@@ -1,0 +1,2322 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="MangoPanel — Manage your hosting account, websites, databases, email, and more.">
+    <title>MangoPanel · Client Portal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
+    <link rel="stylesheet" href="/assets/app.css">
+    <script>
+      (function() {
+        var t = localStorage.getItem("mp_theme") || "Default";
+        document.getElementById("theme-style").setAttribute("href", "/assets/" + t + ".css");
+        
+        // Immediate redirect to login if no token
+        if (!localStorage.getItem("mp_client_token")) {
+          window.location.href = "/login";
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app-preloader">
+      <div class="mango-loader"></div>
+      <div class="loader-progress"><div class="loader-progress-bar"></div></div>
+    </div>
+    <div id="client-app" class="app-shell client-shell" v-cloak>
+      <aside class="sidebar client-sidebar" v-if="token">
+        <div class="brand">
+          <span class="brand-mark">M</span>
+          <div>
+            <strong>MangoPanel</strong>
+            <small>Client portal</small>
+          </div>
+        </div>
+        <div v-if="token" class="site-switcher">
+          <span>Site</span>
+          <button class="site-select-button" @click="toggleSiteSwitcher">
+            <span>{{ selectedWebsiteLabel }}</span>
+            <app-icon name="chevron"></app-icon>
+          </button>
+          <div v-if="siteSwitcherOpen" class="site-select-menu">
+            <input v-model="siteSearchQuery" placeholder="Search sites">
+            <button class="site-option" :class="{ active: !selectedWebsiteId }" @click="chooseSite('')">
+              <strong>All sites</strong>
+              <small>{{ websites.length }} website{{ websites.length === 1 ? '' : 's' }}</small>
+            </button>
+            <button v-for="site in filteredSites" :key="site.id" class="site-option" :class="{ active: String(site.id) === String(selectedWebsiteId) }" @click="chooseSite(site.id)">
+              <strong>{{ site.domain }}</strong>
+              <small>{{ site.status }} · PHP {{ site.php_version }}</small>
+            </button>
+          </div>
+        </div>
+        <nav class="nav-list">
+          <button v-for="item in primaryMenuItems" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
+            <app-icon :name="item.icon"></app-icon>
+            <span>{{ item.label }}</span>
+          </button>
+          <span class="nav-group">Hosting</span>
+          <button v-for="item in hostingMenuItems" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
+            <app-icon :name="item.icon"></app-icon>
+            <span>{{ item.label }}</span>
+          </button>
+          <span class="nav-group">Advanced</span>
+          <button v-for="item in advancedMenuItems" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
+            <app-icon :name="item.icon"></app-icon>
+            <span>{{ item.label }}</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="main client-main" v-if="token">
+        <header class="topbar">
+          <!-- Left: page context breadcrumb -->
+          <div class="topbar-context">
+            <div class="topbar-page-icon">
+              <app-icon :name="activeMenuItem.icon"></app-icon>
+            </div>
+            <div class="topbar-page-meta">
+              <span class="topbar-page-title-row">
+                <span class="topbar-page-title">{{ activeMenuItem.label }}</span>
+                <span class="feature-status-badge" :class="featureStatusClass(activePage)">{{ activeFeatureStatus.label }}</span>
+              </span>
+              <span class="topbar-page-desc">{{ activeMenuItem.description }}</span>
+            </div>
+          </div>
+
+          <!-- Center: global search -->
+          <div v-if="token" class="global-search">
+            <span class="search-icon-wrap">
+              <app-icon name="search"></app-icon>
+            </span>
+            <input v-model="searchQuery" placeholder="Search pages, sites, databases…" class="search-input" autocomplete="off" spellcheck="false">
+            <kbd class="search-kbd">⌘K</kbd>
+            <div v-if="searchResults.length" class="search-results">
+              <button v-for="result in searchResults" :key="`${result.type}-${result.label}-${result.detail}`" @click="chooseSearchResult(result)">
+                <span class="search-result-type">{{ result.type }}</span>
+                <strong>{{ result.label }}</strong>
+                <small>{{ result.detail }}</small>
+              </button>
+            </div>
+          </div>
+
+          <!-- Right: notifications + user -->
+          <div v-if="token" class="topbar-actions">
+            <!-- Notifications -->
+            <div style="position: relative; display: flex;">
+              <button class="notification-bell" @click="toggleNotifications" aria-label="Notifications">
+                <app-icon name="bell"></app-icon>
+                <span v-if="unreadNotificationsCount > 0" class="notification-badge">{{ unreadNotificationsCount }}</span>
+              </button>
+              <div v-if="notificationsOpen" class="notification-dropdown">
+                <div class="notification-header">
+                  <h3>Notifications</h3>
+                  <button v-if="unreadNotificationsCount > 0" @click="markAllNotificationsRead">Mark all read</button>
+                </div>
+                <div v-if="notifications.length === 0" class="notification-empty">No notifications yet.</div>
+                <ul v-else class="notification-list">
+                  <li v-for="n in notifications" :key="n.id" class="notification-item" :class="{ unread: !n.read }">
+                    {{ n.text }}
+                    <span class="notification-time">{{ n.time }}</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <!-- User trigger -->
+            <button class="user-trigger" @click="toggleUserMenu" aria-label="Open user menu">
+              <span class="user-avatar-chip">{{ userInitial }}</span>
+              <span class="user-trigger-meta">
+                <span class="user-trigger-name">{{ currentUserEmail }}</span>
+                <span class="user-trigger-role">Client account</span>
+              </span>
+              <app-icon name="chevron" class="user-chevron-icon"></app-icon>
+            </button>
+
+            <!-- Dropdown -->
+            <div v-if="userMenuOpen" class="user-menu">
+              <div class="user-menu-header">
+                <span class="user-avatar-lg">{{ userInitial }}</span>
+                <div class="user-menu-info">
+                  <strong>{{ currentUserEmail }}</strong>
+                  <small>Client account</small>
+                </div>
+              </div>
+              <div class="user-menu-divider"></div>
+              <nav class="user-menu-nav">
+                <button @click="goTo('security')"><app-icon name="security"></app-icon><span>Security</span></button>
+                <button @click="goTo('hosting-plan')"><app-icon name="plan"></app-icon><span>Plan Details</span></button>
+                <button @click="goTo('settings')"><app-icon name="settings"></app-icon><span>Account Settings</span></button>
+              </nav>
+              <div class="user-menu-divider"></div>
+              <button class="user-menu-signout" @click="logout">
+                <app-icon name="logout"></app-icon>
+                <span>Sign out</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div class="client-main-content">
+
+          <!-- ═══════════════════════════════════════════════════════════ DASHBOARD -->
+          <section v-if="activePage === 'dashboard'" class="page-stack">
+            <!-- Welcome banner -->
+            <div class="dashboard-welcome">
+              <div class="welcome-text">
+                <h2>Welcome back, {{ currentUserEmail.split('@')[0] }}</h2>
+                <p>{{ websites.length }} website{{ websites.length !== 1 ? 's' : '' }} · {{ databases.length }} database{{ databases.length !== 1 ? 's' : '' }} · {{ mailboxes.length }} mailbox{{ mailboxes.length !== 1 ? 'es' : '' }}</p>
+              </div>
+              <div class="welcome-actions">
+                <button class="primary-button" @click="openSiteWizard"><app-icon name="plus"></app-icon>Add Website</button>
+              </div>
+            </div>
+
+            <!-- Resource bars -->
+            <div class="resource-summary-grid">
+              <div class="resource-summary-card">
+                <div class="resource-summary-header">
+                  <app-icon name="disk"></app-icon>
+                  <span>Disk Usage</span>
+                </div>
+                <div class="resource-bar-wrap">
+                  <div class="resource-bar" :style="{ '--pct': diskPercent + '%' }" :class="{ warn: diskPercent > 80, danger: diskPercent > 95 }"></div>
+                </div>
+                <div class="resource-summary-nums">
+                  <strong>{{ home.resources.disk_used_mb }} MB</strong>
+                  <small>of {{ home.resources.disk_limit_mb }} MB</small>
+                </div>
+              </div>
+              <div class="resource-summary-card">
+                <div class="resource-summary-header">
+                  <app-icon name="folder"></app-icon>
+                  <span>Inodes</span>
+                </div>
+                <div class="resource-bar-wrap">
+                  <div class="resource-bar" :style="{ '--pct': inodePercent + '%' }" :class="{ warn: inodePercent > 80, danger: inodePercent > 95 }"></div>
+                </div>
+                <div class="resource-summary-nums">
+                  <strong>{{ home.resources.inodes_used }}</strong>
+                  <small>of {{ home.resources.inodes_limit }}</small>
+                </div>
+              </div>
+              <div class="resource-summary-card">
+                <div class="resource-summary-header">
+                  <app-icon name="cpu"></app-icon>
+                  <span>CPU</span>
+                </div>
+                <div class="resource-bar-wrap"><div class="resource-bar" style="--pct: 20%"></div></div>
+                <div class="resource-summary-nums">
+                  <strong>{{ home.resources.cpu }}</strong>
+                  <small>current trend</small>
+                </div>
+              </div>
+              <div class="resource-summary-card">
+                <div class="resource-summary-header">
+                  <app-icon name="memory"></app-icon>
+                  <span>Memory</span>
+                </div>
+                <div class="resource-bar-wrap"><div class="resource-bar" style="--pct: 35%"></div></div>
+                <div class="resource-summary-nums">
+                  <strong>{{ home.resources.memory }}</strong>
+                  <small>runtime health</small>
+                </div>
+              </div>
+            </div>
+
+            <!-- Warning banner -->
+            <section v-if="home.warnings.length" class="panel warning-panel">
+              <h2><app-icon name="warning"></app-icon> Needs Attention</h2>
+              <ul class="clean-list">
+                <li v-for="warning in home.warnings" :key="warning.message">{{ warning.message }}</li>
+              </ul>
+            </section>
+
+            <!-- cPanel-style icon grid -->
+            <div class="cpanel-section-wrap">
+              <div v-for="(tiles, group) in cpanelGroups" :key="group" class="cpanel-group">
+                <h3 class="cpanel-group-title">{{ group }}</h3>
+                <div class="cpanel-grid">
+                  <button
+                    v-for="tile in tiles"
+                    :key="tile.label"
+                    class="cpanel-tile"
+                    :class="{ disabled: isFeatureDisabled(tile.target) }"
+                    :disabled="isFeatureDisabled(tile.target)"
+                    :style="{ '--tile-color': tile.color }"
+                    @click="tileCick(tile)"
+                  >
+                    <div class="cpanel-tile-icon">
+                      <app-icon :name="tile.icon"></app-icon>
+                    </div>
+                    <span class="cpanel-tile-label">{{ tile.label }}</span>
+                    <span class="cpanel-tile-status" :class="featureStatusClass(tile.target)">{{ featureStatus(tile.target).label }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Recent activity -->
+            <div v-if="activity.length" class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Recent Activity</h2>
+                  <p>Last {{ Math.min(activity.length, 5) }} events on your account</p>
+                </div>
+                <button class="ghost-button" @click="goTo('activity')">View all</button>
+              </div>
+              <ul class="clean-list">
+                <li v-for="item in activity.slice(0, 5)" :key="item.id">
+                  <strong><app-icon name="activity"></app-icon>{{ item.action }}</strong>
+                  <small>{{ item.created_at }}</small>
+                </li>
+              </ul>
+            </div>
+
+            <div v-if="recentSyncJobs.length" class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Recent Sync</h2>
+                  <p>Last {{ recentSyncJobs.length }} jobs</p>
+                </div>
+                <button class="ghost-button" @click="goTo('activity')">View all</button>
+              </div>
+              <ul class="clean-list sync-list">
+                <li v-for="job in recentSyncJobs" :key="job.id">
+                  <strong><app-icon name="activity"></app-icon>{{ formatJobType(job.type) }}</strong>
+                  <span class="job-status-badge" :class="jobStatusClass(job.status)">{{ job.status }}</span>
+                  <small>{{ formatJobDetail(job) }}</small>
+                </li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ WEBSITES -->
+          <section v-if="activePage === 'website'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Websites</h2>
+                <p>{{ websites.length }} website{{ websites.length === 1 ? '' : 's' }} on this account</p>
+              </div>
+              <button class="primary-button" @click="openSiteWizard"><app-icon name="plus"></app-icon><span>Add Website</span></button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Domain</th>
+                    <th>Status</th>
+                    <th>SSL</th>
+                    <th>PHP Version</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="site in websites" :key="site.id">
+                    <td class="site-info-cell">
+                      <strong>{{ site.domain }}</strong>
+                      <small class="truncate-path" :title="site.document_root">{{ site.document_root }}</small>
+                    </td>
+                    <td><span class="pill" :class="site.status">{{ site.status }}</span></td>
+                    <td><span class="pill" :class="site.ssl_status">{{ site.ssl_status }}</span></td>
+                    <td>
+                      <div class="php-switcher-cell">
+                        <select
+                          :value="site.php_version"
+                          :disabled="phpSwitching[site.id]"
+                          class="php-version-select"
+                          @change="switchPhpVersion(site, $event.target.value)"
+                        >
+                          <option v-for="v in phpVersions" :key="v" :value="v">PHP {{ v }}</option>
+                        </select>
+                        <span v-if="phpSwitching[site.id]" class="php-switching-indicator">…</span>
+                      </div>
+                    </td>
+                    <td class="actions">
+                      <a class="small-button" :href="site.public_url" target="_blank" rel="noreferrer">Open</a>
+                      <button @click="issueSsl(site)">SSL</button>
+                      <button @click="launch('files')">Files</button>
+                      <button @click="launch('phpmyadmin')">DB</button>
+                      <button class="danger-button" @click="deleteWebsite(site)"><app-icon name="trash"></app-icon></button>
+                    </td>
+                  </tr>
+                  <tr v-if="!websites.length"><td colspan="5" class="empty-row">No websites yet. Add one above.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ FILES -->
+          <section v-if="activePage === 'files'" class="page-stack files-page">
+            <div class="panel analytics-toolbar" v-if="websites.length">
+              <div>
+                <h2>Files Management</h2>
+                <p>Manage files for your hosting account and websites.</p>
+              </div>
+              <div class="analytics-domain-control">
+                <label>Selected Domain
+                  <select v-model="selectedWebsiteId">
+                    <option value="">All sites</option>
+                    <option v-for="site in websites" :key="site.id" :value="site.id">{{ site.domain }}</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div class="files-cards-grid">
+              <!-- Card 1: Root Filesystem -->
+              <div class="panel file-access-card" @click="launch('files', '/files')">
+                <div class="large-icon"><app-icon name="server"></app-icon></div>
+                <h3>Access Root Filesystem of this hosting</h3>
+              </div>
+
+              <!-- Card 2: All Domains -->
+              <div class="panel file-access-card" @click="launch('files', '/files/domains/')">
+                <div class="large-icon"><app-icon name="folder"></app-icon></div>
+                <h3>Access files of all domains</h3>
+              </div>
+
+              <!-- Card 3: Selected Domain -->
+              <div class="panel file-access-card" :class="{ disabled: !selectedWebsiteId }" @click="selectedWebsiteId ? launch('files', '/files/domains/' + selectedWebsiteLabel + '/') : null">
+                <div class="large-icon"><app-icon name="website"></app-icon></div>
+                <h3>Access files of domain {{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : '[select domain]' }}</h3>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ DOMAINS -->
+          <section v-if="activePage === 'domains'" class="panel">
+            <h2>Domains</h2>
+            <ul class="clean-list">
+              <li v-for="domain in domains" :key="domain.id">
+                <strong><app-icon name="domains"></app-icon>{{ domain.name }}</strong>
+                <span class="pill">{{ domain.kind }}</span>
+                <span class="pill" :class="domain.status">{{ domain.status }}</span>
+              </li>
+              <li v-if="!domains.length"><span>No domains yet.</span></li>
+            </ul>
+          </section>
+
+
+          <!-- ═══════════════════════════════════════════════════════════ HOSTING PLAN -->
+          <section v-if="activePage === 'hosting-plan'" class="page-stack hosting-plan-page">
+            
+            <div v-if="home.accounts.length" class="premium-plan-hero">
+              <div class="plan-badge"><app-icon name="plan"></app-icon> {{ home.accounts[0].plan_name }} Plan</div>
+              <h2>Hosting Plan Details</h2>
+              <p>Everything you need to know about your current server resources and configurations.</p>
+            </div>
+
+            <div v-if="home.accounts.length" class="premium-cards-grid">
+              
+              <!-- Website Details -->
+              <div class="premium-card">
+                <div class="premium-card-header">
+                  <div class="premium-card-icon"><app-icon name="website"></app-icon></div>
+                  <h3>Website Details</h3>
+                </div>
+                <div class="premium-card-body">
+                  <div class="premium-list">
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Access your website at</span>
+                      <strong class="premium-item-value"><a :href="'https://' + (selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com'))" target="_blank">https://{{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com') }}</a></strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Access your website with www</span>
+                      <strong class="premium-item-value"><a :href="'https://www.' + (selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com'))" target="_blank">https://www.{{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com') }}</a></strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Website IP address</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].node_hostname || '127.0.0.1' }}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Hosting Details -->
+              <div class="premium-card">
+                <div class="premium-card-header">
+                  <div class="premium-card-icon"><app-icon name="performance"></app-icon></div>
+                  <h3>Hosting Details</h3>
+                  <button class="premium-btn">Upgrade plan</button>
+                </div>
+                <div class="premium-card-body">
+                  <div class="premium-list grid-2">
+                    <div class="premium-item">
+                      <div class="premium-item-icon"><app-icon name="disk-usage"></app-icon></div>
+                      <div class="premium-item-content">
+                        <span class="premium-item-label">Disk Space</span>
+                        <strong class="premium-item-value">{{ home.accounts[0].storage_mb ? (home.accounts[0].storage_mb >= 1024 ? (home.accounts[0].storage_mb / 1024).toFixed(1) + ' GB' : home.accounts[0].storage_mb + ' MB') : '200 GB' }}</strong>
+                      </div>
+                    </div>
+                    <div class="premium-item">
+                      <div class="premium-item-icon"><app-icon name="analytics"></app-icon></div>
+                      <div class="premium-item-content">
+                        <span class="premium-item-label">RAM</span>
+                        <strong class="premium-item-value">{{ home.accounts[0].memory_mb || '3072' }} MB</strong>
+                      </div>
+                    </div>
+                    <div class="premium-item">
+                      <div class="premium-item-icon"><app-icon name="cpu"></app-icon></div>
+                      <div class="premium-item-content">
+                        <span class="premium-item-label">CPU Cores</span>
+                        <strong class="premium-item-value">{{ home.accounts[0].cpu_limit || '2' }}</strong>
+                      </div>
+                    </div>
+                    <div class="premium-item">
+                      <div class="premium-item-icon"><app-icon name="files"></app-icon></div>
+                      <div class="premium-item-content">
+                        <span class="premium-item-label">Inodes</span>
+                        <strong class="premium-item-value">{{ home.accounts[0].inode_limit || '600000' }}</strong>
+                      </div>
+                    </div>
+                    <div class="premium-item">
+                      <div class="premium-item-icon"><app-icon name="domains"></app-icon></div>
+                      <div class="premium-item-content">
+                        <span class="premium-item-label">Addons/Websites</span>
+                        <strong class="premium-item-value">{{ home.accounts[0].max_websites || '100' }}</strong>
+                      </div>
+                    </div>
+                    <div class="premium-item">
+                      <div class="premium-item-icon"><app-icon name="performance"></app-icon></div>
+                      <div class="premium-item-content">
+                        <span class="premium-item-label">Max Processes</span>
+                        <strong class="premium-item-value">{{ home.accounts[0].max_processes || '120' }}</strong>
+                      </div>
+                    </div>
+                    <div class="premium-item">
+                      <div class="premium-item-icon"><app-icon name="server"></app-icon></div>
+                      <div class="premium-item-content">
+                        <span class="premium-item-label">PHP Workers</span>
+                        <strong class="premium-item-value">{{ home.accounts[0].php_workers || '60' }}</strong>
+                      </div>
+                    </div>
+                    <div class="premium-item">
+                      <div class="premium-item-icon"><app-icon name="bandwidth"></app-icon></div>
+                      <div class="premium-item-content">
+                        <span class="premium-item-label">Bandwidth</span>
+                        <strong class="premium-item-value">{{ home.accounts[0].bandwidth_mb ? (home.accounts[0].bandwidth_mb >= 1024 ? (home.accounts[0].bandwidth_mb / 1024).toFixed(1) + ' GB' : home.accounts[0].bandwidth_mb + ' MB') : 'Unlimited' }}</strong>
+                      </div>
+                    </div>
+
+                    <div class="ns-divider"></div>
+                    
+                    <div class="premium-item col-span-2 premium-item-col">
+                      <span class="premium-item-label">Current nameserver 1</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].nameserver_1 || 'ns1.dns-parking.com' }}</strong>
+                    </div>
+                    <div class="premium-item col-span-2 premium-item-col">
+                      <span class="premium-item-label">Current nameserver 2</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].nameserver_2 || 'ns2.dns-parking.com' }}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Server Details -->
+              <div class="premium-card">
+                <div class="premium-card-header">
+                  <div class="premium-card-icon"><app-icon name="server"></app-icon></div>
+                  <h3>Server Details</h3>
+                </div>
+                <div class="premium-card-body">
+                  <div class="premium-list">
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Server Name</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].node_name || 'server1874' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Server Location</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].node_location || 'Asia (India)' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Backups location</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].backup_location || 'Singapore' }}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- FTP Details -->
+              <div class="premium-card">
+                <div class="premium-card-header">
+                  <div class="premium-card-icon"><app-icon name="ftp"></app-icon></div>
+                  <h3>FTP Details</h3>
+                </div>
+                <div class="premium-card-body">
+                  <div class="premium-list">
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">FTP IP</span>
+                      <strong class="premium-item-value">ftp://{{ home.accounts[0].node_hostname || '127.0.0.1' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">FTP Hostname</span>
+                      <strong class="premium-item-value">ftp://{{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com') }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">FTP Username</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].username }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">File Upload Path</span>
+                      <strong class="premium-item-value">public_html</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Node.js details -->
+              <div class="premium-card full-span">
+                <div class="premium-card-header">
+                  <div class="premium-card-icon"><app-icon name="terminal"></app-icon></div>
+                  <h3>Node.js Details</h3>
+                </div>
+                <div class="premium-card-body">
+                  <div class="premium-list grid-2">
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Supported frontend frameworks</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].frontend_frameworks || 'Angular, Astro, Next.js, Nuxt, Parcel, React, Vue.js, etc.' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Supported backend frameworks</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].backend_frameworks || 'Express, Fastify, Hono, NestJS, Nuxt, React Router, SvelteKit' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Supported Node.js versions</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].nodejs_versions || '24.x, 22.x, 20.x and 18.x' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Supported package managers</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].package_managers || 'npm (default), yarn and pnpm' }}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ PERFORMANCE -->
+          <section v-if="activePage === 'performance'" class="page-stack">
+            <div class="metric-grid">
+              <div class="metric"><app-icon name="performance"></app-icon><span>CPU</span><strong>{{ formatResource(latestResourceUsage.cpu_percent, "%") }}</strong><small>{{ latestResourceUsage.source || "collector" }}</small></div>
+              <div class="metric"><app-icon name="analytics"></app-icon><span>RAM</span><strong>{{ formatResource(latestResourceUsage.memory_mb, "MB") }}</strong><small>of {{ formatResource(latestResourceUsage.memory_limit_mb, "MB") }}</small></div>
+              <div class="metric"><app-icon name="files"></app-icon><span>Storage</span><strong>{{ formatResource(latestResourceUsage.storage_mb, "MB") }}</strong><small>of {{ formatResource(latestResourceUsage.storage_limit_mb, "MB") }}</small></div>
+            </div>
+            <div class="panel resource-panel">
+              <div class="section-head">
+                <div>
+                  <h2>Resource Usage History</h2>
+                  <p>Live account usage sampled from Docker containers when available and file storage on disk.</p>
+                </div>
+                <div class="range-tabs">
+                  <button v-for="range in resourceUsage.windows" :key="range" :class="{ active: resourceRange === range }" @click="changeResourceRange(range)">{{ range }}</button>
+                </div>
+              </div>
+              <div class="resource-chart-wrap">
+                <svg class="resource-chart" viewBox="0 0 720 220" preserveAspectRatio="none" role="img" aria-label="Resource usage graph">
+                  <line v-for="tick in [0, 55, 110, 165, 220]" :key="tick" x1="0" x2="720" :y1="tick" :y2="tick"></line>
+                  <g v-for="series in resourceSeries" :key="series.key">
+                    <path class="resource-fill" :d="resourceFillPath(series.key, series.max)" :style="{ color: series.color }"></path>
+                    <path class="resource-line" :d="resourcePath(series.key, series.max)" :style="{ color: series.color }"></path>
+                  </g>
+                </svg>
+              </div>
+              <div class="resource-legend">
+                <span v-for="series in resourceSeries" :key="series.key"><i :style="{ background: series.color }"></i>{{ series.label }}</span>
+                <small v-if="resourceChartPoints.length">Last sample {{ formatSampleTime(latestResourceUsage.sampled_at) }}</small>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ ANALYTICS -->
+          <section v-if="activePage === 'analytics'" class="page-stack">
+            <div class="panel analytics-toolbar">
+              <div>
+                <h2>Analytics</h2>
+                <p>{{ analytics.domain || selectedWebsite?.domain || "No domain selected" }}</p>
+              </div>
+              <div class="analytics-domain-control" style="display: flex; gap: 1rem; align-items: flex-end;">
+                <label>Change domain
+                  <select v-model="selectedWebsiteId" @change="loadAnalytics">
+                    <option v-for="site in websites" :key="site.id" :value="site.id">{{ site.domain }}</option>
+                  </select>
+                </label>
+                <button class="secondary-button" @click="downloadRawLogs(analytics.domain || selectedWebsite?.domain)" :disabled="!analytics.domain && !selectedWebsite" style="height: 38px; display: inline-flex; align-items: center; gap: 0.5rem;">
+                  <app-icon name="download"></app-icon> Download Logs
+                </button>
+              </div>
+            </div>
+            <div class="metric-grid analytics-metrics">
+              <div class="metric"><app-icon name="website"></app-icon><span>Domain shown</span><strong>{{ analytics.domain || "-" }}</strong><small>selected website</small></div>
+              <div class="metric"><app-icon name="files"></app-icon><span>Bandwidth</span><strong>{{ formatBytes(analytics.summary.bandwidth_bytes) }}</strong><small>bytes served</small></div>
+              <div class="metric"><app-icon name="analytics"></app-icon><span>Total requests</span><strong>{{ analytics.summary.total_requests }}</strong><small>all logged responses</small></div>
+              <div class="metric"><app-icon name="network"></app-icon><span>Unique IPs</span><strong>{{ analytics.summary.unique_ip_addresses }}</strong><small>distinct visitors</small></div>
+              <div class="metric"><app-icon name="security"></app-icon><span>Error 4xx</span><strong>{{ analytics.summary.error_4xx }}</strong><small>client errors</small></div>
+              <div class="metric"><app-icon name="activity"></app-icon><span>Error 5xx</span><strong>{{ analytics.summary.error_5xx }}</strong><small>server errors</small></div>
+            </div>
+            <div class="panel analytics-panel">
+              <div class="section-head">
+                <div>
+                  <h2>Filter by</h2>
+                  <p>{{ analytics.filters.find((item) => item.key === analytics.filter)?.label || "Top list" }}</p>
+                </div>
+                <div class="range-tabs">
+                  <button v-for="filter in analytics.filters" :key="filter.key" :class="{ active: analytics.filter === filter.key }" @click="changeAnalyticsFilter(filter.key)">{{ filter.label }}</button>
+                </div>
+              </div>
+              <ol v-if="analytics.filter === 'top-countries'" class="analytics-ranking">
+                <li v-for="country in analytics.top_countries" :key="country.country">
+                  <span>{{ country.country }}</span><strong>{{ country.requests }}</strong>
+                </li>
+                <li v-if="!analytics.top_countries.length"><span>No access logs yet</span><strong>0</strong></li>
+              </ol>
+              <div v-if="['access-logs', '4xx', '5xx'].includes(analytics.filter)" class="table-wrap">
+                <table>
+                  <thead><tr><th>Time</th><th>Request</th><th>Status</th><th>IP</th><th>Country</th><th>Bandwidth</th></tr></thead>
+                  <tbody>
+                    <tr v-for="log in analytics.filter === '4xx' ? analytics.error_4xx_logs : analytics.filter === '5xx' ? analytics.error_5xx_logs : analytics.access_logs" :key="log.id">
+                      <td>{{ log.created_at }}</td>
+                      <td><strong>{{ log.method }}</strong><small>{{ log.path }}</small></td>
+                      <td><span class="pill">{{ log.status_code }}</span></td>
+                      <td>{{ log.ip_address || "Unknown" }}</td>
+                      <td>{{ log.country }}</td>
+                      <td>{{ formatBytes(log.bytes_sent) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-if="analytics.filter === 'total-requests'" class="analytics-summary-list">
+                <div><span>Total requests</span><strong>{{ analytics.summary.total_requests }}</strong></div>
+                <div><span>Successful requests</span><strong>{{ Math.max(analytics.summary.total_requests - analytics.summary.error_4xx - analytics.summary.error_5xx, 0) }}</strong></div>
+                <div><span>Error requests</span><strong>{{ analytics.summary.error_4xx + analytics.summary.error_5xx }}</strong></div>
+              </div>
+              <div v-if="analytics.filter === 'unique-ips'" class="table-wrap">
+                <table>
+                  <thead><tr><th>IP address</th><th>Requests</th><th>Last seen</th></tr></thead>
+                  <tbody>
+                    <tr v-for="ip in analytics.top_ips" :key="ip.ip_address"><td>{{ ip.ip_address }}</td><td>{{ ip.requests }}</td><td>{{ ip.last_seen_at }}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-if="analytics.filter === 'bandwidth'" class="table-wrap">
+                <table>
+                  <thead><tr><th>Path</th><th>Requests</th><th>Bandwidth</th></tr></thead>
+                  <tbody>
+                    <tr v-for="item in analytics.top_bandwidth" :key="item.path"><td>{{ item.path }}</td><td>{{ item.requests }}</td><td>{{ formatBytes(item.bandwidth_bytes) }}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ SECURITY -->
+          <section v-if="activePage === 'security'" class="panel">
+            <h2>Security</h2>
+            <ul class="clean-list">
+              <li v-for="warning in home.warnings" :key="warning.message"><strong><app-icon name="security"></app-icon>{{ warning.message }}</strong></li>
+              <li v-if="!home.warnings.length"><strong><app-icon name="check"></app-icon>No current warnings</strong><small>Your account looks good.</small></li>
+            </ul>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ DATABASES -->
+          <section v-if="activePage === 'databases'" class="panel glass-panel">
+            <div class="section-head" style="margin-bottom: 1.5rem; text-align: center;">
+              <div>
+                <h2 style="font-size: 28px; font-weight: 800; margin-bottom: 8px;">Databases</h2>
+                <p class="muted">Manage your MySQL databases, users, and remote access grants.</p>
+              </div>
+            </div>
+
+            <!-- Sub-tabs for clean layout -->
+            <div class="pill-tabs">
+              <button :class="{ active: dbTab === 'databases' }" @click="dbTab = 'databases'">
+                <app-icon name="databases" style="vertical-align: middle; margin-right: 6px;"></app-icon>Databases
+              </button>
+              <button :class="{ active: dbTab === 'users' }" @click="dbTab = 'users'">
+                <app-icon name="user" style="vertical-align: middle; margin-right: 6px;"></app-icon>Database Users
+              </button>
+              <button :class="{ active: dbTab === 'grants' }" @click="dbTab = 'grants'">
+                <app-icon name="lock" style="vertical-align: middle; margin-right: 6px;"></app-icon>User Access Grants
+              </button>
+            </div>
+
+            <div class="database-crud-grid">
+              <!-- Tab 1: Databases -->
+              <div v-if="dbTab === 'databases'" class="premium-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                  <div>
+                    <h3 style="margin:0;"><app-icon name="databases"></app-icon>Databases</h3>
+                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">{{ databases.length }} database{{ databases.length === 1 ? '' : 's' }}</p>
+                  </div>
+                  <button class="primary-button" @click="openDbModal('database')"><app-icon name="plus"></app-icon><span>Create Database</span></button>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Name</th><th>Status</th><th>Connection Details</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr v-for="database in databases" :key="database.id">
+                        <td><strong>{{ database.name }}</strong></td>
+                        <td>
+                          <span class="pill" :class="database.status === 'active' ? 'ok' : 'suspended'">
+                            {{ database.status }}
+                          </span>
+                        </td>
+                        <td><small>{{ database.connection?.host || '127.0.0.1' }}:{{ database.connection?.port || 3306 }}</small></td>
+                        <td class="actions">
+                          <button class="small-button" @click="openEditDbModal(database)">Edit</button>
+                          <button class="danger-button" @click="deleteDatabase(database)"><app-icon name="trash"></app-icon></button>
+                        </td>
+                      </tr>
+                      <tr v-if="!databases.length"><td colspan="4" class="empty-row">No databases created yet. Click "Create Database" to start.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Tab 2: Users -->
+              <div v-if="dbTab === 'users'" class="premium-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                  <div>
+                    <h3 style="margin:0;"><app-icon name="user"></app-icon>Database Users</h3>
+                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">{{ databaseUsers.length }} user{{ databaseUsers.length === 1 ? '' : 's' }}</p>
+                  </div>
+                  <button class="primary-button" @click="openDbModal('user')"><app-icon name="plus"></app-icon><span>Create User</span></button>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Username</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr v-for="user in databaseUsers" :key="user.id">
+                        <td><strong>{{ user.username }}</strong></td>
+                        <td>
+                          <span class="pill" :class="user.status === 'active' ? 'ok' : 'suspended'">
+                            {{ user.status }}
+                          </span>
+                        </td>
+                        <td class="actions">
+                          <button class="small-button" @click="openChangePasswordModal(user)">Reset Password</button>
+                          <button class="danger-button" @click="deleteDatabaseUser(user)"><app-icon name="trash"></app-icon></button>
+                        </td>
+                      </tr>
+                      <tr v-if="!databaseUsers.length"><td colspan="3" class="empty-row">No database users yet.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Tab 3: Grants -->
+              <div v-if="dbTab === 'grants'" class="premium-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                  <div>
+                    <h3 style="margin:0;"><app-icon name="lock"></app-icon>User Access Grants</h3>
+                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">Manage which users can access which databases.</p>
+                  </div>
+                  <button class="primary-button" @click="openDbModal('grant')"><app-icon name="plus"></app-icon><span>Grant Access</span></button>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Database</th><th>User</th><th>Privileges</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr v-for="grant in databaseGrants" :key="grant.id">
+                        <td><strong>{{ grant.database_name }}</strong></td>
+                        <td>{{ grant.username }}</td>
+                        <td><span class="pill">{{ grant.privileges }}</span></td>
+                        <td>
+                          <span class="pill" :class="grant.status === 'active' ? 'ok' : 'suspended'">
+                            {{ grant.status }}
+                          </span>
+                        </td>
+                        <td class="actions">
+                          <button class="small-button" @click="openEditGrantModal(grant)">Edit Privileges</button>
+                          <button class="danger-button" @click="deleteDatabaseGrant(grant)"><app-icon name="trash"></app-icon></button>
+                        </td>
+                      </tr>
+                      <tr v-if="!databaseGrants.length"><td colspan="5" class="empty-row">No user access grants configured.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ SERVICES -->
+          <section v-if="activePage === 'services'" class="panel">
+            <div class="panel-header">
+              <h2>Background Services</h2>
+              <button class="danger-button" @click="rebootStack" :disabled="loadingServices">
+                <app-icon name="fix"></app-icon><span>Reboot Entire Stack</span>
+              </button>
+            </div>
+            <p style="margin-bottom: 1.5rem; color: var(--text-secondary);">Manage and restart isolated background services. A full stack reboot will abruptly kill all running processes.</p>
+            <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem;">
+              <div v-for="svc in availableServices" :key="svc.id" class="card" style="display: flex; align-items: center; justify-content: space-between; padding: 1.5rem;">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                  <div style="background: var(--surface-hover); padding: 0.75rem; border-radius: 12px; color: var(--brand);">
+                    <app-icon :name="svc.icon"></app-icon>
+                  </div>
+                  <div>
+                    <h3 style="margin: 0; font-size: 1.1rem;">{{ svc.name }}</h3>
+                    <small style="color: var(--text-secondary);">{{ svc.description }}</small>
+                  </div>
+                </div>
+                <button class="secondary-button" @click="restartService(svc.id)" :disabled="loadingServices">
+                  <app-icon name="activity"></app-icon><span>Restart</span>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ ACTIVITY -->
+          <section v-if="activePage === 'activity'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Activity Log</h2>
+                <p>Account events and sync jobs</p>
+              </div>
+              <button class="ghost-button" @click="loadSyncJobs"><app-icon name="cache"></app-icon><span>Refresh</span></button>
+            </div>
+            <div class="activity-sync-grid">
+              <ul class="clean-list">
+                <li v-for="item in activity" :key="item.id">
+                  <strong><app-icon name="activity"></app-icon>{{ item.action }}</strong>
+                  <small>{{ item.created_at }}</small>
+                </li>
+                <li v-if="!activity.length"><span>No activity yet.</span></li>
+              </ul>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Job</th><th>Status</th><th>Result</th><th>Updated</th></tr></thead>
+                  <tbody>
+                    <tr v-for="job in syncJobs" :key="job.id">
+                      <td><strong>{{ formatJobType(job.type) }}</strong><small>#{{ job.id }} · {{ job.target_type }}</small></td>
+                      <td><span class="job-status-badge" :class="jobStatusClass(job.status)">{{ job.status }}</span></td>
+                      <td><small>{{ formatJobDetail(job) }}</small></td>
+                      <td><small>{{ job.updated_at || job.created_at }}</small></td>
+                    </tr>
+                    <tr v-if="!syncJobs.length"><td colspan="4" class="empty-row">No sync jobs yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ EMAIL -->
+          <section v-if="activePage === 'email'" class="page-stack">
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Email &amp; Mailboxes</h2>
+                  <p>{{ mailboxes.length }} mailbox{{ mailboxes.length === 1 ? '' : 'es' }} on this account</p>
+                </div>
+                <div class="inline-form">
+                  <input v-model="newMailbox.email" placeholder="user@yourdomain.com">
+                  <input v-model.number="newMailbox.quota_mb" type="number" min="100" placeholder="Quota MB">
+                  <button class="primary-button" @click="createMailbox"><app-icon name="plus"></app-icon><span>Add Mailbox</span></button>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Email</th><th>Quota</th><th>Status</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    <tr v-for="mailbox in mailboxes" :key="mailbox.id">
+                      <td><strong>{{ mailbox.email }}</strong></td>
+                      <td>{{ mailbox.quota_mb }} MB</td>
+                      <td><span class="pill" :class="mailbox.status">{{ mailbox.status }}</span></td>
+                      <td class="actions">
+                        <button @click="toggleMailboxStatus(mailbox)">{{ mailbox.status === 'suspended' ? 'Enable' : 'Suspend' }}</button>
+                        <button class="danger-button" @click="deleteMailbox(mailbox)"><app-icon name="trash"></app-icon></button>
+                      </td>
+                    </tr>
+                    <tr v-if="!mailboxes.length"><td colspan="4" class="empty-row">No mailboxes yet. Add one above.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel" v-if="home.accounts.length && home.accounts[0].runtime">
+              <h2>Mail Server Connection</h2>
+              <ul class="clean-list">
+                <li><strong><app-icon name="activity"></app-icon>SMTP</strong><small>{{ home.accounts[0].runtime.sftp_host }}:{{ home.accounts[0].runtime.smtp_port || 587 }} · STARTTLS</small></li>
+                <li><strong><app-icon name="network"></app-icon>IMAP</strong><small>{{ home.accounts[0].runtime.sftp_host }}:993 · SSL/TLS</small></li>
+                <li><strong><app-icon name="activity"></app-icon>Webmail (Mailpit)</strong><a :href="home.accounts[0].runtime.mailpit_url" target="_blank" rel="noreferrer">{{ home.accounts[0].runtime.mailpit_url }}</a></li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ CRON JOBS -->
+          <section v-if="activePage === 'cron-jobs'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Cron Jobs</h2>
+                <p>{{ cronJobs.length }} scheduled task{{ cronJobs.length === 1 ? '' : 's' }}</p>
+              </div>
+              <div class="inline-form">
+                <input v-model="newCronJob.schedule" placeholder="*/15 * * * *">
+                <input v-model="newCronJob.command" placeholder="php /home/.../cron.php">
+                <button class="primary-button" @click="createCronJob"><app-icon name="plus"></app-icon><span>Add Job</span></button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Schedule</th><th>Command</th><th>Status</th><th>Last Exit</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr v-for="job in cronJobs" :key="job.id">
+                    <td><code>{{ job.schedule }}</code></td>
+                    <td><code>{{ job.command }}</code></td>
+                    <td><span class="pill" :class="job.status">{{ job.status }}</span></td>
+                    <td><span class="pill" :class="{ ok: job.last_exit_code === 0 }">{{ job.last_exit_code === 0 ? 'OK' : 'Exit ' + job.last_exit_code }}</span></td>
+                    <td class="actions">
+                      <button @click="toggleCronStatus(job)">{{ job.status === 'disabled' ? 'Enable' : 'Disable' }}</button>
+                      <button class="danger-button" @click="deleteCronJob(job)"><app-icon name="trash"></app-icon></button>
+                    </td>
+                  </tr>
+                  <tr v-if="!cronJobs.length"><td colspan="5" class="empty-row">No cron jobs yet. Add one above.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ BACKUPS -->
+          <section v-if="activePage === 'backups'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Backups</h2>
+                <p>{{ backups.length }} backup record{{ backups.length === 1 ? '' : 's' }}</p>
+              </div>
+              <button class="primary-button" @click="openBackupWizard"><app-icon name="plus"></app-icon><span>Manual Backup</span></button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Created</th><th>Artifact</th></tr></thead>
+                <tbody>
+                  <tr v-for="backup in backups" :key="backup.id">
+                    <td>#{{ backup.id }}</td>
+                    <td><span class="pill">{{ backup.kind }}</span></td>
+                    <td><span class="pill" :class="backup.status">{{ backup.status }}</span></td>
+                    <td><small>{{ backup.created_at }}</small></td>
+                    <td>
+                      <small>{{ backup.artifact_path || '—' }}</small>
+                      <button v-if="backup.status === 'completed'" class="small-button" style="margin-left: 8px;" @click="restoreBackup(backup.id)">Restore</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!backups.length"><td colspan="5" class="empty-row">No backups yet. Click Manual Backup to create one.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ GIT -->
+          <section v-if="activePage === 'git'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Git Deployments</h2>
+                <p>{{ gitDeployments.length }} connected repositor{{ gitDeployments.length === 1 ? 'y' : 'ies' }}</p>
+              </div>
+            </div>
+            <div class="inline-form" style="margin-bottom: 1rem;">
+              <input v-model="newGitDeployment.repository_url" placeholder="https://github.com/user/repo.git">
+              <input v-model="newGitDeployment.branch" placeholder="main">
+              <button class="primary-button" @click="createGitDeployment"><app-icon name="plus"></app-icon><span>Connect</span></button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Repository</th><th>Branch</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr v-for="dep in gitDeployments" :key="dep.id">
+                    <td><strong>{{ dep.repository_url }}</strong><small>{{ dep.deploy_path }}</small></td>
+                    <td><code>{{ dep.branch }}</code></td>
+                    <td><span class="pill" :class="dep.status">{{ dep.status }}</span></td>
+                    <td class="actions">
+                      <button class="danger-button" @click="deleteGitDeployment(dep)"><app-icon name="trash"></app-icon></button>
+                    </td>
+                  </tr>
+                  <tr v-if="!gitDeployments.length"><td colspan="4" class="empty-row">No deployments yet. Connect a repository above.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ SSH ACCESS -->
+          <section v-if="activePage === 'ssh-access'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="terminal"></app-icon>
+              <div>
+                <h2>SSH / SFTP Access</h2>
+                <p>Use these credentials with any SFTP client (FileZilla, Cyberduck, WinSCP) or SSH terminal.</p>
+              </div>
+            </div>
+            <div class="ssh-info-grid">
+              <div class="ssh-info-card">
+                <label>Host</label>
+                <code>{{ sshInfo.host }}</code>
+              </div>
+              <div class="ssh-info-card">
+                <label>Port</label>
+                <code>{{ sshInfo.port }}</code>
+              </div>
+              <div class="ssh-info-card">
+                <label>Username</label>
+                <code>{{ sshInfo.user }}</code>
+              </div>
+              <div class="ssh-info-card">
+                <label>Home directory</label>
+                <code>{{ sshInfo.path }}</code>
+              </div>
+            </div>
+            <div class="info-box">
+              <app-icon name="info"></app-icon>
+              <p>Authentication uses your account password or an SSH key. Key-based authentication is recommended for security.</p>
+            </div>
+            <h3 style="margin: 1.25rem 0 .5rem;">Quick connect command</h3>
+            <pre class="code-block">sftp -P {{ sshInfo.port }} {{ sshInfo.user }}@{{ sshInfo.host }}</pre>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ PHP CONFIGURATION -->
+          <section v-if="activePage === 'php-configuration'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="php"></app-icon>
+              <div>
+                <h2>PHP Configuration</h2>
+                <p>Select the PHP version for each website. Changes are applied on the next request.</p>
+              </div>
+            </div>
+            <div class="php-version-list">
+              <div v-for="site in websites" :key="site.id" class="php-version-row">
+                <div class="php-version-site">
+                  <strong>{{ site.domain }}</strong>
+                  <small>{{ site.document_root }}</small>
+                </div>
+                <div class="php-switcher-group" style="display: flex; gap: 8px; align-items: center;">
+                  <button class="secondary-button" @click="openPhpIniModal(site)" style="padding: 4px 10px; font-size: 13px;">Configure INI</button>
+                  <div class="php-switcher-btn-group">
+                    <button
+                      v-for="v in phpVersions"
+                      :key="v"
+                      class="php-version-btn"
+                      :class="{ active: site.php_version === v, switching: phpSwitching[site.id] }"
+                      :disabled="phpSwitching[site.id]"
+                      @click="switchPhpVersion(site, v)"
+                    >PHP {{ v }}</button>
+                  </div>
+                </div>
+              </div>
+              <div v-if="!websites.length" class="empty-state">
+                <app-icon name="php"></app-icon>
+                <p>No websites yet. <button class="link-button" @click="goTo('website')">Add a website</button> to configure PHP.</p>
+              </div>
+            </div>
+            <div class="info-box" style="margin-top: 1.5rem;">
+              <app-icon name="info"></app-icon>
+              <div>
+                <strong>Supported versions:</strong> PHP 7.4 (legacy), 8.0, 8.1, 8.2, 8.3, 8.4 (latest). We recommend PHP 8.3+ for best performance and security.
+              </div>
+            </div>
+            <h3 style="margin: 1.5rem 0 .5rem;">Common PHP INI settings</h3>
+            <p class="muted" style="margin-bottom: 1rem;">Click "Configure INI" next to a website above to modify its configuration.</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Directive</th><th>Recommended value</th><th>Description</th></tr></thead>
+                <tbody>
+                  <tr><td><code>memory_limit</code></td><td><code>256M</code></td><td>Maximum memory a script can allocate</td></tr>
+                  <tr><td><code>max_execution_time</code></td><td><code>120</code></td><td>Maximum script execution time (seconds)</td></tr>
+                  <tr><td><code>upload_max_filesize</code></td><td><code>64M</code></td><td>Maximum upload file size</td></tr>
+                  <tr><td><code>post_max_size</code></td><td><code>64M</code></td><td>Maximum POST data size</td></tr>
+                  <tr><td><code>max_input_vars</code></td><td><code>5000</code></td><td>Maximum input variables</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ DNS ZONE EDITOR -->
+          <section v-if="activePage === 'dns-zone-editor'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="dns"></app-icon>
+              <div>
+                <h2>DNS Zone Editor</h2>
+                <p>Manage DNS records for your domains. Changes propagate within 5 minutes on most resolvers.</p>
+              </div>
+            </div>
+
+            <div class="dns-domain-bar">
+              <label>
+                Select domain
+                <select v-model="selectedDomainId" @change="newDnsRecord.domain_id = selectedDomainId; loadDnsRecords()">
+                  <option value="" disabled>Choose a domain</option>
+                  <option v-for="domain in domains" :key="domain.id" :value="domain.id">{{ domain.name }}</option>
+                </select>
+              </label>
+            </div>
+
+            <div v-if="selectedDomainId" class="dns-add-form">
+              <h3>Add DNS Record</h3>
+              <div class="inline-form dns-form">
+                <select v-model="newDnsRecord.type">
+                  <option v-for="t in ['A','AAAA','CNAME','MX','TXT','NS','SRV','CAA']" :key="t">{{ t }}</option>
+                </select>
+                <input v-model="newDnsRecord.name" placeholder="Name (@ for root)">
+                <input v-model="newDnsRecord.value" placeholder="Value / Target">
+                <input v-model.number="newDnsRecord.ttl" type="number" min="60" placeholder="TTL" style="width:90px">
+                <button class="primary-button" @click="createDnsRecord"><app-icon name="plus"></app-icon><span>Add</span></button>
+              </div>
+            </div>
+
+            <div v-if="selectedDomainId" class="table-wrap">
+              <table>
+                <thead><tr><th>Type</th><th>Name</th><th>Value</th><th>TTL</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr v-for="record in filteredDnsRecords" :key="record.id">
+                    <td><span class="pill dns-type-pill">{{ record.type }}</span></td>
+                    <td><code>{{ record.name }}</code></td>
+                    <td><code class="dns-value">{{ record.value }}</code></td>
+                    <td>{{ record.ttl }}s</td>
+                    <td class="actions">
+                      <button class="danger-button" @click="deleteDnsRecord(record)"><app-icon name="trash"></app-icon></button>
+                    </td>
+                  </tr>
+                  <tr v-if="!filteredDnsRecords.length"><td colspan="5" class="empty-row">No DNS records for this domain yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="!selectedDomainId && domains.length === 0" class="empty-state">
+              <app-icon name="dns"></app-icon>
+              <p>No domains available. Add a website first.</p>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ PHP INFO -->
+          <section v-if="activePage === 'php-info'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="info"></app-icon>
+              <div>
+                <h2>PHP Info</h2>
+                <p>Runtime PHP configuration for your hosting environment.</p>
+              </div>
+            </div>
+            <div class="php-info-grid">
+              <div class="php-info-card">
+                <label>PHP Version</label>
+                <strong>{{ selectedWebsite?.php_version || phpVersions[phpVersions.length - 1] }}</strong>
+              </div>
+              <div class="php-info-card">
+                <label>SAPI</label>
+                <strong>FPM/FastCGI</strong>
+              </div>
+              <div class="php-info-card">
+                <label>Extensions</label>
+                <strong>bcmath, ctype, curl, dom, exif, fileinfo, gd, intl, json, mbstring, mysqli, opcache, openssl, pcre, pdo, redis, xml, zip</strong>
+              </div>
+              <div class="php-info-card">
+                <label>OPcache</label>
+                <strong>Enabled</strong>
+              </div>
+            </div>
+            <div class="info-box" style="margin-top: 1rem;">
+              <app-icon name="info"></app-icon>
+              <p>To change the PHP version for a site, go to <button class="link-button" @click="goTo('php-configuration')">PHP Configuration</button>.</p>
+            </div>
+            <div class="table-wrap" style="margin-top:1.5rem;">
+              <table>
+                <thead><tr><th>Directive</th><th>Value</th></tr></thead>
+                <tbody>
+                  <tr><td><code>memory_limit</code></td><td>256M</td></tr>
+                  <tr><td><code>max_execution_time</code></td><td>120</td></tr>
+                  <tr><td><code>upload_max_filesize</code></td><td>64M</td></tr>
+                  <tr><td><code>post_max_size</code></td><td>64M</td></tr>
+                  <tr><td><code>error_reporting</code></td><td>E_ALL &amp; ~E_DEPRECATED</td></tr>
+                  <tr><td><code>display_errors</code></td><td>Off</td></tr>
+                  <tr><td><code>session.gc_maxlifetime</code></td><td>1440</td></tr>
+                  <tr><td><code>date.timezone</code></td><td>UTC</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ CACHE MANAGER -->
+          <section v-if="activePage === 'cache-manager'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="cache"></app-icon>
+              <div>
+                <h2>Cache Manager</h2>
+                <p>Manage object cache and OPcache for {{ selectedWebsite?.domain || 'all sites' }}.</p>
+              </div>
+            </div>
+
+            <div class="cache-status-grid">
+              <div class="cache-status-card" :class="cacheStatus.opcode_cache">
+                <app-icon name="performance"></app-icon>
+                <div>
+                  <strong>OPcache</strong>
+                  <span class="pill">{{ cacheStatus.opcode_cache }}</span>
+                </div>
+                <small>PHP bytecode caching</small>
+              </div>
+              <div class="cache-status-card" :class="cacheStatus.object_cache">
+                <app-icon name="databases"></app-icon>
+                <div>
+                  <strong>Object Cache</strong>
+                  <span class="pill">{{ cacheStatus.object_cache }}</span>
+                </div>
+                <small>Redis / Memcached</small>
+              </div>
+              <div class="cache-status-card">
+                <app-icon name="activity"></app-icon>
+                <div>
+                  <strong>Last Purged</strong>
+                  <span>{{ cacheStatus.last_purged || 'Never' }}</span>
+                </div>
+                <small>Manual cache clear</small>
+              </div>
+            </div>
+
+            <div class="cache-actions">
+              <div>
+                <h3>Purge Cache</h3>
+                <p class="muted">Clears all cached content for {{ selectedWebsite?.domain || 'the selected site' }}. Pages will be regenerated on next visit.</p>
+              </div>
+              <div class="cache-buttons">
+                <button class="primary-button" :disabled="cachePurging" @click="purgeCache(selectedWebsite?.id)">
+                  <app-icon name="cache"></app-icon>
+                  <span>{{ cachePurging ? 'Purging…' : 'Purge All Cache' }}</span>
+                </button>
+                <button class="ghost-button" :disabled="cachePurging" @click="purgeCache()">Purge All Sites</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ PASSWORD PROTECT DIRS -->
+          <section v-if="activePage === 'password-protect-directories'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="password-protect"></app-icon>
+              <div>
+                <h2>Password Protect Directories</h2>
+                <p>Restrict access to directories with HTTP basic authentication.</p>
+              </div>
+            </div>
+
+            <div class="inline-form protect-form">
+              <input v-model="newProtectedDir.path" placeholder="/public_html/admin">
+              <input v-model="newProtectedDir.username" placeholder="Username">
+              <input v-model="newProtectedDir.password" type="password" placeholder="Password">
+              <button class="primary-button" @click="addProtectedDir"><app-icon name="plus"></app-icon><span>Protect</span></button>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Directory</th><th>Username</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr v-for="dir in protectedDirs" :key="dir.id">
+                    <td><code>{{ dir.path }}</code></td>
+                    <td>{{ dir.username }}</td>
+                    <td class="actions">
+                      <button class="danger-button" @click="removeProtectedDir(dir)"><app-icon name="trash"></app-icon> Remove</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!protectedDirs.length"><td colspan="3" class="empty-row">No protected directories yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ IP MANAGER -->
+          <section v-if="activePage === 'ip-manager'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="ip"></app-icon>
+              <div>
+                <h2>IP Manager</h2>
+                <p>Allow or block specific IP addresses and CIDR ranges from accessing your account.</p>
+              </div>
+            </div>
+
+            <div class="inline-form">
+              <input v-model="newIpRule.ip" placeholder="192.168.1.1 or 10.0.0.0/24">
+              <select v-model="newIpRule.type">
+                <option value="block">Block</option>
+                <option value="allow">Allow</option>
+              </select>
+              <button class="primary-button" @click="createIpRule"><app-icon name="plus"></app-icon><span>Add Rule</span></button>
+            </div>
+
+            <div class="ip-rules-grid">
+              <div class="ip-rule-group">
+                <h3><app-icon name="security"></app-icon> Blocked IPs</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>IP / CIDR</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr v-for="rule in ipRules.filter(r => r.type === 'block')" :key="rule.ip">
+                        <td><code>{{ rule.ip }}</code></td>
+                        <td><span class="pill danger">Blocked</span></td>
+                        <td class="actions"><button class="danger-button" @click="deleteIpRule(rule)"><app-icon name="trash"></app-icon></button></td>
+                      </tr>
+                      <tr v-if="!ipRules.filter(r => r.type === 'block').length"><td colspan="3" class="empty-row">No blocked IPs.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="ip-rule-group">
+                <h3><app-icon name="check"></app-icon> Allowed IPs</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>IP / CIDR</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr v-for="rule in ipRules.filter(r => r.type === 'allow')" :key="rule.ip">
+                        <td><code>{{ rule.ip }}</code></td>
+                        <td><span class="pill ok">Allowed</span></td>
+                        <td class="actions"><button class="danger-button" @click="deleteIpRule(rule)"><app-icon name="trash"></app-icon></button></td>
+                      </tr>
+                      <tr v-if="!ipRules.filter(r => r.type === 'allow').length"><td colspan="3" class="empty-row">No allowed IPs.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ HOTLINK PROTECTION -->
+          <section v-if="activePage === 'hotlink-protection'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="hotlink"></app-icon>
+              <div>
+                <h2>Hotlink Protection</h2>
+                <p>Prevent other websites from embedding your images and media files directly.</p>
+              </div>
+            </div>
+
+            <div class="hotlink-toggle-row">
+              <label class="toggle-label">
+                <div class="toggle-switch" :class="{ active: hotlink.enabled }" @click="hotlink.enabled = !hotlink.enabled">
+                  <div class="toggle-knob"></div>
+                </div>
+                <span>{{ hotlink.enabled ? 'Hotlink protection enabled' : 'Hotlink protection disabled' }}</span>
+              </label>
+            </div>
+
+            <div v-if="hotlink.enabled" class="form-grid" style="margin-top:1rem; max-width:540px;">
+              <label>
+                Allowed domains
+                <textarea v-model="hotlink.allowed_domains" rows="4" placeholder="example.com&#10;cdn.example.com&#10;(one per line — these are allowed to hotlink)"></textarea>
+                <small>Leave blank to block all external hotlinking.</small>
+              </label>
+              <button class="primary-button" :disabled="hotlink.saving" @click="saveHotlinkProtection">
+                {{ hotlink.saving ? 'Saving…' : 'Save Settings' }}
+              </button>
+            </div>
+
+            <div v-if="!hotlink.enabled" class="info-box" style="margin-top:1rem;">
+              <app-icon name="info"></app-icon>
+              <p>Enable hotlink protection to prevent bandwidth theft from external image embedding.</p>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ FOLDER INDEX MANAGER -->
+          <section v-if="activePage === 'folder-index-manager'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="folder-index"></app-icon>
+              <div>
+                <h2>Folder Index Manager</h2>
+                <p>Control whether visitors can browse directory contents when no index file exists.</p>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Domain</th><th>Document Root</th><th>Directory Listing</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr v-for="site in websites" :key="site.id">
+                    <td><strong>{{ site.domain }}</strong></td>
+                    <td><small>{{ site.document_root }}</small></td>
+                    <td>
+                      <span class="pill" :class="site.index_enabled ? 'active' : 'danger'">
+                        {{ site.index_enabled ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </td>
+                    <td class="actions">
+                      <button @click="toggleFolderIndex(site)" class="secondary-button" :disabled="site.savingIndex">
+                        {{ site.savingIndex ? 'Saving...' : (site.index_enabled ? 'Disable' : 'Enable') }}
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="!websites.length"><td colspan="4" class="empty-row">No websites configured yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="info-box" style="margin-top:1rem;">
+              <app-icon name="info"></app-icon>
+              <p>Disabling directory listing (recommended) returns a 403 error when visitors browse to a directory without an index file.</p>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ FIX FILE OWNERSHIP -->
+          <section v-if="activePage === 'fix-file-ownership'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="fix"></app-icon>
+              <div>
+                <h2>Fix File Ownership</h2>
+                <p>Repair file ownership and permissions on all account files. Use this if you see permission errors.</p>
+              </div>
+            </div>
+
+            <div v-if="fixOwnershipResult" class="fix-result" :class="{ success: fixOwnershipResult.success, error: !fixOwnershipResult.success }">
+              <app-icon :name="fixOwnershipResult.success ? 'check' : 'warning'"></app-icon>
+              <p>{{ fixOwnershipResult.message }}</p>
+            </div>
+
+            <div class="fix-ownership-panel">
+              <div class="info-box">
+                <app-icon name="warning"></app-icon>
+                <div>
+                  <strong>What this does:</strong>
+                  <ul style="margin: .5rem 0 0; padding-left: 1.2rem;">
+                    <li>Resets all file ownership to your account user</li>
+                    <li>Sets directories to 755 and files to 644</li>
+                    <li>Preserves .htaccess and config file permissions</li>
+                  </ul>
+                </div>
+              </div>
+              <button
+                class="primary-button"
+                style="margin-top:1.5rem;"
+                :disabled="fixOwnershipRunning"
+                @click="fixFileOwnership"
+              >
+                <app-icon name="fix"></app-icon>
+                <span>{{ fixOwnershipRunning ? 'Running…' : 'Fix File Ownership' }}</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- Account Settings Section -->
+          <section v-if="activePage === 'settings'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="fix"></app-icon>
+              <div>
+                <h2>Account Settings</h2>
+                <p>Manage your account password and personalize your dashboard theme.</p>
+              </div>
+            </div>
+
+            <div class="cpanel-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;">
+              <!-- Password change card -->
+              <div class="panel" style="padding: 1.5rem; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;">
+                <h3 style="margin-top: 0; margin-bottom: 1.2rem; color: var(--text); display: flex; align-items: center; gap: 8px;">
+                  <app-icon name="security"></app-icon> Change Password
+                </h3>
+                <div class="form-grid">
+                  <label>Current Password
+                    <input v-model="settingsForm.current_password" type="password" placeholder="Enter current password" autocomplete="current-password">
+                  </label>
+                  <label>New Password
+                    <input v-model="settingsForm.new_password" type="password" placeholder="Enter new password (min. 10 chars)" autocomplete="new-password">
+                  </label>
+                  <label>Confirm New Password
+                    <input v-model="settingsForm.confirm_password" type="password" placeholder="Confirm new password" autocomplete="new-password">
+                  </label>
+                  <button class="primary-button" style="margin-top: 0.5rem;" @click="updatePassword" :disabled="isChangingPassword">
+                    {{ isChangingPassword ? 'Updating…' : 'Change Password' }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Theme selector card -->
+              <div class="panel" style="padding: 1.5rem; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;">
+                <h3 style="margin-top: 0; margin-bottom: 1.2rem; color: var(--text); display: flex; align-items: center; gap: 8px;">
+                  <app-icon name="dashboard"></app-icon> Panel Theme
+                </h3>
+                <p class="muted" style="margin-top: 0; font-size: 13px; margin-bottom: 1.5rem;">Choose a visual style for your client panel dashboard. The theme switches instantly and persists across sessions.</p>
+                
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                  <!-- Theme option: Default -->
+                  <div @click="switchTheme('Default')" :style="{ border: activeTheme === 'Default' ? '2px solid var(--brand)' : '1px solid var(--line)' }" style="padding: 12px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; background: var(--surface-2);">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <div style="width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--line); background: #ffffff; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                        <div v-if="activeTheme === 'Default'" style="width: 8px; height: 8px; border-radius: 50%; background: var(--brand);"></div>
+                      </div>
+                      <strong style="color: var(--text);">Default Theme</strong>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #f7f7f9; border: 1px solid #e3e5e9;" title="Background"></span>
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #ffffff; border: 1px solid #e3e5e9;" title="Surface"></span>
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #fdb528;" title="Brand"></span>
+                    </div>
+                  </div>
+
+                  <!-- Theme option: Dark -->
+                  <div @click="switchTheme('Dark')" :style="{ border: activeTheme === 'Dark' ? '2px solid var(--brand)' : '1px solid var(--line)' }" style="padding: 12px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; background: var(--surface-2);">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <div style="width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--line); background: #151d30; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                        <div v-if="activeTheme === 'Dark'" style="width: 8px; height: 8px; border-radius: 50%; background: var(--brand);"></div>
+                      </div>
+                      <strong style="color: var(--text);">Dark Theme</strong>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #0b0f19; border: 1px solid #222f4c;" title="Background"></span>
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #151d30; border: 1px solid #222f4c;" title="Surface"></span>
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #fdb528;" title="Brand"></span>
+                    </div>
+                  </div>
+
+                  <!-- Theme option: Cyberpunk -->
+                  <div @click="switchTheme('Cyberpunk')" :style="{ border: activeTheme === 'Cyberpunk' ? '2px solid var(--brand)' : '1px solid var(--line)' }" style="padding: 12px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; background: var(--surface-2);">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <div style="width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--line); background: #04001a; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                        <div v-if="activeTheme === 'Cyberpunk'" style="width: 8px; height: 8px; border-radius: 50%; background: var(--brand);"></div>
+                      </div>
+                      <strong style="color: var(--text);">Cyberpunk Theme</strong>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #12002f; border: 1px solid #7b0099;" title="Background"></span>
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #04001a; border: 1px solid #7b0099;" title="Surface"></span>
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #ff0055;" title="Brand"></span>
+                    </div>
+                  </div>
+
+                  <!-- Theme option: AWS Console -->
+                  <div @click="switchTheme('AwsConsole')" :style="{ border: activeTheme === 'AwsConsole' ? '2px solid var(--brand)' : '1px solid var(--line)' }" style="padding: 12px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; background: var(--surface-2);">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <div style="width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--line); background: #232f3e; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                        <div v-if="activeTheme === 'AwsConsole'" style="width: 8px; height: 8px; border-radius: 50%; background: var(--brand);"></div>
+                      </div>
+                      <strong style="color: var(--text);">AWS Console Theme</strong>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #f2f3f3; border: 1px solid #eaeded;" title="Background"></span>
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #ffffff; border: 1px solid #eaeded;" title="Surface"></span>
+                      <span style="width: 20px; height: 20px; border-radius: 4px; background: #ec7211;" title="Brand"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          
+
+          <!-- ═══════════════════════════════════════════════════════════ REDIRECTS -->
+          <section v-if="activePage === 'redirects'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="globe"></app-icon>
+              <div>
+                <h2>Redirects</h2>
+                <p>Send all of the visitors of a domain or particular page to a different URL.</p>
+              </div>
+            </div>
+
+            <div class="form-grid" style="margin-bottom: 2rem; max-width: 800px;">
+              <label>Type
+                <select v-model="newRedirect.type">
+                  <option value="301">Permanent (301)</option>
+                  <option value="302">Temporary (302)</option>
+                </select>
+              </label>
+              <label>Domain
+                <select v-model="newRedirect.website_id">
+                  <option disabled value="">Select a domain</option>
+                  <option v-for="site in websites" :key="site.id" :value="site.id">{{ site.domain }}</option>
+                </select>
+              </label>
+              <label>Path (e.g. /old-page)
+                <input v-model="newRedirect.source_path" placeholder="/">
+              </label>
+              <label style="grid-column: 1 / -1;">Redirects to
+                <input v-model="newRedirect.target_url" placeholder="https://example.com/new-page">
+              </label>
+              <label style="grid-column: 1 / -1;">Match Type
+                <select v-model="newRedirect.match_type">
+                  <option value="exact">Only redirect with or without www.</option>
+                  <option value="wildcard">Wildcard Redirect (Match all files in directory)</option>
+                </select>
+              </label>
+              <button class="primary-button" @click="addRedirect" :disabled="!newRedirect.website_id || !newRedirect.target_url" style="grid-column: 1 / -1; width: fit-content;">
+                Add Redirect
+              </button>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Domain</th><th>Directory</th><th>Redirects To</th><th>Type</th><th>Match</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr v-for="r in redirects" :key="r.id">
+                    <td>{{ r.domain }}</td>
+                    <td><code>{{ r.source_path }}</code></td>
+                    <td><a :href="r.target_url" target="_blank">{{ r.target_url }}</a></td>
+                    <td>{{ r.type }}</td>
+                    <td>{{ r.match_type }}</td>
+                    <td class="actions">
+                      <button class="danger-button" @click="deleteRedirect(r.id)"><app-icon name="trash"></app-icon> Delete</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!redirects.length"><td colspan="6" class="empty-row">No redirects configured.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ DISK USAGE -->
+          <section v-if="activePage === 'disk-usage'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="disk-usage"></app-icon>
+              <div>
+                <h2>Disk Usage</h2>
+                <p>Monitor your account's disk space usage per directory.</p>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Directory</th><th>Size</th></tr></thead>
+                <tbody>
+                  <tr v-for="dir in diskUsage" :key="dir.path">
+                    <td><code>{{ dir.path }}</code></td>
+                    <td><strong>{{ dir.size }}</strong></td>
+                  </tr>
+                  <tr v-if="!diskUsage.length"><td colspan="2" class="empty-row">Loading disk usage...</td></tr>
+                </tbody>
+              </table>
+            </div>
+            
+            <div class="info-box" style="margin-top: 1rem;">
+              <app-icon name="info"></app-icon>
+              <p>Disk usage calculations include the `public_html` directories of all your websites. System directories, logs, and database files may contribute additional space usage not reflected here.</p>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ MODSECURITY -->
+          <section v-if="activePage === 'modsecurity'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="shield"></app-icon>
+              <div>
+                <h2>ModSecurity</h2>
+                <p>Enable or disable ModSecurity for your domains. ModSecurity protects your website from various attacks.</p>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Domain</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr v-for="site in websites" :key="site.id">
+                    <td><strong>{{ site.domain }}</strong></td>
+                    <td>
+                      <span class="pill" :class="(site.modsec_enabled === undefined || site.modsec_enabled) ? 'active' : 'danger'">
+                        {{ (site.modsec_enabled === undefined || site.modsec_enabled) ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </td>
+                    <td class="actions">
+                      <button @click="toggleModSec(site)" class="secondary-button" :disabled="site.savingModsec">
+                        {{ site.savingModsec ? 'Saving...' : ((site.modsec_enabled === undefined || site.modsec_enabled) ? 'Disable' : 'Enable') }}
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="!websites.length"><td colspan="3" class="empty-row">No websites configured yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            
+            <div class="info-box" style="margin-top: 1rem;">
+              <app-icon name="info"></app-icon>
+              <p>Disabling ModSecurity may resolve issues with certain scripts but leaves your site vulnerable to attacks. Only disable it if absolutely necessary.</p>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ MYSQL DATABASE WIZARD -->
+          <section v-if="activePage === 'mysql-database-wizard'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="database"></app-icon>
+              <div>
+                <h2>MySQL® Database Wizard</h2>
+                <p>Create a database, a user, and link them together in 3 easy steps.</p>
+              </div>
+            </div>
+
+            <div class="wizard-container" style="max-width: 600px; margin-top: 1rem;">
+              <!-- Step 1: Create Database -->
+              <div v-if="dbWizardStep === 1" class="wizard-step">
+                <h3>Step 1: Create a Database</h3>
+                <label style="display:block; margin: 1rem 0;">New Database Name
+                  <input v-model="wizardDbName" type="text" placeholder="e.g. app_data" style="margin-top:0.5rem; width:100%;">
+                </label>
+                <button class="primary-button" @click="wizardNextStep" :disabled="!wizardDbName">Next Step</button>
+              </div>
+
+              <!-- Step 2: Create User -->
+              <div v-if="dbWizardStep === 2" class="wizard-step">
+                <h3>Step 2: Create a Database User</h3>
+                <label style="display:block; margin: 1rem 0;">Username
+                  <input v-model="wizardDbUser" type="text" placeholder="e.g. app_user" style="margin-top:0.5rem; width:100%;">
+                </label>
+                <label style="display:block; margin: 1rem 0;">Password
+                  <input v-model="wizardDbPass" type="password" placeholder="Strong password" style="margin-top:0.5rem; width:100%;">
+                </label>
+                <div style="display:flex; gap:1rem;">
+                  <button class="secondary-button" @click="dbWizardStep = 1">Back</button>
+                  <button class="primary-button" @click="wizardNextStep" :disabled="!wizardDbUser || !wizardDbPass">Next Step</button>
+                </div>
+              </div>
+
+              <!-- Step 3: Grant Privileges -->
+              <div v-if="dbWizardStep === 3" class="wizard-step">
+                <h3>Step 3: Add User to the Database</h3>
+                <p style="margin: 1rem 0;">User <strong>{{ wizardDbUser }}</strong> will be granted all privileges on database <strong>{{ wizardDbName }}</strong>.</p>
+                <div style="display:flex; gap:1rem;">
+                  <button class="secondary-button" @click="dbWizardStep = 2">Back</button>
+                  <button class="primary-button" @click="wizardNextStep">Make Changes</button>
+                </div>
+              </div>
+
+              <!-- Step 4: Complete -->
+              <div v-if="dbWizardStep === 4" class="wizard-step success-step">
+                <app-icon name="check" style="color: var(--success); width: 48px; height: 48px; margin-bottom: 1rem;"></app-icon>
+                <h3>Database Created Successfully!</h3>
+                <p>User <strong>{{ wizardDbUser }}</strong> was added to the database <strong>{{ wizardDbName }}</strong>.</p>
+                <button class="primary-button" @click="resetDbWizard" style="margin-top: 1.5rem;">Return to MySQL Databases</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ API TOKENS -->
+          <section v-if="activePage === 'api-tokens'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="key"></app-icon>
+              <div>
+                <h2>API Tokens</h2>
+                <p>Create and manage API tokens to authenticate with the MangoPanel REST API.</p>
+              </div>
+            </div>
+
+            <div class="form-grid" style="margin-bottom: 2rem; max-width: 600px;">
+              <label>Token Name
+                <input v-model="newApiTokenName" placeholder="e.g. CI/CD Deployment Script">
+              </label>
+              <button class="primary-button" @click="createApiToken" :disabled="!newApiTokenName" style="margin-top: 1.5rem; width: fit-content;">Generate Token</button>
+            </div>
+
+            <div v-if="newApiTokenRaw" class="info-box" style="margin-bottom: 2rem; border-color: var(--primary);">
+              <h3 style="margin-bottom: 0.5rem; color: var(--primary);">Token Generated!</h3>
+              <p>Please copy your new API token now. You won't be able to see it again!</p>
+              <div style="display:flex; align-items:center; gap:0.5rem; margin-top:1rem;">
+                <code style="flex:1; padding:1rem; font-size:1.1rem; user-select:all;">{{ newApiTokenRaw }}</code>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Name</th><th>Created</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <tr v-for="t in apiTokens" :key="t.id">
+                    <td><strong>{{ t.name }}</strong></td>
+                    <td>{{ new Date(t.created_at).toLocaleString() }}</td>
+                    <td class="actions">
+                      <button class="danger-button" @click="deleteApiToken(t.id)"><app-icon name="trash"></app-icon> Revoke</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!apiTokens.length"><td colspan="3" class="empty-row">No API tokens configured.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ TWO-FACTOR AUTHENTICATION -->
+          <section v-if="activePage === 'two-factor-auth'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="shield"></app-icon>
+              <div>
+                <h2>Two-Factor Authentication (2FA)</h2>
+                <p>Protect your account with an additional layer of security using an authenticator app.</p>
+              </div>
+            </div>
+
+            <!-- Generate Secret / Setup -->
+            <div v-if="!has2FA && !tfaSetup.secret" class="info-box">
+              <p>Two-factor authentication is currently <strong>disabled</strong>.</p>
+              <button class="primary-button" style="margin-top: 1rem;" @click="generate2FA">Set Up 2FA</button>
+            </div>
+
+            <!-- Setup In Progress -->
+            <div v-if="!has2FA && tfaSetup.secret" class="form-grid" style="max-width: 600px; margin-top: 1rem;">
+              <h3 style="grid-column: 1 / -1;">1. Scan the QR Code</h3>
+              <p style="grid-column: 1 / -1;">Open your authenticator app (like Google Authenticator or Authy) and scan this QR code.</p>
+              <div style="grid-column: 1 / -1; display:flex; justify-content:center; padding: 2rem; background: var(--bg-color); border-radius: 8px;">
+                <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(tfaSetup.uri)" alt="QR Code" style="width: 200px; height: 200px;">
+              </div>
+              <p style="grid-column: 1 / -1; font-size: 0.9rem; text-align: center;">Or enter the secret manually: <code>{{ tfaSetup.secret }}</code></p>
+              
+              <h3 style="grid-column: 1 / -1; margin-top: 2rem;">2. Verify Setup</h3>
+              <label style="grid-column: 1 / -1;">Enter the 6-digit code from your app:
+                <input v-model="tfaSetup.code" type="text" placeholder="000000" maxlength="6" style="margin-top: 0.5rem; letter-spacing: 2px; text-align: center; font-size: 1.5rem;">
+              </label>
+              
+              <div style="grid-column: 1 / -1; display:flex; gap:1rem; margin-top: 1rem;">
+                <button class="secondary-button" @click="tfaSetup.secret = null">Cancel</button>
+                <button class="primary-button" @click="enable2FA" :disabled="tfaSetup.code.length !== 6">Verify & Enable</button>
+              </div>
+            </div>
+
+            <!-- 2FA Enabled -->
+            <div v-if="has2FA" class="info-box" style="border-color: var(--success);">
+              <app-icon name="check" style="color: var(--success); width: 48px; height: 48px; margin-bottom: 1rem;"></app-icon>
+              <h3 style="color: var(--success); margin-bottom: 0.5rem;">Two-Factor Authentication is Enabled</h3>
+              <p>Your account is protected. You will be required to enter a code from your authenticator app each time you sign in.</p>
+              
+              <div style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid var(--border-color);">
+                <h3>Disable 2FA</h3>
+                <p style="margin: 0.5rem 0;">To disable 2FA, please enter a code from your authenticator app.</p>
+                <div style="display: flex; gap: 1rem; align-items: center;">
+                  <input v-model="tfaDisableCode" type="text" placeholder="000000" maxlength="6" style="width: 150px; text-align: center; letter-spacing: 2px; font-size: 1.2rem;">
+                  <button class="danger-button" @click="disable2FA" :disabled="tfaDisableCode.length !== 6">Disable 2FA</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ FTP ACCOUNTS -->
+          <section v-if="activePage === 'ftp-accounts'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="ftp"></app-icon>
+              <div>
+                <h2>FTP Accounts</h2>
+                <p>Create and manage virtual FTP accounts for specific directories.</p>
+              </div>
+            </div>
+            
+            <div class="settings-layout">
+              <!-- Left Column: Add FTP Account -->
+              <div class="settings-card">
+                <h3>Add FTP Account</h3>
+                <p class="text-sm muted mb-4">Create a new SFTP user. Passwords must be secure.</p>
+                
+                <form @submit.prevent="createFtpAccount" class="modern-form">
+                  <div class="form-group">
+                    <label>Username</label>
+                    <div class="input-with-prefix">
+                      <span class="input-prefix">{{ currentUserEmail.split('@')[0] }}_</span>
+                      <input v-model="newFtpUsername" type="text" required pattern="[a-zA-Z0-9_]+" placeholder="user" />
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label>Password</label>
+                    <input v-model="newFtpPassword" type="password" required minlength="8" />
+                  </div>
+                  <div class="form-group">
+                    <label>Directory Path (relative to your home)</label>
+                    <input v-model="newFtpPath" type="text" required placeholder="public_html/..." />
+                  </div>
+                  <div class="form-actions">
+                    <button type="submit" class="primary-btn">Create FTP Account</button>
+                  </div>
+                </form>
+              </div>
+
+              <!-- Right Column: Existing Accounts -->
+              <div class="settings-card">
+                <h3>Existing FTP Accounts</h3>
+                <div v-if="ftpAccounts.length === 0" class="empty-state">
+                  <p>No additional FTP accounts have been created yet.</p>
+                </div>
+                <div v-else class="domain-list">
+                  <div v-for="ftp in ftpAccounts" :key="ftp.id" class="domain-row">
+                    <div class="domain-info">
+                      <strong>{{ ftp.username }}</strong>
+                      <span class="domain-path"><app-icon name="folder"></app-icon> /home/{{ currentUserEmail.split('@')[0] }}/{{ ftp.path }}</span>
+                    </div>
+                    <div class="domain-actions">
+                      <button class="icon-button danger" @click="deleteFtpAccount(ftp.id)" title="Delete FTP Account">
+                        <app-icon name="trash"></app-icon>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+
+          <!-- App Installer Module -->
+          <section v-if="activePage === 'installer'" class="panel">
+            <div class="advanced-tool-header">
+              <app-icon name="wordpress"></app-icon>
+              <div>
+                <h2>App Installer</h2>
+                <p>One-click installation for popular CMS and scripts.</p>
+              </div>
+            </div>
+            
+            <div class="cpanel-grid" style="margin-top: 1.5rem;">
+              <button
+                v-for="script in installer.scripts"
+                :key="script.id"
+                class="cpanel-tile"
+                style="--tile-color: var(--brand);"
+                @click="openInstallerModal(script)"
+              >
+                <div class="cpanel-tile-icon">
+                  <app-icon :name="script.icon"></app-icon>
+                </div>
+                <span class="cpanel-tile-label">{{ script.name }}</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- Installer Modal -->
+          <div v-if="installer.selectedScript" class="modal-overlay" @click.self="closeInstallerModal">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2>Install {{ installer.selectedScript.name }}</h2>
+                <button class="close-button" @click="closeInstallerModal">×</button>
+              </div>
+              <div class="modal-body">
+                <div class="form-grid">
+                  <label>Installation URL
+                    <select v-model="installer.form.website_id">
+                      <option value="" disabled>Select website</option>
+                      <option v-for="site in websites" :key="site.id" :value="site.id">{{ site.domain }}</option>
+                    </select>
+                  </label>
+                  
+                  <div v-for="field in installer.selectedScript.required_fields" :key="field.name">
+                    <label>{{ field.label }}
+                      <input 
+                        v-model="installer.form[field.name]" 
+                        :type="field.type" 
+                        :placeholder="field.placeholder"
+                      >
+                      <small v-if="field.name === 'admin_password'">Minimum 8 characters required</small>
+                    </label>
+                  </div>
+
+                  <label>
+                    <input v-model="installer.form.allow_overwrite" type="checkbox">
+                    Allow overwriting existing files in directory
+                  </label>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="ghost-button" @click="closeInstallerModal">Cancel</button>
+                <button
+                  class="primary-button"
+                  @click="submitInstallScript"
+                  :disabled="!installer.form.website_id || (installer.selectedScript.required_fields || []).some(f => !installer.form[f.name] || (f.name === 'admin_password' && installer.form[f.name].length < 8))"
+                >
+                  Install Now
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Website Wizard Modal -->
+          <div v-if="siteWizard.isOpen" class="modal-overlay" @click.self="closeSiteWizard">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2>Add Website (Step {{ siteWizard.step === 4 ? (siteWizard.type === 'blank' ? 3 : 4) : (siteWizard.step === 2 ? 2 : (siteWizard.step === 3 ? 3 : 1)) }} of {{ siteWizard.type === 'blank' ? 3 : 4 }})</h2>
+                <button class="close-button" @click="closeSiteWizard">×</button>
+              </div>
+              
+              <!-- Step 1: Type Selection -->
+              <div class="modal-body" v-if="siteWizard.step === 1">
+                <h3 style="margin-bottom: 1rem;">What do you want to build?</h3>
+                <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
+                  <label style="border: 1px solid var(--line); padding: 14px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px;">
+                    <input type="radio" v-model="siteWizard.type" value="blank">
+                    <div>
+                      <strong style="display: block; color: var(--text);">Blank Website</strong>
+                      <span class="muted">Start from scratch with HTML/PHP files.</span>
+                    </div>
+                  </label>
+                  <label v-for="script in installer.scripts" :key="script.id" style="border: 1px solid var(--line); padding: 14px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px;">
+                    <input type="radio" v-model="siteWizard.type" :value="script.id">
+                    <div>
+                      <strong style="display: block; color: var(--text);">{{ script.name }}</strong>
+                      <span class="muted">Install {{ script.name }} dynamically with a database automatically set up.</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Step 2: Domain Name -->
+              <div class="modal-body" v-if="siteWizard.step === 2">
+                <h3 style="margin-bottom: 1rem;">Enter your domain</h3>
+                <div class="form-grid">
+                  <label>Domain Name
+                    <input v-model="siteWizard.domain" placeholder="example.com">
+                    <small>Do not include http:// or www.</small>
+                  </label>
+                </div>
+              </div>
+              
+              <!-- Step 3: CMS Details (Only for CMS types) -->
+              <div class="modal-body" v-if="siteWizard.step === 3 && siteWizard.type !== 'blank'">
+                <h3 style="margin-bottom: 1rem;">Configure {{ (installer.scripts.find(s => s.id === siteWizard.type) || {name: siteWizard.type}).name }} Installation</h3>
+                <div class="form-grid">
+                  <label>Site Title <input v-model="siteWizard.site_title" placeholder="My Site"></label>
+                  <label>Admin Username <input v-model="siteWizard.admin_username" placeholder="admin"></label>
+                  <label>Admin Email <input v-model="siteWizard.admin_email" type="email" placeholder="admin@example.com"></label>
+                  <label>Admin Password 
+                    <input v-model="siteWizard.admin_password" type="password" placeholder="At least 8 characters">
+                    <small>Minimum 8 characters required</small>
+                  </label>
+                  <label>
+                    <input v-model="siteWizard.allow_overwrite" type="checkbox"> Allow overwriting existing files
+                  </label>
+                </div>
+              </div>
+              
+              <!-- Step 4: Configure DNS -->
+              <div class="modal-body" v-if="siteWizard.step === 4">
+                <h3 style="margin-bottom: 1rem;">Configure DNS</h3>
+                <div class="info-box" style="margin-bottom: 1rem;">
+                  <app-icon name="info"></app-icon>
+                  <div>
+                    <strong>Point your domain to MangoPanel</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">For this website to work, you must configure your domain's DNS settings at your registrar (e.g. GoDaddy, Namecheap).</p>
+                  </div>
+                </div>
+                <div class="ssh-info-card">
+                  <label>Required A Record</label>
+                  <code>Name: @</code>
+                  <code>Value: {{ sshInfo.host }}</code>
+                </div>
+              </div>
+
+              <div class="modal-footer">
+                <button v-if="siteWizard.step > 1" class="ghost-button" @click="prevSiteWizardStep">Back</button>
+                <button v-else class="ghost-button" @click="closeSiteWizard">Cancel</button>
+                
+                <button 
+                  v-if="siteWizard.step < 4" 
+                  class="primary-button" 
+                  @click="nextSiteWizardStep" 
+                  :disabled="(siteWizard.step === 2 && !siteWizard.domain) || (siteWizard.step === 3 && (!siteWizard.site_title || !siteWizard.admin_username || !siteWizard.admin_email || !siteWizard.admin_password || siteWizard.admin_password.length < 8))"
+                >
+                  Next
+                </button>
+                <button v-if="siteWizard.step === 4" class="primary-button" @click="finishSiteWizard">I have updated the DNS</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Backup Wizard Modal -->
+          <div v-if="backupWizard.isOpen" class="modal-overlay" @click.self="!backupWizard.isRunning && closeBackupWizard()">
+            <div class="modal-panel" style="max-width: 600px;">
+              <div class="modal-header">
+                <h2>Create Manual Backup</h2>
+                <button class="close-button" @click="closeBackupWizard" :disabled="backupWizard.isRunning">×</button>
+              </div>
+              
+              <div class="modal-body" v-if="backupWizard.step === 1">
+                <div class="info-box" style="margin-bottom: 1.5rem; background: var(--brand-tint); border-color: var(--brand); color: var(--brand-ink);">
+                  <app-icon name="backup"></app-icon>
+                  <div>
+                    <strong style="font-size: 16px;">Backup Details & Destination</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">Review the target folders, databases, and the storage destination below before proceeding.</p>
+                  </div>
+                </div>
+                
+                <div style="display: grid; gap: 16px; margin-bottom: 1.5rem;">
+                  <div class="premium-card" style="padding: 16px;">
+                    <label style="font-weight: 700; color: var(--text); font-size: 14px; margin-bottom: 8px;">Storage Destination</label>
+                    <code style="display: block; font-size: 13px; padding: 8px;">{{ sshInfo.path }}/backups/</code>
+                  </div>
+                  <div class="premium-card" style="padding: 16px;">
+                    <label style="font-weight: 700; color: var(--text); font-size: 14px; margin-bottom: 8px;">Data to Back Up</label>
+                    <ul class="clean-list" style="font-size: 13px; margin: 0;">
+                      <li style="padding: 6px 0; border-bottom: 1px solid var(--line);">
+                        <strong>Files:</strong> <code>{{ sshInfo.path }}/domains/</code>
+                      </li>
+                      <li style="padding: 6px 0;">
+                        <strong>Databases:</strong> 
+                        <span v-if="databases.length">
+                          <span v-for="(db, idx) in databases" :key="db.id">
+                            <code>{{ db.name }}</code>{{ idx === databases.length - 1 ? '' : ', ' }}
+                          </span>
+                        </span>
+                        <span v-else class="muted">No databases configured</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              
+              <div class="modal-body" v-if="backupWizard.step === 2">
+                <div class="premium-card" style="text-align: center; padding: 3rem 2rem;">
+                  <app-icon name="activity" style="width: 56px; height: 56px; color: var(--brand); animation: spin 2s linear infinite;"></app-icon>
+                  <h3 style="margin-top: 1.5rem; font-size: 22px;">Creating Backup...</h3>
+                  <div class="progress-track" style="margin: 24px auto; max-width: 80%;">
+                    <div class="progress-bar" style="width: 60%; animation: pulse 1.5s infinite;"></div>
+                  </div>
+                  <p class="muted" style="font-size: 14px;">{{ backupWizard.progressText }}</p>
+                  <p v-if="backupWizard.progressText.includes('Compressing')" class="muted" style="font-size: 12px; margin-top: 8px;">This might take a few minutes depending on your site size.</p>
+                </div>
+              </div>
+
+              <div class="modal-footer" v-if="backupWizard.step === 1">
+                <button class="ghost-button" @click="closeBackupWizard">Cancel</button>
+                <button class="primary-button" style="padding: 0 24px;" @click="startBackupWizard"><app-icon name="backup"></app-icon><span>Start Backup</span></button>
+              </div>
+              <div class="modal-footer" v-if="backupWizard.step === 2 && !backupWizard.isRunning">
+                <button class="primary-button" @click="closeBackupWizard">Done</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- PHP INI Modal -->
+          <div v-if="editingPhpIniSite" class="modal-overlay" @click.self="editingPhpIniSite = null">
+            <div class="modal">
+              <header class="modal-header">
+                <h2>Configure PHP INI for {{ editingPhpIniSite.domain }}</h2>
+                <button class="icon-button" @click="editingPhpIniSite = null"><app-icon name="x"></app-icon></button>
+              </header>
+              <div class="modal-content">
+                <form @submit.prevent="savePhpIni" class="form-grid">
+                  <label>memory_limit
+                    <input type="text" v-model="phpIniForm.memory_limit" placeholder="e.g. 256M">
+                  </label>
+                  <label>max_execution_time
+                    <input type="number" v-model="phpIniForm.max_execution_time" placeholder="e.g. 120">
+                  </label>
+                  <label>upload_max_filesize
+                    <input type="text" v-model="phpIniForm.upload_max_filesize" placeholder="e.g. 64M">
+                  </label>
+                  <label>post_max_size
+                    <input type="text" v-model="phpIniForm.post_max_size" placeholder="e.g. 64M">
+                  </label>
+                  <label>max_input_vars
+                    <input type="number" v-model="phpIniForm.max_input_vars" placeholder="e.g. 5000">
+                  </label>
+                  <label style="grid-column: 1 / -1;">Custom Directives (Format: key = value)
+                    <textarea v-model="phpIniForm.custom" rows="3" placeholder="e.g. display_errors = Off"></textarea>
+                  </label>
+                </form>
+              </div>
+              <footer class="modal-footer">
+                <button class="secondary-button" @click="editingPhpIniSite = null">Cancel</button>
+                <button class="primary-button" @click="savePhpIni" :disabled="phpIniSaving">
+                  {{ phpIniSaving ? 'Saving...' : 'Save Configuration' }}
+                </button>
+              </footer>
+            </div>
+          </div>
+
+          <!-- Database CRUD Modals -->
+          <div v-if="dbModal" class="modal-overlay" @click.self="closeDbModal">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2 v-if="dbModal === 'database'">Create Database</h2>
+                <h2 v-if="dbModal === 'user'">Create Database User</h2>
+                <h2 v-if="dbModal === 'grant'">Grant Access</h2>
+                <h2 v-if="dbModal === 'edit_database'">Edit Database</h2>
+                <h2 v-if="dbModal === 'change_password'">Reset Database Password</h2>
+                <h2 v-if="dbModal === 'edit_grant'">Edit Database Privileges</h2>
+                <button class="close-button" @click="closeDbModal">×</button>
+              </div>
+              
+              <!-- Create Database -->
+              <div class="modal-body" v-if="dbModal === 'database'">
+                <div class="form-grid">
+                  <label>Database Name <input v-model="newDatabase.name" placeholder="u000001_app"></label>
+                  <label>Username (optional) <input v-model="newDatabase.username" placeholder="legacy default user"></label>
+                </div>
+              </div>
+              
+              <!-- Create User -->
+              <div class="modal-body" v-if="dbModal === 'user'">
+                <div class="form-grid">
+                  <label>Username <input v-model="newDatabaseUser.username" placeholder="u000001_user"></label>
+                  <label>Password <input v-model="newDatabaseUser.password" type="password" placeholder="Strong password"></label>
+                </div>
+              </div>
+              
+              <!-- Grant Access -->
+              <div class="modal-body" v-if="dbModal === 'grant'">
+                <div class="form-grid">
+                  <label>Database
+                    <select v-model="newDatabaseGrant.database_id">
+                      <option value="" disabled>Select database</option>
+                      <option v-for="database in databases" :key="database.id" :value="database.id">{{ database.name }}</option>
+                    </select>
+                  </label>
+                  <label>User
+                    <select v-model="newDatabaseGrant.user_id">
+                      <option value="" disabled>Select user</option>
+                      <option v-for="user in databaseUsers" :key="user.id" :value="user.id">{{ user.username }}</option>
+                    </select>
+                  </label>
+                  <label>Privileges
+                    <select v-model="newDatabaseGrant.privileges">
+                      <option value="ALL">All privileges</option>
+                      <option value="READ_WRITE">Read/write</option>
+                      <option value="READ">Read only</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Edit Database -->
+              <div class="modal-body" v-if="dbModal === 'edit_database' && editingDatabase">
+                <div class="form-grid">
+                  <label>Database Name <input v-model="editingDatabase.name" placeholder="u000001_app"></label>
+                  <label>Status
+                    <select v-model="editingDatabase.status">
+                      <option value="active">Active</option>
+                      <option value="suspended">Suspended</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Change Password -->
+              <div class="modal-body" v-if="dbModal === 'change_password' && editingDatabaseUser">
+                <div class="form-grid">
+                  <label>User: <strong>{{ editingDatabaseUser.username }}</strong></label>
+                  <label>Status
+                    <select v-model="editingDatabaseUser.status">
+                      <option value="active">Active</option>
+                      <option value="suspended">Suspended</option>
+                    </select>
+                  </label>
+                  <label>New Password <input v-model="editingDatabaseUser.newPassword" type="password" placeholder="At least 8 characters"></label>
+                </div>
+              </div>
+
+              <!-- Edit Grant -->
+              <div class="modal-body" v-if="dbModal === 'edit_grant' && editingDatabaseGrant">
+                <div class="form-grid">
+                  <label>Database: <strong>{{ editingDatabaseGrant.database_name }}</strong></label>
+                  <label>User: <strong>{{ editingDatabaseGrant.username }}</strong></label>
+                  <label>Privileges
+                    <select v-model="editingDatabaseGrant.privileges">
+                      <option value="ALL">All privileges</option>
+                      <option value="READ_WRITE">Read/write</option>
+                      <option value="READ">Read only</option>
+                    </select>
+                  </label>
+                  <label>Status
+                    <select v-model="editingDatabaseGrant.status">
+                      <option value="active">Active</option>
+                      <option value="suspended">Suspended</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div class="modal-footer">
+                <button class="ghost-button" @click="closeDbModal">Cancel</button>
+                <button v-if="dbModal === 'database'" class="primary-button" @click="createDatabase" :disabled="!newDatabase.name">Create Database</button>
+                <button v-if="dbModal === 'user'" class="primary-button" @click="createDatabaseUser" :disabled="!newDatabaseUser.username || !newDatabaseUser.password">Create User</button>
+                <button v-if="dbModal === 'grant'" class="primary-button" @click="createDatabaseGrant" :disabled="!newDatabaseGrant.database_id || !newDatabaseGrant.user_id">Grant Access</button>
+                <button v-if="dbModal === 'edit_database'" class="primary-button" @click="saveEditDatabase" :disabled="!editingDatabase.name">Save Database</button>
+                <button v-if="dbModal === 'change_password'" class="primary-button" @click="saveChangePassword" :disabled="!editingDatabaseUser.newPassword">Reset Password</button>
+                <button v-if="dbModal === 'edit_grant'" class="primary-button" @click="saveEditGrant">Save Privileges</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div><!-- /.client-main-content -->
+      </main>
+    </div>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/client.js"></script>
+  </body>
+</html>

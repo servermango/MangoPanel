@@ -1,0 +1,679 @@
+/* ============================================================
+   AWS Console Theme — Elegant, Professional, High-Density
+   Inspired by the AWS Management Console design language
+   ============================================================ */
+
+/* ─── Core Color Tokens ─────────────────────────────────────── */
+:root {
+  --bg:           #f2f3f3;
+  --surface:      #ffffff;
+  --surface-2:    #fafafa;
+  --text:         #0d1117;
+  --muted:        #5f6b7a;
+  --line:         #d5dbdb;
+  --brand:        #ec7211;
+  --brand-strong: #c45207;
+  --brand-ink:    #ffffff;
+  --brand-tint:   #fff4e6;
+  --accent:       #232f3e;
+  --accent-dark:  #161e2d;
+  --success:      #1d8102;
+  --success-ink:  #ffffff;
+  --warning:      #8d6605;
+  --danger:       #d13212;
+  --info:         #0972d3;
+  --shadow:       none;
+}
+
+/* ─── Typography ────────────────────────────────────────────── */
+body {
+  font-family: "Amazon Ember", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* ─── Global Reset for AWS Flat Aesthetic ───────────────────── */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+/* Selective border-radius for pills / avatars only */
+.user-avatar,
+.badge,
+.status-dot,
+.status-badge,
+.toast-item {
+  border-radius: 2px !important;
+}
+
+/* ─── Scrollbars ────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f2f3f3;
+}
+::-webkit-scrollbar-thumb {
+  background: #aab7c4;
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #879596;
+}
+
+/* ─── App Shell ─────────────────────────────────────────────── */
+.app-shell {
+  background: var(--bg);
+}
+
+/* ─── Header / Navigation Bar ───────────────────────────────── */
+header.header {
+  background: #232f3e !important;
+  border-bottom: 1px solid #1a242f !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3) !important;
+  min-height: 56px !important;
+  padding: 0 20px !important;
+  gap: 0 !important;
+}
+
+header.header::after {
+  content: '';
+  display: block;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #ec7211 0%, #ff9900 50%, #ec7211 100%);
+  pointer-events: none;
+}
+
+header.header,
+header.header h1,
+header.header h2,
+header.header h3,
+header.header p,
+header.header span,
+header.header strong,
+header.header div,
+header.header label,
+header.header a {
+  color: #d5dbdb !important;
+}
+
+header.header .logo,
+header.header .brand-title,
+header.header h1 {
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.01em !important;
+}
+
+/* Search in header */
+header.header input,
+header.header input[type="text"],
+header.header input[type="search"] {
+  background: #394756 !important;
+  border: 1px solid #4e6176 !important;
+  color: #f0f3f5 !important;
+  font-size: 13px !important;
+  padding: 6px 10px !important;
+  transition: border-color 0.15s, box-shadow 0.15s !important;
+}
+header.header input::placeholder {
+  color: #8fa3b2 !important;
+}
+header.header input:focus {
+  border-color: #ec7211 !important;
+  box-shadow: 0 0 0 2px rgba(236, 114, 17, 0.3) !important;
+  outline: none !important;
+}
+
+/* Header buttons / icon buttons */
+header.header button {
+  background: transparent !important;
+  border: none !important;
+  color: #d5dbdb !important;
+}
+header.header button:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+}
+
+/* ─── Sidebar ───────────────────────────────────────────────── */
+aside.sidebar {
+  background: #ffffff !important;
+  border-right: 1px solid #d5dbdb !important;
+  padding-top: 0 !important;
+  box-shadow: none !important;
+}
+
+aside.sidebar .brand,
+aside.sidebar .sidebar-brand {
+  background: #232f3e !important;
+  color: #ffffff !important;
+  padding: 14px 18px !important;
+  border-bottom: 1px solid #1a242f !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.01em !important;
+}
+aside.sidebar .brand *,
+aside.sidebar .sidebar-brand * {
+  color: #ffffff !important;
+}
+
+/* Sidebar section headers */
+aside.sidebar .menu-category,
+aside.sidebar h4,
+aside.sidebar .section-label {
+  color: #5f6b7a !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  padding: 16px 18px 4px !important;
+  margin: 0 !important;
+  border-top: 1px solid #eaeded !important;
+}
+
+/* Sidebar buttons */
+aside.sidebar button {
+  border: none !important;
+  border-left: 3px solid transparent !important;
+  border-bottom: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 9px 18px !important;
+  text-align: left !important;
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+  color: #0d1117 !important;
+  width: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  transition: background 0.1s, color 0.1s !important;
+  margin: 0 !important;
+}
+aside.sidebar button:hover {
+  background: #f0f3f5 !important;
+  border-left-color: #879596 !important;
+  color: #0d1117 !important;
+}
+aside.sidebar button.active {
+  background: #fff4e6 !important;
+  border-left: 3px solid #ec7211 !important;
+  color: #c45207 !important;
+  font-weight: 600 !important;
+}
+aside.sidebar button.active .icon {
+  color: #ec7211 !important;
+}
+
+/* ─── Main Content Area ─────────────────────────────────────── */
+main.main-content {
+  background: var(--bg) !important;
+  padding: 20px !important;
+}
+
+/* ─── Panels / Cards ────────────────────────────────────────── */
+.panel,
+.premium-card,
+.cpanel-tile,
+.info-box,
+.metric {
+  background: #ffffff !important;
+  border: 1px solid #d5dbdb !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* Panel header bar (AWS uses solid header borders) */
+.advanced-tool-header {
+  padding-bottom: 12px !important;
+  border-bottom: 1px solid #eaeded !important;
+  margin-bottom: 16px !important;
+}
+
+.panel-title,
+.advanced-tool-header h2,
+.advanced-tool-header h3 {
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  color: #0d1117 !important;
+  letter-spacing: 0 !important;
+}
+
+/* ─── Breadcrumb ────────────────────────────────────────────── */
+.breadcrumb,
+.page-breadcrumb {
+  font-size: 12px !important;
+  color: #5f6b7a !important;
+}
+.breadcrumb a {
+  color: #0972d3 !important;
+  text-decoration: none !important;
+}
+.breadcrumb a:hover {
+  text-decoration: underline !important;
+}
+
+/* ─── Buttons ───────────────────────────────────────────────── */
+button,
+.small-button {
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  border: 1px solid #aab7c4 !important;
+  background: #ffffff !important;
+  color: #0d1117 !important;
+  padding: 4px 12px !important;
+  min-height: 32px !important;
+  box-shadow: none !important;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s !important;
+}
+button:hover,
+.small-button:hover {
+  background: #f0f3f5 !important;
+  border-color: #879596 !important;
+}
+button:active {
+  background: #eaeded !important;
+}
+
+/* Primary (orange) button */
+button.primary-button,
+.primary-button,
+button[class*="primary"] {
+  background: linear-gradient(to bottom, #ff9900, #e8890c) !important;
+  border: 1px solid #c17d12 !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  box-shadow: 0 1px 1px rgba(0,0,0,0.1) !important;
+}
+button.primary-button:hover,
+.primary-button:hover {
+  background: linear-gradient(to bottom, #ffad33, #ec7211) !important;
+  border-color: #a86109 !important;
+}
+
+/* Danger button */
+button.danger-button,
+.danger-button {
+  background: #ffffff !important;
+  border-color: #d13212 !important;
+  color: #d13212 !important;
+}
+button.danger-button:hover,
+.danger-button:hover {
+  background: #fdf3f2 !important;
+}
+
+/* Ghost/link button */
+.ghost-button,
+button.ghost-button {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: #0972d3 !important;
+  font-weight: 400 !important;
+}
+.ghost-button:hover {
+  background: #f0f3f5 !important;
+  border-color: #aab7c4 !important;
+  color: #0972d3 !important;
+}
+
+/* ─── Form Inputs ───────────────────────────────────────────── */
+input,
+select,
+textarea {
+  border: 1px solid #aab7c4 !important;
+  background: #ffffff !important;
+  color: #0d1117 !important;
+  font-size: 13.5px !important;
+  padding: 5px 10px !important;
+  box-shadow: none !important;
+  transition: border-color 0.15s, box-shadow 0.15s !important;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #0972d3 !important;
+  box-shadow: 0 0 0 2px rgba(9, 114, 211, 0.25) !important;
+  outline: none !important;
+}
+input::placeholder,
+textarea::placeholder {
+  color: #879596 !important;
+}
+
+label {
+  color: #0d1117 !important;
+  font-size: 13.5px !important;
+  font-weight: 700 !important;
+  margin-bottom: 2px !important;
+}
+label .muted {
+  font-weight: 400 !important;
+  color: #5f6b7a !important;
+}
+
+/* ─── Tables ────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse !important;
+  width: 100% !important;
+  border: 1px solid #d5dbdb !important;
+  font-size: 13px !important;
+}
+table thead {
+  background: #fafafa !important;
+}
+table th {
+  background: #fafafa !important;
+  border-bottom: 2px solid #d5dbdb !important;
+  color: #5f6b7a !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  padding: 8px 12px !important;
+  white-space: nowrap !important;
+}
+table td {
+  border-bottom: 1px solid #eaeded !important;
+  padding: 10px 12px !important;
+  color: #0d1117 !important;
+  vertical-align: middle !important;
+}
+table tr:last-child td {
+  border-bottom: none !important;
+}
+table tr:hover td {
+  background: #f8f9fa !important;
+}
+table a,
+table .link {
+  color: #0972d3 !important;
+  text-decoration: none !important;
+}
+table a:hover {
+  text-decoration: underline !important;
+  color: #0554a8 !important;
+}
+
+/* ─── Badges / Status ───────────────────────────────────────── */
+.badge,
+.status-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  padding: 2px 7px !important;
+  letter-spacing: 0.02em !important;
+}
+
+/* Status colors */
+.badge-success,
+.status-badge.running { background: #e6f4ea !important; color: #1d8102 !important; border: 1px solid #b7d8b7 !important; }
+.badge-danger,
+.status-badge.stopped { background: #fdf3f2 !important; color: #d13212 !important; border: 1px solid #f5c8c2 !important; }
+.badge-warning,
+.status-badge.pending { background: #fef5e7 !important; color: #8d6605 !important; border: 1px solid #f5d892 !important; }
+.badge-info,
+.status-badge.info    { background: #e6f3fc !important; color: #0972d3 !important; border: 1px solid #90c0e8 !important; }
+
+/* ─── Info / Alert Boxes ────────────────────────────────────── */
+.info-box {
+  background: #f8fbfe !important;
+  border: 1px solid #90c0e8 !important;
+  border-left: 4px solid #0972d3 !important;
+  color: #0d1117 !important;
+  padding: 12px 16px !important;
+  font-size: 13.5px !important;
+}
+
+/* ─── Fix Result / Alerts ───────────────────────────────────── */
+.fix-result.error {
+  border-left: 4px solid #d13212 !important;
+  background: #fdf3f2 !important;
+  color: #d13212 !important;
+}
+.fix-result.success {
+  border-left: 4px solid #1d8102 !important;
+  background: #e6f4ea !important;
+  color: #1d8102 !important;
+}
+
+/* ─── Modals ────────────────────────────────────────────────── */
+.modal-panel,
+.modal-backdrop .panel {
+  background: #ffffff !important;
+  border: 1px solid #d5dbdb !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18) !important;
+}
+
+.modal-backdrop {
+  background: rgba(22, 25, 31, 0.55) !important;
+}
+
+/* Modal header */
+.modal-panel header,
+.modal-header {
+  background: #232f3e !important;
+  color: #ffffff !important;
+  padding: 14px 20px !important;
+  border-bottom: 1px solid #1a242f !important;
+}
+.modal-panel header *,
+.modal-header * {
+  color: #ffffff !important;
+}
+
+/* ─── Metrics / Resource Usage ──────────────────────────────── */
+.metric {
+  padding: 14px 16px !important;
+  border: 1px solid #d5dbdb !important;
+}
+.metric-value {
+  font-size: 26px !important;
+  font-weight: 700 !important;
+  color: #0d1117 !important;
+  font-variant-numeric: tabular-nums !important;
+}
+.metric-label {
+  font-size: 12px !important;
+  color: #5f6b7a !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+  font-weight: 700 !important;
+}
+
+/* ─── cpanel Tiles ──────────────────────────────────────────── */
+.cpanel-tile {
+  border: 1px solid #d5dbdb !important;
+  background: #ffffff !important;
+  transition: background 0.12s, border-color 0.12s !important;
+  box-shadow: none !important;
+}
+.cpanel-tile:hover {
+  background: #f0f3f5 !important;
+  border-color: #879596 !important;
+}
+.cpanel-tile .icon {
+  color: #ec7211 !important;
+}
+.cpanel-tile-label {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #0d1117 !important;
+}
+
+/* ─── Code Blocks / Terminal ────────────────────────────────── */
+code,
+pre,
+.code-block,
+.terminal {
+  background: #0d1117 !important;
+  color: #c9d1d9 !important;
+  border: 1px solid #30363d !important;
+  font-family: "Courier New", Courier, monospace !important;
+  font-size: 12.5px !important;
+}
+
+/* ─── Toasts / Notifications ────────────────────────────────── */
+.toast-item {
+  border-left: 4px solid var(--brand) !important;
+  background: #ffffff !important;
+  color: #0d1117 !important;
+  border: 1px solid #d5dbdb !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15) !important;
+}
+.toast-item.success { border-left-color: #1d8102 !important; }
+.toast-item.error   { border-left-color: #d13212 !important; }
+.toast-item.info    { border-left-color: #0972d3 !important; }
+
+/* ─── Progress Bars ─────────────────────────────────────────── */
+.progress-bar,
+progress {
+  background: #eaeded !important;
+  border: none !important;
+}
+.progress-bar-fill,
+progress::-webkit-progress-value {
+  background: #ec7211 !important;
+}
+progress::-webkit-progress-bar {
+  background: #eaeded !important;
+}
+
+/* ─── Tabs ──────────────────────────────────────────────────── */
+.tab-bar,
+.tabs {
+  border-bottom: 2px solid #d5dbdb !important;
+  background: transparent !important;
+}
+.tab-button,
+.tabs button {
+  border: none !important;
+  border-bottom: 3px solid transparent !important;
+  background: transparent !important;
+  color: #5f6b7a !important;
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  padding: 10px 16px !important;
+  margin-bottom: -2px !important;
+  transition: color 0.12s, border-color 0.12s !important;
+}
+.tab-button:hover,
+.tabs button:hover {
+  color: #0d1117 !important;
+  border-bottom-color: #aab7c4 !important;
+  background: transparent !important;
+}
+.tab-button.active,
+.tabs button.active {
+  color: #ec7211 !important;
+  border-bottom-color: #ec7211 !important;
+  background: transparent !important;
+}
+
+/* ─── Toggle / Switch ───────────────────────────────────────── */
+.toggle,
+input[type="checkbox"] {
+  accent-color: #ec7211 !important;
+}
+
+/* ─── Links ─────────────────────────────────────────────────── */
+a,
+.link {
+  color: #0972d3 !important;
+}
+a:hover,
+.link:hover {
+  color: #0554a8 !important;
+  text-decoration: underline !important;
+}
+
+/* ─── User Menu / Dropdown ──────────────────────────────────── */
+.user-menu,
+.dropdown-panel {
+  background: #232f3e !important;
+  color: #d5dbdb !important;
+  border: 1px solid #1a242f !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
+}
+.user-menu button,
+.dropdown-panel button {
+  background: transparent !important;
+  border: none !important;
+  color: #d5dbdb !important;
+  text-align: left !important;
+}
+.user-menu button:hover,
+.dropdown-panel button:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+}
+
+/* ─── User Avatar ───────────────────────────────────────────── */
+.user-avatar {
+  background: linear-gradient(135deg, #ec7211, #ff9900) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+}
+
+/* ─── Page/Section Titles ───────────────────────────────────── */
+h1, h2, h3 {
+  letter-spacing: -0.01em;
+}
+h1 { font-size: 20px !important; font-weight: 700 !important; }
+h2 { font-size: 18px !important; font-weight: 700 !important; }
+h3 { font-size: 15px !important; font-weight: 700 !important; }
+
+.muted {
+  color: #5f6b7a !important;
+}
+
+/* ─── Section Dividers ──────────────────────────────────────── */
+hr,
+.divider {
+  border: none !important;
+  border-top: 1px solid #eaeded !important;
+  margin: 16px 0 !important;
+}
+
+/* ─── Form Grid Overrides ───────────────────────────────────── */
+.form-grid {
+  display: grid;
+  gap: 14px;
+}
+.form-grid label {
+  font-weight: 700 !important;
+}
+
+/* ─── Sidebar search / filter ───────────────────────────────── */
+aside.sidebar input {
+  background: #f0f3f5 !important;
+  border: 1px solid #d5dbdb !important;
+  color: #0d1117 !important;
+  font-size: 13px !important;
+  padding: 6px 10px !important;
+  margin: 8px 12px !important;
+  width: calc(100% - 24px) !important;
+}
+aside.sidebar input:focus {
+  border-color: #0972d3 !important;
+  box-shadow: 0 0 0 2px rgba(9, 114, 211, 0.2) !important;
+  background: #ffffff !important;
+}
+
+/* ─── Service / Process Status Colors ───────────────────────── */
+.service-running { color: #1d8102 !important; }
+.service-stopped { color: #d13212 !important; }
+.service-unknown { color: #5f6b7a !important; }

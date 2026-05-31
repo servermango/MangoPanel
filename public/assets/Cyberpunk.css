@@ -1,0 +1,676 @@
+/* ============================================================
+   Cyberpunk Theme — Neon Noir, Glitch Aesthetic, Dark Edge
+   Inspired by Blade Runner / Neo-Tokyo / Terminal UI design
+   ============================================================ */
+
+/* ─── Core Color Tokens ─────────────────────────────────────── */
+:root {
+  --bg:           #08001e;
+  --surface:      #0e0028;
+  --surface-2:    #150038;
+  --text:         #e0e0ff;
+  --muted:        #8080b0;
+  --line:         #2a0060;
+  --brand:        #00f5d4;
+  --brand-strong: #00c9ae;
+  --brand-ink:    #08001e;
+  --brand-tint:   #001a26;
+  --accent:       #ff003c;
+  --accent-dark:  #cc0030;
+  --success:      #39ff14;
+  --success-ink:  #001a00;
+  --warning:      #ffcc00;
+  --danger:       #ff003c;
+  --info:         #00aaff;
+  --shadow:       0 0 20px rgba(0, 245, 212, 0.15), 0 0 60px rgba(255, 0, 60, 0.08);
+}
+
+/* ─── Typography ─────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
+
+body {
+  font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  font-size: 14px;
+  letter-spacing: 0.03em;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Monospace elements */
+code, pre, .terminal, .code-block {
+  font-family: 'Share Tech Mono', 'Courier New', monospace !important;
+}
+
+/* ─── Scanline / Background Texture ──────────────────────────── */
+body::before {
+  content: '';
+  display: block;
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 2px,
+    rgba(0, 0, 0, 0.07) 2px,
+    rgba(0, 0, 0, 0.07) 4px
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Scrollbars ─────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #08001e;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a0060;
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #00f5d4;
+}
+
+/* ─── App Shell ──────────────────────────────────────────────── */
+.app-shell {
+  background: var(--bg);
+  position: relative;
+  z-index: 1;
+}
+
+/* ─── Header ─────────────────────────────────────────────────── */
+header.header {
+  background: #0e0028 !important;
+  border-bottom: 1px solid #2a0060 !important;
+  box-shadow:
+    0 1px 0 #00f5d4,
+    0 4px 24px rgba(0, 245, 212, 0.08) !important;
+  min-height: 56px !important;
+  position: relative !important;
+}
+
+header.header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    #00f5d4 20%,
+    #ff003c 50%,
+    #00f5d4 80%,
+    transparent 100%
+  );
+  animation: headerGlow 4s linear infinite;
+}
+
+@keyframes headerGlow {
+  0%   { opacity: 0.6; }
+  50%  { opacity: 1;   }
+  100% { opacity: 0.6; }
+}
+
+header.header,
+header.header h1,
+header.header span,
+header.header strong,
+header.header p,
+header.header div {
+  color: #00f5d4 !important;
+}
+
+header.header h1,
+header.header .brand-title,
+header.header .logo {
+  font-weight: 700 !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase !important;
+  text-shadow: 0 0 12px rgba(0, 245, 212, 0.7) !important;
+}
+
+header.header input {
+  background: rgba(0, 245, 212, 0.05) !important;
+  border: 1px solid #2a0060 !important;
+  color: #00f5d4 !important;
+  font-family: 'Share Tech Mono', monospace !important;
+  letter-spacing: 0.05em !important;
+}
+header.header input::placeholder { color: #2a6055 !important; }
+header.header input:focus {
+  border-color: #00f5d4 !important;
+  box-shadow: 0 0 0 2px rgba(0, 245, 212, 0.25), 0 0 8px rgba(0, 245, 212, 0.4) !important;
+}
+
+header.header button {
+  background: transparent !important;
+  border: none !important;
+  color: #8080b0 !important;
+}
+header.header button:hover {
+  color: #00f5d4 !important;
+  background: rgba(0, 245, 212, 0.08) !important;
+}
+
+/* ─── Sidebar ────────────────────────────────────────────────── */
+aside.sidebar {
+  background: #0e0028 !important;
+  border-right: 1px solid #2a0060 !important;
+  box-shadow: 2px 0 16px rgba(0, 245, 212, 0.05) !important;
+}
+
+aside.sidebar .brand,
+aside.sidebar .sidebar-brand {
+  background: #08001e !important;
+  border-bottom: 1px solid #00f5d4 !important;
+  box-shadow: 0 2px 12px rgba(0, 245, 212, 0.15) !important;
+  padding: 14px 18px !important;
+}
+aside.sidebar .brand *,
+aside.sidebar .sidebar-brand * {
+  color: #00f5d4 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.1em !important;
+  font-weight: 700 !important;
+  text-shadow: 0 0 10px rgba(0, 245, 212, 0.5) !important;
+}
+
+/* Sidebar section labels */
+aside.sidebar .menu-category,
+aside.sidebar h4,
+aside.sidebar .section-label {
+  color: #2a0060 !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.15em !important;
+  text-transform: uppercase !important;
+  padding: 14px 16px 4px !important;
+  border-top: 1px solid #1a003d !important;
+  text-shadow: none !important;
+}
+
+aside.sidebar button {
+  background: transparent !important;
+  border: none !important;
+  border-left: 2px solid transparent !important;
+  border-radius: 0 !important;
+  color: #8080b0 !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.05em !important;
+  padding: 9px 16px !important;
+  text-transform: uppercase !important;
+  font-size: 11.5px !important;
+  width: 100% !important;
+  text-align: left !important;
+  transition: all 0.15s !important;
+  margin: 0 !important;
+}
+aside.sidebar button:hover {
+  background: rgba(0, 245, 212, 0.06) !important;
+  border-left-color: rgba(0, 245, 212, 0.5) !important;
+  color: #00f5d4 !important;
+  text-shadow: 0 0 8px rgba(0, 245, 212, 0.4) !important;
+}
+aside.sidebar button.active {
+  background: rgba(0, 245, 212, 0.1) !important;
+  border-left: 2px solid #00f5d4 !important;
+  color: #00f5d4 !important;
+  text-shadow: 0 0 10px rgba(0, 245, 212, 0.6) !important;
+  box-shadow: inset 4px 0 12px rgba(0, 245, 212, 0.08) !important;
+}
+
+/* ─── Main Content ───────────────────────────────────────────── */
+main.main-content {
+  background: var(--bg) !important;
+}
+
+/* ─── Panels ─────────────────────────────────────────────────── */
+.panel,
+.premium-card,
+.info-box,
+.metric {
+  background: #0e0028 !important;
+  border: 1px solid #2a0060 !important;
+  box-shadow: 0 0 16px rgba(0, 245, 212, 0.04), 0 2px 8px rgba(0, 0, 0, 0.5) !important;
+  border-radius: 0 !important;
+  position: relative !important;
+}
+
+/* Corner accent on panels */
+.panel::before,
+.premium-card::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 16px;
+  height: 16px;
+  border-top: 2px solid #00f5d4;
+  border-left: 2px solid #00f5d4;
+  pointer-events: none;
+}
+
+.advanced-tool-header {
+  border-bottom: 1px solid #2a0060 !important;
+  margin-bottom: 16px !important;
+  padding-bottom: 12px !important;
+}
+
+.advanced-tool-header h2,
+.advanced-tool-header h3,
+.panel-title {
+  color: #00f5d4 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.1em !important;
+  text-shadow: 0 0 10px rgba(0, 245, 212, 0.4) !important;
+}
+
+/* ─── Headings ───────────────────────────────────────────────── */
+h1, h2, h3 {
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+}
+h1 { color: #00f5d4 !important; text-shadow: 0 0 14px rgba(0, 245, 212, 0.5) !important; }
+h2 { color: #00f5d4 !important; text-shadow: 0 0 10px rgba(0, 245, 212, 0.4) !important; }
+h3 { color: #e0e0ff !important; }
+
+/* ─── Buttons ────────────────────────────────────────────────── */
+button,
+.small-button {
+  background: transparent !important;
+  border: 1px solid #2a0060 !important;
+  color: #8080b0 !important;
+  font-family: 'Rajdhani', sans-serif !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+  padding: 4px 14px !important;
+  min-height: 32px !important;
+  transition: all 0.15s !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+button::after,
+.small-button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, transparent 40%, rgba(0, 245, 212, 0.08) 100%);
+  pointer-events: none;
+}
+button:hover,
+.small-button:hover {
+  border-color: #00f5d4 !important;
+  color: #00f5d4 !important;
+  box-shadow: 0 0 8px rgba(0, 245, 212, 0.3), inset 0 0 8px rgba(0, 245, 212, 0.05) !important;
+  text-shadow: 0 0 8px rgba(0, 245, 212, 0.5) !important;
+}
+
+button.primary-button,
+.primary-button {
+  background: rgba(0, 245, 212, 0.1) !important;
+  border: 1px solid #00f5d4 !important;
+  color: #00f5d4 !important;
+  box-shadow: 0 0 12px rgba(0, 245, 212, 0.25) !important;
+  text-shadow: 0 0 8px rgba(0, 245, 212, 0.6) !important;
+}
+button.primary-button:hover,
+.primary-button:hover {
+  background: rgba(0, 245, 212, 0.2) !important;
+  box-shadow: 0 0 20px rgba(0, 245, 212, 0.5), 0 0 40px rgba(0, 245, 212, 0.15) !important;
+}
+
+button.danger-button,
+.danger-button {
+  border-color: #ff003c !important;
+  color: #ff003c !important;
+  box-shadow: 0 0 8px rgba(255, 0, 60, 0.2) !important;
+}
+button.danger-button:hover,
+.danger-button:hover {
+  background: rgba(255, 0, 60, 0.1) !important;
+  box-shadow: 0 0 16px rgba(255, 0, 60, 0.4) !important;
+}
+
+.ghost-button,
+button.ghost-button {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: #00f5d4 !important;
+}
+.ghost-button:hover {
+  border-color: rgba(0, 245, 212, 0.3) !important;
+  background: rgba(0, 245, 212, 0.06) !important;
+}
+
+/* ─── Inputs ─────────────────────────────────────────────────── */
+input,
+select,
+textarea {
+  background: #08001e !important;
+  border: 1px solid #2a0060 !important;
+  color: #e0e0ff !important;
+  font-family: 'Share Tech Mono', monospace !important;
+  font-size: 13px !important;
+  letter-spacing: 0.04em !important;
+  caret-color: #00f5d4 !important;
+  transition: border-color 0.15s, box-shadow 0.15s !important;
+}
+input::placeholder,
+textarea::placeholder {
+  color: #3a2060 !important;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #00f5d4 !important;
+  box-shadow: 0 0 0 2px rgba(0, 245, 212, 0.2), 0 0 8px rgba(0, 245, 212, 0.3) !important;
+  outline: none !important;
+}
+
+label {
+  color: #8080b0 !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase !important;
+}
+
+/* ─── Tables ─────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse !important;
+  width: 100% !important;
+  border: 1px solid #1a003d !important;
+  font-family: 'Share Tech Mono', monospace !important;
+  font-size: 12.5px !important;
+}
+table thead {
+  background: #0e0028 !important;
+  border-bottom: 1px solid #00f5d4 !important;
+}
+table th {
+  color: #00f5d4 !important;
+  font-size: 10.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase !important;
+  padding: 8px 12px !important;
+  background: #0e0028 !important;
+  border-bottom: 1px solid #00f5d4 !important;
+  text-shadow: 0 0 6px rgba(0, 245, 212, 0.4) !important;
+}
+table td {
+  border-bottom: 1px solid #1a003d !important;
+  padding: 9px 12px !important;
+  color: #c0c0e0 !important;
+}
+table tr:hover td {
+  background: rgba(0, 245, 212, 0.04) !important;
+}
+table a,
+table .link {
+  color: #00f5d4 !important;
+  text-decoration: none !important;
+  text-shadow: 0 0 6px rgba(0, 245, 212, 0.3) !important;
+}
+
+/* ─── Badges / Status ────────────────────────────────────────── */
+.badge-success,
+.status-badge.running {
+  background: rgba(57, 255, 20, 0.1) !important;
+  color: #39ff14 !important;
+  border: 1px solid rgba(57, 255, 20, 0.3) !important;
+  text-shadow: 0 0 6px rgba(57, 255, 20, 0.5) !important;
+}
+.badge-danger,
+.status-badge.stopped {
+  background: rgba(255, 0, 60, 0.1) !important;
+  color: #ff003c !important;
+  border: 1px solid rgba(255, 0, 60, 0.3) !important;
+  text-shadow: 0 0 6px rgba(255, 0, 60, 0.5) !important;
+}
+.badge-warning,
+.status-badge.pending {
+  background: rgba(255, 204, 0, 0.1) !important;
+  color: #ffcc00 !important;
+  border: 1px solid rgba(255, 204, 0, 0.3) !important;
+}
+.badge-info,
+.status-badge.info {
+  background: rgba(0, 170, 255, 0.1) !important;
+  color: #00aaff !important;
+  border: 1px solid rgba(0, 170, 255, 0.3) !important;
+}
+
+/* ─── Info Box ───────────────────────────────────────────────── */
+.info-box {
+  background: rgba(0, 170, 255, 0.06) !important;
+  border-left: 3px solid #00aaff !important;
+  border-color: rgba(0, 170, 255, 0.3) !important;
+  color: #a0c8ff !important;
+}
+
+/* ─── Fix Results ────────────────────────────────────────────── */
+.fix-result.error {
+  border-left: 3px solid #ff003c !important;
+  background: rgba(255, 0, 60, 0.06) !important;
+  color: #ff6680 !important;
+}
+.fix-result.success {
+  border-left: 3px solid #39ff14 !important;
+  background: rgba(57, 255, 20, 0.06) !important;
+  color: #39ff14 !important;
+}
+
+/* ─── Modals ─────────────────────────────────────────────────── */
+.modal-backdrop {
+  background: rgba(8, 0, 30, 0.85) !important;
+  backdrop-filter: blur(4px) !important;
+}
+.modal-panel,
+.modal-backdrop .panel {
+  background: #0e0028 !important;
+  border: 1px solid #00f5d4 !important;
+  box-shadow:
+    0 0 0 1px rgba(0, 245, 212, 0.2),
+    0 0 40px rgba(0, 245, 212, 0.1),
+    0 20px 60px rgba(0, 0, 0, 0.8) !important;
+}
+
+/* ─── Metrics ────────────────────────────────────────────────── */
+.metric {
+  border: 1px solid #2a0060 !important;
+  background: #0e0028 !important;
+}
+.metric-value {
+  color: #00f5d4 !important;
+  font-family: 'Share Tech Mono', monospace !important;
+  font-size: 28px !important;
+  text-shadow: 0 0 12px rgba(0, 245, 212, 0.5) !important;
+}
+.metric-label {
+  color: #5050a0 !important;
+  font-size: 10px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.12em !important;
+}
+
+/* ─── cpanel Tiles ───────────────────────────────────────────── */
+.cpanel-tile {
+  background: #0e0028 !important;
+  border: 1px solid #2a0060 !important;
+  box-shadow: none !important;
+  transition: all 0.15s !important;
+}
+.cpanel-tile:hover {
+  background: rgba(0, 245, 212, 0.06) !important;
+  border-color: #00f5d4 !important;
+  box-shadow: 0 0 12px rgba(0, 245, 212, 0.15) !important;
+}
+.cpanel-tile .icon {
+  color: #00f5d4 !important;
+  filter: drop-shadow(0 0 4px rgba(0, 245, 212, 0.5)) !important;
+}
+.cpanel-tile-label {
+  color: #c0c0e0 !important;
+  letter-spacing: 0.05em !important;
+  font-size: 11.5px !important;
+  text-transform: uppercase !important;
+}
+
+/* ─── Code Blocks / Terminal ─────────────────────────────────── */
+code,
+pre,
+.code-block,
+.terminal {
+  background: #020010 !important;
+  color: #00f5d4 !important;
+  border: 1px solid #1a003d !important;
+  font-family: 'Share Tech Mono', monospace !important;
+  font-size: 12.5px !important;
+  text-shadow: 0 0 4px rgba(0, 245, 212, 0.3) !important;
+}
+
+/* ─── Toasts ─────────────────────────────────────────────────── */
+.toast-item {
+  background: #0e0028 !important;
+  border: 1px solid #2a0060 !important;
+  color: #e0e0ff !important;
+  box-shadow: 0 0 16px rgba(0, 245, 212, 0.1) !important;
+}
+.toast-item.success { border-left: 3px solid #39ff14 !important; }
+.toast-item.error   { border-left: 3px solid #ff003c !important; }
+.toast-item.info    { border-left: 3px solid #00f5d4 !important; }
+
+/* ─── Progress Bars ──────────────────────────────────────────── */
+.progress-bar,
+progress {
+  background: #1a003d !important;
+  border: 1px solid #2a0060 !important;
+}
+.progress-bar-fill,
+progress::-webkit-progress-value {
+  background: linear-gradient(90deg, #00c9ae, #00f5d4) !important;
+  box-shadow: 0 0 8px rgba(0, 245, 212, 0.5) !important;
+}
+progress::-webkit-progress-bar {
+  background: #1a003d !important;
+}
+
+/* ─── Tabs ───────────────────────────────────────────────────── */
+.tab-bar,
+.tabs {
+  border-bottom: 1px solid #2a0060 !important;
+  background: transparent !important;
+}
+.tab-button,
+.tabs button {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 2px solid transparent !important;
+  color: #5050a0 !important;
+  font-family: 'Rajdhani', sans-serif !important;
+  font-weight: 700 !important;
+  font-size: 12px !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+  padding: 10px 16px !important;
+  margin-bottom: -1px !important;
+  transition: all 0.15s !important;
+}
+.tab-button:hover,
+.tabs button:hover {
+  color: #e0e0ff !important;
+  background: transparent !important;
+}
+.tab-button.active,
+.tabs button.active {
+  color: #00f5d4 !important;
+  border-bottom-color: #00f5d4 !important;
+  text-shadow: 0 0 8px rgba(0, 245, 212, 0.5) !important;
+  background: transparent !important;
+}
+
+/* ─── Links ──────────────────────────────────────────────────── */
+a,
+.link {
+  color: #00f5d4 !important;
+  text-decoration: none !important;
+}
+a:hover,
+.link:hover {
+  text-shadow: 0 0 8px rgba(0, 245, 212, 0.5) !important;
+  text-decoration: underline !important;
+}
+
+/* ─── User Menu ──────────────────────────────────────────────── */
+.user-menu,
+.dropdown-panel {
+  background: #0e0028 !important;
+  border: 1px solid #00f5d4 !important;
+  box-shadow: 0 0 24px rgba(0, 245, 212, 0.15), 0 8px 32px rgba(0, 0, 0, 0.6) !important;
+  color: #e0e0ff !important;
+}
+.user-menu button,
+.dropdown-panel button {
+  background: transparent !important;
+  border: none !important;
+  color: #8080b0 !important;
+}
+.user-menu button:hover,
+.dropdown-panel button:hover {
+  background: rgba(0, 245, 212, 0.08) !important;
+  color: #00f5d4 !important;
+}
+
+/* ─── User Avatar ────────────────────────────────────────────── */
+.user-avatar {
+  background: rgba(0, 245, 212, 0.15) !important;
+  border: 1px solid #00f5d4 !important;
+  color: #00f5d4 !important;
+  font-weight: 700 !important;
+  text-shadow: 0 0 8px rgba(0, 245, 212, 0.6) !important;
+  box-shadow: 0 0 10px rgba(0, 245, 212, 0.2) !important;
+}
+
+/* ─── Dividers ───────────────────────────────────────────────── */
+hr,
+.divider {
+  border: none !important;
+  border-top: 1px solid #1a003d !important;
+}
+
+/* ─── Muted Text ─────────────────────────────────────────────── */
+.muted {
+  color: #5050a0 !important;
+}
+
+/* ─── Sidebar Search ─────────────────────────────────────────── */
+aside.sidebar input {
+  background: #08001e !important;
+  border: 1px solid #2a0060 !important;
+  color: #e0e0ff !important;
+  font-family: 'Share Tech Mono', monospace !important;
+  font-size: 12px !important;
+}
+aside.sidebar input:focus {
+  border-color: #00f5d4 !important;
+  box-shadow: 0 0 8px rgba(0, 245, 212, 0.2) !important;
+}
+
+/* ─── Service Status Colors ──────────────────────────────────── */
+.service-running { color: #39ff14 !important; text-shadow: 0 0 6px rgba(57, 255, 20, 0.5) !important; }
+.service-stopped { color: #ff003c !important; text-shadow: 0 0 6px rgba(255, 0, 60, 0.5) !important; }
+.service-unknown { color: #5050a0 !important; }
+
+/* ─── Selection Highlight ────────────────────────────────────── */
+::selection {
+  background: rgba(0, 245, 212, 0.3) !important;
+  color: #ffffff !important;
+}

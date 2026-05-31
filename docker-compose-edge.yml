@@ -1,0 +1,28 @@
+name: mangopanel-edge
+services:
+  caddy:
+    image: lucaslorentz/caddy-docker-proxy:ci-alpine
+    container_name: mangopanel-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - CADDY_INGRESS_NETWORKS=mangopanel-edge
+      - CADDY_DOCKER_PROCESS_CADDYFILE=true
+    networks:
+      - mangopanel-edge
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - caddy_data:/data
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  mangopanel-edge:
+    name: mangopanel-edge
+    external: false
+
+volumes:
+  caddy_data:

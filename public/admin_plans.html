@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MangoPanel Plans</title>
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <div id="admin-app" class="app-shell" v-cloak>
+      <aside class="sidebar admin-sidebar">
+        <div class="brand">
+          <span class="brand-mark">M</span>
+          <div>
+            <strong>MangoPanel</strong>
+            <small>Admin panel</small>
+          </div>
+        </div>
+        <nav class="nav-list">
+          <a href="/">Client</a>
+          <a href="/admin">Admin</a>
+          <a class="active" href="/admin/plans">Plans</a>
+          <a href="/admin/setup">Setup</a>
+          <a href="/status">Status</a>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1>Hosting Plans</h1>
+            <p>Create account plans for Docker resource limits, quotas, and backup retention.</p>
+          </div>
+          <button v-if="token" class="ghost-button" @click="logout">Sign out</button>
+        </header>
+
+        <section v-if="!token" class="panel auth-panel">
+          <h2>Admin Sign In</h2>
+          <div v-if="!challengeToken" class="form-grid">
+            <label>Email <input v-model="login.email" autocomplete="username"></label>
+            <label>Password <input v-model="login.password" type="password" autocomplete="current-password"></label>
+            <button class="primary-button" @click="startLogin">Continue</button>
+          </div>
+          <div v-else class="form-grid">
+            <label>TOTP code <input v-model="login.code" inputmode="numeric" autocomplete="one-time-code"></label>
+            <button class="primary-button" @click="finishLogin">Verify</button>
+            <p class="muted">Development seed accepts code <code>000000</code>.</p>
+          </div>
+          <p v-if="message" class="message">{{ message }}</p>
+        </section>
+
+        <template v-else>
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Create Plan</h2>
+                <p>New hosting accounts use the selected plan values when the agent generates their stack.</p>
+              </div>
+            </div>
+            <div class="plan-form">
+              <label>Plan name <input v-model="newPlan.name" placeholder="Starter 10 GB"></label>
+              <h3 class="section-subhead">Compute Limits</h3>
+              <label>CPU cores <input v-model="newPlan.cpu_limit" inputmode="decimal" placeholder="1"></label>
+              <label>Memory MB <input v-model.number="newPlan.memory_mb" type="number" min="128"></label>
+              <label>Max Processes <input v-model.number="newPlan.max_processes" type="number" min="0"></label>
+              <label>PHP Workers <input v-model.number="newPlan.php_workers" type="number" min="0"></label>
+              
+              <h3 class="section-subhead">Storage & Quotas</h3>
+              <label>Storage MB <input v-model.number="newPlan.storage_mb" type="number" min="100"></label>
+              <label>Inode limit <input v-model.number="newPlan.inode_limit" type="number" min="1000"></label>
+              <label>Websites <input v-model.number="newPlan.max_websites" type="number" min="1"></label>
+              <label>Databases <input v-model.number="newPlan.max_databases" type="number" min="0"></label>
+              <label>Mailboxes <input v-model.number="newPlan.max_mailboxes" type="number" min="0"></label>
+              <label>Cron jobs <input v-model.number="newPlan.max_cron_jobs" type="number" min="0"></label>
+              <label>Daily emails <input v-model.number="newPlan.daily_email_limit" type="number" min="0"></label>
+              
+              <h3 class="section-subhead">Hosting Details</h3>
+              <label>Bandwidth MB (0 = Unlimited) <input v-model.number="newPlan.bandwidth_mb" type="number" min="0"></label>
+              <label>Nameserver 1 <input v-model="newPlan.nameserver_1" type="text" placeholder="ns1.dns-parking.com"></label>
+              <label>Nameserver 2 <input v-model="newPlan.nameserver_2" type="text" placeholder="ns2.dns-parking.com"></label>
+              <label>Backup retention days <input v-model.number="newPlan.backup_retention_days" type="number" min="1"></label>
+              <label>Backup location <input v-model="newPlan.backup_location" type="text" placeholder="Singapore"></label>
+              
+              <h3 class="section-subhead">Node.js Details</h3>
+              <label>Frontend Frameworks <input v-model="newPlan.frontend_frameworks" type="text" placeholder="Angular, Astro, Next.js, etc."></label>
+              <label>Backend Frameworks <input v-model="newPlan.backend_frameworks" type="text" placeholder="Express, Fastify, NestJS, etc."></label>
+              <label>Node.js Versions <input v-model="newPlan.nodejs_versions" type="text" placeholder="24.x, 22.x, 20.x and 18.x"></label>
+              <label>Package Managers <input v-model="newPlan.package_managers" type="text" placeholder="npm (default), yarn and pnpm"></label>
+
+              <button class="primary-button plan-submit" @click="createPlan">Create Plan</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Plans</h2>
+                <p>Limits are written into account metadata, quota config, and generated Compose files.</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Compute</th>
+                    <th>Storage</th>
+                    <th>Objects</th>
+                    <th>Email</th>
+                    <th>Backups</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="plan in plans" :key="plan.id">
+                    <td><strong>{{ plan.name }}</strong><small>#{{ plan.id }}</small></td>
+                    <td>{{ plan.cpu_limit }} CPU<small>{{ plan.memory_mb }} MB RAM</small></td>
+                    <td>{{ plan.storage_mb }} MB<small>{{ plan.inode_limit }} inodes</small></td>
+                    <td>{{ plan.max_websites }} sites<small>{{ plan.max_databases }} DB · {{ plan.max_mailboxes }} mail · {{ plan.max_cron_jobs }} cron</small></td>
+                    <td>{{ plan.daily_email_limit }}/day</td>
+                    <td>{{ plan.backup_retention_days }} days</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <p v-if="message" class="message">{{ message }}</p>
+        </template>
+      </main>
+    </div>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/admin.js"></script>
+  </body>
+</html>

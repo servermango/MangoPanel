@@ -1,0 +1,15 @@
+services:
+  mangopanel:
+    build: .
+    environment:
+      MP_ENV: development
+      MP_DEV_AUTH_TEST_MODE: "true"
+      MP_HOST: 0.0.0.0
+      MP_PORT: 8000
+      MP_DATA_DIR: /data
+      MP_JWT_SECRET: dev-only-change-me
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./var/dev/docker-data:/data
+

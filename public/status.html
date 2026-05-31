@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MangoPanel Status</title>
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <div id="status-app" class="status-shell" v-cloak>
+      <header class="status-header">
+        <div>
+          <a href="/" class="back-link">MangoPanel</a>
+          <h1>System Status</h1>
+          <p>Live platform health, incidents, and maintenance windows.</p>
+        </div>
+        <a class="ghost-button" href="/api/public/status/feed.atom">Atom feed</a>
+      </header>
+
+      <main>
+        <section class="status-banner" :class="status.overall_status">
+          <span>{{ statusLabel(status.overall_status) }}</span>
+          <strong>{{ headline }}</strong>
+        </section>
+
+        <section class="panel">
+          <h2>Components</h2>
+          <div class="component-list">
+            <div class="component-row" v-for="component in status.components" :key="component.id">
+              <div>
+                <strong>{{ component.name }}</strong>
+                <small>{{ component.group_name }}</small>
+              </div>
+              <span class="pill">{{ component.status }}</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="two-column">
+          <div class="panel">
+            <h2>Incidents</h2>
+            <ul class="clean-list" v-if="status.incidents.length">
+              <li v-for="incident in status.incidents" :key="incident.id">
+                <strong>{{ incident.title }}</strong>
+                <span class="pill">{{ incident.state }}</span>
+                <small>{{ incident.created_at }}</small>
+              </li>
+            </ul>
+            <p v-else class="muted">No incidents have been published.</p>
+          </div>
+
+          <div class="panel">
+            <h2>Maintenance</h2>
+            <ul class="clean-list" v-if="status.maintenance.length">
+              <li v-for="item in status.maintenance" :key="item.id">
+                <strong>{{ item.title }}</strong>
+                <span class="pill">{{ item.state }}</span>
+                <small>{{ item.starts_at }} to {{ item.ends_at }}</small>
+              </li>
+            </ul>
+            <p v-else class="muted">No maintenance windows are scheduled.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/status.js"></script>
+  </body>
+</html>
+

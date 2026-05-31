@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="MangoPanel — Professional cloud hosting control panel login.">
+    <title>MangoPanel · Sign In</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
+    <link rel="stylesheet" href="/assets/app.css">
+    <script>
+      (function() {
+        var t = localStorage.getItem("mp_theme") || "Default";
+        document.getElementById("theme-style").setAttribute("href", "/assets/" + t + ".css");
+        
+        // Immediate redirect to panel if already logged in
+        if (localStorage.getItem("mp_client_token")) {
+          window.location.href = "/";
+        }
+      })();
+    </script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100vh;
+        overflow: hidden;
+        font-family: 'Inter', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .login-container {
+        display: flex;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      /* Left Pane - SaaS Branding & Visuals */
+      .login-left-pane {
+        flex: 1.2;
+        background: linear-gradient(135deg, #0b0f19 0%, #151d30 50%, #1e1b4b 100%);
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 48px;
+        color: #ffffff;
+        overflow: hidden;
+      }
+
+      .mesh-gradient {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        opacity: 0.35;
+        background: radial-gradient(circle at 10% 20%, #fdb528 0%, transparent 40%),
+                    radial-gradient(circle at 90% 80%, #8b5cf6 0%, transparent 45%),
+                    radial-gradient(circle at 50% 50%, #06b6d4 0%, transparent 35%);
+        filter: blur(80px);
+        animation: meshPulse 15s infinite alternate ease-in-out;
+        z-index: 1;
+      }
+
+      @keyframes meshPulse {
+        0% { transform: scale(1) translate(0, 0); }
+        50% { transform: scale(1.1) translate(3%, -3%); }
+        100% { transform: scale(1.2) translate(-2%, 5%); }
+      }
+
+      .left-header {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .left-header .logo-icon {
+        width: 42px;
+        height: 42px;
+        background: linear-gradient(135deg, #fdb528 0%, #e8a417 100%);
+        border-radius: 12px 12px 12px 4px;
+        transform: rotate(-10deg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 4px 12px rgba(253, 181, 40, 0.3);
+      }
+
+      .left-header .logo-text {
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        background: linear-gradient(to right, #ffffff, #f3f4f6);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .left-header .panel-badge {
+        font-size: 11px;
+        font-weight: 600;
+        background: rgba(253, 181, 40, 0.15);
+        color: #fdb528;
+        padding: 2px 8px;
+        border-radius: 99px;
+        border: 1px solid rgba(253, 181, 40, 0.2);
+      }
+
+      .left-content {
+        position: relative;
+        z-index: 2;
+        max-width: 540px;
+        margin: auto 0;
+      }
+
+      .left-content h1 {
+        font-size: 42px;
+        font-weight: 800;
+        line-height: 1.15;
+        letter-spacing: -0.04em;
+        margin-bottom: 16px;
+        background: linear-gradient(to right, #ffffff, #e5e7eb);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .left-content p {
+        font-size: 16px;
+        line-height: 1.6;
+        color: #94a3b8;
+        margin-bottom: 40px;
+      }
+
+      /* Floating UI Cards */
+      .visuals-container {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        margin-top: 20px;
+      }
+
+      .floating-card {
+        background: rgba(21, 29, 48, 0.6);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 18px 24px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        max-width: 380px;
+        transition: transform 0.3s ease, border-color 0.3s ease;
+      }
+
+      .floating-card:hover {
+        transform: translateY(-4px) scale(1.01);
+        border-color: rgba(253, 181, 40, 0.4);
+      }
+
+      .card-1 {
+        animation: floatEffect 6s infinite ease-in-out;
+      }
+      .card-2 {
+        animation: floatEffect 8s infinite ease-in-out 1.2s;
+        align-self: flex-start;
+        margin-left: 40px;
+      }
+
+      @keyframes floatEffect {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-10px); }
+      }
+
+      .card-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        background: rgba(253, 181, 40, 0.1);
+        color: #fdb528;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+
+      .card-icon svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+      }
+
+      .card-info {
+        flex-grow: 1;
+      }
+
+      .card-info h4 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: #ffffff;
+      }
+
+      .card-info p {
+        margin: 2px 0 0;
+        font-size: 12px;
+        color: #94a3b8;
+      }
+
+      .card-indicator {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #22c55e;
+        background: rgba(34, 197, 94, 0.15);
+        padding: 4px 8px;
+        border-radius: 99px;
+      }
+
+      .card-indicator .dot {
+        width: 6px;
+        height: 6px;
+        background: #22c55e;
+        border-radius: 50%;
+        box-shadow: 0 0 8px #22c55e;
+        animation: pulseDot 2s infinite;
+      }
+
+      @keyframes pulseDot {
+        0% { transform: scale(0.9); opacity: 0.6; }
+        50% { transform: scale(1.2); opacity: 1; }
+        100% { transform: scale(0.9); opacity: 0.6; }
+      }
+
+      .progress-bar-wrap {
+        width: 100px;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 99px;
+        overflow: hidden;
+      }
+
+      .progress-bar {
+        height: 100%;
+        background: #fdb528;
+        border-radius: 99px;
+      }
+
+      .left-footer {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        gap: 32px;
+        font-size: 13px;
+        color: #64748b;
+      }
+
+      .left-footer span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .left-footer span::before {
+        content: '';
+        width: 4px;
+        height: 4px;
+        background: #fdb528;
+        border-radius: 50%;
+      }
+
+      /* Right Pane - Form Layout */
+      .login-right-pane {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 40px;
+        background: var(--bg);
+        z-index: 2;
+        overflow-y: auto;
+      }
+
+      .login-card {
+        width: 100%;
+        max-width: 420px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 40px;
+        box-shadow: var(--shadow);
+        transition: transform 0.3s, box-shadow 0.3s;
+      }
+
+      .form-header {
+        text-align: center;
+        margin-bottom: 32px;
+      }
+
+      .form-header h2 {
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0 0 8px 0;
+        color: var(--text);
+      }
+
+      .form-header p {
+        font-size: 14px;
+        color: var(--muted);
+        margin: 0;
+      }
+
+      .input-group {
+        position: relative;
+        margin-bottom: 20px;
+      }
+
+      .input-group label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .input-wrapper {
+        position: relative;
+      }
+
+      .input-icon {
+        position: absolute;
+        left: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        pointer-events: none;
+      }
+
+      .input-icon svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+      }
+
+      .input-field {
+        width: 100%;
+        padding: 12px 16px 12px 42px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface-2);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+        box-sizing: border-box;
+        transition: border-color 0.2s, background-color 0.2s, box-shadow 0.2s;
+      }
+
+      .input-field:focus {
+        outline: none;
+        border-color: var(--brand);
+        background-color: var(--surface);
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 15%, transparent);
+      }
+
+      .toggle-password {
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: none;
+        border: none;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 6px;
+        display: flex;
+        align-items: center;
+        border-radius: 6px;
+      }
+
+      .toggle-password:hover {
+        color: var(--text);
+        background: rgba(0,0,0,0.05);
+      }
+
+      .toggle-password svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+      }
+
+      .action-btn {
+        width: 100%;
+        padding: 14px;
+        border-radius: 12px;
+        background: var(--brand);
+        color: var(--brand-ink);
+        font-weight: 600;
+        font-size: 14px;
+        font-family: inherit;
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        box-shadow: 0 4px 12px color-mix(in srgb, var(--brand) 20%, transparent);
+      }
+
+      .action-btn:hover:not(:disabled) {
+        background: var(--brand-strong);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px color-mix(in srgb, var(--brand) 30%, transparent);
+      }
+
+      .action-btn:active:not(:disabled) {
+        transform: translateY(0);
+      }
+
+      .action-btn:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
+
+      .back-btn {
+        width: 100%;
+        padding: 10px;
+        background: none;
+        border: 1px solid var(--line);
+        color: var(--text);
+        border-radius: 12px;
+        font-size: 13px;
+        font-weight: 500;
+        font-family: inherit;
+        cursor: pointer;
+        margin-top: 12px;
+        transition: all 0.2s;
+      }
+
+      .back-btn:hover {
+        background: var(--surface-2);
+      }
+
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid currentColor;
+        border-bottom-color: transparent;
+        border-radius: 50%;
+        display: inline-block;
+        box-sizing: border-box;
+        animation: rotation 0.8s linear infinite;
+      }
+
+      @keyframes rotation {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+
+      /* Alert / Message */
+      .alert {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 12px 16px;
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+        border: 1px solid var(--danger);
+        color: var(--danger);
+        font-size: 13px;
+        margin-bottom: 24px;
+        line-height: 1.4;
+      }
+
+      .alert svg {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+
+      .shake {
+        animation: shakeEffect 0.4s ease-in-out;
+      }
+
+      @keyframes shakeEffect {
+        0%, 100% { transform: translateX(0); }
+        20%, 60% { transform: translateX(-6px); }
+        40%, 80% { transform: translateX(6px); }
+      }
+
+      .form-footer {
+        text-align: center;
+        margin-top: 24px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .form-footer a {
+        color: var(--brand-strong);
+        text-decoration: none;
+        font-weight: 600;
+      }
+
+      .form-footer a:hover {
+        text-decoration: underline;
+      }
+
+      /* Dev credential helper */
+      .dev-helper {
+        margin-top: 24px;
+        padding: 12px;
+        border-radius: 10px;
+        background: var(--surface-2);
+        border: 1px dashed var(--line);
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .dev-helper code {
+        background: var(--surface);
+        padding: 2px 4px;
+        border-radius: 4px;
+        font-family: monospace;
+        color: var(--text);
+        border: 1px solid var(--line);
+      }
+
+      /* Page transition states */
+      .fade-enter-active, .fade-leave-active {
+        transition: opacity 0.3s ease, transform 0.3s ease;
+      }
+      
+      .fade-enter-from, .fade-leave-to {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+
+      /* Responsive rules */
+      @media (max-width: 950px) {
+        .login-left-pane {
+          display: none;
+        }
+        .login-right-pane {
+          flex: 1;
+          padding: 24px;
+        }
+        .login-card {
+          padding: 32px 24px;
+          border-radius: 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="login-app" class="login-container" v-cloak>
+      
+      <!-- Left side visuals -->
+      <div class="login-left-pane">
+        <div class="mesh-gradient"></div>
+        
+        <header class="left-header">
+          <div class="logo-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.59 20 4 16.41 4 12C4 7.59 7.59 4 12 4C16.41 4 20 7.59 20 12C20 16.41 16.41 20 12 20Z" fill="#ffffff" />
+              <path d="M12 6C9.79 6 8 7.79 8 10C8 11.85 9.25 13.41 10.95 13.88C11.12 13.92 11.23 14.07 11.23 14.25V17C11.23 17.55 11.57 18 12 18C12.43 18 12.77 17.55 12.77 17V14.25C12.77 14.07 12.88 13.92 13.05 13.88C14.75 13.41 16 11.85 16 10C16 7.79 14.21 6 12 6Z" fill="#ffffff" />
+            </svg>
+          </div>
+          <span class="logo-text">MangoPanel</span>
+          <span class="panel-badge">Client Portal</span>
+        </header>
+
+        <div class="left-content">
+          <h1>The modern control panel for web projects.</h1>
+          <p>Easily manage websites, configure databases, secure your traffic, and access server diagnostics through a clean, unified dashboard.</p>
+          
+          <div class="visuals-container">
+            <!-- Floating Card 1: Websites -->
+            <div class="floating-card card-1">
+              <div class="card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+              </div>
+              <div class="card-info">
+                <h4>Websites Status</h4>
+                <p>All virtual hosts running smoothly</p>
+              </div>
+              <div class="card-indicator">
+                <div class="dot"></div>
+                Active
+              </div>
+            </div>
+
+            <!-- Floating Card 2: Server Usage -->
+            <div class="floating-card card-2">
+              <div class="card-icon">
+                <svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+              </div>
+              <div class="card-info">
+                <h4>System Resources</h4>
+                <p>RAM allocated: 1.2 GB / 3.0 GB</p>
+              </div>
+              <div class="progress-bar-wrap">
+                <div class="progress-bar" style="width: 40%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="left-footer">
+          <span>SSD Cloud Hosting</span>
+          <span>Automatic Backups</span>
+          <span>Let's Encrypt SSL</span>
+        </footer>
+      </div>
+
+      <!-- Right side login card -->
+      <div class="login-right-pane">
+        <div class="login-card" :class="{ shake: shakeError }">
+          
+          <div class="form-header">
+            <h2>Welcome back</h2>
+            <p v-if="!challengeToken">Please enter your hosting account details</p>
+            <p v-else>Two-factor authentication is required</p>
+          </div>
+
+          <!-- Alert message block -->
+          <div v-if="error" class="alert">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <span>{{ error }}</span>
+          </div>
+
+          <!-- State 1: Password Login -->
+          <form v-if="!challengeToken" @submit.prevent="startLogin">
+            <div class="input-group">
+              <label for="email">Email Address</label>
+              <div class="input-wrapper">
+                <span class="input-icon">
+                  <svg viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                </span>
+                <input 
+                  type="email" 
+                  id="email" 
+                  v-model="email" 
+                  class="input-field" 
+                  placeholder="name@domain.com"
+                  required
+                  autocomplete="email"
+                >
+              </div>
+            </div>
+
+            <div class="input-group">
+              <label for="password">Password</label>
+              <div class="input-wrapper">
+                <span class="input-icon">
+                  <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                </span>
+                <input 
+                  :type="showPassword ? 'text' : 'password'" 
+                  id="password" 
+                  v-model="password" 
+                  class="input-field" 
+                  placeholder="••••••••"
+                  required
+                  autocomplete="current-password"
+                >
+                <button type="button" class="toggle-password" @click="showPassword = !showPassword" aria-label="Toggle password visibility">
+                  <svg v-if="showPassword" viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                  <svg v-else viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" class="action-btn" :disabled="loading">
+              <span v-if="loading" class="spinner"></span>
+              <span>{{ loading ? 'Signing in...' : 'Sign In' }}</span>
+            </button>
+          </form>
+
+          <!-- State 2: TOTP Authentication -->
+          <form v-else @submit.prevent="finishLogin">
+            <div class="input-group">
+              <label for="totp">Verification Code</label>
+              <div class="input-wrapper">
+                <span class="input-icon">
+                  <svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+                </span>
+                <input 
+                  type="text" 
+                  id="totp" 
+                  v-model="code" 
+                  class="input-field" 
+                  placeholder="000000"
+                  required
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  autofocus
+                >
+              </div>
+            </div>
+
+            <button type="submit" class="action-btn" :disabled="loading">
+              <span v-if="loading" class="spinner"></span>
+              <span>{{ loading ? 'Verifying...' : 'Verify Code' }}</span>
+            </button>
+
+            <button type="button" class="back-btn" @click="goBack" :disabled="loading">
+              Back to Sign In
+            </button>
+          </form>
+
+          <!-- Footer links -->
+          <div class="form-footer">
+            <span>New customer? </span>
+            <a href="/signup">Create hosting account</a>
+          </div>
+
+          <!-- Developer credentials helper -->
+          <div v-if="isLocalhost" class="dev-helper">
+            <strong>Development Environment:</strong><br>
+            Fill: <code>owner@example.mango.test</code> / <code>ChangeMe-DevOnly-123!</code><br>
+            TOTP Seed Code: <code>000000</code>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Vue 3 and App script -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script>
+      const { createApp } = Vue;
+
+      createApp({
+        data() {
+          return {
+            email: "",
+            password: "",
+            code: "",
+            challengeToken: "",
+            error: "",
+            loading: false,
+            showPassword: false,
+            shakeError: false,
+            isLocalhost: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+          };
+        },
+        mounted() {
+          // Preload helper fields for easy localhost dev flow
+          if (this.isLocalhost) {
+            this.email = "owner@example.mango.test";
+            this.password = "ChangeMe-DevOnly-123!";
+            this.code = "000000";
+          }
+        },
+        methods: {
+          async startLogin() {
+            this.error = "";
+            this.loading = true;
+            this.shakeError = false;
+
+            try {
+              const response = await fetch("/api/client/auth/login", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Accept": "application/json"
+                },
+                body: JSON.stringify({ email: this.email, password: this.password })
+              });
+              const payload = await response.json();
+              
+              if (!response.ok) {
+                throw new Error(payload.error || "Login failed");
+              }
+
+              if (payload.totp_required) {
+                this.challengeToken = payload.challenge_token;
+              } else if (payload.access_token) {
+                localStorage.setItem("mp_client_token", payload.access_token);
+                window.location.href = "/";
+              }
+            } catch (err) {
+              this.error = this.humanizeError(err.message);
+              this.triggerShake();
+            } finally {
+              this.loading = false;
+            }
+          },
+          async finishLogin() {
+            this.error = "";
+            this.loading = true;
+            this.shakeError = false;
+
+            try {
+              const response = await fetch("/api/client/auth/totp/verify", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Accept": "application/json"
+                },
+                body: JSON.stringify({ challenge_token: this.challengeToken, code: this.code })
+              });
+              const payload = await response.json();
+
+              if (!response.ok) {
+                throw new Error(payload.error || "2FA Verification failed");
+              }
+
+              localStorage.setItem("mp_client_token", payload.access_token);
+              window.location.href = "/";
+            } catch (err) {
+              this.error = this.humanizeError(err.message);
+              this.triggerShake();
+            } finally {
+              this.loading = false;
+            }
+          },
+          goBack() {
+            this.challengeToken = "";
+            this.code = "";
+            this.error = "";
+          },
+          triggerShake() {
+            this.shakeError = true;
+            setTimeout(() => {
+              this.shakeError = false;
+            }, 4000);
+          },
+          humanizeError(errString) {
+            switch(errString) {
+              case "invalid_credentials":
+                return "The email or password you entered is incorrect.";
+              case "invalid_totp":
+                return "The verification code is invalid. Please try again.";
+              case "missing_bearer_token":
+                return "Authentication token is missing. Please log in.";
+              default:
+                return errString;
+            }
+          }
+        }
+      }).mount("#login-app");
+    </script>
+  </body>
+</html>

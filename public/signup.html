@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="MangoPanel — Create hosting account for web projects.">
+    <title>MangoPanel · Sign Up</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
+    <link rel="stylesheet" href="/assets/app.css">
+    <script>
+      (function() {
+        var t = localStorage.getItem("mp_theme") || "Default";
+        document.getElementById("theme-style").setAttribute("href", "/assets/" + t + ".css");
+        
+        // Immediate redirect to panel if already logged in
+        if (localStorage.getItem("mp_client_token")) {
+          window.location.href = "/";
+        }
+      })();
+    </script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100vh;
+        overflow: hidden;
+        font-family: 'Inter', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .signup-container {
+        display: flex;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      /* Left Pane - SaaS Branding & Visuals */
+      .signup-left-pane {
+        flex: 1.2;
+        background: linear-gradient(135deg, #0b0f19 0%, #151d30 50%, #1e1b4b 100%);
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 48px;
+        color: #ffffff;
+        overflow: hidden;
+      }
+
+      .mesh-gradient {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        opacity: 0.35;
+        background: radial-gradient(circle at 10% 20%, #fdb528 0%, transparent 40%),
+                    radial-gradient(circle at 90% 80%, #8b5cf6 0%, transparent 45%),
+                    radial-gradient(circle at 50% 50%, #06b6d4 0%, transparent 35%);
+        filter: blur(80px);
+        animation: meshPulse 15s infinite alternate ease-in-out;
+        z-index: 1;
+      }
+
+      @keyframes meshPulse {
+        0% { transform: scale(1) translate(0, 0); }
+        50% { transform: scale(1.1) translate(3%, -3%); }
+        100% { transform: scale(1.2) translate(-2%, 5%); }
+      }
+
+      .left-header {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .left-header .logo-icon {
+        width: 42px;
+        height: 42px;
+        background: linear-gradient(135deg, #fdb528 0%, #e8a417 100%);
+        border-radius: 12px 12px 12px 4px;
+        transform: rotate(-10deg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 4px 12px rgba(253, 181, 40, 0.3);
+      }
+
+      .left-header .logo-text {
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        background: linear-gradient(to right, #ffffff, #f3f4f6);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .left-header .panel-badge {
+        font-size: 11px;
+        font-weight: 600;
+        background: rgba(253, 181, 40, 0.15);
+        color: #fdb528;
+        padding: 2px 8px;
+        border-radius: 99px;
+        border: 1px solid rgba(253, 181, 40, 0.2);
+      }
+
+      .left-content {
+        position: relative;
+        z-index: 2;
+        max-width: 540px;
+        margin: auto 0;
+      }
+
+      .left-content h1 {
+        font-size: 42px;
+        font-weight: 800;
+        line-height: 1.15;
+        letter-spacing: -0.04em;
+        margin-bottom: 16px;
+        background: linear-gradient(to right, #ffffff, #e5e7eb);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .left-content p {
+        font-size: 16px;
+        line-height: 1.6;
+        color: #94a3b8;
+        margin-bottom: 40px;
+      }
+
+      /* Floating UI Cards */
+      .visuals-container {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        margin-top: 20px;
+      }
+
+      .floating-card {
+        background: rgba(21, 29, 48, 0.6);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 18px 24px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        max-width: 380px;
+        transition: transform 0.3s ease, border-color 0.3s ease;
+      }
+
+      .floating-card:hover {
+        transform: translateY(-4px) scale(1.01);
+        border-color: rgba(253, 181, 40, 0.4);
+      }
+
+      .card-1 {
+        animation: floatEffect 6s infinite ease-in-out;
+      }
+      .card-2 {
+        animation: floatEffect 8s infinite ease-in-out 1.2s;
+        align-self: flex-start;
+        margin-left: 40px;
+      }
+
+      @keyframes floatEffect {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-10px); }
+      }
+
+      .card-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        background: rgba(253, 181, 40, 0.1);
+        color: #fdb528;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+
+      .card-icon svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+      }
+
+      .card-info {
+        flex-grow: 1;
+      }
+
+      .card-info h4 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: #ffffff;
+      }
+
+      .card-info p {
+        margin: 2px 0 0;
+        font-size: 12px;
+        color: #94a3b8;
+      }
+
+      .card-step-badge {
+        font-size: 11px;
+        font-weight: 700;
+        color: #fdb528;
+        background: rgba(253, 181, 40, 0.15);
+        padding: 4px 8px;
+        border-radius: 99px;
+      }
+
+      .left-footer {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        gap: 32px;
+        font-size: 13px;
+        color: #64748b;
+      }
+
+      .left-footer span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .left-footer span::before {
+        content: '';
+        width: 4px;
+        height: 4px;
+        background: #fdb528;
+        border-radius: 50%;
+      }
+
+      /* Right Pane - Form Layout */
+      .signup-right-pane {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 40px;
+        background: var(--bg);
+        z-index: 2;
+        overflow-y: auto;
+      }
+
+      .signup-card {
+        width: 100%;
+        max-width: 440px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        padding: 40px;
+        box-shadow: var(--shadow);
+        transition: transform 0.3s, box-shadow 0.3s;
+      }
+
+      .form-header {
+        text-align: center;
+        margin-bottom: 28px;
+      }
+
+      .form-header h2 {
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0 0 8px 0;
+        color: var(--text);
+      }
+
+      .form-header p {
+        font-size: 14px;
+        color: var(--muted);
+        margin: 0;
+      }
+
+      .input-group {
+        position: relative;
+        margin-bottom: 18px;
+      }
+
+      .input-group label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .input-wrapper {
+        position: relative;
+      }
+
+      .input-icon {
+        position: absolute;
+        left: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        pointer-events: none;
+      }
+
+      .input-icon svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+      }
+
+      .input-field {
+        width: 100%;
+        padding: 12px 16px 12px 42px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface-2);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+        box-sizing: border-box;
+        transition: border-color 0.2s, background-color 0.2s, box-shadow 0.2s;
+      }
+
+      .input-field:focus {
+        outline: none;
+        border-color: var(--brand);
+        background-color: var(--surface);
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 15%, transparent);
+      }
+
+      .toggle-password {
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: none;
+        border: none;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 6px;
+        display: flex;
+        align-items: center;
+        border-radius: 6px;
+      }
+
+      .toggle-password:hover {
+        color: var(--text);
+        background: rgba(0,0,0,0.05);
+      }
+
+      .toggle-password svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+      }
+
+      .action-btn {
+        width: 100%;
+        padding: 14px;
+        border-radius: 12px;
+        background: var(--brand);
+        color: var(--brand-ink);
+        font-weight: 600;
+        font-size: 14px;
+        font-family: inherit;
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        box-shadow: 0 4px 12px color-mix(in srgb, var(--brand) 20%, transparent);
+        margin-top: 10px;
+      }
+
+      .action-btn:hover:not(:disabled) {
+        background: var(--brand-strong);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px color-mix(in srgb, var(--brand) 30%, transparent);
+      }
+
+      .action-btn:active:not(:disabled) {
+        transform: translateY(0);
+      }
+
+      .action-btn:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
+
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid currentColor;
+        border-bottom-color: transparent;
+        border-radius: 50%;
+        display: inline-block;
+        box-sizing: border-box;
+        animation: rotation 0.8s linear infinite;
+      }
+
+      @keyframes rotation {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+
+      /* Alert / Message */
+      .alert {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 12px 16px;
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+        border: 1px solid var(--danger);
+        color: var(--danger);
+        font-size: 13px;
+        margin-bottom: 20px;
+        line-height: 1.4;
+      }
+
+      .alert svg {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+
+      .shake {
+        animation: shakeEffect 0.4s ease-in-out;
+      }
+
+      @keyframes shakeEffect {
+        0%, 100% { transform: translateX(0); }
+        20%, 60% { transform: translateX(-6px); }
+        40%, 80% { transform: translateX(6px); }
+      }
+
+      .form-footer {
+        text-align: center;
+        margin-top: 24px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .form-footer a {
+        color: var(--brand-strong);
+        text-decoration: none;
+        font-weight: 600;
+      }
+
+      .form-footer a:hover {
+        text-decoration: underline;
+      }
+
+      /* SUCCESS STATE STYLES */
+      .success-icon-wrap {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 24px;
+      }
+      
+      .success-circle {
+        width: 60px;
+        height: 60px;
+        background: rgba(34, 197, 94, 0.1);
+        color: #22c55e;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 4px 12px rgba(34, 197, 94, 0.1);
+      }
+
+      .success-circle svg {
+        width: 32px;
+        height: 32px;
+      }
+
+      .secret-box-wrapper {
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 24px;
+        position: relative;
+      }
+
+      .secret-label {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: var(--muted);
+        letter-spacing: 0.05em;
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .secret-code-display {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .secret-code-display strong {
+        font-family: monospace;
+        font-size: 18px;
+        letter-spacing: 0.05em;
+        color: var(--text);
+        word-break: break-all;
+      }
+
+      .copy-btn {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        color: var(--text);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.2s;
+        flex-shrink: 0;
+      }
+
+      .copy-btn:hover {
+        background: var(--brand-tint);
+        border-color: var(--brand);
+        color: var(--brand-ink);
+      }
+
+      .details-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-bottom: 28px;
+        font-size: 13px;
+        border-top: 1px solid var(--line);
+        padding-top: 16px;
+      }
+
+      .details-item {
+        display: flex;
+        justify-content: space-between;
+        color: var(--text);
+      }
+
+      .details-item span {
+        color: var(--muted);
+      }
+
+      .details-item code {
+        background: var(--surface-2);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: monospace;
+      }
+
+      /* Responsive rules */
+      @media (max-width: 950px) {
+        .signup-left-pane {
+          display: none;
+        }
+        .signup-right-pane {
+          flex: 1;
+          padding: 24px;
+        }
+        .signup-card {
+          padding: 32px 24px;
+          border-radius: 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="signup-app" class="signup-container" v-cloak>
+      
+      <!-- Left side visuals -->
+      <div class="signup-left-pane">
+        <div class="mesh-gradient"></div>
+        
+        <header class="left-header">
+          <div class="logo-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.59 20 4 16.41 4 12C4 7.59 7.59 4 12 4C16.41 4 20 7.59 20 12C20 16.41 16.41 20 12 20Z" fill="#ffffff" />
+              <path d="M12 6C9.79 6 8 7.79 8 10C8 11.85 9.25 13.41 10.95 13.88C11.12 13.92 11.23 14.07 11.23 14.25V17C11.23 17.55 11.57 18 12 18C12.43 18 12.77 17.55 12.77 17V14.25C12.77 14.07 12.88 13.92 13.05 13.88C14.75 13.41 16 11.85 16 10C16 7.79 14.21 6 12 6Z" fill="#ffffff" />
+            </svg>
+          </div>
+          <span class="logo-text">MangoPanel</span>
+          <span class="panel-badge">Client Portal</span>
+        </header>
+
+        <div class="left-content">
+          <h1>Start deploying in minutes.</h1>
+          <p>Sign up to instantly configure your hosting accounts, databases, and secure emails on high-performance servers.</p>
+          
+          <div class="visuals-container">
+            <!-- Floating Card 1: Features -->
+            <div class="floating-card card-1">
+              <div class="card-icon">
+                <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+              </div>
+              <div class="card-info">
+                <h4>Server Configuration</h4>
+                <p>2 Cores CPU · 3GB RAM · SSD</p>
+              </div>
+              <span class="card-step-badge">Provisioned</span>
+            </div>
+
+            <!-- Floating Card 2: Interactive progress -->
+            <div class="floating-card card-2">
+              <div class="card-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"></path><path d="M22 12H2"></path></svg>
+              </div>
+              <div class="card-info">
+                <h4>Hosting Domain</h4>
+                <p>Subdomain setup automated</p>
+              </div>
+              <span class="card-step-badge">Active SSL</span>
+            </div>
+          </div>
+        </div>
+
+        <footer class="left-footer">
+          <span>SSD Cloud Hosting</span>
+          <span>Automatic Backups</span>
+          <span>Let's Encrypt SSL</span>
+        </footer>
+      </div>
+
+      <!-- Right side form container -->
+      <div class="signup-right-pane">
+        
+        <!-- State 1: Form Details Entry -->
+        <div v-if="!result" class="signup-card" :class="{ shake: shakeError }">
+          
+          <div class="form-header">
+            <h2>Create Account</h2>
+            <p>Get started with MangoPanel hosting</p>
+          </div>
+
+          <!-- Alert message block -->
+          <div v-if="message" class="alert">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <span>{{ message }}</span>
+          </div>
+
+          <form @submit.prevent="signup">
+            <div class="input-group">
+              <label for="fullname">Full Name</label>
+              <div class="input-wrapper">
+                <span class="input-icon">
+                  <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                </span>
+                <input 
+                  type="text" 
+                  id="fullname" 
+                  v-model="form.full_name" 
+                  class="input-field" 
+                  placeholder="John Doe"
+                  required
+                  autocomplete="name"
+                >
+              </div>
+            </div>
+
+            <div class="input-group">
+              <label for="email">Email Address</label>
+              <div class="input-wrapper">
+                <span class="input-icon">
+                  <svg viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                </span>
+                <input 
+                  type="email" 
+                  id="email" 
+                  v-model="form.email" 
+                  class="input-field" 
+                  placeholder="name@domain.com"
+                  required
+                  autocomplete="email"
+                >
+              </div>
+            </div>
+
+            <div class="input-group">
+              <label for="password">Password</label>
+              <div class="input-wrapper">
+                <span class="input-icon">
+                  <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                </span>
+                <input 
+                  :type="showPassword ? 'text' : 'password'" 
+                  id="password" 
+                  v-model="form.password" 
+                  class="input-field" 
+                  placeholder="••••••••"
+                  required
+                  autocomplete="new-password"
+                >
+                <button type="button" class="toggle-password" @click="showPassword = !showPassword" aria-label="Toggle password visibility">
+                  <svg v-if="showPassword" viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                  <svg v-else viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" class="action-btn" :disabled="loading">
+              <span v-if="loading" class="spinner"></span>
+              <span>{{ loading ? 'Creating account...' : 'Create Account' }}</span>
+            </button>
+          </form>
+
+          <div class="form-footer">
+            <span>Already have an account? </span>
+            <a href="/login">Sign in</a>
+          </div>
+
+        </div>
+
+        <!-- State 2: Account Created & TOTP Setup Screen -->
+        <div v-else class="signup-card">
+          
+          <div class="success-icon-wrap">
+            <div class="success-circle">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+            </div>
+          </div>
+
+          <div class="form-header">
+            <h2>Account Created</h2>
+            <p>Your server space and configurations have been successfully provisioned</p>
+          </div>
+
+          <div class="secret-box-wrapper">
+            <span class="secret-label">TOTP Setup Secret</span>
+            <div class="secret-code-display">
+              <strong>{{ result.totp_secret }}</strong>
+              <button class="copy-btn" @click="copySecret">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>{{ copyFeedback }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="alert" style="background: rgba(253, 181, 40, 0.08); border-color: rgba(253, 181, 40, 0.4); color: var(--brand-ink);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--brand-strong);">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+            <span><strong>Important:</strong> Add this TOTP secret code to your authenticator app (Google Authenticator, Authy, etc.) to log in.</span>
+          </div>
+
+          <div class="details-list">
+            <div class="details-item">
+              <span>Primary Website Domain</span>
+              <strong>{{ result.hosting_account?.default_domain }}</strong>
+            </div>
+            <div class="details-item">
+              <span>Provisioning Status</span>
+              <code>{{ result.hosting_account?.status }}</code>
+            </div>
+          </div>
+
+          <a class="action-btn" href="/login" style="text-decoration: none;">
+            Proceed to Sign In
+          </a>
+
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- Vue 3 and App script -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script>
+      const { createApp } = Vue;
+
+      createApp({
+        data() {
+          return {
+            form: {
+              full_name: "",
+              email: "",
+              password: ""
+            },
+            message: "",
+            result: null,
+            loading: false,
+            showPassword: false,
+            shakeError: false,
+            copyFeedback: "Copy"
+          };
+        },
+        methods: {
+          async signup() {
+            this.message = "";
+            this.loading = true;
+            this.shakeError = false;
+
+            try {
+              const response = await fetch("/api/public/signup", {
+                method: "POST",
+                headers: { 
+                  "Content-Type": "application/json", 
+                  "Accept": "application/json" 
+                },
+                body: JSON.stringify(this.form)
+              });
+              const payload = await response.json();
+              
+              if (!response.ok) {
+                throw new Error(payload.error || "Account registration failed");
+              }
+              
+              this.result = payload;
+            } catch (err) {
+              this.message = this.humanizeError(err.message);
+              this.triggerShake();
+            } finally {
+              this.loading = false;
+            }
+          },
+          copySecret() {
+            if (!this.result || !this.result.totp_secret) return;
+            navigator.clipboard.writeText(this.result.totp_secret)
+              .then(() => {
+                this.copyFeedback = "Copied!";
+                setTimeout(() => {
+                  this.copyFeedback = "Copy";
+                }, 2000);
+              })
+              .catch(() => {
+                this.copyFeedback = "Failed";
+              });
+          },
+          triggerShake() {
+            this.shakeError = true;
+            setTimeout(() => {
+              this.shakeError = false;
+            }, 500);
+          },
+          humanizeError(errString) {
+            switch(errString) {
+              case "email_already_registered":
+                return "This email address is already registered. Please sign in instead.";
+              case "invalid_email":
+                return "The email format is invalid.";
+              case "password_too_weak":
+                return "The password is too weak. Please choose a stronger one.";
+              default:
+                return errString;
+            }
+          }
+        }
+      }).mount("#signup-app");
+    </script>
+  </body>
+</html>

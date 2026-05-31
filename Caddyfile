@@ -1,0 +1,6 @@
+{
+	# Disable automatic HTTPS for all sites — MangoPanel dev uses .localhost
+	# domains which can't get ACME certificates. Production deployments should
+	# remove this and let Caddy manage TLS automatically.
+	auto_https disable_redirects
+}

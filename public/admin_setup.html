@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MangoPanel Admin Setup</title>
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <div id="admin-setup-app" class="status-shell" v-cloak>
+      <header class="status-header">
+        <div>
+          <a href="/" class="back-link">MangoPanel</a>
+          <h1>First Admin Setup</h1>
+          <p>Create the initial super admin. This setup can only run while no admin exists.</p>
+        </div>
+      </header>
+
+      <main>
+        <section class="panel auth-panel" v-if="bootstrap.admin_setup_required && !result">
+          <h2>Create Super Admin</h2>
+          <div class="form-grid">
+            <label>Full name <input v-model="form.full_name" autocomplete="name"></label>
+            <label>Email <input v-model="form.email" autocomplete="email"></label>
+            <label>Password <input v-model="form.password" type="password" autocomplete="new-password"></label>
+            <button class="primary-button" @click="setup">Create Admin</button>
+          </div>
+          <p v-if="message" class="message">{{ message }}</p>
+        </section>
+
+        <section class="panel" v-else-if="result">
+          <h2>Admin Created</h2>
+          <p>Add this TOTP secret to your authenticator app before signing in.</p>
+          <div class="secret-box">
+            <span>TOTP secret</span>
+            <strong>{{ result.totp_secret }}</strong>
+          </div>
+          <a class="ghost-button" href="/admin">Go to admin login</a>
+        </section>
+
+        <section class="panel" v-else>
+          <h2>Admin Already Configured</h2>
+          <p class="muted">First-admin setup is locked because an admin account already exists.</p>
+          <a class="ghost-button" href="/admin">Go to admin login</a>
+        </section>
+      </main>
+    </div>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/admin_setup.js"></script>
+  </body>
+</html>
