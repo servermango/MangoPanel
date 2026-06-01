@@ -200,7 +200,9 @@ const app = createApp({
       message: "",
       notifications: [],
       notificationsOpen: false,
+      sessionExpired: false,
       loadingServices: false,
+      serviceStatusMap: {},
       availableServices: [
         { id: "web", name: "Web Server (OpenLiteSpeed)", icon: "website", description: "Serves PHP and static files." },
         { id: "db", name: "Database Server (MariaDB)", icon: "databases", description: "MySQL/MariaDB relational database." },
@@ -249,6 +251,7 @@ const app = createApp({
       analytics: {
         domain: "",
         website_id: null,
+        analytics_enabled: true,
         filter: "top-countries",
         filters: [
           { key: "top-countries", label: "Top list" },
@@ -268,6 +271,7 @@ const app = createApp({
         top_bandwidth: [],
       },
       activity: [],
+      phpInfo: { website: {}, runtime: {}, directives: {}, extensions: [], opcache: {} },
       selectedWebsiteId: "",
       siteSwitcherOpen: false,
       siteSearchQuery: "",
@@ -301,7 +305,7 @@ const app = createApp({
       },
       siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false },
       mailboxes: [],
-      newMailbox: { email: "", quota_mb: 1024 },
+      mailboxWizard: { isOpen: false, step: 1, isCreating: false, createdMailbox: null, email: "", quota_mb: 1024, password: "", confirm_password: "" },
       cronJobs: [],
       newCronJob: { schedule: "*/15 * * * *", command: "" },
       backups: [],
@@ -312,7 +316,7 @@ const app = createApp({
       selectedDomainId: "",
       newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300 },
       // Cache Manager
-      cacheStatus: { object_cache: "inactive", opcode_cache: "active", last_purged: null },
+      cacheStatus: { object_cache: "inactive", opcode_cache: "active", last_purged: null, opcode_cache_backend: "opcache", object_cache_backend: "redis" },
       cachePurging: false,
       // IP Manager
       ipRules: [],
@@ -583,6 +587,9 @@ const app = createApp({
   },
   methods: {
     notify(text, type = "success") {
+      if (type === "error" && String(text || "") === "invalid_access_token") {
+        return;
+      }
       const id = Date.now() + Math.random();
       const n = { id, text, type, read: false, time: new Date().toLocaleTimeString(), toastVisible: true };
       this.notifications.unshift(n);
@@ -625,6 +632,38 @@ const app = createApp({
       this.notificationsOpen = !this.notificationsOpen;
       if (this.notificationsOpen) this.markAllNotificationsRead();
     },
+    clearSessionState() {
+      localStorage.removeItem("mp_client_token");
+      const host = window.location.hostname;
+      const cookieNames = ["mp_client_token", "jwt"];
+      cookieNames.forEach(name => {
+        document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+        document.cookie = `${name}=; path=/; domain=.localhost; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+        document.cookie = `${name}=; path=/; domain=${host}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+        if (host.includes('.')) {
+          const parts = host.split('.');
+          for (let i = 0; i < parts.length - 1; i++) {
+            const domain = '.' + parts.slice(i).join('.');
+            document.cookie = `${name}=; path=/; domain=${domain}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+          }
+        }
+      });
+      this.token = "";
+      this.challengeToken = "";
+      this.userMenuOpen = false;
+      this.notificationsOpen = false;
+      this.siteSwitcherOpen = false;
+      this.sessionExpired = true;
+    },
+    handleSessionExpired() {
+      if (this.sessionExpired) {
+        this.clearSessionState();
+        window.location.href = "/login";
+        return;
+      }
+      this.clearSessionState();
+      window.location.href = "/login";
+    },
     async restartService(serviceId) {
       if (!confirm(`Are you sure you want to restart this service? It will cause brief downtime.`)) return;
       this.loadingServices = true;
@@ -643,6 +682,24 @@ const app = createApp({
       } finally {
         this.loadingServices = false;
       }
+    },
+    serviceStatusFor(serviceId) {
+      return this.serviceStatusMap[serviceId] || { service: serviceId, status: "unknown", health: "unknown", running: false, supported: true };
+    },
+    serviceStatusClass(serviceId) {
+      const service = this.serviceStatusFor(serviceId);
+      if (service.status === "running" || service.health === "healthy") return "ok";
+      if (service.status === "missing" || service.status === "exited") return "danger";
+      if (service.status === "simulated" || service.status === "unknown" || service.status === "docker_unavailable") return "warn";
+      return "neutral";
+    },
+    serviceStatusLabel(serviceId) {
+      const service = this.serviceStatusFor(serviceId);
+      if (service.status === "running" && service.health === "healthy") return "running";
+      if (service.status === "running") return "running";
+      if (service.status === "missing") return "missing";
+      if (service.status === "docker_unavailable") return "unavailable";
+      return service.status || "unknown";
     },
     async rebootStack() {
       if (!confirm("WARNING: This will forcefully restart ALL services and abruptly kill all running processes. Your websites will be completely offline for 10-30 seconds. Are you absolutely sure?")) return;
@@ -670,7 +727,13 @@ const app = createApp({
       const body = options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body;
       const response = await fetch(path, { ...options, body, headers });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Request failed");
+      if (!response.ok) {
+        const error = payload.error || "Request failed";
+        if (error === "invalid_access_token") {
+          this.handleSessionExpired();
+        }
+        throw new Error(error);
+      }
       return payload;
     },
     async startLogin() {
@@ -692,6 +755,7 @@ const app = createApp({
           method: "POST",
           body: JSON.stringify({ challenge_token: this.challengeToken, code: this.login.code }),
         });
+        this.sessionExpired = false;
         this.token = payload.access_token;
         localStorage.setItem("mp_client_token", this.token);
         this.challengeToken = "";
@@ -706,11 +770,18 @@ const app = createApp({
         this.home = await this.api("/api/client/home");
         this.websites = (await this.api("/api/client/websites")).websites;
         this.domains = (await this.api("/api/client/domains")).domains;
+        this.cacheStatus = { ...this.cacheStatus, ...((await this.api("/api/client/cache/status")).cache_status || {}) };
         await this.loadDatabases();
         await this.loadResourceUsage();
         await this.loadAnalytics();
         this.activity = (await this.api("/api/client/activity")).activity;
         await this.loadSyncJobs();
+        if (this.activePage === "php-info") {
+          await this.loadPhpInfo();
+        }
+        if (this.activePage === "disk-usage") {
+          await this.loadDiskUsage();
+        }
         this.mailboxes = (await this.api("/api/client/mailboxes")).mailboxes || [];
         this.cronJobs = (await this.api("/api/client/cron-jobs")).cron_jobs || [];
         this.backups = (await this.api("/api/client/backups")).backups || [];
@@ -724,6 +795,9 @@ const app = createApp({
         this.hotlink = { ...this.hotlink, ...(hotlinkPayload.hotlink || {}) };
         this.has2FA = this.home.has_2fa || false;
         await this.loadInstallerScripts();
+        if (this.activePage === "services") {
+          await this.loadServicesStatus();
+        }
         if (this.selectedWebsiteId && !this.websites.some((site) => String(site.id) === String(this.selectedWebsiteId))) {
           this.selectedWebsiteId = "";
         }
@@ -752,6 +826,18 @@ const app = createApp({
       if (!this.token) return;
       try {
         this.syncJobs = (await this.api("/api/client/sync-jobs")).jobs || [];
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async loadServicesStatus() {
+      try {
+        const payload = await this.api("/api/client/services/status");
+        const services = payload.services || [];
+        this.serviceStatusMap = services.reduce((acc, service) => {
+          acc[service.service] = service;
+          return acc;
+        }, {});
       } catch (error) {
         this.notify(error.message, "error");
       }
@@ -855,6 +941,15 @@ const app = createApp({
         this.notify(error.message, "error");
       }
     },
+    async loadPhpInfo() {
+      if (!this.token) return;
+      try {
+        const siteId = this.selectedWebsite?.id || "";
+        this.phpInfo = await this.api(`/api/client/php-info?website_id=${encodeURIComponent(siteId)}`);
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
     async changeResourceRange(range) {
       this.resourceRange = range;
       await this.loadResourceUsage();
@@ -866,6 +961,39 @@ const app = createApp({
         this.analytics = await this.api(`/api/client/analytics?website_id=${encodeURIComponent(siteId)}&filter=${encodeURIComponent(this.analytics.filter)}`);
       } catch (error) {
         this.notify(error.message, "error");
+      }
+    },
+    async toggleAnalyticsTracking(site) {
+      if (!site) return;
+      site.savingAnalytics = true;
+      const nextValue = Number(site.analytics_enabled) ? 0 : 1;
+      const previousValue = Number(site.analytics_enabled) ? 1 : 0;
+      site.analytics_enabled = nextValue;
+      if (this.selectedWebsite && String(this.selectedWebsite.id) === String(site.id)) {
+        this.analytics.analytics_enabled = !!nextValue;
+      }
+      try {
+        const payload = await this.api(`/api/client/websites/${site.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ analytics_enabled: nextValue }),
+        });
+        const idx = this.websites.findIndex((item) => String(item.id) === String(site.id));
+        if (idx !== -1) {
+          this.websites[idx] = { ...this.websites[idx], ...payload.website };
+        }
+        this.analytics.analytics_enabled = !!payload.website.analytics_enabled;
+        if (this.activePage === "analytics") {
+          await this.loadAnalytics();
+        }
+        this.notify(`Analytics tracking ${payload.website.analytics_enabled ? "enabled" : "paused"} for ${site.domain}`, "success");
+      } catch (error) {
+        site.analytics_enabled = previousValue;
+        if (this.selectedWebsite && String(this.selectedWebsite.id) === String(site.id)) {
+          this.analytics.analytics_enabled = !!previousValue;
+        }
+        this.notify(error.message, "error");
+      } finally {
+        site.savingAnalytics = false;
       }
     },
     async changeAnalyticsFilter(filter) {
@@ -904,7 +1032,7 @@ const app = createApp({
       try {
         const payload = await this.api(`/api/client/dns-records/${record.id}`, { method: "DELETE" });
         this.dnsRecords = payload.dns_records || this.dnsRecords.filter((r) => r.id !== record.id);
-        this.notify(`DNS record removed from simulated zone (job #${payload.job_id})`, "success");
+        this.notify(`DNS record removed from development zone (job #${payload.job_id})`, "success");
       } catch (error) {
         this.notify(error.message, "error");
       }
@@ -937,7 +1065,37 @@ const app = createApp({
           method: "POST",
           body: JSON.stringify(websiteId ? { website_id: websiteId } : {}),
         });
-        this.notify(`Cache purge synced in development mode (job #${payload.job_id})`, "success");
+        this.notify(`Cache purge queued (job #${payload.job_id})`, "success");
+        this.cacheStatus = { ...this.cacheStatus, last_purged: new Date().toLocaleString() };
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.cachePurging = false;
+      }
+    },
+    async resetOpcodeCache(websiteId) {
+      this.cachePurging = true;
+      try {
+        const payload = await this.api("/api/client/cache/opcache/reset", {
+          method: "POST",
+          body: JSON.stringify(websiteId ? { website_id: websiteId } : {}),
+        });
+        this.notify(`OPcache reset queued (job #${payload.job_id})`, "success");
+        this.cacheStatus = { ...this.cacheStatus, last_purged: new Date().toLocaleString() };
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.cachePurging = false;
+      }
+    },
+    async flushObjectCache(websiteId) {
+      this.cachePurging = true;
+      try {
+        const payload = await this.api("/api/client/cache/object-cache/flush", {
+          method: "POST",
+          body: JSON.stringify(websiteId ? { website_id: websiteId } : {}),
+        });
+        this.notify(`Object cache flush queued (job #${payload.job_id})`, "success");
         this.cacheStatus = { ...this.cacheStatus, last_purged: new Date().toLocaleString() };
       } catch (error) {
         this.notify(error.message, "error");
@@ -1848,6 +2006,32 @@ const app = createApp({
     async createBackupNow() {
       await this.createBackup();
     },
+    async downloadBackup(backupId) {
+      try {
+        const response = await fetch(`/api/client/backups/${backupId}/download`, {
+          headers: {
+            Accept: "application/gzip",
+            ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+          },
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || "download_failed");
+        }
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `backup-${backupId}.tar.gz`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        this.notify("Backup download started.", "success");
+      } catch (err) {
+        this.notify(err.message, "error");
+      }
+    },
     async restoreBackup(backupId) {
       if (!confirm("Are you sure you want to restore this backup? This will overwrite your current files and databases.")) return;
       try {
@@ -1859,17 +2043,71 @@ const app = createApp({
       }
     },
     // Mailbox methods
+    openMailboxWizard() {
+      this.mailboxWizard = { isOpen: true, step: 1, isCreating: false, createdMailbox: null, email: "", quota_mb: 1024, password: "", confirm_password: "" };
+    },
+    closeMailboxWizard() {
+      if (this.mailboxWizard.isCreating) return;
+      this.mailboxWizard.isOpen = false;
+    },
+    prevMailboxWizardStep() {
+      if (this.mailboxWizard.step > 1 && !this.mailboxWizard.isCreating) {
+        this.mailboxWizard.step -= 1;
+      }
+    },
+    nextMailboxWizardStep() {
+      if (this.mailboxWizard.isCreating) return;
+      if (this.mailboxWizard.step === 1) {
+        if (!this.mailboxWizard.email || !this.mailboxWizard.quota_mb) return;
+        this.mailboxWizard.step = 2;
+        return;
+      }
+      if (this.mailboxWizard.step === 2) {
+        if (!this.mailboxWizard.password || this.mailboxWizard.password.length < 10) return;
+        if (this.mailboxWizard.password !== this.mailboxWizard.confirm_password) return;
+        this.mailboxWizard.step = 3;
+      }
+    },
     async createMailbox() {
-      if (!this.newMailbox.email) return;
+      if (this.mailboxWizard.isCreating) return;
+      if (!this.mailboxWizard.email || !this.mailboxWizard.password) return;
       try {
-        await this.api("/api/client/mailboxes", {
+        this.mailboxWizard.isCreating = true;
+        const payload = {
+          email: this.mailboxWizard.email,
+          quota_mb: this.mailboxWizard.quota_mb,
+          password: this.mailboxWizard.password,
+          confirm_password: this.mailboxWizard.confirm_password,
+        };
+        const response = await this.api("/api/client/mailboxes", {
           method: "POST",
-          body: JSON.stringify(this.newMailbox),
+          body: JSON.stringify(payload),
         });
-        this.notify(`Mailbox ${this.newMailbox.email} created`, "success");
-        this.newMailbox = { email: "", quota_mb: 1024 };
+        this.notify(`Mailbox ${this.mailboxWizard.email} created`, "success");
+        this.mailboxWizard.isCreating = false;
+        this.mailboxWizard.createdMailbox = { id: response.mailbox_id, email: this.mailboxWizard.email };
+        this.mailboxWizard.step = 4;
+        this.mailboxWizard.password = "";
+        this.mailboxWizard.confirm_password = "";
         this.mailboxes = (await this.api("/api/client/mailboxes")).mailboxes || [];
+        await this.loadSyncJobs();
       } catch (error) {
+        this.mailboxWizard.isCreating = false;
+        this.notify(error.message, "error");
+      }
+    },
+    async launchMailboxWebmail(mailbox) {
+      const preview = window.open("about:blank", "_blank", "noopener,noreferrer");
+      try {
+        const payload = await this.api(`/api/client/mailboxes/${mailbox.id}/webmail/launch`);
+        if (preview) {
+          preview.opener = null;
+          preview.location = payload.launch_url;
+        } else {
+          window.open(payload.launch_url, "_blank", "noopener,noreferrer");
+        }
+      } catch (error) {
+        if (preview) preview.close();
         this.notify(error.message, "error");
       }
     },
@@ -1914,11 +2152,11 @@ const app = createApp({
     async toggleCronStatus(job) {
       const newStatus = job.status === "disabled" ? "enabled" : "disabled";
       try {
-        const payload = await this.api(`/api/client/cron-jobs/${job.id}`, {
+        await this.api(`/api/client/cron-jobs/${job.id}`, {
           method: "PATCH",
           body: JSON.stringify({ status: newStatus }),
         });
-        Object.assign(job, payload.cron_job);
+        this.cronJobs = (await this.api("/api/client/cron-jobs")).cron_jobs || [];
         this.notify(`Cron job ${newStatus}`, "success");
       } catch (error) {
         this.notify(error.message, "error");
@@ -1959,6 +2197,16 @@ const app = createApp({
         this.notify(error.message, "error");
       }
     },
+    async rollbackGitDeployment(dep) {
+      if (!window.confirm(`Rollback repository ${dep.repository_url} to the previous commit?`)) return;
+      try {
+        await this.api(`/api/client/git-deployments/${dep.id}/rollback`, { method: "POST" });
+        this.gitDeployments = (await this.api("/api/client/git-deployments")).git_deployments || [];
+        this.notify("Git deployment rolled back", "success");
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
     goTo(target) {
       if (this.isFeatureDisabled(target)) {
         this.notify(`${this.featureStatus(target).label}: ${target}`, "error");
@@ -1973,6 +2221,12 @@ const app = createApp({
         if (!this.resourcePoll) this.resourcePoll = window.setInterval(() => this.loadResourceUsage(), 10000);
       } else if (target === "analytics") {
         this.loadAnalytics();
+        if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }
+      } else if (target === "php-info") {
+        this.loadPhpInfo();
+        if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }
+      } else if (target === "disk-usage") {
+        this.loadDiskUsage();
         if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }
       } else if (target === "dns-zone-editor") {
         if (this.domains.length) this.selectedDomainId = this.domains[0].id;
@@ -1993,6 +2247,7 @@ const app = createApp({
       this.siteSwitcherOpen = false;
       this.siteSearchQuery = "";
       if (this.activePage === "analytics") this.loadAnalytics();
+      if (this.activePage === "php-info") this.loadPhpInfo();
     },
     toggleSiteSwitcher() {
       this.siteSwitcherOpen = !this.siteSwitcherOpen;
@@ -2056,23 +2311,7 @@ const app = createApp({
       } catch (err) {
         console.error("API logout failed:", err);
       }
-      localStorage.removeItem("mp_client_token");
-      const host = window.location.hostname;
-      const cookieNames = ["mp_client_token", "jwt"];
-      cookieNames.forEach(name => {
-        document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
-        document.cookie = `${name}=; path=/; domain=.localhost; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
-        document.cookie = `${name}=; path=/; domain=${host}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
-        if (host.includes('.')) {
-          const parts = host.split('.');
-          for (let i = 0; i < parts.length - 1; i++) {
-            const domain = '.' + parts.slice(i).join('.');
-            document.cookie = `${name}=; path=/; domain=${domain}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
-          }
-        }
-      });
-      this.token = "";
-      this.userMenuOpen = false;
+      this.clearSessionState();
       window.location.href = "/login";
     },
     switchTheme(themeName) {
@@ -2129,11 +2368,17 @@ const app = createApp({
       if (newVal === "remote-mysql" && this.remoteMysqlHosts.length === 0) {
         this.loadRemoteMysqlHosts();
       }
+      if (newVal === "services" && Object.keys(this.serviceStatusMap).length === 0) {
+        this.loadServicesStatus();
+      }
       if (newVal === "site-builder" && this.siteBuilderTemplates.length === 0) {
         this.loadSiteBuilderTemplates();
       }
       if (newVal === "disk-usage" && this.diskUsage.length === 0) {
         this.loadDiskUsage();
+      }
+      if (newVal === "php-info") {
+        this.loadPhpInfo();
       }
     }
   }

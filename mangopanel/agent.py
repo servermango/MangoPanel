@@ -1,9 +1,14 @@
 import json
+import calendar
+import re
+import pwd
 import shutil
 import subprocess
 import time
 import tarfile
 import os
+import shlex
+from datetime import datetime, timedelta
 
 def is_within_directory(directory, target):
     abs_directory = os.path.abspath(directory)
@@ -25,7 +30,7 @@ from pathlib import Path
 
 from .config import load_config
 from .db import connect, log_job_event, row_to_dict, rows_to_dicts
-from .stack import STACK_SERVICES, build_account_runtime, ensure_account_layout, render_crontab, stack_summary
+from .stack import STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, stack_summary
 
 
 class AgentError(Exception):
@@ -36,6 +41,321 @@ MANGOPANEL_PLACEHOLDER_PREFIX = "<?php\nheader('Content-Type: text/plain');\nech
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".svg"}
+IMAGE_OPTIMIZE_FORMAT = "WEBP"
+CRON_SPECIAL_SCHEDULES = {
+    "@hourly": "0 * * * *",
+    "@daily": "0 0 * * *",
+    "@midnight": "0 0 * * *",
+    "@weekly": "0 0 * * 0",
+    "@monthly": "0 0 1 * *",
+    "@yearly": "0 0 1 1 *",
+    "@annually": "0 0 1 1 *",
+}
+
+
+def _parse_cron_field(field, minimum, maximum, *, day_of_week=False):
+    text = str(field).strip()
+    if not text:
+        raise AgentError("invalid_cron_schedule")
+    values = set()
+    wildcard = False
+    for chunk in text.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            raise AgentError("invalid_cron_schedule")
+        step = None
+        if "/" in chunk:
+            base, raw_step = chunk.split("/", 1)
+            if not raw_step.isdigit():
+                raise AgentError("invalid_cron_schedule")
+            step = int(raw_step)
+            if step <= 0:
+                raise AgentError("invalid_cron_schedule")
+        else:
+            base = chunk
+        if base == "*":
+            start = minimum
+            end = maximum
+            wildcard = True
+        elif "-" in base:
+            start_text, end_text = base.split("-", 1)
+            if not start_text.isdigit() or not end_text.isdigit():
+                raise AgentError("invalid_cron_schedule")
+            start = int(start_text)
+            end = int(end_text)
+        else:
+            if not base.isdigit():
+                raise AgentError("invalid_cron_schedule")
+            start = end = int(base)
+        if start < minimum or end > maximum or start > end:
+            raise AgentError("invalid_cron_schedule")
+        for value in range(start, end + 1, step or 1):
+            if day_of_week and value == 7:
+                value = 0
+            values.add(value)
+    if day_of_week and 0 in values:
+        values.add(7)
+    return {"values": values, "wildcard": wildcard}
+
+
+def parse_cron_schedule(schedule):
+    text = str(schedule or "").strip()
+    if not text:
+        raise AgentError("invalid_cron_schedule")
+    lower = text.lower()
+    if lower in CRON_SPECIAL_SCHEDULES:
+        text = CRON_SPECIAL_SCHEDULES[lower]
+    elif lower == "@reboot":
+        return {"special": "@reboot", "original": text}
+    parts = text.split()
+    if len(parts) != 5:
+        raise AgentError("invalid_cron_schedule")
+    return {
+        "special": None,
+        "original": text,
+        "minute": _parse_cron_field(parts[0], 0, 59),
+        "hour": _parse_cron_field(parts[1], 0, 23),
+        "dom": _parse_cron_field(parts[2], 1, 31),
+        "month": _parse_cron_field(parts[3], 1, 12),
+        "dow": _parse_cron_field(parts[4], 0, 7, day_of_week=True),
+    }
+
+
+def validate_cron_schedule(schedule):
+    return parse_cron_schedule(schedule)["original"]
+
+
+def cron_matches_schedule(parsed, moment):
+    if parsed.get("special") == "@reboot":
+        return False
+    minute = moment.minute
+    hour = moment.hour
+    dom = moment.day
+    month = moment.month
+    dow = (moment.isoweekday()) % 7
+    if minute not in parsed["minute"]["values"]:
+        return False
+    if hour not in parsed["hour"]["values"]:
+        return False
+    if month not in parsed["month"]["values"]:
+        return False
+    dom_match = dom in parsed["dom"]["values"]
+    dow_match = dow in parsed["dow"]["values"]
+    if parsed["dom"]["wildcard"] or parsed["dow"]["wildcard"]:
+        if not dom_match or not dow_match:
+            return False
+    else:
+        if not (dom_match or dow_match):
+            return False
+    return True
+
+
+def cron_next_run_at(schedule, from_time=None):
+    parsed = parse_cron_schedule(schedule)
+    if parsed.get("special") == "@reboot":
+        return None
+    candidate = (from_time or datetime.utcnow()).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    limit = candidate + timedelta(days=366 * 4)
+    while candidate <= limit:
+        if cron_matches_schedule(parsed, candidate):
+            return candidate.isoformat(timespec="seconds") + "Z"
+        candidate += timedelta(minutes=1)
+    return None
+
+
+def cron_runtime_paths(account):
+    base = Path(account["base_path"]) / ".runtime" / "cron"
+    return {
+        "base": base,
+        "jobs": base / "jobs",
+        "logs": base / "logs",
+        "state": base / "state",
+        "report": base / "report.json",
+    }
+
+
+def cron_container_base_path(account):
+    return str(Path("/home") / account["username"])
+
+
+def cron_container_to_host_path(account, container_path_text):
+    if not container_path_text:
+        return None
+    container_root = cron_container_base_path(account).rstrip("/")
+    text = str(container_path_text)
+    if text.startswith(container_root + "/"):
+        relative = text[len(container_root) + 1 :]
+        return str(Path(account["base_path"]) / relative)
+    if text == container_root:
+        return account["base_path"]
+    return text
+
+
+def cron_runner_paths(account, cron_job):
+    runtime = cron_runtime_paths(account)
+    job_id = int(cron_job["id"])
+    script_path = runtime["jobs"] / f"job-{job_id}.sh"
+    log_path = runtime["logs"] / f"job-{job_id}.log"
+    state_path = runtime["state"] / f"job-{job_id}.state"
+    container_script = container_path(account, str(script_path))
+    return {
+        "script_path": script_path,
+        "runner_command": container_script,
+        "log_path": log_path,
+        "state_path": state_path,
+        "container_base": cron_container_base_path(account),
+    }
+
+
+def read_key_value_file(path):
+    data = {}
+    file_path = Path(path)
+    if not file_path.exists():
+        return data
+    for line in file_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip()] = value.strip()
+    return data
+
+
+def read_cron_runtime_state(account, cron_job):
+    cron_job = dict(cron_job)
+    paths = cron_runner_paths(account, cron_job)
+    state = read_key_value_file(paths["state_path"])
+    log_path = Path(cron_container_to_host_path(account, state.get("log_path")) or paths["log_path"])
+    last_output = ""
+    if log_path.exists() and log_path.is_file():
+        last_output = log_path.read_text(encoding="utf-8", errors="replace")[-4096:]
+    merged = {
+        "runner_path": str(paths["script_path"]),
+        "runner_command": paths["runner_command"],
+        "log_path": str(log_path),
+        "state_path": str(paths["state_path"]),
+        "last_output": last_output,
+    }
+    if state.get("last_run_at"):
+        merged["last_run_at"] = state["last_run_at"]
+    if state.get("finished_at"):
+        merged["finished_at"] = state["finished_at"]
+    if state.get("last_exit_code") is not None and state.get("last_exit_code") != "":
+        try:
+            merged["last_exit_code"] = int(state["last_exit_code"])
+        except ValueError:
+            merged["last_exit_code"] = state["last_exit_code"]
+    return merged
+
+
+def cron_wrapper_script(account, cron_job):
+    paths = cron_runner_paths(account, cron_job)
+    job_id = int(cron_job["id"])
+    account_id = int(account["id"])
+    username = account["username"]
+    base_path = paths["container_base"]
+    command = str(cron_job["command"]).replace("\n", " ").strip()
+    schedule = str(cron_job["schedule"]).replace("\n", " ").strip()
+    return "\n".join(
+        [
+            "#!/bin/sh",
+            "set -u",
+            f"JOB_ID={job_id}",
+            f"ACCOUNT_ID={account_id}",
+            f"USERNAME={shlex.quote(username)}",
+            f"BASE_PATH={shlex.quote(base_path)}",
+            f"CRON_COMMAND={shlex.quote(command)}",
+            f"SCHEDULE={shlex.quote(schedule)}",
+            'CRON_ROOT="$BASE_PATH/.runtime/cron"',
+            'LOG_PATH="$CRON_ROOT/logs/job-$JOB_ID.log"',
+            'STATE_PATH="$CRON_ROOT/state/job-$JOB_ID.state"',
+            'mkdir -p "$CRON_ROOT/logs" "$CRON_ROOT/state"',
+            'cd "$BASE_PATH" || exit 1',
+            'STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
+            ': > "$LOG_PATH"',
+            'if /bin/sh -lc "$CRON_COMMAND" >>"$LOG_PATH" 2>&1; then',
+            "  EXIT_CODE=0",
+            "else",
+            "  EXIT_CODE=$?",
+            "fi",
+            'FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
+            'printf "job_id=%s\\naccount_id=%s\\nusername=%s\\nschedule=%s\\ncommand=%s\\nstarted_at=%s\\nlast_run_at=%s\\nfinished_at=%s\\nlast_exit_code=%s\\nlog_path=%s\\n" "$JOB_ID" "$ACCOUNT_ID" "$USERNAME" "$SCHEDULE" "$CRON_COMMAND" "$STARTED_AT" "$FINISHED_AT" "$FINISHED_AT" "$EXIT_CODE" "$LOG_PATH" > "$STATE_PATH"',
+            'exit "$EXIT_CODE"',
+            "",
+        ]
+    )
+
+
+def write_account_json(account, relative_path, payload):
+    path = Path(account["base_path"]) / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def ensure_cron_runtime_artifacts(account, cron_jobs):
+    runtime = cron_runtime_paths(account)
+    runtime["jobs"].mkdir(parents=True, exist_ok=True)
+    runtime["logs"].mkdir(parents=True, exist_ok=True)
+    runtime["state"].mkdir(parents=True, exist_ok=True)
+    managed_jobs = []
+    for job in cron_jobs:
+        job = dict(job)
+        paths = cron_runner_paths(account, job)
+        script_text = cron_wrapper_script(account, job)
+        paths["script_path"].write_text(script_text, encoding="utf-8")
+        paths["script_path"].chmod(0o755)
+        job.update(
+            {
+                "runner_command": paths["runner_command"],
+                "runner_path": str(paths["script_path"]),
+                "log_path": str(paths["log_path"]),
+                "state_path": str(paths["state_path"]),
+                "next_run_at": None if job["status"] != "enabled" else cron_next_run_at(job["schedule"]),
+            }
+        )
+        state = read_key_value_file(paths["state_path"])
+        if state.get("last_run_at"):
+            job["last_run_at"] = state["last_run_at"]
+        if state.get("last_exit_code") not in (None, ""):
+            try:
+                job["last_exit_code"] = int(state["last_exit_code"])
+            except ValueError:
+                job["last_exit_code"] = state["last_exit_code"]
+        if paths["log_path"].exists():
+            job["last_output"] = paths["log_path"].read_text(encoding="utf-8", errors="replace")[-4096:]
+        managed_jobs.append(job)
+    crontab_path = Path(account["base_path"]) / ".runtime" / "stack" / "cron"
+    crontab_path.parent.mkdir(parents=True, exist_ok=True)
+    crontab_path.write_text(render_crontab(account, managed_jobs), encoding="utf-8")
+    return runtime, managed_jobs, crontab_path
+
+
+def decorate_cron_jobs(account, cron_jobs):
+    return [dict(job, **read_cron_runtime_state(account, job)) for job in cron_jobs]
+
+
+def sql_literal(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def git_runtime_dir(account):
+    return Path(account["base_path"]) / ".runtime" / "git"
+
+
+def git_metadata_path(account, deployment_id):
+    return git_runtime_dir(account) / f"deployment-{deployment_id}.json"
+
+
+def mysql_remote_runtime_dir(account):
+    return Path(account["base_path"]) / ".runtime" / "mysql-remote"
+
+
+def postgres_runtime_dir(account):
+    return Path(account["base_path"]) / ".runtime" / "postgresql"
+
+
+def image_runtime_dir(account):
+    return Path(account["base_path"]) / ".runtime" / "images"
 
 
 class Agent:
@@ -159,6 +479,8 @@ class Agent:
             if not mailbox:
                 raise AgentError("mailbox_not_found")
             return self.provision_hosting_account(conn, mailbox["account_id"])
+        if job_type == "sync_mailboxes":
+            return self.sync_mailboxes(conn, job["target_id"])
         if job_type == "manual_backup":
             return self.manual_backup(conn, job["target_id"])
         if job_type == "restore_backup":
@@ -175,6 +497,8 @@ class Agent:
             return self.sync_redirects(conn, job["target_id"])
         if job_type == "sync_website_modsec":
             return self.sync_website_modsec(conn, job["target_id"])
+        if job_type == "sync_website_analytics":
+            return self.sync_website_analytics(conn, job["target_id"])
         if job_type == "sync_ftp_accounts":
             return self.sync_ftp_accounts(conn, job["target_id"])
         if job_type == "sync_remote_mysql":
@@ -199,6 +523,10 @@ class Agent:
             return self.update_website_php(conn, job["target_id"])
         if job_type == "purge_cache":
             return self.purge_cache(conn, job)
+        if job_type == "reset_opcache":
+            return self.reset_opcache(conn, job)
+        if job_type == "flush_object_cache":
+            return self.flush_object_cache(conn, job)
         if job_type == "create_cron_job":
             cron = conn.execute("SELECT * FROM cron_jobs WHERE id = ?", (job["target_id"],)).fetchone()
             if not cron:
@@ -208,10 +536,12 @@ class Agent:
             deployment = conn.execute("SELECT * FROM git_deployments WHERE id = ?", (job["target_id"],)).fetchone()
             if not deployment:
                 raise AgentError("git_deployment_not_found")
-            Path(deployment["deploy_path"]).mkdir(parents=True, exist_ok=True)
-            marker = Path(deployment["deploy_path"]) / ".mangopanel-git-deploy"
-            marker.write_text("repository={}\nbranch={}\n".format(deployment["repository_url"], deployment["branch"]), encoding="utf-8")
-            return {"deployment_id": deployment["id"], "marker": str(marker)}
+            return self.deploy_git_repository(conn, deployment["id"])
+        if job_type == "git_rollback":
+            deployment = conn.execute("SELECT * FROM git_deployments WHERE id = ?", (job["target_id"],)).fetchone()
+            if not deployment:
+                raise AgentError("git_deployment_not_found")
+            return self.rollback_git_repository(conn, deployment["id"])
         if job_type == "install_wordpress":
             return self.install_wordpress(conn, job)
         if job_type == "install_script":
@@ -264,12 +594,231 @@ class Agent:
             return json.loads(payload) if payload else {}
         return payload
 
+    def account_identity(self, account):
+        uid = getattr(os, "getuid", lambda: None)()
+        gid = getattr(os, "getgid", lambda: None)()
+        try:
+            entry = pwd.getpwnam(account["username"])
+            uid = entry.pw_uid
+            gid = entry.pw_gid
+        except Exception:
+            pass
+        return uid, gid
+
     def account_simulated_dir(self, account, *parts):
         path = Path(account["base_path"]) / ".runtime" / "simulated"
         for part in parts:
             path = path / str(part)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def account_runtime_dir(self, account, *parts):
+        path = Path(account["base_path"]) / ".runtime"
+        for part in parts:
+            path = path / str(part)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def cache_report_path(self, account):
+        return self.account_runtime_dir(account, "cache", "last_action.json")
+
+    def php_binary_for_version(self, version):
+        raw = str(version or "8.3").strip().replace(".", "")
+        if raw not in {"82", "83", "84"}:
+            raw = "83"
+        return f"/usr/local/lsws/lsphp{raw}/bin/lsphp"
+
+    def cache_scope_websites(self, conn, account, payload):
+        website_id = payload.get("website_id")
+        if website_id:
+            website = conn.execute(
+                "SELECT * FROM websites WHERE id = ? AND account_id = ?",
+                (website_id, account["id"]),
+            ).fetchone()
+            if not website:
+                raise AgentError("website_not_found")
+            return [website]
+        return conn.execute(
+            "SELECT * FROM websites WHERE account_id = ? ORDER BY id",
+            (account["id"],),
+        ).fetchall()
+
+    def write_cache_action_report(self, account, action, payload, websites, purged_paths):
+        report = {
+            "account_id": account["id"],
+            "action": action,
+            "scope": payload.get("scope", "all"),
+            "website_id": payload.get("website_id"),
+            "mode": self.config.agent_mode,
+            "website_count": len(websites),
+            "purged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "purged_paths": purged_paths,
+        }
+        report_path = self.cache_report_path(account)
+        report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        return str(report_path)
+
+    def clear_cache_directories(self, base_path, websites):
+        purged_paths = []
+        account_cache_dirs = [
+            base_path / ".runtime" / "cache",
+            base_path / ".runtime" / "cachedata",
+        ]
+        for cache_dir in account_cache_dirs:
+            removed = self.clear_directory_contents(cache_dir)
+            if removed:
+                purged_paths.extend(removed)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+
+        for website in websites:
+            root = Path(website["document_root"]).resolve()
+            website_cache_dirs = [
+                root / "cache",
+                root / ".cache",
+                root / "tmp" / "cache",
+                root / "wp-content" / "cache",
+                root / "storage" / "framework" / "cache",
+            ]
+            for cache_dir in website_cache_dirs:
+                try:
+                    cache_dir.relative_to(base_path)
+                except ValueError:
+                    continue
+                purged_paths.extend(self.clear_directory_contents(cache_dir))
+        return purged_paths
+
+    def reset_opcache_backend(self, account, websites):
+        commands = []
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker")
+            if docker:
+                for website in websites:
+                    php_bin = self.php_binary_for_version(website.get("php_version"))
+                    script = f"{php_bin} -d opcache.enable_cli=1 -r 'function_exists(\"opcache_reset\") ? opcache_reset() : false;'"
+                    subprocess.run(
+                        [docker, "exec", f"mp-{account['username']}-web", "sh", "-lc", script],
+                        check=False,
+                    )
+                    commands.append({"php_binary": php_bin, "website_id": website["id"]})
+        return commands
+
+    def flush_object_cache_backend(self, account):
+        result = {"backend": "redis", "flushed": True, "mode": "filesystem"}
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker")
+            if docker:
+                exec_result = subprocess.run(
+                    [docker, "exec", f"mp-{account['username']}-redis", "redis-cli", "FLUSHDB"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                result["mode"] = "redis"
+                result["flushed"] = exec_result.returncode == 0
+                if exec_result.returncode != 0:
+                    raise AgentError(exec_result.stderr.strip() or exec_result.stdout.strip() or "redis_flush_failed")
+        return result
+
+    def account_relative_path(self, account, raw_path, require_subpath=False):
+        base_path = Path(account["base_path"]).resolve()
+        text = str(raw_path or "").strip()
+        if not text:
+            raise AgentError("path_required")
+        candidate = (base_path / text.lstrip("/")).resolve()
+        try:
+            rel = candidate.relative_to(base_path)
+        except ValueError as exc:
+            raise AgentError("invalid_account_path") from exc
+        relative = "" if str(rel) == "." else rel.as_posix()
+        if require_subpath and not relative:
+            raise AgentError("invalid_account_path")
+        return candidate, relative
+
+    def replace_managed_block(self, content, begin_marker, end_marker, block):
+        pattern = re.compile(r"{}.*?{}\n?".format(re.escape(begin_marker), re.escape(end_marker)), re.S)
+        if block:
+            if pattern.search(content):
+                updated = pattern.sub(block, content)
+            else:
+                stripped = content.rstrip()
+                updated = block if not stripped else stripped + "\n\n" + block
+            return updated.rstrip() + "\n"
+        updated = pattern.sub("", content)
+        stripped = updated.rstrip()
+        return (stripped + "\n") if stripped else ""
+
+    def is_preserved_config_file(self, path):
+        name = path.name.lower()
+        if name in {".htaccess", ".htpasswd", ".user.ini", ".env"}:
+            return True
+        if name in {"wp-config.php", "configuration.php", "config.php", "settings.php"}:
+            return True
+        if "config" in name or "configuration" in name or "settings" in name:
+            return True
+        if name.endswith(".ini") or name.endswith(".conf"):
+            return True
+        return False
+
+    def apply_account_metadata(self, path, account, preserve_permissions=False):
+        uid, gid = self.account_identity(account)
+        try:
+            if uid is not None and gid is not None and hasattr(os, "chown"):
+                os.chown(path, uid, gid)
+        except PermissionError as exc:
+            raise AgentError("ownership_fix_failed") from exc
+        except OSError as exc:
+            raise AgentError("ownership_fix_failed") from exc
+
+        if not preserve_permissions:
+            mode = 0o755 if Path(path).is_dir() else 0o644
+            try:
+                os.chmod(path, mode)
+            except OSError as exc:
+                raise AgentError("ownership_fix_failed") from exc
+
+    def clear_directory_contents(self, directory):
+        directory = Path(directory)
+        if not directory.exists() or not directory.is_dir():
+            return []
+        removed = []
+        for item in directory.iterdir():
+            try:
+                if item.is_symlink() or item.is_file():
+                    item.unlink()
+                    removed.append(str(item))
+                elif item.is_dir():
+                    shutil.rmtree(item)
+                    removed.append(str(item))
+            except FileNotFoundError:
+                continue
+        return removed
+
+    def htpasswd_hash(self, password):
+        try:
+            import crypt
+            method = getattr(crypt, "METHOD_SHA512", None)
+            salt = crypt.mksalt(method) if method is not None else crypt.mksalt()
+            hashed = crypt.crypt(password, salt)
+            if hashed and not hashed.startswith("*"):
+                return hashed
+        except Exception:
+            pass
+        openssl = shutil.which("openssl")
+        if openssl:
+            result = subprocess.run(
+                [openssl, "passwd", "-apr1", password],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            hashed = result.stdout.strip()
+            if result.returncode == 0 and hashed:
+                return hashed
+        raise AgentError("password_hashing_unavailable")
+
+    def hotlink_pattern(self, domain):
+        escaped = re.escape(domain)
+        return r"^https?://(?:[^/]+\.)?{}(?:/|$)".format(escaped)
 
     def write_simulated_json(self, account, name, payload):
         path = self.account_simulated_dir(account, name)
@@ -281,6 +830,36 @@ class Agent:
         if not website:
             raise AgentError("website_not_found")
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (website["account_id"],)).fetchone()
+        cert_dir = Path(account["base_path"]) / "ssl" / website["domain"]
+        cert_dir.mkdir(parents=True, exist_ok=True)
+        cert_path = cert_dir / "issued.crt"
+        key_path = cert_dir / "issued.key"
+        openssl = shutil.which("openssl")
+        if openssl:
+            subprocess.run(
+                [
+                    openssl,
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-keyout",
+                    str(key_path),
+                    "-out",
+                    str(cert_path),
+                    "-days",
+                    "90",
+                    "-subj",
+                    f"/CN={website['domain']}",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        else:
+            cert_path.write_text("-----BEGIN CERTIFICATE-----\ndev\n-----END CERTIFICATE-----\n", encoding="utf-8")
+            key_path.write_text("-----BEGIN PRIVATE KEY-----\ndev\n-----END PRIVATE KEY-----\n", encoding="utf-8")
         conn.execute("UPDATE websites SET ssl_status = 'local-dev' WHERE id = ?", (website_id,))
         conn.execute(
             """
@@ -289,12 +868,12 @@ class Agent:
             """,
             (account["id"], website_id, website["domain"], "local-dev"),
         )
-        artifact = self.write_simulated_json(
+        artifact = write_account_json(
             account,
-            "ssl/{}.json".format(website["domain"]),
-            {"mode": "simulate", "domain": website["domain"], "status": "local-dev", "website_id": website_id},
+            Path(".runtime") / "ssl" / f"{website['domain']}-issued.json",
+            {"mode": "native", "domain": website["domain"], "status": "local-dev", "website_id": website_id, "cert_path": str(cert_path), "key_path": str(key_path)},
         )
-        return {"mode": "simulate", "ssl_status": "local-dev", "website_id": website_id, "artifact_path": artifact}
+        return {"mode": "native", "ssl_status": "local-dev", "website_id": website_id, "artifact_path": artifact, "cert_path": str(cert_path), "key_path": str(key_path)}
 
     def sync_dns_record(self, conn, record_id):
         record = conn.execute("SELECT * FROM dns_records WHERE id = ?", (record_id,)).fetchone()
@@ -313,22 +892,58 @@ class Agent:
         zone_lines = [
             "$ORIGIN {}.".format(domain["name"]),
             "$TTL 300",
-            "; MangoPanel simulated DNS zone",
+            "; MangoPanel managed DNS zone",
         ]
         for item in records:
             priority = "{} ".format(item["priority"]) if item["priority"] is not None else ""
             zone_lines.append("{} {} IN {} {}{}".format(item["name"], item["ttl"], item["type"], priority, item["value"]))
-        artifact = self.account_simulated_dir(account, "dns", "{}.zone".format(domain["name"]))
+        artifact = Path(account["base_path"]) / ".runtime" / "dns" / "zones" / "{}.zone".format(domain["name"])
+        artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text("\n".join(zone_lines) + "\n", encoding="utf-8")
-        return {"mode": "simulate", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "artifact_path": str(artifact)}
+        report = write_account_json(
+            account,
+            Path(".runtime") / "dns" / f"{domain['name']}.json",
+            {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "zone_path": str(artifact)},
+        )
+        return {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "artifact_path": report, "zone_path": str(artifact)}
 
     def sync_remote_mysql(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
+        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
         hosts = rows_to_dicts(conn.execute("SELECT id, host_ip, created_at FROM remote_mysql_hosts WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
-        artifact = self.write_simulated_json(account, "remote-mysql.json", {"mode": "simulate", "hosts": hosts})
-        return {"mode": "simulate", "synced": True, "account_id": account_id, "hosts_count": len(hosts), "artifact_path": artifact}
+        sql = []
+        sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(runtime['db_user'])}@'%' IDENTIFIED BY {sql_literal(runtime['db_password'])};")
+        sql.append(f"GRANT ALL PRIVILEGES ON `{runtime['db_name']}`.* TO {sql_literal(runtime['db_user'])}@'%';")
+        for host in hosts:
+            sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(runtime['db_user'])}@{sql_literal(host['host_ip'])} IDENTIFIED BY {sql_literal(runtime['db_password'])};")
+            sql.append(f"GRANT ALL PRIVILEGES ON `{runtime['db_name']}`.* TO {sql_literal(runtime['db_user'])}@{sql_literal(host['host_ip'])};")
+        sql.append("FLUSH PRIVILEGES;")
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker")
+            if docker:
+                subprocess.run(
+                    [
+                        docker,
+                        "exec",
+                        f"mp-{account['username']}-db",
+                        "mariadb",
+                        "-uroot",
+                        f"-p{runtime['db_root_password']}",
+                        "-e",
+                        "\n".join(sql),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+        artifact = write_account_json(
+            account,
+            Path(".runtime") / "mysql-remote" / "report.json",
+            {"mode": "native", "hosts": hosts, "sql": sql},
+        )
+        return {"mode": "native", "synced": True, "account_id": account_id, "hosts_count": len(hosts), "artifact_path": artifact}
 
     def sync_hotlink_protection(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -337,14 +952,57 @@ class Agent:
         settings = conn.execute("SELECT * FROM hotlink_settings WHERE account_id = ?", (account_id,)).fetchone()
         enabled = bool(settings["enabled"]) if settings else False
         allowed = [line.strip() for line in (settings["allowed_domains"] if settings else "").splitlines() if line.strip()]
-        lines = [
-            "# MangoPanel simulated hotlink protection",
-            "enabled={}".format(str(enabled).lower()),
-            "allowed_domains={}".format(",".join(allowed)),
+        websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
+        if not websites:
+            return {"synced": True, "account_id": account_id, "enabled": enabled, "artifact_path": str(Path(account["base_path"]) / ".htaccess"), "artifacts": []}
+
+        managed_domains = {website["domain"] for website in websites}
+        managed_domains.update(allowed)
+        managed_domains = sorted(domain for domain in managed_domains if domain)
+
+        block_lines = [
+            "# BEGIN MangoPanel Hotlink",
+            "RewriteEngine On",
+            "RewriteCond %{REQUEST_FILENAME} -s [OR]",
+            "RewriteCond %{REQUEST_FILENAME} -d",
+            "RewriteRule ^ - [L]",
         ]
-        artifact = self.account_simulated_dir(account, "hotlink.conf")
-        artifact.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return {"mode": "simulate", "synced": True, "account_id": account_id, "enabled": enabled, "artifact_path": str(artifact)}
+        if enabled:
+            block_lines.append(r"RewriteCond %{REQUEST_URI} \.(?:jpe?g|png|gif|webp|avif|svg|bmp|ico)$ [NC]")
+            if managed_domains:
+                block_lines.append(r"RewriteCond %{HTTP_REFERER} !^$ [NC]")
+                for domain in managed_domains:
+                    block_lines.append(f"RewriteCond %{{HTTP_REFERER}} !{self.hotlink_pattern(domain)}")
+                block_lines.append("RewriteRule ^ - [F,L]")
+            else:
+                block_lines.append(r"RewriteCond %{HTTP_REFERER} !^$ [NC]")
+                block_lines.append("RewriteRule ^ - [F,L]")
+        block_lines.append("# END MangoPanel Hotlink")
+        block_text = "\n".join(block_lines) + "\n"
+
+        artifact_paths = []
+        for website in websites:
+            root = Path(website["document_root"])
+            root.mkdir(parents=True, exist_ok=True)
+            htaccess = root / ".htaccess"
+            current = htaccess.read_text(encoding="utf-8") if htaccess.exists() else ""
+            updated = self.replace_managed_block(current, "# BEGIN MangoPanel Hotlink", "# END MangoPanel Hotlink", block_text if enabled else "")
+            if updated:
+                htaccess.write_text(updated, encoding="utf-8")
+                htaccess.chmod(0o644)
+                artifact_paths.append(str(htaccess))
+            elif htaccess.exists():
+                htaccess.unlink()
+                artifact_paths.append(str(htaccess))
+
+        artifact_path = artifact_paths[0] if artifact_paths else str(Path(account["base_path"]) / ".htaccess")
+        return {
+            "synced": True,
+            "account_id": account_id,
+            "enabled": enabled,
+            "artifact_path": artifact_path,
+            "artifacts": artifact_paths,
+        }
 
     def install_site_builder(self, conn, job):
         payload = self.job_payload(job)
@@ -359,17 +1017,17 @@ class Agent:
         index.write_text(
             "<!doctype html>\n"
             "<html><head><meta charset=\"utf-8\"><title>{domain}</title></head>\n"
-            "<body><h1>{domain}</h1><p>MangoPanel simulated {template} site builder template.</p></body></html>\n".format(
+            "<body><h1>{domain}</h1><p>MangoPanel {template} site builder template.</p></body></html>\n".format(
                 domain=website["domain"], template=template_id
             ),
             encoding="utf-8",
         )
-        artifact = self.write_simulated_json(
+        artifact = write_account_json(
             account,
-            "site-builder/{}-{}.json".format(website["id"], template_id),
-            {"mode": "simulate", "website_id": website["id"], "domain": website["domain"], "template_id": template_id, "written_files": [str(index)]},
+            Path(".runtime") / "site-builder" / f"{website['id']}-{template_id}.json",
+            {"mode": "native", "website_id": website["id"], "domain": website["domain"], "template_id": template_id, "written_files": [str(index)]},
         )
-        return {"mode": "simulate", "installed": True, "website_id": website["id"], "template_id": template_id, "artifact_path": artifact}
+        return {"mode": "native", "installed": True, "website_id": website["id"], "template_id": template_id, "artifact_path": artifact}
 
     def optimize_images(self, conn, job):
         payload = self.job_payload(job)
@@ -385,36 +1043,78 @@ class Agent:
         except ValueError:
             raise AgentError("invalid_image_path")
         images = []
+        derivatives = []
         if target.exists():
             candidates = [target] if target.is_file() else target.rglob("*")
             for item in candidates:
                 if item.is_file() and item.suffix.lower() in IMAGE_EXTENSIONS:
-                    images.append({"path": str(item), "size_bytes": item.stat().st_size})
+                    size_bytes = item.stat().st_size
+                    images.append({"path": str(item), "size_bytes": size_bytes})
+                    derivative = image_runtime_dir(account) / "optimized" / item.relative_to(base)
+                    if item.suffix.lower() == ".svg":
+                        derivative = derivative.with_suffix(".svg")
+                        derivative.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, derivative)
+                    else:
+                        derivative = derivative.with_suffix(".webp")
+                        derivative.parent.mkdir(parents=True, exist_ok=True)
+                        from PIL import Image, ImageOps
+
+                        with Image.open(item) as img:
+                            img = ImageOps.exif_transpose(img)
+                            img.thumbnail((1600, 1600))
+                            if img.mode not in {"RGB", "L"}:
+                                img = img.convert("RGB")
+                            img.save(derivative, format=IMAGE_OPTIMIZE_FORMAT, quality=82, method=6, optimize=True)
+                    derivatives.append({"source": str(item), "derivative": str(derivative), "size_bytes": derivative.stat().st_size})
         total_bytes = sum(item["size_bytes"] for item in images)
-        artifact = self.write_simulated_json(
+        artifact = write_account_json(
             account,
-            "image-optimization-report.json",
-            {"mode": "simulate", "requested_path": requested, "images": images, "total_bytes": total_bytes},
+            Path(".runtime") / "images" / "report.json",
+            {"mode": "native", "requested_path": requested, "images": images, "derivatives": derivatives, "total_bytes": total_bytes},
         )
-        return {"mode": "simulate", "optimized": False, "images_count": len(images), "total_bytes": total_bytes, "artifact_path": artifact}
+        return {"mode": "native", "optimized": bool(images), "images_count": len(images), "total_bytes": total_bytes, "artifact_path": artifact, "derivatives": derivatives}
 
     def sync_cron_jobs(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
         cron_jobs = rows_to_dicts(conn.execute("SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
-        cron_path = Path(account["base_path"]) / ".runtime" / "stack" / "cron"
-        cron_path.parent.mkdir(parents=True, exist_ok=True)
-        cron_path.write_text(render_crontab(row_to_dict(account), cron_jobs), encoding="utf-8")
-        artifact = self.write_simulated_json(account, "cron.json", {"mode": "simulate", "jobs": cron_jobs, "crontab_path": str(cron_path)})
-        return {"mode": "simulate", "synced": True, "account_id": account_id, "jobs_count": len(cron_jobs), "artifact_path": artifact, "crontab_path": str(cron_path)}
+        runtime, managed_jobs, cron_path = ensure_cron_runtime_artifacts(row_to_dict(account), cron_jobs)
+        for job in managed_jobs:
+            conn.execute(
+                """
+                UPDATE cron_jobs
+                SET next_run_at = ?, last_run_at = COALESCE(?, last_run_at), last_exit_code = COALESCE(?, last_exit_code), last_output = COALESCE(?, last_output)
+                WHERE id = ?
+                """,
+                (
+                    job.get("next_run_at"),
+                    job.get("last_run_at"),
+                    job.get("last_exit_code"),
+                    job.get("last_output"),
+                    job["id"],
+                ),
+            )
+        artifact = write_account_json(
+            row_to_dict(account),
+            ".runtime/cron/report.json",
+            {
+                "mode": "native",
+                "jobs": managed_jobs,
+                "crontab_path": str(cron_path),
+                "runtime": {k: str(v) for k, v in runtime.items()},
+            },
+        )
+        return {"mode": "native", "synced": True, "account_id": account_id, "jobs_count": len(cron_jobs), "artifact_path": artifact, "crontab_path": str(cron_path)}
 
     def sync_pg_databases(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
+        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
         databases = rows_to_dicts(conn.execute("SELECT * FROM pg_databases WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
-        users = rows_to_dicts(conn.execute("SELECT id, account_id, username, created_at FROM pg_users WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
+        users = rows_to_dicts(conn.execute("SELECT id, account_id, username, password, created_at FROM pg_users WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         grants = rows_to_dicts(
             conn.execute(
                 """
@@ -428,13 +1128,102 @@ class Agent:
                 (account_id,),
             ).fetchall()
         )
-        artifact = self.write_simulated_json(
+        sql = []
+        docker = shutil.which("docker") if self.config.agent_mode == "docker" else None
+        if docker:
+            for user in users:
+                sql.append(f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{user['username']}') THEN CREATE ROLE {user['username']} LOGIN PASSWORD {sql_literal(user['password'])}; ELSE ALTER ROLE {user['username']} LOGIN PASSWORD {sql_literal(user['password'])}; END IF; END $$;")
+                subprocess.run(
+                    [
+                        docker,
+                        "exec",
+                        f"mp-{account['username']}-pg",
+                        "psql",
+                        "-U",
+                        runtime["db_user"],
+                        "-d",
+                        "postgres",
+                        "-v",
+                        "ON_ERROR_STOP=1",
+                        "-c",
+                        sql[-1],
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            for database in databases:
+                exists = subprocess.run(
+                    [
+                        docker,
+                        "exec",
+                        f"mp-{account['username']}-pg",
+                        "psql",
+                        "-U",
+                        runtime["db_user"],
+                        "-d",
+                        "postgres",
+                        "-tAc",
+                        f"SELECT 1 FROM pg_database WHERE datname = '{database['name']}';",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if "1" not in (exists.stdout or ""):
+                    create_db = subprocess.run(
+                        [
+                            docker,
+                            "exec",
+                            f"mp-{account['username']}-pg",
+                            "createdb",
+                            "-U",
+                            runtime["db_user"],
+                            "-O",
+                            users[0]["username"] if users else runtime["db_user"],
+                            database["name"],
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if create_db.returncode != 0:
+                        raise AgentError(create_db.stderr.strip() or create_db.stdout.strip() or "postgres_create_database_failed")
+                sql.append(f"CREATE DATABASE {database['name']};")
+            for grant in grants:
+                privileges = "ALL PRIVILEGES" if grant["privileges"] == "ALL" else "CONNECT"
+                grant_sql = "GRANT {} ON DATABASE {} TO {};".format(
+                    privileges,
+                    grant["database_name"],
+                    grant["username"],
+                )
+                sql.append(grant_sql)
+                subprocess.run(
+                    [
+                        docker,
+                        "exec",
+                        f"mp-{account['username']}-pg",
+                        "psql",
+                        "-U",
+                        runtime["db_user"],
+                        "-d",
+                        "postgres",
+                        "-v",
+                        "ON_ERROR_STOP=1",
+                        "-c",
+                        grant_sql,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+        artifact = write_account_json(
             account,
-            "postgresql.json",
-            {"mode": "simulate", "databases": databases, "users": users, "grants": grants},
+            Path(".runtime") / "postgresql" / "report.json",
+            {"mode": "native", "databases": databases, "users": users, "grants": grants, "sql": sql},
         )
         return {
-            "mode": "simulate",
+            "mode": "native",
             "synced": True,
             "account_id": account_id,
             "databases_count": len(databases),
@@ -442,6 +1231,112 @@ class Agent:
             "grants_count": len(grants),
             "artifact_path": artifact,
         }
+
+    def git_deploy_metadata(self, account, deployment_id):
+        path = git_metadata_path(account, deployment_id)
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def write_git_deploy_metadata(self, account, deployment_id, payload):
+        path = git_metadata_path(account, deployment_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return str(path)
+
+    def git_run(self, args, cwd=None):
+        result = subprocess.run(args, cwd=cwd, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AgentError(result.stderr.strip() or result.stdout.strip() or "git_operation_failed")
+        return result
+
+    def deploy_git_repository(self, conn, deployment_id):
+        deployment = conn.execute("SELECT * FROM git_deployments WHERE id = ?", (deployment_id,)).fetchone()
+        if not deployment:
+            raise AgentError("git_deployment_not_found")
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (deployment["account_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        deploy_path = Path(account["base_path"]) / deployment["deploy_path"]
+        deploy_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata = self.git_deploy_metadata(row_to_dict(account), deployment_id)
+        previous_commit = metadata.get("current_commit")
+        if deploy_path.exists() and (deploy_path / ".git").exists():
+            status = subprocess.run(["git", "-C", str(deploy_path), "status", "--porcelain"], check=False, capture_output=True, text=True)
+            if status.stdout.strip():
+                raise AgentError("dirty_worktree")
+            self.git_run(["git", "-C", str(deploy_path), "fetch", "--prune", "origin"])
+            self.git_run(["git", "-C", str(deploy_path), "checkout", deployment["branch"]])
+            self.git_run(["git", "-C", str(deploy_path), "reset", "--hard", f"origin/{deployment['branch']}"])
+        else:
+            if deploy_path.exists() and any(deploy_path.iterdir()):
+                raise AgentError("dirty_worktree")
+            self.git_run(["git", "clone", "--branch", deployment["branch"], "--single-branch", deployment["repository_url"], str(deploy_path)])
+        current_commit = subprocess.run(["git", "-C", str(deploy_path), "rev-parse", "HEAD"], check=False, capture_output=True, text=True)
+        if current_commit.returncode != 0:
+            raise AgentError(current_commit.stderr.strip() or current_commit.stdout.strip() or "git_head_lookup_failed")
+        current_commit = current_commit.stdout.strip()
+        report = self.write_git_deploy_metadata(
+            row_to_dict(account),
+            deployment_id,
+            {
+                "deployment_id": deployment_id,
+                "repository_url": deployment["repository_url"],
+                "branch": deployment["branch"],
+                "deploy_path": str(deploy_path),
+                "previous_commit": previous_commit,
+                "current_commit": current_commit,
+                "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+        )
+        conn.execute(
+            "UPDATE git_deployments SET status = 'deployed', last_commit = ?, previous_commit = ?, last_deployed_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?",
+            (current_commit, previous_commit, deployment_id),
+        )
+        return {"deployment_id": deployment_id, "deploy_path": str(deploy_path), "current_commit": current_commit, "previous_commit": previous_commit, "artifact_path": report, "status": "deployed"}
+
+    def rollback_git_repository(self, conn, deployment_id):
+        deployment = conn.execute("SELECT * FROM git_deployments WHERE id = ?", (deployment_id,)).fetchone()
+        if not deployment:
+            raise AgentError("git_deployment_not_found")
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (deployment["account_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        metadata = self.git_deploy_metadata(row_to_dict(account), deployment_id)
+        rollback_commit = metadata.get("previous_commit")
+        if not rollback_commit:
+            raise AgentError("rollback_not_available")
+        deploy_path = Path(account["base_path"]) / deployment["deploy_path"]
+        if not (deploy_path / ".git").exists():
+            raise AgentError("git_repository_missing")
+        self.git_run(["git", "-C", str(deploy_path), "reset", "--hard", rollback_commit])
+        current_commit = subprocess.run(["git", "-C", str(deploy_path), "rev-parse", "HEAD"], check=False, capture_output=True, text=True)
+        if current_commit.returncode != 0:
+            raise AgentError(current_commit.stderr.strip() or current_commit.stdout.strip() or "git_head_lookup_failed")
+        current_commit = current_commit.stdout.strip()
+        new_previous = metadata.get("current_commit")
+        report = self.write_git_deploy_metadata(
+            row_to_dict(account),
+            deployment_id,
+            {
+                "deployment_id": deployment_id,
+                "repository_url": deployment["repository_url"],
+                "branch": deployment["branch"],
+                "deploy_path": str(deploy_path),
+                "previous_commit": new_previous,
+                "current_commit": current_commit,
+                "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "rolled_back_from": rollback_commit,
+            },
+        )
+        conn.execute(
+            "UPDATE git_deployments SET status = 'rolled_back', last_commit = ?, previous_commit = ?, last_deployed_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?",
+            (current_commit, new_previous, deployment_id),
+        )
+        return {"deployment_id": deployment_id, "deploy_path": str(deploy_path), "current_commit": current_commit, "rolled_back_from": rollback_commit, "artifact_path": report, "status": "rolled_back"}
 
     def install_custom_ssl(self, conn, job):
         payload = self.job_payload(job)
@@ -497,10 +1392,11 @@ class Agent:
         plan = conn.execute("SELECT * FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
         node = conn.execute("SELECT * FROM nodes WHERE id = ?", (account["node_id"],)).fetchone()
         websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
+        mailboxes = conn.execute("SELECT * FROM mailboxes WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
         runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
-        paths = ensure_account_layout(row_to_dict(account), row_to_dict(plan), row_to_dict(node), rows_to_dicts(websites), runtime)
+        paths = ensure_account_layout(row_to_dict(account), row_to_dict(plan), row_to_dict(node), rows_to_dicts(websites), runtime, rows_to_dicts(mailboxes))
         cron_jobs = rows_to_dicts(conn.execute("SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
-        (paths["stack"] / "cron").write_text(render_crontab(row_to_dict(account), cron_jobs), encoding="utf-8")
+        ensure_cron_runtime_artifacts(row_to_dict(account), cron_jobs)
         apply_result = self.apply_stack(paths["compose"], account["username"])
         
 
@@ -530,6 +1426,9 @@ class Agent:
         if touched_website_id:
             summary["website_id"] = touched_website_id
         return summary
+
+    def sync_mailboxes(self, conn, account_id):
+        return self.provision_hosting_account(conn, account_id)
 
     def apply_stack(self, compose_path, username=None):
         if self.config.agent_mode == "simulate":
@@ -728,29 +1627,21 @@ class Agent:
             raise AgentError("inode_quota_exceeded")
             
         artifact_path = backup_dir / f"backup-{backup_id}.tar.gz"
-        
-        # Create tar archive
+        roots = [
+            "account.json",
+            "domains",
+            "databases",
+            "mail",
+            "git",
+            "ssl",
+            "pg_databases",
+            ".runtime/stack",
+        ]
         with tarfile.open(artifact_path, "w:gz") as tar:
-            # 1. Add domains/ directory
-            domains_dir = base_path / "domains"
-            if domains_dir.exists():
-                tar.add(domains_dir, arcname="domains")
-                
-            # 2. Add simulated .sql dumps for each database
-            databases = conn.execute("SELECT * FROM databases WHERE account_id = ?", (account["id"],)).fetchall()
-            if databases:
-                temp_db_dir = backup_dir / f"temp_db_dumps_{backup_id}"
-                temp_db_dir.mkdir(exist_ok=True)
-                try:
-                    for db in databases:
-                        db_name = db["name"]
-                        dump_file = temp_db_dir / f"{db_name}.sql"
-                        dump_content = f"-- MangoPanel Simulated MySQL Dump\n-- Database: {db_name}\n-- Generated for backup #{backup_id}\n\nCREATE TABLE IF NOT EXISTS `example_table` (\n  `id` int(11) NOT NULL AUTO_INCREMENT,\n  `data` varchar(255) DEFAULT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n"
-                        dump_file.write_text(dump_content, encoding="utf-8")
-                        tar.add(dump_file, arcname=f"databases/{db_name}.sql")
-                finally:
-                    # Clean up temporary DB dumps
-                    shutil.rmtree(temp_db_dir, ignore_errors=True)
+            for rel in roots:
+                source = base_path / rel
+                if source.exists():
+                    tar.add(source, arcname=rel)
 
         self.prune_expired_backups(conn, account["id"], int(plan["backup_retention_days"]))
         
@@ -774,25 +1665,28 @@ class Agent:
             raise AgentError("backup_artifact_missing")
             
         base_path = Path(account["base_path"])
-        domains_dir = base_path / "domains"
-        
-        # Extract archive
-        # In a real environment, this might involve careful handling, 
-        # clearing old domains, and importing databases using mysql client.
+        restore_roots = [
+            base_path / "domains",
+            base_path / "databases",
+            base_path / "mail",
+            base_path / "git",
+            base_path / "ssl",
+            base_path / "pg_databases",
+            base_path / ".runtime" / "stack",
+        ]
         try:
             with tarfile.open(artifact_path, "r:gz") as tar:
-                # We'll just extract over the existing directories
-                tar.extractall(path=base_path)
-                
-                # Check for database dumps to log simulation
-                db_members = [m for m in tar.getmembers() if m.name.startswith("databases/")]
-                for db_member in db_members:
-                    # Simulated import log
-                    pass
+                for target in restore_roots:
+                    if target.exists():
+                        self.clear_directory_contents(target)
+                account_json = base_path / "account.json"
+                if account_json.exists():
+                    account_json.unlink()
+                safe_extract(tar, path=base_path)
         except Exception as e:
             raise AgentError(f"restore_failed: {str(e)}")
-            
-        return {"backup_id": backup_id, "restored": True}
+
+        return {"backup_id": backup_id, "restored": True, "artifact_path": str(artifact_path)}
 
     def update_website_php(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
@@ -841,16 +1735,64 @@ class Agent:
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
-            
-        if self.config.agent_mode == "docker":
-            docker = shutil.which("docker")
-            if docker:
-                subprocess.run(
-                    [docker, "exec", f"mp-{account['username']}-web", "sh", "-c", "rm -rf /usr/local/lsws/cachedata/*"],
-                    check=False
-                )
-                
-        return {"account_id": account["id"], "purged": True}
+        payload = self.job_payload(job)
+        base_path = Path(account["base_path"]).resolve()
+        websites = self.cache_scope_websites(conn, account, payload)
+        purged_paths = self.clear_cache_directories(base_path, websites)
+        self.reset_opcache_backend(account, websites)
+        self.flush_object_cache_backend(account)
+        report_path = self.write_cache_action_report(account, "purge_all", payload, websites, purged_paths)
+        return {
+            "account_id": account["id"],
+            "website_id": payload.get("website_id"),
+            "purged": True,
+            "purged_paths": purged_paths,
+            "artifact_path": report_path,
+        }
+
+    def reset_opcache(self, conn, job):
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        payload = self.job_payload(job)
+        websites = self.cache_scope_websites(conn, account, payload)
+        commands = self.reset_opcache_backend(account, websites)
+        opcache_dir = Path(account["base_path"]).resolve() / ".runtime" / "cache" / "opcache"
+        opcache_dir.mkdir(parents=True, exist_ok=True)
+        opcache_purged = self.clear_directory_contents(opcache_dir)
+        report_path = self.write_cache_action_report(account, "reset_opcache", payload, websites, [])
+        return {
+            "account_id": account["id"],
+            "website_id": payload.get("website_id"),
+            "reset": True,
+            "commands": commands,
+            "purged_paths": opcache_purged,
+            "artifact_path": report_path,
+        }
+
+    def flush_object_cache(self, conn, job):
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        payload = self.job_payload(job)
+        websites = self.cache_scope_websites(conn, account, payload)
+        result = self.flush_object_cache_backend(account)
+        base_path = Path(account["base_path"]).resolve()
+        object_cache_dir = base_path / ".runtime" / "cache" / "object-cache"
+        object_cache_dir.mkdir(parents=True, exist_ok=True)
+        purged_paths = self.clear_directory_contents(object_cache_dir)
+        purged_paths.extend(self.clear_cache_directories(base_path, websites))
+        report_path = self.write_cache_action_report(account, "flush_object_cache", payload, websites, purged_paths)
+        result.update(
+            {
+                "account_id": account["id"],
+                "website_id": payload.get("website_id"),
+                "purged": True,
+                "purged_paths": purged_paths,
+                "artifact_path": report_path,
+            }
+        )
+        return result
 
     def prune_expired_backups(self, conn, account_id, retention_days):
         rows = conn.execute(
@@ -876,6 +1818,8 @@ class Agent:
         if not account:
             raise AgentError("hosting_account_not_found")
         service_name = self.job_payload(job).get("service")
+        if service_name not in STACK_SERVICES:
+            raise AgentError("invalid_service")
         
         stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
         if not stack:
@@ -893,24 +1837,123 @@ class Agent:
                 )
                 if result.returncode != 0:
                     raise AgentError(result.stderr.strip() or "docker_restart_failed")
-                    
-        return {"service": service_name, "restarted": True}
+        state = self.inspect_service_state(account, service_name)
+        return {"service": service_name, "restarted": True, "state": state}
+
+    def service_container_name(self, account, service_name):
+        return "mp-{}-{}".format(account["username"], service_name)
+
+    def inspect_service_state(self, account, service_name):
+        state = {
+            "service": service_name,
+            "container": self.service_container_name(account, service_name),
+            "mode": self.config.agent_mode,
+            "supported": service_name in STACK_SERVICES,
+            "status": "unknown",
+            "health": "unknown",
+            "running": False,
+        }
+        if self.config.agent_mode != "docker":
+            state["status"] = "simulated"
+            return state
+        docker = shutil.which("docker")
+        if not docker:
+            state["status"] = "docker_unavailable"
+            return state
+        result = subprocess.run(
+            [
+                docker,
+                "inspect",
+                "--format",
+                "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.State.Running}}",
+                state["container"],
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            state["status"] = "missing"
+            return state
+        payload = result.stdout.strip().split("|")
+        if len(payload) >= 3:
+            state["status"] = payload[0] or "unknown"
+            state["health"] = payload[1] or "none"
+            state["running"] = payload[2].strip().lower() == "true"
+        return state
+
+    def service_status(self, account, stack, service_name=None):
+        if service_name and service_name not in STACK_SERVICES:
+            raise AgentError("invalid_service")
+        services = [service_name] if service_name else STACK_SERVICES
+        service_rows = [self.inspect_service_state(account, service) for service in services]
+        return {
+            "account_id": account["id"],
+            "username": account["username"],
+            "compose_path": stack.get("compose_path") if isinstance(stack, dict) else stack["compose_path"],
+            "mode": self.config.agent_mode,
+            "services": service_rows,
+        }
 
     def fix_file_ownership(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
-            
-        if self.config.agent_mode == "docker":
-            docker = shutil.which("docker")
-            if docker:
-                # Assuming www-data is used internally in the openlitespeed container
-                subprocess.run(
-                    [docker, "exec", f"mp-{account['username']}-web", "chown", "-R", "www-data:www-data", "/var/www/vhosts"],
-                    check=False
-                )
-                
-        return {"fixed": True, "account_id": account["id"]}
+        base_path = Path(account["base_path"]).resolve()
+        if not base_path.exists():
+            raise AgentError("account_path_not_found")
+
+        directories_fixed = 0
+        files_fixed = 0
+        preserved_files = 0
+        skipped_symlinks = 0
+
+        for root, dirs, files in os.walk(base_path):
+            current = Path(root)
+            if current.is_symlink():
+                skipped_symlinks += 1
+                continue
+            self.apply_account_metadata(current, account, preserve_permissions=False)
+            directories_fixed += 1
+            for directory in dirs:
+                path = current / directory
+                if path.is_symlink():
+                    skipped_symlinks += 1
+                    continue
+                self.apply_account_metadata(path, account, preserve_permissions=False)
+                directories_fixed += 1
+            for filename in files:
+                path = current / filename
+                if path.is_symlink():
+                    skipped_symlinks += 1
+                    continue
+                preserve = self.is_preserved_config_file(path)
+                self.apply_account_metadata(path, account, preserve_permissions=preserve)
+                if preserve:
+                    preserved_files += 1
+                else:
+                    files_fixed += 1
+
+        report_path = self.account_runtime_dir(account, "ownership", "last_fix.json")
+        report = {
+            "account_id": account["id"],
+            "username": account["username"],
+            "directories_fixed": directories_fixed,
+            "files_fixed": files_fixed,
+            "preserved_files": preserved_files,
+            "skipped_symlinks": skipped_symlinks,
+            "fixed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        return {
+            "fixed": True,
+            "account_id": account["id"],
+            "directories_fixed": directories_fixed,
+            "files_fixed": files_fixed,
+            "preserved_files": preserved_files,
+            "skipped_symlinks": skipped_symlinks,
+            "artifact_path": str(report_path),
+        }
 
     def sync_ip_rules(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -963,21 +2006,24 @@ class Agent:
         htaccess_snippet = "# BEGIN MangoPanel Index Rules\n"
         htaccess_snippet += f"{directive}\n"
         htaccess_snippet += "# END MangoPanel Index Rules\n"
-        
+
+        root = Path(website["document_root"])
+        root.mkdir(parents=True, exist_ok=True)
+        htaccess = root / ".htaccess"
+        current = htaccess.read_text(encoding="utf-8") if htaccess.exists() else ""
+        updated = self.replace_managed_block(current, "# BEGIN MangoPanel Index Rules", "# END MangoPanel Index Rules", htaccess_snippet)
+        htaccess.write_text(updated, encoding="utf-8")
+        htaccess.chmod(0o644)
+
         if self.config.agent_mode == "docker":
             docker = shutil.which("docker")
             if docker:
-                script = f"""
-                touch /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                chown www-data:www-data /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                sed -i '/# BEGIN MangoPanel Index Rules/,/# END MangoPanel Index Rules/d' /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                echo "{htaccess_snippet}" >> /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                """
+                script = f"chown www-data:www-data /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess"
                 subprocess.run(
                     [docker, "exec", "-i", f"mp-{account['username']}-web", "bash", "-c", script],
                     check=False
                 )
-        return {"synced": True, "website_id": website_id, "index_enabled": index_enabled}
+        return {"synced": True, "website_id": website_id, "index_enabled": index_enabled, "artifact_path": str(htaccess)}
 
     def sync_protected_directories(self, conn, account_id, payload):
         if isinstance(payload, str):
@@ -990,53 +2036,47 @@ class Agent:
         remove = payload.get("remove", False)
         username = payload.get("username", "")
         password = payload.get("password", "")
-        
         if not path:
-            return {"synced": False, "error": "No path provided"}
-            
-        # Ensure path does not contain ..
-        if ".." in path:
-            return {"synced": False, "error": "Invalid path"}
-            
-        full_path = f"/var/www/vhosts{path}"
-        
-        if self.config.agent_mode == "docker":
-            docker = shutil.which("docker")
-            if docker:
-                container = f"mp-{account['username']}-web"
-                if remove:
-                    script = f"""
-                    rm -f {full_path}/.htpasswd
-                    if [ -f {full_path}/.htaccess ]; then
-                        sed -i '/# BEGIN MangoPanel Auth/,/# END MangoPanel Auth/d' {full_path}/.htaccess
-                    fi
-                    """
+            raise AgentError("path_required")
+
+        _, relative_path = self.account_relative_path(account, path, require_subpath=True)
+        host_path = Path(account["base_path"]) / relative_path
+        container_path = Path("/home") / account["username"] / relative_path
+        htpasswd_path = host_path / ".htpasswd"
+        htaccess_path = host_path / ".htaccess"
+
+        if remove:
+            if htpasswd_path.exists():
+                htpasswd_path.unlink()
+            if htaccess_path.exists():
+                current = htaccess_path.read_text(encoding="utf-8")
+                updated = self.replace_managed_block(current, "# BEGIN MangoPanel Auth", "# END MangoPanel Auth", "")
+                if updated:
+                    htaccess_path.write_text(updated, encoding="utf-8")
                 else:
-                    auth_name = f"Protected Area {path}"
-                    htaccess_snippet = f"""# BEGIN MangoPanel Auth
-AuthType Basic
-AuthName "{auth_name}"
-AuthUserFile {full_path}/.htpasswd
-Require valid-user
-# END MangoPanel Auth
-"""
-                    script = f"""
-                    mkdir -p {full_path}
-                    # apt-get install -y apache2-utils should be in the container, or use pure-pw, or openssl
-                    # Alpine might use `htpasswd` from `apache2-utils`
-                    # If htpasswd is not found, we use openssl
-                    htpasswd -bc {full_path}/.htpasswd "{username}" "{password}" || echo "{username}:$(openssl passwd -crypt '{password}')" > {full_path}/.htpasswd
-                    
-                    touch {full_path}/.htaccess
-                    sed -i '/# BEGIN MangoPanel Auth/,/# END MangoPanel Auth/d' {full_path}/.htaccess
-                    echo "{htaccess_snippet}" >> {full_path}/.htaccess
-                    chown -R www-data:www-data {full_path}/.htpasswd {full_path}/.htaccess
-                    """
-                subprocess.run(
-                    [docker, "exec", "-i", container, "bash", "-c", script],
-                    check=False
-                )
-        return {"synced": True, "path": path, "removed": remove}
+                    htaccess_path.unlink()
+            return {"synced": True, "path": relative_path, "removed": True, "artifact_path": str(host_path)}
+
+        if not username or not password:
+            raise AgentError("credentials_required")
+
+        host_path.mkdir(parents=True, exist_ok=True)
+        htpasswd_path.write_text("{}:{}\n".format(username, self.htpasswd_hash(password)), encoding="utf-8")
+        htpasswd_path.chmod(0o640)
+        auth_name = f"Protected Area {relative_path}".replace('"', "'")
+        htaccess_block = (
+            "# BEGIN MangoPanel Auth\n"
+            "AuthType Basic\n"
+            f'AuthName "{auth_name}"\n'
+            f"AuthUserFile {container_path / '.htpasswd'}\n"
+            "Require valid-user\n"
+            "# END MangoPanel Auth\n"
+        )
+        current = htaccess_path.read_text(encoding="utf-8") if htaccess_path.exists() else ""
+        updated = self.replace_managed_block(current, "# BEGIN MangoPanel Auth", "# END MangoPanel Auth", htaccess_block)
+        htaccess_path.write_text(updated, encoding="utf-8")
+        htaccess_path.chmod(0o644)
+        return {"synced": True, "path": relative_path, "removed": False, "artifact_path": str(host_path)}
 
     def sync_redirects(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
@@ -1091,22 +2131,54 @@ Require valid-user
         htaccess_snippet += f"    {directive}\n"
         htaccess_snippet += f"</IfModule>\n"
         htaccess_snippet += "# END MangoPanel ModSec\n"
-        
+
+        root = Path(website["document_root"])
+        root.mkdir(parents=True, exist_ok=True)
+        htaccess = root / ".htaccess"
+        current = htaccess.read_text(encoding="utf-8") if htaccess.exists() else ""
+        updated = self.replace_managed_block(current, "# BEGIN MangoPanel ModSec", "# END MangoPanel ModSec", htaccess_snippet)
+        htaccess.write_text(updated, encoding="utf-8")
+        htaccess.chmod(0o644)
+
         if self.config.agent_mode == "docker":
             docker = shutil.which("docker")
             if docker:
-                container = f"mp-{account['username']}-web"
-                script = f"""
-                touch /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                chown www-data:www-data /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                sed -i '/# BEGIN MangoPanel ModSec/,/# END MangoPanel ModSec/d' /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                echo "{htaccess_snippet}" >> /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                """
+                script = f"chown www-data:www-data /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess"
                 subprocess.run(
-                    [docker, "exec", "-i", container, "bash", "-c", script],
+                    [docker, "exec", "-i", f"mp-{account['username']}-web", "bash", "-c", script],
                     check=False
                 )
-        return {"synced": True, "website_id": website_id, "modsec_enabled": modsec_enabled}
+        return {"synced": True, "website_id": website_id, "modsec_enabled": modsec_enabled, "artifact_path": str(htaccess)}
+
+    def sync_website_analytics(self, conn, website_id):
+        website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
+        if not website:
+            raise AgentError("website_not_found")
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (website["account_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        summary = self.provision_hosting_account(conn, account["id"], touched_website_id=website_id)
+        analytics_enabled = website["analytics_enabled"] if "analytics_enabled" in website.keys() and website["analytics_enabled"] is not None else 1
+        artifact = write_account_json(
+            account,
+            Path(".runtime") / "analytics" / f"{website['domain']}.json",
+            {
+                "mode": "native",
+                "website_id": website["id"],
+                "domain": website["domain"],
+                "analytics_enabled": int(analytics_enabled),
+                "document_root": website["document_root"],
+            },
+        )
+        summary.update(
+            {
+                "synced": True,
+                "website_id": website_id,
+                "analytics_enabled": int(analytics_enabled),
+                "artifact_path": artifact,
+            }
+        )
+        return summary
 
     def sync_ftp_accounts(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -1114,7 +2186,7 @@ Require valid-user
             raise AgentError("hosting_account_not_found")
         
         # We need the runtime for the default sftp_password
-        runtime = account_runtime(conn, account_id)
+        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
         
         ftp_accounts = conn.execute("SELECT * FROM ftp_accounts WHERE account_id = ?", (account_id,)).fetchall()
         
@@ -1133,7 +2205,8 @@ Require valid-user
             # For additional users, we can name them as `account['username']_ftpuser`
             # And DIR can be set to their specific directory if we use the format:
             # user:pass:1001:1001:dir
-            lines.append(f"{fa['username']}:{fa['password']}:1001:1001:{fa['path']}")
+            _, rel_path = self.account_relative_path(account, fa["path"], require_subpath=True)
+            lines.append(f"{fa['username']}:{fa['password']}:1001:1001:{rel_path}")
             
         sftp_conf = Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf"
         with open(sftp_conf, "w", encoding="utf-8") as f:

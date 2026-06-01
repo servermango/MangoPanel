@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-from .agent import Agent
+from .agent import Agent, AgentError, cron_next_run_at, decorate_cron_jobs, validate_cron_schedule
 from .config import load_config
 from .db import (
     connect,
@@ -25,52 +25,52 @@ from .db import (
     rows_to_dicts,
     seed_dev_data,
 )
-from .security import create_jwt, generate_totp_secret, hash_password, verify_jwt, verify_password, verify_totp
+from .security import create_jwt, generate_totp_secret, hash_mailpit_password, hash_password, verify_jwt, verify_password, verify_totp
 
 
 CONFIG = load_config()
 PUBLIC_DIR = Path(__file__).resolve().parent.parent / "public"
 FEATURE_STATUS = {
     "dashboard": {"status": "functional", "label": "Functional"},
-    "installer": {"status": "simulated", "label": "Simulated"},
+    "installer": {"status": "functional", "label": "Functional"},
     "hosting-plan": {"status": "functional", "label": "Functional"},
     "performance": {"status": "read_only", "label": "Read only"},
-    "analytics": {"status": "read_only", "label": "Read only"},
+    "analytics": {"status": "functional", "label": "Functional"},
     "security": {"status": "functional", "label": "Functional"},
     "domains": {"status": "functional", "label": "Functional"},
     "website": {"status": "functional", "label": "Functional"},
-    "files": {"status": "simulated", "label": "Simulated"},
+    "files": {"status": "functional", "label": "Functional"},
     "databases": {"status": "functional", "label": "Functional"},
     "email": {"status": "functional", "label": "Functional"},
-    "cron-jobs": {"status": "simulated", "label": "Simulated"},
-    "backups": {"status": "simulated", "label": "Simulated"},
-    "git": {"status": "simulated", "label": "Simulated"},
+    "cron-jobs": {"status": "functional", "label": "Functional"},
+    "backups": {"status": "functional", "label": "Functional"},
+    "git": {"status": "functional", "label": "Functional"},
     "ssh-access": {"status": "read_only", "label": "Read only"},
     "php-configuration": {"status": "functional", "label": "Functional"},
-    "dns-zone-editor": {"status": "simulated", "label": "Simulated"},
+    "dns-zone-editor": {"status": "functional", "label": "Functional"},
     "php-info": {"status": "read_only", "label": "Read only"},
-    "cache-manager": {"status": "simulated", "label": "Simulated"},
-    "password-protect-directories": {"status": "simulated", "label": "Simulated"},
+    "cache-manager": {"status": "functional", "label": "Functional"},
+    "password-protect-directories": {"status": "functional", "label": "Functional"},
     "ip-manager": {"status": "functional", "label": "Functional"},
-    "hotlink-protection": {"status": "simulated", "label": "Simulated"},
-    "folder-index-manager": {"status": "simulated", "label": "Simulated"},
-    "fix-file-ownership": {"status": "simulated", "label": "Simulated"},
-    "services": {"status": "simulated", "label": "Simulated"},
+    "hotlink-protection": {"status": "functional", "label": "Functional"},
+    "folder-index-manager": {"status": "functional", "label": "Functional"},
+    "fix-file-ownership": {"status": "functional", "label": "Functional"},
+    "services": {"status": "functional", "label": "Functional"},
     "activity": {"status": "read_only", "label": "Read only"},
     "settings": {"status": "functional", "label": "Functional"},
     "redirects": {"status": "functional", "label": "Functional"},
     "disk-usage": {"status": "read_only", "label": "Read only"},
-    "modsecurity": {"status": "simulated", "label": "Simulated"},
+    "modsecurity": {"status": "functional", "label": "Functional"},
     "mysql-database-wizard": {"status": "functional", "label": "Functional"},
     "api-tokens": {"status": "functional", "label": "Functional"},
     "two-factor-auth": {"status": "functional", "label": "Functional"},
-    "ftp-accounts": {"status": "simulated", "label": "Simulated"},
-    "images": {"status": "simulated", "label": "Simulated"},
-    "remote-mysql": {"status": "simulated", "label": "Simulated"},
-    "postgresql-databases": {"status": "simulated", "label": "Simulated"},
-    "postgresql-database-wizard": {"status": "simulated", "label": "Simulated"},
-    "site-builder": {"status": "simulated", "label": "Simulated"},
-    "ssl-tls": {"status": "simulated", "label": "Simulated"},
+    "ftp-accounts": {"status": "functional", "label": "Functional"},
+    "images": {"status": "functional", "label": "Functional"},
+    "remote-mysql": {"status": "functional", "label": "Functional"},
+    "postgresql-databases": {"status": "functional", "label": "Functional"},
+    "postgresql-database-wizard": {"status": "functional", "label": "Functional"},
+    "site-builder": {"status": "functional", "label": "Functional"},
+    "ssl-tls": {"status": "functional", "label": "Functional"},
     "visitors": {"status": "read_only", "label": "Read only"},
     "errors": {"status": "read_only", "label": "Read only"},
     "bandwidth": {"status": "read_only", "label": "Read only"},
@@ -79,6 +79,12 @@ FEATURE_STATUS = {
     "resource-usage": {"status": "read_only", "label": "Read only"},
     "phppgadmin": {"status": "disabled", "label": "Unavailable"},
 }
+
+MAILPIT_BRAND_SVG = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" role=\"img\" aria-label=\"MangoPanel\">
+  <rect x=\"8\" y=\"8\" width=\"112\" height=\"112\" rx=\"28\" fill=\"#0f172a\"/>
+  <path d=\"M34 90V38h14l16 24 16-24h14v52H80V64l-16 22-16-22v26z\" fill=\"#f59e0b\"/>
+  <circle cx=\"94\" cy=\"34\" r=\"8\" fill=\"#34d399\"/>
+</svg>"""
 
 
 class ApiError(Exception):
@@ -130,6 +136,22 @@ def expired_auth_cookie_headers(host_header):
             "mp_client_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; Domain=.localhost",
         ]
     return [expired_auth_cookie_header(host_header)]
+
+
+def normalize_account_relative_path(account, raw_path, label="path", allow_empty=False):
+    base_path = Path(account["base_path"]).resolve()
+    text = str(raw_path or "").strip()
+    if not text:
+        if allow_empty:
+            return base_path, ""
+        raise ApiError(HTTPStatus.BAD_REQUEST, "{}_required".format(label))
+    candidate = (base_path / text.lstrip("/")).resolve()
+    try:
+        rel = candidate.relative_to(base_path)
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_{}".format(label)) from exc
+    relative = "" if str(rel) == "." else rel.as_posix()
+    return candidate, relative
 
 
 def extract_magic_launch_token(forwarded_uri):
@@ -217,7 +239,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/health":
                 return self.json_response({"status": "ok", "service": "mangopanel-api"})
 
-            if path.startswith("/api/"):
+            if path.startswith("/api/") or path.startswith("/auth/"):
                 return self.route_api(method, path, query)
 
             self.json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
@@ -254,7 +276,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             actor_type = "admin" if "/api/admin/" in path else "user"
             return self.verify_totp_challenge(actor_type)
 
-        if path.startswith("/api/public/"):
+        if path.startswith("/auth/") or path.startswith("/api/public/"):
             return self.public_api(method, path)
 
         if path.startswith("/api/public/status"):
@@ -277,6 +299,8 @@ class MangoHandler(BaseHTTPRequestHandler):
     def public_api(self, method, path):
         if path.startswith("/api/public/status"):
             return self.public_status(path)
+        if path == "/api/public/mailpit-brand.svg" and method == "GET":
+            return self.svg_response(MAILPIT_BRAND_SVG)
         if path == "/api/public/bootstrap" and method == "GET":
             return self.json_response({"admin_setup_required": admin_count() == 0})
         if path == "/api/public/signup" and method == "POST":
@@ -285,6 +309,8 @@ class MangoHandler(BaseHTTPRequestHandler):
         if path == "/api/public/admin-setup" and method == "POST":
             body = self.read_json()
             return self.setup_first_admin(body)
+        if path.startswith("/auth/") and method == "GET":
+            return self.public_tool_launch(path)
         if path.startswith("/api/public/tool-launch/") and method == "GET":
             return self.public_tool_launch(path)
         if path == "/api/public/auth-verify":
@@ -292,22 +318,43 @@ class MangoHandler(BaseHTTPRequestHandler):
         raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
 
     def public_tool_launch(self, path):
-        match = re.match(
-            r"^/api/public/tool-launch/(?P<tool>filebrowser|phpmyadmin)/auth/(?P<token>[A-Za-z0-9._-]{20,})(?:/|$)",
-            path,
-        )
-        if not match:
-            raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
-
-        tool = match.group("tool")
-        token = match.group("token")
         forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+        tool = None
+        if forwarded_host:
+            host_part = forwarded_host.split(":")[0]
+            if host_part.startswith("files-") or host_part.startswith("files."):
+                tool = "filebrowser"
+            elif host_part.startswith("pma-") or host_part.startswith("pma."):
+                tool = "phpmyadmin"
+
+        token = None
+        suffix = ""
+        if path.startswith("/auth/"):
+            match = re.match(r"^/auth/(?P<token>[A-Za-z0-9._-]{20,})(?P<suffix>/.*)?$", path)
+            if not match:
+                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
+            token = match.group("token")
+            suffix = match.group("suffix") or ""
+        else:
+            match = re.match(
+                r"^/api/public/tool-launch/(?P<tool>filebrowser|phpmyadmin)/auth/(?P<token>[A-Za-z0-9._-]{20,})(?P<suffix>/.*)?$",
+                path,
+            )
+            if not match:
+                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
+            tool = match.group("tool")
+            token = match.group("token")
+            suffix = match.group("suffix") or ""
+
         username = None
         if forwarded_host:
             host_part = forwarded_host.split(":")[0]
             match = re.match(r"^(?:files|pma)[-.](\w+)\.", host_part)
             if match:
                 username = match.group(1)
+
+        if not tool:
+            raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
 
         payload = verify_jwt(token, CONFIG.jwt_secret)
         if not payload or payload.get("purpose") != "tool_launch" or payload.get("tool") != tool:
@@ -329,13 +376,6 @@ class MangoHandler(BaseHTTPRequestHandler):
             if not account:
                 raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
 
-            runtime = account_runtime(conn, account["id"])
-            tool_config = {
-                "filebrowser": (runtime.get("filebrowser_secret_path", "files"), runtime.get("filebrowser_url", "")),
-                "phpmyadmin": (runtime.get("phpmyadmin_secret_path", "db"), runtime.get("phpmyadmin_url", "")),
-            }
-            secret_path, _ = tool_config[tool]
-
             access_token = create_jwt(
                 {"sub": actor_id, "actor_type": actor_type, "purpose": "access", "jti": secrets.token_urlsafe(16)},
                 CONFIG.jwt_secret,
@@ -346,10 +386,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 "INSERT INTO sessions(actor_type, actor_id, token_id, expires_at) VALUES (?, ?, ?, ?)",
                 (actor_type, actor_id, access_payload["jti"], int(time.time()) + 600),
             )
+            default_path = "/files" if tool == "filebrowser" else "/db/"
+            clean_path = suffix or default_path
             self.send_response(HTTPStatus.FOUND)
             for cookie_header in auth_cookie_headers(access_token, forwarded_host):
                 self.send_header("Set-Cookie", cookie_header)
-            self.send_header("Location", build_tool_redirect_url(forwarded_host, f"/{secret_path}/"))
+            self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path))
             self.end_headers()
             return
 
@@ -680,6 +722,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 window_key = query.get("range", ["30m"])[0]
                 payload = resource_usage_payload(conn, account, window_key)
                 return self.json_response(payload)
+            if path == "/api/client/php-info" and method == "GET":
+                require_account(account)
+                website_id = optional_positive_int(query.get("website_id", [""])[0])
+                return self.json_response(client_php_info_payload(conn, account, website_id))
             if path == "/api/client/analytics" and method == "GET":
                 require_account(account)
                 website_id = optional_positive_int(query.get("website_id", [""])[0])
@@ -725,7 +771,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     {"website": row_to_dict(conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()), "job_id": job_id},
                     HTTPStatus.CREATED,
                 )
-            if path.startswith("/api/client/websites/") and not path.endswith("/php"):
+            if path.startswith("/api/client/websites/") and not path.endswith("/php") and not path.endswith("/modsec"):
                 require_active_account(account)
                 website_id = path_int_id(path, "/api/client/websites/")
                 website = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone()
@@ -745,12 +791,34 @@ class MangoHandler(BaseHTTPRequestHandler):
                     if "php_ini" in body:
                         php_ini_str = json.dumps(body["php_ini"])
                         
-                    index_enabled = int(body.get("index_enabled", (website["index_enabled"] if website["index_enabled"] is not None else 0)))
-                    modsec_enabled = int(body.get("modsec_enabled", (website["modsec_enabled"] if website["modsec_enabled"] is not None else 1)))
+                    if "index_enabled" in body:
+                        try:
+                            index_enabled = int(body.get("index_enabled"))
+                        except (TypeError, ValueError):
+                            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_index_enabled")
+                        if index_enabled not in {0, 1}:
+                            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_index_enabled")
+                    else:
+                        index_enabled = int(website["index_enabled"] if website["index_enabled"] is not None else 0)
+                    try:
+                        modsec_enabled = int(body.get("modsec_enabled", (website["modsec_enabled"] if website["modsec_enabled"] is not None else 1)))
+                    except (TypeError, ValueError):
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_modsec_enabled")
+                    if modsec_enabled not in {0, 1}:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_modsec_enabled")
+                    if "analytics_enabled" in body:
+                        try:
+                            analytics_enabled = int(body.get("analytics_enabled"))
+                        except (TypeError, ValueError):
+                            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_analytics_enabled")
+                        if analytics_enabled not in {0, 1}:
+                            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_analytics_enabled")
+                    else:
+                        analytics_enabled = int(website["analytics_enabled"] if website["analytics_enabled"] is not None else 1)
                         
                     conn.execute(
-                        "UPDATE websites SET php_version = ?, status = ?, php_ini = ?, index_enabled = ?, modsec_enabled = ? WHERE id = ?",
-                        (php_version, status, php_ini_str, index_enabled, modsec_enabled, website_id),
+                        "UPDATE websites SET php_version = ?, status = ?, php_ini = ?, index_enabled = ?, modsec_enabled = ?, analytics_enabled = ? WHERE id = ?",
+                        (php_version, status, php_ini_str, index_enabled, modsec_enabled, analytics_enabled, website_id),
                     )
                     
                     job_id = enqueue_agent_job(conn, "update_website_php", "website", website_id, {"php_version": php_version})
@@ -758,8 +826,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                         job_id = enqueue_agent_job(conn, "sync_website_index", "website", website_id, {})
                     if "modsec_enabled" in body:
                         job_id = enqueue_agent_job(conn, "sync_website_modsec", "website", website_id, {})
+                    if "analytics_enabled" in body:
+                        job_id = enqueue_agent_job(conn, "sync_website_analytics", "website", website_id, {})
                         
-                    log_activity(conn, actor["id"], "website_updated", {"website_id": website_id, "php_version": php_version, "index_enabled": index_enabled, "modsec_enabled": modsec_enabled})
+                    log_activity(conn, actor["id"], "website_updated", {"website_id": website_id, "php_version": php_version, "index_enabled": index_enabled, "modsec_enabled": modsec_enabled, "analytics_enabled": analytics_enabled})
                     updated = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
                     return self.json_response({"website": row_to_dict(updated), "job_id": job_id})
                 if method == "DELETE":
@@ -877,13 +947,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
                 base_url = runtime.get("filebrowser_url", "")
-                secret_path = runtime.get("filebrowser_secret_path", "files")
+                requested_path = query.get("path", [""])[0].strip()
                 launch_token = create_jwt(
                     {"sub": actor["id"], "actor_type": "user", "purpose": "tool_launch", "tool": "filebrowser"},
                     CONFIG.jwt_secret,
                     600,
                 )
-                launch_url = f"{base_url}/{secret_path}/auth/{launch_token}/"
+                launch_url = f"{base_url}/auth/{launch_token}"
+                if requested_path:
+                    _, rel_path = normalize_account_relative_path(account, requested_path, allow_empty=True)
+                    launch_url += "/files"
+                    if rel_path:
+                        launch_url += f"/{rel_path}"
                 usage = conn.execute(
                     "SELECT storage_mb, storage_limit_mb FROM resource_usage_samples WHERE account_id = ? ORDER BY sampled_at DESC LIMIT 1",
                     (account["id"],)
@@ -933,18 +1008,25 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
                 base_url = runtime.get("phpmyadmin_url", "")
-                secret_path = runtime.get("phpmyadmin_secret_path", "db")
                 launch_token = create_jwt(
                     {"sub": actor["id"], "actor_type": "user", "purpose": "tool_launch", "tool": "phpmyadmin"},
                     CONFIG.jwt_secret,
                     600,
                 )
-                launch_url = f"{base_url}/{secret_path}/auth/{launch_token}/"
+                launch_url = f"{base_url}/auth/{launch_token}"
                 return self.json_response({"launch_url": launch_url, "expires_in": 600})
             if path == "/api/client/webmail/launch" and method == "GET":
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
                 return self.json_response({"launch_url": runtime.get("mailpit_url"), "expires_in": 300})
+            if path.startswith("/api/client/mailboxes/") and path.endswith("/webmail/launch") and method == "GET":
+                require_account(account)
+                mailbox_id = path_int_id(path, "/api/client/mailboxes/")
+                mailbox = require_owned_mailbox(conn, account["id"], mailbox_id)
+                runtime = account_runtime(conn, account["id"])
+                mailbox_query = quote(f'addressed:"{mailbox["email"]}"', safe="")
+                launch_url = f"{runtime.get('mailpit_url', '').rstrip('/')}/search?q={mailbox_query}"
+                return self.json_response({"launch_url": launch_url, "mailbox": {"id": mailbox_id, "email": mailbox["email"]}, "expires_in": 300})
             if path == "/api/client/databases" and method == "GET":
                 require_account(account)
                 return self.json_response(client_databases_payload(conn, account["id"]))
@@ -1179,11 +1261,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "mailboxes", "max_mailboxes", "mailbox_limit_reached")
                 body = self.read_json()
+                email = normalize_email(body.get("email"))
+                password = validate_password(body.get("password", ""))
+                confirm_password = str(body.get("confirm_password") or "").strip()
+                if confirm_password and confirm_password != password:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "mailbox_password_mismatch")
+                quota_mb = positive_int(body.get("quota_mb", 1024), "invalid_mailbox_quota", minimum=100, maximum=100000)
                 cur = conn.execute(
-                    "INSERT INTO mailboxes(account_id, email, quota_mb, status) VALUES (?, ?, ?, ?)",
-                    (account["id"], body.get("email"), int(body.get("quota_mb", 1024)), "active"),
+                    "INSERT INTO mailboxes(account_id, email, quota_mb, status, password_hash, mailpit_auth_hash) VALUES (?, ?, ?, ?, ?, ?)",
+                    (account["id"], email, quota_mb, "active", hash_password(password), hash_mailpit_password(password)),
                 )
-                job_id = enqueue_agent_job(conn, "create_mailbox", "mailbox", cur.lastrowid, {"email": body.get("email")})
+                job_id = enqueue_agent_job(conn, "create_mailbox", "mailbox", cur.lastrowid, {"email": email})
                 return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id}, HTTPStatus.CREATED)
             if path == "/api/client/backups" and method == "POST":
                 require_active_account(account)
@@ -1194,6 +1282,25 @@ class MangoHandler(BaseHTTPRequestHandler):
                 job_id = enqueue_agent_job(conn, "manual_backup", "backup", cur.lastrowid, {})
                 backup = conn.execute("SELECT * FROM backups WHERE id = ?", (cur.lastrowid,)).fetchone()
                 return self.json_response({"backup_id": cur.lastrowid, "status": backup["status"], "job_id": job_id}, HTTPStatus.CREATED)
+            if path.startswith("/api/client/backups/") and path.endswith("/download") and method == "GET":
+                require_account(account)
+                backup_id = path_int_id(path, "/api/client/backups/")
+                backup = conn.execute("SELECT * FROM backups WHERE id = ? AND account_id = ?", (backup_id, account["id"])).fetchone()
+                if not backup:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "backup_not_found")
+                artifact_path = Path(backup["artifact_path"] or "")
+                if not artifact_path.exists() or not artifact_path.is_file():
+                    raise ApiError(HTTPStatus.NOT_FOUND, "backup_artifact_missing")
+                data = artifact_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Content-Disposition", f'attachment; filename="{artifact_path.name}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                self.record_access_log(HTTPStatus.OK, len(data))
+                return
             if path == "/api/client/restores" and method == "POST":
                 require_active_account(account)
                 job_id = enqueue_agent_job(conn, "restore_backup", "hosting_account", account["id"], self.read_json())
@@ -1203,9 +1310,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "cron_jobs", "max_cron_jobs", "cron_job_limit_reached")
                 body = self.read_json()
+                try:
+                    schedule = validate_cron_schedule(body.get("schedule", "*/15 * * * *"))
+                except AgentError as exc:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+                command = str(body.get("command", "php cron.php")).replace("\n", " ").strip()
+                if not command:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_cron_command")
                 cur = conn.execute(
-                    "INSERT INTO cron_jobs(account_id, schedule, command, status, last_exit_code, last_output) VALUES (?, ?, ?, ?, ?, ?)",
-                    (account["id"], body.get("schedule", "*/15 * * * *"), body.get("command", "php cron.php"), "enabled", 0, "dev run ok"),
+                    "INSERT INTO cron_jobs(account_id, schedule, command, status, next_run_at, last_exit_code, last_output) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (account["id"], schedule, command, "enabled", cron_next_run_at(schedule), None, None),
                 )
                 job_id = enqueue_agent_job(conn, "create_cron_job", "cron_job", cur.lastrowid, {})
                 return self.json_response({"cron_job_id": cur.lastrowid, "job_id": job_id}, HTTPStatus.CREATED)
@@ -1219,12 +1333,33 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/git-deployments" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
+                repository_url = str(body.get("repository_url", "")).strip()
+                if not repository_url:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "repository_url_required")
+                branch = clean_text(body.get("branch", "main"), "main")
+                deploy_text = str(body.get("deploy_path") or "").strip()
+                if not deploy_text:
+                    repo_slug = re.sub(r"\.git$", "", repository_url.rstrip("/").split("/")[-1])
+                    deploy_text = f"git/{repo_slug or 'deployment'}"
+                deploy_path, _ = normalize_account_relative_path(account, deploy_text, label="deploy_path")
                 cur = conn.execute(
                     "INSERT INTO git_deployments(account_id, repository_url, branch, deploy_path, status) VALUES (?, ?, ?, ?, ?)",
-                    (account["id"], body.get("repository_url"), body.get("branch", "main"), body.get("deploy_path", account["base_path"]), "configured"),
+                    (account["id"], repository_url, branch, str(deploy_path), "configured"),
                 )
                 job_id = enqueue_agent_job(conn, "git_deploy", "git_deployment", cur.lastrowid, {})
                 return self.json_response({"git_deployment_id": cur.lastrowid, "job_id": job_id}, HTTPStatus.CREATED)
+            if path.startswith("/api/client/git-deployments/") and path.endswith("/rollback") and method == "POST":
+                require_active_account(account)
+                deployment_id = path_int_id(path.replace("/rollback", ""), "/api/client/git-deployments/")
+                deployment = conn.execute(
+                    "SELECT * FROM git_deployments WHERE id = ? AND account_id = ?",
+                    (deployment_id, account["id"]),
+                ).fetchone()
+                if not deployment:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "git_deployment_not_found")
+                job_id = enqueue_agent_job(conn, "git_rollback", "git_deployment", deployment_id, {})
+                log_activity(conn, actor["id"], "git_deployment_rolled_back", {"deployment_id": deployment_id})
+                return self.json_response({"job_id": job_id, "status": "queued"})
             if path.startswith("/api/client/git-deployments/"):
                 require_active_account(account)
                 deployment_id = path_int_id(path, "/api/client/git-deployments/")
@@ -1242,7 +1377,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/mailboxes" and method == "GET":
                 require_account(account)
                 rows = conn.execute(
-                    "SELECT * FROM mailboxes WHERE account_id = ? ORDER BY id",
+                    "SELECT id, account_id, email, quota_mb, status, created_at FROM mailboxes WHERE account_id = ? ORDER BY id",
                     (account["id"],),
                 ).fetchall()
                 return self.json_response({"mailboxes": rows_to_dicts(rows)})
@@ -1250,38 +1385,53 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "mailboxes", "max_mailboxes", "mailbox_limit_reached")
                 body = self.read_json()
+                email = normalize_email(body.get("email"))
+                password = validate_password(body.get("password", ""))
+                confirm_password = str(body.get("confirm_password") or "").strip()
+                if confirm_password and confirm_password != password:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "mailbox_password_mismatch")
+                quota_mb = positive_int(body.get("quota_mb", 1024), "invalid_mailbox_quota", minimum=100, maximum=100000)
                 cur = conn.execute(
-                    "INSERT INTO mailboxes(account_id, email, quota_mb, status) VALUES (?, ?, ?, ?)",
-                    (account["id"], body.get("email"), int(body.get("quota_mb", 1024)), "active"),
+                    "INSERT INTO mailboxes(account_id, email, quota_mb, status, password_hash, mailpit_auth_hash) VALUES (?, ?, ?, ?, ?, ?)",
+                    (account["id"], email, quota_mb, "active", hash_password(password), hash_mailpit_password(password)),
                 )
-                job_id = enqueue_agent_job(conn, "create_mailbox", "mailbox", cur.lastrowid, {"email": body.get("email")})
+                job_id = enqueue_agent_job(conn, "create_mailbox", "mailbox", cur.lastrowid, {"email": email})
                 return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id}, HTTPStatus.CREATED)
             if path.startswith("/api/client/mailboxes/"):
                 require_active_account(account)
                 mailbox_id = path_int_id(path, "/api/client/mailboxes/")
-                mailbox = conn.execute(
-                    "SELECT * FROM mailboxes WHERE id = ? AND account_id = ?",
-                    (mailbox_id, account["id"]),
-                ).fetchone()
-                if not mailbox:
-                    raise ApiError(HTTPStatus.NOT_FOUND, "mailbox_not_found")
+                mailbox = require_owned_mailbox(conn, account["id"], mailbox_id)
                 if method == "PATCH":
                     body = self.read_json()
-                    quota_mb = int(body.get("quota_mb", mailbox["quota_mb"]))
+                    quota_mb = positive_int(body.get("quota_mb", mailbox["quota_mb"]), "invalid_mailbox_quota", minimum=100, maximum=100000)
                     status = body.get("status", mailbox["status"])
                     if status not in {"active", "suspended"}:
                         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mailbox_status")
+                    password_sql = ""
+                    params = [quota_mb, status]
+                    if body.get("password"):
+                        password = validate_password(body.get("password", ""))
+                        confirm_password = str(body.get("confirm_password") or "").strip()
+                        if confirm_password and confirm_password != password:
+                            raise ApiError(HTTPStatus.BAD_REQUEST, "mailbox_password_mismatch")
+                        password_sql = ", password_hash = ?, mailpit_auth_hash = ?"
+                        params.extend([hash_password(password), hash_mailpit_password(password)])
                     conn.execute(
-                        "UPDATE mailboxes SET quota_mb = ?, status = ? WHERE id = ?",
-                        (quota_mb, status, mailbox_id),
+                        f"UPDATE mailboxes SET quota_mb = ?, status = ?{password_sql} WHERE id = ?",
+                        tuple(params + [mailbox_id]),
                     )
+                    job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": mailbox_id})
                     log_activity(conn, actor["id"], "mailbox_updated", {"mailbox_id": mailbox_id})
-                    updated = conn.execute("SELECT * FROM mailboxes WHERE id = ?", (mailbox_id,)).fetchone()
-                    return self.json_response({"mailbox": row_to_dict(updated)})
+                    updated = conn.execute(
+                        "SELECT id, account_id, email, quota_mb, status, created_at FROM mailboxes WHERE id = ?",
+                        (mailbox_id,),
+                    ).fetchone()
+                    return self.json_response({"mailbox": row_to_dict(updated), "job_id": job_id})
                 if method == "DELETE":
                     conn.execute("DELETE FROM mailboxes WHERE id = ?", (mailbox_id,))
+                    job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": mailbox_id, "email": mailbox["email"]})
                     log_activity(conn, actor["id"], "mailbox_deleted", {"email": mailbox["email"]})
-                    return self.json_response({"deleted": True})
+                    return self.json_response({"deleted": True, "job_id": job_id})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_mailbox_route")
             if path == "/api/client/cron-jobs" and method == "GET":
                 require_account(account)
@@ -1289,14 +1439,21 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id",
                     (account["id"],),
                 ).fetchall()
-                return self.json_response({"cron_jobs": rows_to_dicts(rows)})
+                return self.json_response({"cron_jobs": decorate_cron_jobs(account, rows_to_dicts(rows))})
             if path == "/api/client/cron-jobs" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "cron_jobs", "max_cron_jobs", "cron_job_limit_reached")
                 body = self.read_json()
+                try:
+                    schedule = validate_cron_schedule(body.get("schedule", "*/15 * * * *"))
+                except AgentError as exc:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+                command = str(body.get("command", "php cron.php")).replace("\n", " ").strip()
+                if not command:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_cron_command")
                 cur = conn.execute(
-                    "INSERT INTO cron_jobs(account_id, schedule, command, status, last_exit_code, last_output) VALUES (?, ?, ?, ?, ?, ?)",
-                    (account["id"], body.get("schedule", "*/15 * * * *"), body.get("command", "php cron.php"), "enabled", 0, "dev run ok"),
+                    "INSERT INTO cron_jobs(account_id, schedule, command, status, next_run_at, last_exit_code, last_output) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (account["id"], schedule, command, "enabled", cron_next_run_at(schedule), None, None),
                 )
                 job_id = enqueue_agent_job(conn, "create_cron_job", "cron_job", cur.lastrowid, {})
                 return self.json_response({"cron_job_id": cur.lastrowid, "job_id": job_id}, HTTPStatus.CREATED)
@@ -1311,14 +1468,19 @@ class MangoHandler(BaseHTTPRequestHandler):
                     raise ApiError(HTTPStatus.NOT_FOUND, "cron_job_not_found")
                 if method == "PATCH":
                     body = self.read_json()
-                    schedule = body.get("schedule", cron["schedule"])
-                    command = body.get("command", cron["command"])
+                    try:
+                        schedule = validate_cron_schedule(body.get("schedule", cron["schedule"]))
+                    except AgentError as exc:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+                    command = str(body.get("command", cron["command"])).replace("\n", " ").strip()
+                    if not command:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_cron_command")
                     status = body.get("status", cron["status"])
                     if status not in {"enabled", "disabled"}:
                         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_cron_status")
                     conn.execute(
-                        "UPDATE cron_jobs SET schedule = ?, command = ?, status = ? WHERE id = ?",
-                        (schedule, command, status, cron_id),
+                        "UPDATE cron_jobs SET schedule = ?, command = ?, status = ?, next_run_at = ? WHERE id = ?",
+                        (schedule, command, status, cron_next_run_at(schedule) if status == "enabled" else None, cron_id),
                     )
                     job_id = enqueue_agent_job(conn, "sync_cron_jobs", "hosting_account", account["id"], {})
                     log_activity(conn, actor["id"], "cron_job_updated", {"cron_id": cron_id})
@@ -1340,10 +1502,25 @@ class MangoHandler(BaseHTTPRequestHandler):
                 valid_services = ["web", "db", "filebrowser", "phpmyadmin", "cron", "sftp", "smtp-relay"]
                 if service_name not in valid_services:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_service")
-                
                 job_id = enqueue_agent_job(conn, "restart_service", "hosting_account", account["id"], {"service": service_name})
                 log_activity(conn, actor["id"], "service_restarted", {"account_id": account["id"], "service": service_name})
                 return self.json_response({"success": True, "job_id": job_id})
+
+            if path == "/api/client/services/status" and method == "GET":
+                require_account(account)
+                service_name = query.get("service", [""])[0].strip()
+                if service_name:
+                    valid_services = ["web", "db", "filebrowser", "phpmyadmin", "cron", "sftp", "smtp-relay"]
+                    if service_name not in valid_services:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_service")
+                stack = conn.execute(
+                    "SELECT * FROM account_stacks WHERE account_id = ?",
+                    (account["id"],),
+                ).fetchone()
+                if not stack:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "stack_not_found")
+                payload = Agent(CONFIG).service_status(row_to_dict(account), row_to_dict(stack), service_name or None)
+                return self.json_response(payload)
 
             if path == "/api/client/services/kill-all" and method == "POST":
                 require_active_account(account)
@@ -1572,46 +1749,64 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/activity" and method == "GET":
                 rows = conn.execute("SELECT * FROM activity_logs WHERE user_id = ? ORDER BY id DESC LIMIT 50", (actor["id"],)).fetchall()
                 return self.json_response({"activity": rows_to_dicts(rows)})
+            if path == "/api/client/cache/status" and method == "GET":
+                require_account(account)
+                return self.json_response(client_cache_status(conn, account))
             if path == "/api/client/cache/purge" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
                 website_id = optional_positive_int(body.get("website_id") or "")
                 payload = {"scope": "all"}
                 if website_id:
+                    website = conn.execute(
+                        "SELECT * FROM websites WHERE id = ? AND account_id = ?",
+                        (website_id, account["id"]),
+                    ).fetchone()
+                    if not website:
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
                     payload["website_id"] = website_id
+                    payload["scope"] = "website"
                 job_id = enqueue_agent_job(conn, "purge_cache", "hosting_account", account["id"], payload)
                 log_activity(conn, actor["id"], "cache_purged", payload)
+                return self.json_response({"job_id": job_id, "status": "queued"})
+            if path == "/api/client/cache/opcache/reset" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                website_id = optional_positive_int(body.get("website_id") or "")
+                payload = {"scope": "all"}
+                if website_id:
+                    website = conn.execute(
+                        "SELECT * FROM websites WHERE id = ? AND account_id = ?",
+                        (website_id, account["id"]),
+                    ).fetchone()
+                    if not website:
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                    payload["website_id"] = website_id
+                    payload["scope"] = "website"
+                job_id = enqueue_agent_job(conn, "reset_opcache", "hosting_account", account["id"], payload)
+                log_activity(conn, actor["id"], "opcache_reset", payload)
+                return self.json_response({"job_id": job_id, "status": "queued"})
+            if path == "/api/client/cache/object-cache/flush" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                website_id = optional_positive_int(body.get("website_id") or "")
+                payload = {"scope": "all"}
+                if website_id:
+                    website = conn.execute(
+                        "SELECT * FROM websites WHERE id = ? AND account_id = ?",
+                        (website_id, account["id"]),
+                    ).fetchone()
+                    if not website:
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                    payload["website_id"] = website_id
+                    payload["scope"] = "website"
+                job_id = enqueue_agent_job(conn, "flush_object_cache", "hosting_account", account["id"], payload)
+                log_activity(conn, actor["id"], "object_cache_flushed", payload)
                 return self.json_response({"job_id": job_id, "status": "queued"})
 
             if path == "/api/client/disk-usage" and method == "GET":
                 require_account(account)
-                
-                # Run du command on the account's vhosts directory
-                # Account base dir is typically /var/www/vhosts for all websites, wait, 
-                # each account has a list of websites with document_roots.
-                # Actually, the base directory is just /var/www/vhosts for the whole server if running natively? 
-                # Let's get it from website configs or just run `du -sh` on each website's document root.
-                
-                websites = conn.execute("SELECT * FROM websites WHERE account_id = ?", (account["id"],)).fetchall()
-                usage = []
-                
-                try:
-                    for w in websites:
-                        doc_root = f"/var/www/vhosts/{w['domain']}/{w['document_root']}"
-                        # Try to run du
-                        # We use subprocess
-                        import subprocess
-                        import os
-                        if os.path.exists(doc_root):
-                            out = subprocess.check_output(["du", "-sh", doc_root], stderr=subprocess.DEVNULL).decode("utf-8")
-                            size = out.split()[0]
-                            usage.append({"path": f"/{w['domain']}/{w['document_root']}", "size": size})
-                        else:
-                            usage.append({"path": f"/{w['domain']}/{w['document_root']}", "size": "0B"})
-                except Exception as e:
-                    pass
-                
-                return self.json_response({"usage": usage})
+                return self.json_response(client_disk_usage_payload(conn, account))
 
             if path == "/api/client/redirects" and method == "GET":
                 require_account(account)
@@ -1634,12 +1829,13 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/ftp-accounts" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
-                username = body.get("username", "").strip()
+                username = validate_db_identifier(body.get("username", ""), "invalid_ftp_username")
                 password = body.get("password", "")
                 ftp_path = body.get("path", "").strip() or "upload"
-                
-                if not username or not password:
+                if not password:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "username_and_password_required")
+                if len(password) < 8:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "password_too_short")
                 
                 # Prepend the main account username as prefix
                 full_username = f"{account['username']}_{username}"
@@ -1648,16 +1844,19 @@ class MangoHandler(BaseHTTPRequestHandler):
                 exists = conn.execute("SELECT id FROM ftp_accounts WHERE username = ?", (full_username,)).fetchone()
                 if exists:
                     raise ApiError(HTTPStatus.CONFLICT, "username_taken")
+                _, normalized_path = normalize_account_relative_path(account, ftp_path, label="path")
+                if not normalized_path:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_path")
                 
                 cursor = conn.execute(
                     "INSERT INTO ftp_accounts (account_id, username, password, path) VALUES (?, ?, ?, ?)",
-                    (account["id"], full_username, password, ftp_path)
+                    (account["id"], full_username, password, normalized_path)
                 )
                 
                 job_id = enqueue_agent_job(conn, "sync_ftp_accounts", "hosting_account", account["id"], {})
                 
                 log_activity(conn, actor["id"], "ftp_account_created", {"username": full_username})
-                return self.json_response({"success": True, "job_id": job_id, "ftp_account": {"id": cursor.lastrowid, "username": full_username, "path": ftp_path}})
+                return self.json_response({"success": True, "job_id": job_id, "ftp_account": {"id": cursor.lastrowid, "username": full_username, "path": normalized_path}})
 
             if path == "/api/client/api-tokens" and method == "POST":
                 require_active_account(account)
@@ -1771,7 +1970,12 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/protected-directories" and method == "GET":
                 require_account(account)
                 dirs = conn.execute("SELECT id, path, username, created_at FROM protected_directories WHERE account_id = ?", (account["id"],)).fetchall()
-                return self.json_response({"protected_dirs": [dict(d) for d in dirs]})
+                protected_dirs = []
+                for row in dirs:
+                    item = dict(row)
+                    item["path"] = "/" + item["path"].lstrip("/")
+                    protected_dirs.append(item)
+                return self.json_response({"protected_dirs": protected_dirs})
 
             if path == "/api/client/protected-directories" and method == "POST":
                 require_active_account(account)
@@ -1782,20 +1986,24 @@ class MangoHandler(BaseHTTPRequestHandler):
                 
                 if not dir_path or not username or not password:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "missing_fields")
+                if len(password) < 8:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "password_too_short")
                     
-                if not dir_path.startswith("/"):
-                    dir_path = "/" + dir_path
+                _, normalized_dir = normalize_account_relative_path(account, dir_path, label="path")
+                if not normalized_dir:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_path")
+                username = validate_db_identifier(username, "invalid_protected_directory_username")
                     
                 try:
                     cursor = conn.execute("INSERT INTO protected_directories(account_id, path, username, password_hash) VALUES (?, ?, ?, ?)", 
-                                          (account["id"], dir_path, username, "managed_by_agent"))
+                                          (account["id"], normalized_dir, username, "managed_by_agent"))
                     dir_id = cursor.lastrowid
                 except sqlite3.IntegrityError:
                     raise ApiError(HTTPStatus.CONFLICT, "directory_already_protected")
 
-                job_id = enqueue_agent_job(conn, "sync_protected_directories", "hosting_account", account["id"], {"path": dir_path, "username": username, "password": password})
-                log_activity(conn, actor["id"], "directory_protected", {"path": dir_path, "username": username})
-                return self.json_response({"id": dir_id, "path": dir_path, "username": username, "job_id": job_id}, HTTPStatus.CREATED)
+                job_id = enqueue_agent_job(conn, "sync_protected_directories", "hosting_account", account["id"], {"path": normalized_dir, "username": username, "password": password})
+                log_activity(conn, actor["id"], "directory_protected", {"path": normalized_dir, "username": username})
+                return self.json_response({"id": dir_id, "path": "/" + normalized_dir, "username": username, "job_id": job_id}, HTTPStatus.CREATED)
 
             match_dir = re.match(r"^/api/client/protected-directories/(\d+)$", path)
             if match_dir and method == "DELETE":
@@ -1961,7 +2169,15 @@ class MangoHandler(BaseHTTPRequestHandler):
                     require_active_account(account)
                     site_id = int(match.group(1))
                     body = self.read_json()
-                    enabled = 1 if body.get("enabled") else 0
+                    raw_enabled = body.get("enabled")
+                    if raw_enabled in {True, 1, "1", "true", "True"}:
+                        enabled = 1
+                    elif raw_enabled in {False, 0, "0", "false", "False"}:
+                        enabled = 0
+                    elif raw_enabled is None:
+                        enabled = 1
+                    else:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_enabled")
                     site = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (site_id, account["id"])).fetchone()
                     if not site:
                         raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
@@ -2015,7 +2231,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not site:
                     raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
                 return self.json_response({
-                    "download_url": f"/api/client/files/launch?path=/logs/{domain}/access.log",
+                    "download_url": f"/api/client/files/launch?path=/domains/{domain}/logs/access.log",
                     "success": True
                 })
 
@@ -2439,6 +2655,16 @@ class MangoHandler(BaseHTTPRequestHandler):
             payload["checks"] = rows_to_dicts(conn.execute("SELECT * FROM status_checks ORDER BY id").fetchall())
         return self.json_response(payload)
 
+    def svg_response(self, svg_text, status=HTTPStatus.OK):
+        body = svg_text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.record_access_log(status, len(body))
+
     def read_json(self):
         length = int(self.headers.get("Content-Length", "0"))
         if length == 0:
@@ -2574,6 +2800,185 @@ def account_runtime(conn, account_id):
     return parse_json_field(row["runtime_json"], {}) if row else {}
 
 
+def client_cache_status(conn, account):
+    runtime = account_runtime(conn, account["id"])
+    report_path = Path(account["base_path"]) / ".runtime" / "cache" / "last_action.json"
+    report = parse_json_field(report_path.read_text(encoding="utf-8"), {}) if report_path.exists() else {}
+    return {
+        "cache_status": {
+            "opcode_cache": "active" if runtime.get("opcode_cache_backend") else "inactive",
+            "object_cache": "active" if runtime.get("object_cache_backend") else "inactive",
+            "opcode_cache_backend": runtime.get("opcode_cache_backend", "opcache"),
+            "object_cache_backend": runtime.get("object_cache_backend", "redis"),
+            "last_purged": report.get("purged_at"),
+            "last_action": report.get("action"),
+            "last_action_scope": report.get("scope"),
+        }
+    }
+
+
+def php_info_probe(account, website=None, runtime=None):
+    runtime = runtime or {}
+    username = account["username"]
+    php_script = (
+        '$opcache_available = function_exists("opcache_get_status");'
+        '$opcache_status = $opcache_available ? @opcache_get_status(false) : null;'
+        '$result = ['
+        '"version" => PHP_VERSION,'
+        '"sapi" => php_sapi_name(),'
+        '"extensions" => get_loaded_extensions(),'
+        '"directives" => ['
+        '"memory_limit" => ini_get("memory_limit"),'
+        '"max_execution_time" => ini_get("max_execution_time"),'
+        '"upload_max_filesize" => ini_get("upload_max_filesize"),'
+        '"post_max_size" => ini_get("post_max_size"),'
+        '"error_reporting" => ini_get("error_reporting"),'
+        '"display_errors" => ini_get("display_errors"),'
+        '"session.gc_maxlifetime" => ini_get("session.gc_maxlifetime"),'
+        '"date.timezone" => ini_get("date.timezone"),'
+        '],'
+        '"opcache" => ['
+        '"available" => $opcache_available,'
+        '"enabled" => $opcache_available ? (bool) ($opcache_status["opcache_enabled"] ?? false) : false,'
+        '"memory_usage" => $opcache_status["memory_usage"] ?? null,'
+        '"statistics" => $opcache_status["opcache_statistics"] ?? null,'
+        '],'
+        '];'
+        'echo json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);'
+    )
+    probes = []
+    docker = shutil.which("docker")
+    if docker:
+        probes.append([docker, "exec", f"mp-{username}-web", "php", "-r", php_script])
+    probes.append(["php", "-r", php_script])
+    payload = None
+    for command in probes:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=8, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode != 0:
+            continue
+        text = result.stdout.strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+            break
+        except json.JSONDecodeError:
+            continue
+    if not payload:
+        payload = {
+            "version": website.get("php_version") if website else "8.3",
+            "sapi": "FPM/FastCGI",
+            "extensions": [
+                "bcmath",
+                "ctype",
+                "curl",
+                "dom",
+                "exif",
+                "fileinfo",
+                "gd",
+                "intl",
+                "json",
+                "mbstring",
+                "mysqli",
+                "opcache",
+                "openssl",
+                "pcre",
+                "pdo",
+                "redis",
+                "xml",
+                "zip",
+            ],
+            "directives": {
+                "memory_limit": "256M",
+                "max_execution_time": "120",
+                "upload_max_filesize": "64M",
+                "post_max_size": "64M",
+                "error_reporting": "E_ALL & ~E_DEPRECATED",
+                "display_errors": "Off",
+                "session.gc_maxlifetime": "1440",
+                "date.timezone": "UTC",
+            },
+            "opcache": {
+                "available": bool(runtime.get("opcode_cache_backend")),
+                "enabled": bool(runtime.get("opcode_cache_backend")),
+                "memory_usage": None,
+                "statistics": None,
+            },
+        }
+    payload["website"] = {
+        "id": website["id"] if website else None,
+        "domain": website["domain"] if website else None,
+        "php_version": website.get("php_version") if website else payload.get("version"),
+        "document_root": website["document_root"] if website else None,
+    }
+    payload["runtime"] = {
+        "web_container": f"mp-{username}-web",
+        "opcode_cache_backend": runtime.get("opcode_cache_backend", "opcache"),
+        "object_cache_backend": runtime.get("object_cache_backend", "redis"),
+    }
+    return payload
+
+
+def client_php_info_payload(conn, account, website_id=None):
+    websites = rows_to_dicts(
+        conn.execute(
+            "SELECT id, account_id, domain, document_root, php_version, ssl_status, status FROM websites WHERE account_id = ? ORDER BY id",
+            (account["id"],),
+        ).fetchall()
+    )
+    website = None
+    if website_id:
+        website = next((item for item in websites if item["id"] == website_id), None)
+        if not website:
+            raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+    elif websites:
+        website = websites[0]
+    runtime = account_runtime(conn, account["id"])
+    payload = php_info_probe(account, website, runtime)
+    payload["websites"] = [
+        {"id": item["id"], "domain": item["domain"], "php_version": item["php_version"], "document_root": item["document_root"]}
+        for item in websites
+    ]
+    return payload
+
+
+def client_disk_usage_payload(conn, account):
+    base_path = Path(account["base_path"]).resolve()
+    websites = rows_to_dicts(
+        conn.execute(
+            "SELECT id, domain, document_root FROM websites WHERE account_id = ? ORDER BY id",
+            (account["id"],),
+        ).fetchall()
+    )
+    usage = []
+    for website in websites:
+        doc_root = Path(website["document_root"])
+        size_mb = directory_size_mb(doc_root)
+        try:
+            relative = doc_root.resolve().relative_to(base_path)
+            display_path = f"/{relative.as_posix()}"
+        except ValueError:
+            display_path = f"/{website['domain']}/public_html"
+        usage.append({
+            "path": display_path,
+            "size": format_size_mb(size_mb),
+            "size_mb": round(float(size_mb), 2),
+        })
+    return {"usage": usage, "total_size_mb": round(sum(item["size_mb"] for item in usage), 2)}
+
+
+def format_size_mb(size_mb):
+    size = float(size_mb or 0)
+    if size >= 1024:
+        return f"{size / 1024:.1f} GB"
+    if size >= 1:
+        return f"{size:.1f} MB"
+    return f"{int(round(size * 1024))} KB" if size > 0 else "0 B"
+
+
 def client_sync_jobs(conn, account, limit=50):
     rows = conn.execute(
         """
@@ -2660,12 +3065,14 @@ ANALYTICS_FILTERS = {
 
 
 def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-countries"):
-    collect_hosted_access_logs(conn, account_id)
-    websites = rows_to_dicts(conn.execute("SELECT id, domain, status FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
+    websites = rows_to_dicts(conn.execute("SELECT id, domain, status, analytics_enabled FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
     selected = select_analytics_website(websites, website_id)
     filter_key = filter_key if filter_key in ANALYTICS_FILTERS else "top-countries"
     if not selected:
         return empty_analytics_payload(filter_key)
+    analytics_enabled = int(selected.get("analytics_enabled", 1) or 0) != 0
+    if analytics_enabled:
+        collect_hosted_access_logs(conn, account_id)
 
     params = [account_id, selected["id"]]
     where_sql = "account_id = ? AND website_id = ?"
@@ -2727,6 +3134,7 @@ def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-
     return {
         "domain": selected["domain"],
         "website_id": selected["id"],
+        "analytics_enabled": analytics_enabled,
         "filters": [{"key": key, "label": label} for key, label in ANALYTICS_FILTERS.items()],
         "filter": filter_key,
         "summary": {
@@ -2759,6 +3167,7 @@ def empty_analytics_payload(filter_key):
     return {
         "domain": "",
         "website_id": None,
+        "analytics_enabled": True,
         "filters": [{"key": key, "label": label} for key, label in ANALYTICS_FILTERS.items()],
         "filter": filter_key,
         "summary": {"total_requests": 0, "unique_ip_addresses": 0, "bandwidth_bytes": 0, "error_4xx": 0, "error_5xx": 0},
@@ -2929,26 +3338,33 @@ RESOURCE_WINDOWS = {
 def resource_usage_payload(conn, account, window_key):
     if window_key not in RESOURCE_WINDOWS:
         window_key = "30m"
-    collect_resource_usage_sample(conn, account)
-    ensure_resource_usage_history(conn, account)
-    now = int(time.time())
-    start = now - RESOURCE_WINDOWS[window_key]
-    rows = rows_to_dicts(
-        conn.execute(
-            """
-            SELECT sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, source
-            FROM resource_usage_samples
-            WHERE account_id = ? AND sampled_at >= ?
-            ORDER BY sampled_at
-            """,
-            (account["id"], start),
-        ).fetchall()
-    )
+    try:
+        collect_resource_usage_sample(conn, account)
+        ensure_resource_usage_history(conn, account)
+        now = int(time.time())
+        start = now - RESOURCE_WINDOWS[window_key]
+        rows = rows_to_dicts(
+            conn.execute(
+                """
+                SELECT sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, source
+                FROM resource_usage_samples
+                WHERE account_id = ? AND sampled_at >= ?
+                ORDER BY sampled_at
+                """,
+                (account["id"], start),
+            ).fetchall()
+        )
+        current = rows[-1] if rows else resource_usage_estimate(account)
+        samples = downsample_resource_usage(rows, max_points=240)
+    except Exception as exc:
+        print(f"resource usage payload failed: {exc}")
+        current = resource_usage_estimate(account)
+        samples = []
     return {
         "range": window_key,
         "windows": list(RESOURCE_WINDOWS.keys()),
-        "current": rows[-1] if rows else resource_usage_estimate(account),
-        "samples": downsample_resource_usage(rows, max_points=240),
+        "current": current,
+        "samples": samples,
     }
 
 
@@ -3329,6 +3745,13 @@ def require_owned_database_grant(conn, account_id, grant_id):
     ).fetchone()
     if not row:
         raise ApiError(HTTPStatus.NOT_FOUND, "database_grant_not_found")
+    return row
+
+
+def require_owned_mailbox(conn, account_id, mailbox_id):
+    row = conn.execute("SELECT * FROM mailboxes WHERE id = ? AND account_id = ?", (mailbox_id, account_id)).fetchone()
+    if not row:
+        raise ApiError(HTTPStatus.NOT_FOUND, "mailbox_not_found")
     return row
 
 

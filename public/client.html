@@ -650,6 +650,21 @@
                 </button>
               </div>
             </div>
+            <div class="analytics-toggle-row">
+              <label class="toggle-label">
+                <div
+                  class="toggle-switch"
+                  :class="{ active: selectedWebsite && Number(selectedWebsite.analytics_enabled) !== 0, saving: selectedWebsite && selectedWebsite.savingAnalytics }"
+                  @click="toggleAnalyticsTracking(selectedWebsite)"
+                  role="switch"
+                  :aria-checked="selectedWebsite && Number(selectedWebsite.analytics_enabled) !== 0"
+                >
+                  <div class="toggle-knob"></div>
+                </div>
+                <span>{{ selectedWebsite ? (selectedWebsite.savingAnalytics ? 'Saving analytics setting…' : (Number(selectedWebsite.analytics_enabled) !== 0 ? 'Analytics tracking enabled' : 'Analytics tracking paused')) : 'Select a site to manage analytics' }}</span>
+              </label>
+              <small v-if="selectedWebsite">Turn this off to stop new access-log collection for the selected site and reduce account overhead.</small>
+            </div>
             <div class="metric-grid analytics-metrics">
               <div class="metric"><app-icon name="website"></app-icon><span>Domain shown</span><strong>{{ analytics.domain || "-" }}</strong><small>selected website</small></div>
               <div class="metric"><app-icon name="files"></app-icon><span>Bandwidth</span><strong>{{ formatBytes(analytics.summary.bandwidth_bytes) }}</strong><small>bytes served</small></div>
@@ -674,6 +689,10 @@
                 </li>
                 <li v-if="!analytics.top_countries.length"><span>No access logs yet</span><strong>0</strong></li>
               </ol>
+              <div v-if="selectedWebsite && Number(selectedWebsite.analytics_enabled) === 0" class="info-box" style="margin-top: 1rem;">
+                <app-icon name="info"></app-icon>
+                <p>Analytics is paused for this site. Existing history stays visible, but new requests will not be collected until you turn it back on.</p>
+              </div>
               <div v-if="['access-logs', '4xx', '5xx'].includes(analytics.filter)" class="table-wrap">
                 <table>
                   <thead><tr><th>Time</th><th>Request</th><th>Status</th><th>IP</th><th>Country</th><th>Bandwidth</th></tr></thead>
@@ -861,6 +880,9 @@
                   <div>
                     <h3 style="margin: 0; font-size: 1.1rem;">{{ svc.name }}</h3>
                     <small style="color: var(--text-secondary);">{{ svc.description }}</small>
+                    <div style="margin-top: 0.5rem;">
+                      <span class="pill" :class="serviceStatusClass(svc.id)">{{ serviceStatusLabel(svc.id) }}</span>
+                    </div>
                   </div>
                 </div>
                 <button class="secondary-button" @click="restartService(svc.id)" :disabled="loadingServices">
@@ -912,11 +934,7 @@
                   <h2>Email &amp; Mailboxes</h2>
                   <p>{{ mailboxes.length }} mailbox{{ mailboxes.length === 1 ? '' : 'es' }} on this account</p>
                 </div>
-                <div class="inline-form">
-                  <input v-model="newMailbox.email" placeholder="user@yourdomain.com">
-                  <input v-model.number="newMailbox.quota_mb" type="number" min="100" placeholder="Quota MB">
-                  <button class="primary-button" @click="createMailbox"><app-icon name="plus"></app-icon><span>Add Mailbox</span></button>
-                </div>
+                <button class="primary-button" @click="openMailboxWizard"><app-icon name="plus"></app-icon><span>Add Mailbox</span></button>
               </div>
               <div class="table-wrap">
                 <table>
@@ -927,6 +945,7 @@
                       <td>{{ mailbox.quota_mb }} MB</td>
                       <td><span class="pill" :class="mailbox.status">{{ mailbox.status }}</span></td>
                       <td class="actions">
+                        <button class="secondary-button" @click="launchMailboxWebmail(mailbox)"><app-icon name="key"></app-icon><span>Login</span></button>
                         <button @click="toggleMailboxStatus(mailbox)">{{ mailbox.status === 'suspended' ? 'Enable' : 'Suspend' }}</button>
                         <button class="danger-button" @click="deleteMailbox(mailbox)"><app-icon name="trash"></app-icon></button>
                       </td>
@@ -946,6 +965,73 @@
             </div>
           </section>
 
+          <div v-if="mailboxWizard.isOpen" class="modal-overlay" @click.self="closeMailboxWizard">
+            <div class="modal-panel" style="max-width: 640px;">
+              <div class="modal-header">
+                <h2 v-if="mailboxWizard.step < 4">Add Mailbox (Step {{ mailboxWizard.step }} of 3)</h2>
+                <h2 v-else>Mailbox Created</h2>
+                <button class="close-button" @click="closeMailboxWizard" :disabled="mailboxWizard.isCreating">×</button>
+              </div>
+
+              <div class="modal-body" v-if="mailboxWizard.step === 1">
+                <div class="form-grid">
+                  <label>
+                    Email address
+                    <input v-model.trim="mailboxWizard.email" type="email" placeholder="user@yourdomain.com">
+                  </label>
+                  <label>
+                    Quota (MB)
+                    <input v-model.number="mailboxWizard.quota_mb" type="number" min="100" step="1" placeholder="1024">
+                  </label>
+                </div>
+              </div>
+
+              <div class="modal-body" v-if="mailboxWizard.step === 2">
+                <div class="form-grid">
+                  <label>
+                    Password
+                    <input v-model="mailboxWizard.password" type="password" placeholder="At least 10 characters">
+                  </label>
+                  <label>
+                    Confirm password
+                    <input v-model="mailboxWizard.confirm_password" type="password" placeholder="Repeat the password">
+                  </label>
+                </div>
+                <div class="info-box" style="margin-top: 1rem;">
+                  <app-icon name="key"></app-icon>
+                  <p>This password is used for the mailbox login and Mailpit access.</p>
+                </div>
+              </div>
+
+              <div class="modal-body" v-if="mailboxWizard.step === 3">
+                <div class="info-box">
+                  <app-icon name="email"></app-icon>
+                  <div>
+                    <strong>{{ mailboxWizard.email }}</strong>
+                    <p>Quota: {{ mailboxWizard.quota_mb }} MB</p>
+                  </div>
+                </div>
+                <div class="info-box" style="margin-top: 1rem;">
+                  <app-icon name="activity"></app-icon>
+                  <p>The mailbox will appear in Mailpit with its own login button in the table below.</p>
+                </div>
+              </div>
+
+              <div class="modal-body success-step" v-if="mailboxWizard.step === 4">
+                <app-icon name="check"></app-icon>
+                <h3>Mailbox ready</h3>
+                <p>{{ mailboxWizard.createdMailbox?.email }} has been created and Mailpit is syncing the account.</p>
+              </div>
+
+              <div class="modal-footer">
+                <button v-if="mailboxWizard.step > 1 && mailboxWizard.step < 4" class="ghost-button" @click="prevMailboxWizardStep" :disabled="mailboxWizard.isCreating">Back</button>
+                <button v-if="mailboxWizard.step < 3" class="primary-button" @click="nextMailboxWizardStep" :disabled="(mailboxWizard.step === 1 && (!mailboxWizard.email || mailboxWizard.quota_mb < 100)) || (mailboxWizard.step === 2 && (!mailboxWizard.password || mailboxWizard.password.length < 10 || mailboxWizard.password !== mailboxWizard.confirm_password))">Next</button>
+                <button v-if="mailboxWizard.step === 3" class="primary-button" @click="createMailbox" :disabled="mailboxWizard.isCreating || !mailboxWizard.email || !mailboxWizard.password || mailboxWizard.password !== mailboxWizard.confirm_password"><span v-if="!mailboxWizard.isCreating">Create Mailbox</span><span v-else>Creating...</span></button>
+                <button v-if="mailboxWizard.step === 4" class="primary-button" @click="closeMailboxWizard">Done</button>
+              </div>
+            </div>
+          </div>
+
           <!-- ═══════════════════════════════════════════════════════════ CRON JOBS -->
           <section v-if="activePage === 'cron-jobs'" class="panel">
             <div class="section-head">
@@ -961,11 +1047,17 @@
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Schedule</th><th>Command</th><th>Status</th><th>Last Exit</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Schedule</th><th>Command</th><th>Next Run</th><th>Last Run</th><th>Status</th><th>Last Exit</th><th>Actions</th></tr></thead>
                 <tbody>
                   <tr v-for="job in cronJobs" :key="job.id">
                     <td><code>{{ job.schedule }}</code></td>
-                    <td><code>{{ job.command }}</code></td>
+                    <td>
+                      <code>{{ job.command }}</code>
+                      <small class="muted" v-if="job.last_output">Last output: {{ job.last_output.slice(0, 80) }}</small>
+                      <small class="muted" v-else>No output yet</small>
+                    </td>
+                    <td><span class="pill">{{ job.next_run_at || 'pending' }}</span></td>
+                    <td><span class="pill">{{ job.last_run_at || 'never' }}</span></td>
                     <td><span class="pill" :class="job.status">{{ job.status }}</span></td>
                     <td><span class="pill" :class="{ ok: job.last_exit_code === 0 }">{{ job.last_exit_code === 0 ? 'OK' : 'Exit ' + job.last_exit_code }}</span></td>
                     <td class="actions">
@@ -973,7 +1065,7 @@
                       <button class="danger-button" @click="deleteCronJob(job)"><app-icon name="trash"></app-icon></button>
                     </td>
                   </tr>
-                  <tr v-if="!cronJobs.length"><td colspan="5" class="empty-row">No cron jobs yet. Add one above.</td></tr>
+                  <tr v-if="!cronJobs.length"><td colspan="7" class="empty-row">No cron jobs yet. Add one above.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -999,7 +1091,10 @@
                     <td><small>{{ backup.created_at }}</small></td>
                     <td>
                       <small>{{ backup.artifact_path || '—' }}</small>
-                      <button v-if="backup.status === 'completed'" class="small-button" style="margin-left: 8px;" @click="restoreBackup(backup.id)">Restore</button>
+                      <div v-if="backup.status === 'completed'" class="actions" style="margin-top: 0.5rem;">
+                        <button class="small-button" @click="downloadBackup(backup.id)">Download</button>
+                        <button class="small-button" @click="restoreBackup(backup.id)">Restore</button>
+                      </div>
                     </td>
                   </tr>
                   <tr v-if="!backups.length"><td colspan="5" class="empty-row">No backups yet. Click Manual Backup to create one.</td></tr>
@@ -1026,10 +1121,11 @@
                 <thead><tr><th>Repository</th><th>Branch</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   <tr v-for="dep in gitDeployments" :key="dep.id">
-                    <td><strong>{{ dep.repository_url }}</strong><small>{{ dep.deploy_path }}</small></td>
+                    <td><strong>{{ dep.repository_url }}</strong><small>{{ dep.deploy_path }}</small><small v-if="dep.last_commit">Last commit: {{ dep.last_commit.slice(0, 10) }}</small></td>
                     <td><code>{{ dep.branch }}</code></td>
                     <td><span class="pill" :class="dep.status">{{ dep.status }}</span></td>
                     <td class="actions">
+                      <button class="secondary-button" @click="rollbackGitDeployment(dep)" :disabled="!dep.last_commit">Rollback</button>
                       <button class="danger-button" @click="deleteGitDeployment(dep)"><app-icon name="trash"></app-icon></button>
                     </td>
                   </tr>
@@ -1192,25 +1288,25 @@
               <app-icon name="info"></app-icon>
               <div>
                 <h2>PHP Info</h2>
-                <p>Runtime PHP configuration for your hosting environment.</p>
+                <p>Runtime PHP configuration for {{ phpInfo.website?.domain || selectedWebsite?.domain || 'your hosting environment' }}.</p>
               </div>
             </div>
             <div class="php-info-grid">
               <div class="php-info-card">
                 <label>PHP Version</label>
-                <strong>{{ selectedWebsite?.php_version || phpVersions[phpVersions.length - 1] }}</strong>
+                <strong>{{ phpInfo.website?.php_version || phpInfo.version || selectedWebsite?.php_version || phpVersions[phpVersions.length - 1] }}</strong>
               </div>
               <div class="php-info-card">
                 <label>SAPI</label>
-                <strong>FPM/FastCGI</strong>
+                <strong>{{ phpInfo.sapi || 'FPM/FastCGI' }}</strong>
               </div>
               <div class="php-info-card">
                 <label>Extensions</label>
-                <strong>bcmath, ctype, curl, dom, exif, fileinfo, gd, intl, json, mbstring, mysqli, opcache, openssl, pcre, pdo, redis, xml, zip</strong>
+                <strong>{{ (phpInfo.extensions || []).join(', ') || 'Loading runtime details...' }}</strong>
               </div>
               <div class="php-info-card">
                 <label>OPcache</label>
-                <strong>Enabled</strong>
+                <strong>{{ phpInfo.opcache?.enabled ? 'Enabled' : 'Disabled' }}</strong>
               </div>
             </div>
             <div class="info-box" style="margin-top: 1rem;">
@@ -1221,14 +1317,14 @@
               <table>
                 <thead><tr><th>Directive</th><th>Value</th></tr></thead>
                 <tbody>
-                  <tr><td><code>memory_limit</code></td><td>256M</td></tr>
-                  <tr><td><code>max_execution_time</code></td><td>120</td></tr>
-                  <tr><td><code>upload_max_filesize</code></td><td>64M</td></tr>
-                  <tr><td><code>post_max_size</code></td><td>64M</td></tr>
-                  <tr><td><code>error_reporting</code></td><td>E_ALL &amp; ~E_DEPRECATED</td></tr>
-                  <tr><td><code>display_errors</code></td><td>Off</td></tr>
-                  <tr><td><code>session.gc_maxlifetime</code></td><td>1440</td></tr>
-                  <tr><td><code>date.timezone</code></td><td>UTC</td></tr>
+                  <tr><td><code>memory_limit</code></td><td>{{ phpInfo.directives?.memory_limit || '256M' }}</td></tr>
+                  <tr><td><code>max_execution_time</code></td><td>{{ phpInfo.directives?.max_execution_time || '120' }}</td></tr>
+                  <tr><td><code>upload_max_filesize</code></td><td>{{ phpInfo.directives?.upload_max_filesize || '64M' }}</td></tr>
+                  <tr><td><code>post_max_size</code></td><td>{{ phpInfo.directives?.post_max_size || '64M' }}</td></tr>
+                  <tr><td><code>error_reporting</code></td><td>{{ phpInfo.directives?.error_reporting || 'E_ALL &amp; ~E_DEPRECATED' }}</td></tr>
+                  <tr><td><code>display_errors</code></td><td>{{ phpInfo.directives?.display_errors || 'Off' }}</td></tr>
+                  <tr><td><code>session.gc_maxlifetime</code></td><td>{{ phpInfo.directives?.['session.gc_maxlifetime'] || '1440' }}</td></tr>
+                  <tr><td><code>date.timezone</code></td><td>{{ phpInfo.directives?.['date.timezone'] || 'UTC' }}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1281,7 +1377,14 @@
                   <app-icon name="cache"></app-icon>
                   <span>{{ cachePurging ? 'Purging…' : 'Purge All Cache' }}</span>
                 </button>
-                <button class="ghost-button" :disabled="cachePurging" @click="purgeCache()">Purge All Sites</button>
+                <button class="secondary-button" :disabled="cachePurging" @click="resetOpcodeCache(selectedWebsite?.id)">
+                  <app-icon name="performance"></app-icon>
+                  <span>Reset OPcache</span>
+                </button>
+                <button class="secondary-button" :disabled="cachePurging" @click="flushObjectCache(selectedWebsite?.id)">
+                  <app-icon name="databases"></app-icon>
+                  <span>Flush Object Cache</span>
+                </button>
               </div>
             </div>
           </section>

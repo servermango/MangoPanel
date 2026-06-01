@@ -21,8 +21,14 @@ class AgentDispatchTests(unittest.TestCase):
         agent_text = (PROJECT_ROOT / "mangopanel" / "agent.py").read_text(encoding="utf-8")
         dispatched = set(re.findall(r'job_type == "([^"]+)"', agent_text))
         expected = {
+            "sync_ftp_accounts",
+            "sync_protected_directories",
             "sync_remote_mysql",
             "sync_hotlink_protection",
+            "sync_mailboxes",
+            "sync_website_analytics",
+            "reset_opcache",
+            "flush_object_cache",
             "install_site_builder",
             "optimize_images",
             "sync_cron_jobs",

@@ -26,6 +26,11 @@ def hash_password(password, iterations=260000):
     )
 
 
+def hash_mailpit_password(password):
+    digest = hashlib.sha1(password.encode("utf-8")).digest()
+    return "{SHA}" + base64.b64encode(digest).decode("ascii")
+
+
 def verify_password(password, encoded):
     try:
         algorithm, iterations, salt, expected = encoded.split("$", 3)
@@ -98,4 +103,3 @@ def verify_totp(secret, code, window=1):
         if hmac.compare_digest(totp_code(secret, now + (delta * 30)), cleaned):
             return True
     return False
-

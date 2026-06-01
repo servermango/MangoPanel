@@ -3,6 +3,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qs, urlparse
 
 
 CLIENT_BASE_URL = os.getenv("MP_CLIENT_BASE_URL", os.getenv("MP_BASE_URL", "http://127.0.0.1:8000")).rstrip("/")
@@ -131,6 +132,17 @@ def main():
     )
     assert status == 302
     assert "Set-Cookie" in headers
+    mailbox = request(
+        CLIENT_BASE_URL,
+        "POST",
+        "/api/client/mailboxes",
+        {"email": f"smoke-mail-{suffix}@example.mango.test", "quota_mb": 1024, "password": PASSWORD, "confirm_password": PASSWORD},
+        token=client_token,
+    )
+    mailbox_launch = request(CLIENT_BASE_URL, "GET", f"/api/client/mailboxes/{mailbox['mailbox_id']}/webmail/launch", token=client_token)
+    parsed_launch = urlparse(mailbox_launch["launch_url"])
+    assert parsed_launch.path.endswith("/search"), parsed_launch.path
+    assert parse_qs(parsed_launch.query).get("q", [""])[0].startswith('addressed:"smoke-mail-')
     request(CLIENT_BASE_URL, "GET", "/api/client/webmail/launch", token=client_token)
     request(CLIENT_BASE_URL, "POST", "/api/client/backups", {}, token=client_token)
     request(CLIENT_BASE_URL, "POST", "/api/client/restores", {"kind": "latest"}, token=client_token)

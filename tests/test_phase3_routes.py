@@ -96,6 +96,30 @@ class ClientApiServer:
             raw = exc.read().decode("utf-8")
             return exc.code, dict(exc.headers), json.loads(raw) if raw else {}
 
+    def request_bytes(self, method, path, body=None, token=None, host=None, extra_headers=None):
+        data = None
+        headers = {"Accept": "application/octet-stream"}
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        if token:
+            headers["Authorization"] = "Bearer {}".format(token)
+        if host:
+            headers["Host"] = host
+        if extra_headers:
+            headers.update(extra_headers)
+        req = urllib.request.Request(self.base_url + path, data=data, headers=headers, method=method)
+        class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(urllib.request.HTTPHandler, NoRedirectHandler)
+        try:
+            with opener.open(req, timeout=10) as response:
+                return response.status, dict(response.headers), response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, dict(exc.headers), exc.read()
+
     def request_error(self, method, path, body=None, token=None):
         data = None
         headers = {"Accept": "application/json"}
@@ -155,7 +179,7 @@ class Phase3RouteTests(unittest.TestCase):
                 server.request("DELETE", "/api/client/pg-databases/users/{}".format(user_id), token=token)
                 server.request("DELETE", "/api/client/pg-databases/{}".format(db_id), token=token)
 
-            artifact = config.account_root / "u000001" / ".runtime" / "simulated" / "postgresql.json"
+            artifact = config.account_root / "u000001" / ".runtime" / "postgresql" / "report.json"
             self.assertTrue(artifact.exists())
             with connect(config.db_path) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) AS c FROM pg_databases").fetchone()["c"], 0)

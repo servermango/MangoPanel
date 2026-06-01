@@ -1,8 +1,14 @@
+import json
+import io
+import os
+import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from mangopanel.agent import Agent
+from mangopanel.agent import Agent, cron_next_run_at
 from mangopanel.config import Config
 from mangopanel.db import connect, create_job, seed_dev_data
 
@@ -25,14 +31,27 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(compose_path.exists())
             compose_text = compose_path.read_text(encoding="utf-8")
             self.assertIn("mp-u000001-web", compose_text)
+            self.assertIn("mp-u000001-redis", compose_text)
             self.assertIn("127.0.0.1:", compose_text)
             self.assertIn('cpus: "1"', compose_text)
             self.assertIn('mangopanel.storage_mb: "10240"', compose_text)
             self.assertIn('mangopanel.inode_limit: "100000"', compose_text)
             self.assertIn('mangopanel.backup_retention_days: "7"', compose_text)
             self.assertTrue((config.account_root / "u000001" / "account.json").exists())
-            cron_text = (config.account_root / "u000001" / ".runtime" / "stack" / "cron").read_text(encoding="utf-8")
-            self.assertIn("php /home/u000001/domains/example.mango.test/public_html/cron.php", cron_text)
+            web_dockerfile = (config.account_root / "u000001" / ".runtime" / "stack" / "web" / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("lsphp83-opcache", web_dockerfile)
+            self.assertIn("lsphp82-opcache", web_dockerfile)
+            self.assertIn("lsphp84-opcache", web_dockerfile)
+            with connect(config.db_path) as conn:
+                cron_job = conn.execute("SELECT * FROM cron_jobs WHERE account_id = 1 ORDER BY id LIMIT 1").fetchone()
+                self.assertIsNotNone(cron_job)
+                cron_script_path = config.account_root / "u000001" / ".runtime" / "cron" / "jobs" / f"job-{cron_job['id']}.sh"
+                cron_text = (config.account_root / "u000001" / ".runtime" / "stack" / "cron").read_text(encoding="utf-8")
+                self.assertIn(f"/home/u000001/.runtime/cron/jobs/job-{cron_job['id']}.sh", cron_text)
+                cron_script = cron_script_path.read_text(encoding="utf-8")
+                self.assertIn("php /home/u000001/domains/example.mango.test/public_html/cron.php", cron_script)
+                mailpit_users = (config.account_root / "u000001" / ".runtime" / "stack" / "mailpit-users.txt").read_text(encoding="utf-8")
+                self.assertIn("hello@example.mango.test:{SHA}", mailpit_users)
             quota_text = (config.account_root / "u000001" / ".runtime" / "stack" / "quota.json").read_text(encoding="utf-8")
             self.assertIn('"storage_mb": 10240', quota_text)
             self.assertIn('"inode_limit": 100000', quota_text)
@@ -75,24 +94,667 @@ class AgentTests(unittest.TestCase):
                     (account["id"], 1, "example.mango.test"),
                 )
                 jobs.append(create_job(conn, "sync_hotlink_protection", "hosting_account", account["id"], {}))
+                conn.execute(
+                    "INSERT INTO mailboxes(account_id, email, quota_mb, status, password_hash, mailpit_auth_hash) VALUES (?, ?, ?, ?, ?, ?)",
+                    (account["id"], "second@example.mango.test", 1024, "active", "pbkdf2_sha256$1$abc$def", "{SHA}dGVzdA=="),
+                )
+                jobs.append(create_job(conn, "sync_mailboxes", "hosting_account", account["id"], {}))
                 conn.commit()
 
                 results = [Agent(config).run_job_by_id(job_id) for job_id in jobs]
 
                 for result in results:
                     self.assertEqual(result["status"], "succeeded")
-                    artifact_path = result["result"].get("artifact_path")
+                    artifact_path = result["result"].get("artifact_path") or result["result"].get("state_path") or result["result"].get("compose_path")
                     self.assertTrue(artifact_path, result)
                     self.assertTrue(Path(artifact_path).exists(), artifact_path)
 
-                simulated_dir = config.account_root / "u000001" / ".runtime" / "simulated"
-                self.assertTrue((simulated_dir / "dns" / "example.mango.test.zone").exists())
-                self.assertTrue((simulated_dir / "ssl" / "example.mango.test.json").exists())
-                self.assertTrue((simulated_dir / "remote-mysql.json").exists())
-                self.assertTrue((simulated_dir / "hotlink.conf").exists())
-                self.assertTrue((simulated_dir / "image-optimization-report.json").exists())
-                self.assertTrue((simulated_dir / "cron.json").exists())
+                self.assertTrue((config.account_root / "u000001" / ".runtime" / "dns" / "example.mango.test.json").exists())
+                self.assertTrue((config.account_root / "u000001" / ".runtime" / "ssl" / "example.mango.test-issued.json").exists())
+                self.assertTrue((config.account_root / "u000001" / ".runtime" / "mysql-remote" / "report.json").exists())
+                self.assertTrue((config.account_root / "u000001" / ".runtime" / "images" / "report.json").exists())
+                self.assertTrue((config.account_root / "u000001" / ".runtime" / "cron" / "report.json").exists())
+                self.assertIn("second@example.mango.test:{SHA}", (config.account_root / "u000001" / ".runtime" / "stack" / "mailpit-users.txt").read_text(encoding="utf-8"))
                 self.assertTrue(Path(website["document_root"], "index.html").exists())
+                hotlink_htaccess = Path(website["document_root"]) / ".htaccess"
+                hotlink_text = hotlink_htaccess.read_text(encoding="utf-8")
+                self.assertIn("# BEGIN MangoPanel Hotlink", hotlink_text)
+                self.assertIn("RewriteCond %{HTTP_REFERER} !^https?://(?:[^/]+\\.)?example\\.mango\\.test(?:/|$)", hotlink_text)
+
+    def test_analytics_sync_toggles_access_logs_in_stack_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                website = conn.execute("SELECT * FROM websites WHERE account_id = 1 ORDER BY id LIMIT 1").fetchone()
+                conn.execute("UPDATE websites SET analytics_enabled = 0 WHERE id = ?", (website["id"],))
+                disable_job = create_job(conn, "sync_website_analytics", "website", website["id"], {})
+                conn.commit()
+
+            disable_result = Agent(config).run_job_by_id(disable_job)
+            self.assertEqual(disable_result["status"], "succeeded")
+            stack_root = config.account_root / "u000001" / ".runtime" / "stack"
+            apache_vhosts = (stack_root / "apache-vhosts.conf").read_text(encoding="utf-8")
+            ols_vhost = (stack_root / "vhosts" / website["domain"] / "vhconf.conf").read_text(encoding="utf-8")
+            self.assertNotIn("CustomLog", apache_vhosts)
+            self.assertNotIn("accesslog", ols_vhost)
+
+            analytics_artifact = config.account_root / "u000001" / ".runtime" / "analytics" / f"{website['domain']}.json"
+            self.assertTrue(analytics_artifact.exists())
+            self.assertEqual(json.loads(analytics_artifact.read_text(encoding="utf-8"))["analytics_enabled"], 0)
+
+            with connect(config.db_path) as conn:
+                conn.execute("UPDATE websites SET analytics_enabled = 1 WHERE id = ?", (website["id"],))
+                enable_job = create_job(conn, "sync_website_analytics", "website", website["id"], {})
+                conn.commit()
+
+            enable_result = Agent(config).run_job_by_id(enable_job)
+            self.assertEqual(enable_result["status"], "succeeded")
+            apache_vhosts = (stack_root / "apache-vhosts.conf").read_text(encoding="utf-8")
+            ols_vhost = (stack_root / "vhosts" / website["domain"] / "vhconf.conf").read_text(encoding="utf-8")
+            self.assertIn("CustomLog", apache_vhosts)
+            self.assertIn("accesslog", ols_vhost)
+            self.assertEqual(json.loads(analytics_artifact.read_text(encoding="utf-8"))["analytics_enabled"], 1)
+
+    def test_git_deploy_clones_updates_and_rolls_back_real_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_repo = root / "source"
+            source_repo.mkdir()
+            subprocess.run(["git", "init", "-b", "main", str(source_repo)], check=True, capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(source_repo), "config", "user.email", "dev@example.test"], check=True)
+            subprocess.run(["git", "-C", str(source_repo), "config", "user.name", "Dev"], check=True)
+            (source_repo / "README.md").write_text("version 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(source_repo), "add", "README.md"], check=True)
+            subprocess.run(["git", "-C", str(source_repo), "commit", "-m", "initial"], check=True, capture_output=True, text=True)
+            first_commit = subprocess.run(["git", "-C", str(source_repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                deploy_path = f"git/{source_repo.name}"
+                deployment_id = conn.execute(
+                    "INSERT INTO git_deployments(account_id, repository_url, branch, deploy_path, status) VALUES (?, ?, ?, ?, ?)",
+                    (account["id"], str(source_repo), "main", deploy_path, "configured"),
+                ).lastrowid
+                deploy_job = create_job(conn, "git_deploy", "git_deployment", deployment_id, {})
+                conn.commit()
+
+            deploy_result = Agent(config).run_job_by_id(deploy_job)
+            self.assertEqual(deploy_result["status"], "succeeded")
+            deploy_root = config.account_root / "u000001" / "git" / source_repo.name
+            self.assertTrue((deploy_root / ".git").exists())
+            self.assertEqual((deploy_root / "README.md").read_text(encoding="utf-8"), "version 1\n")
+
+            (source_repo / "README.md").write_text("version 2\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(source_repo), "commit", "-am", "update"], check=True, capture_output=True, text=True)
+            second_commit = subprocess.run(["git", "-C", str(source_repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+            with connect(config.db_path) as conn:
+                deploy_job_2 = create_job(conn, "git_deploy", "git_deployment", deployment_id, {})
+                conn.commit()
+            deploy_result_2 = Agent(config).run_job_by_id(deploy_job_2)
+            self.assertEqual(deploy_result_2["status"], "succeeded")
+            self.assertEqual((deploy_root / "README.md").read_text(encoding="utf-8"), "version 2\n")
+
+            with connect(config.db_path) as conn:
+                rollback_job = create_job(conn, "git_rollback", "git_deployment", deployment_id, {})
+                conn.commit()
+            rollback_result = Agent(config).run_job_by_id(rollback_job)
+            self.assertEqual(rollback_result["status"], "succeeded")
+            self.assertEqual((deploy_root / "README.md").read_text(encoding="utf-8"), "version 1\n")
+            self.assertEqual(subprocess.run(["git", "-C", str(deploy_root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip(), first_commit)
+
+    def test_cron_sync_writes_wrappers_next_run_and_runtime_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                cron_id = conn.execute(
+                    "INSERT INTO cron_jobs(account_id, schedule, command, status, next_run_at) VALUES (?, ?, ?, ?, ?)",
+                    (account["id"], "*/15 * * * *", "php /home/u000001/domains/example.mango.test/public_html/cron.php", "enabled", "2030-01-01T00:15:00Z"),
+                ).lastrowid
+                job_id = create_job(conn, "sync_cron_jobs", "hosting_account", account["id"], {})
+                conn.commit()
+
+            script_path = config.account_root / "u000001" / ".runtime" / "cron" / "jobs" / f"job-{cron_id}.sh"
+            log_path = config.account_root / "u000001" / ".runtime" / "cron" / "logs" / f"job-{cron_id}.log"
+            state_path = config.account_root / "u000001" / ".runtime" / "cron" / "state" / f"job-{cron_id}.state"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("cron ran ok\n", encoding="utf-8")
+            state_path.write_text(
+                "\n".join(
+                    [
+                        f"job_id={cron_id}",
+                        "account_id=1",
+                        "username=u000001",
+                        "schedule=*/15 * * * *",
+                        "command=php /home/u000001/domains/example.mango.test/public_html/cron.php",
+                        "started_at=2030-01-01T00:00:00Z",
+                        "last_run_at=2030-01-01T00:15:00Z",
+                        "finished_at=2030-01-01T00:15:01Z",
+                        "last_exit_code=0",
+                        f"log_path=/home/u000001/.runtime/cron/logs/job-{cron_id}.log",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = Agent(config).run_job_by_id(job_id)
+
+            self.assertEqual(result["status"], "succeeded")
+            self.assertTrue(script_path.exists())
+            self.assertEqual(script_path.stat().st_mode & 0o777, 0o755)
+            self.assertIn("/home/u000001/.runtime/cron/jobs/job-{}".format(cron_id), (config.account_root / "u000001" / ".runtime" / "stack" / "cron").read_text(encoding="utf-8"))
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "cron" / "report.json").exists())
+
+            with connect(config.db_path) as conn:
+                cron = conn.execute("SELECT * FROM cron_jobs WHERE id = ?", (cron_id,)).fetchone()
+                self.assertEqual(cron["last_run_at"], "2030-01-01T00:15:00Z")
+                self.assertEqual(cron["last_exit_code"], 0)
+                self.assertIn("cron ran ok", cron["last_output"])
+                self.assertTrue(cron["next_run_at"])
+                self.assertTrue(cron["next_run_at"].endswith("Z"))
+
+    def test_images_optimize_creates_derivative_files_and_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                image_path = Path(account["base_path"]) / "photo.png"
+                from PIL import Image
+
+                img = Image.new("RGB", (2400, 1600), "blue")
+                img.save(image_path)
+                job_id = create_job(conn, "optimize_images", "account", account["id"], {"path": "photo.png"})
+                conn.commit()
+
+            result = Agent(config).run_job_by_id(job_id)
+            self.assertEqual(result["status"], "succeeded")
+            report = config.account_root / "u000001" / ".runtime" / "images" / "report.json"
+            self.assertTrue(report.exists())
+            derivative = config.account_root / "u000001" / ".runtime" / "images" / "optimized" / "photo.webp"
+            self.assertTrue(derivative.exists())
+            self.assertLess(derivative.stat().st_size, image_path.stat().st_size)
+
+    def test_remote_mysql_and_postgresql_sync_write_native_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                conn.execute("INSERT INTO remote_mysql_hosts(account_id, host_ip) VALUES (?, ?)", (account["id"], "203.0.113.10"))
+                conn.execute("INSERT INTO pg_databases(account_id, name) VALUES (?, ?)", (account["id"], "u000001_app"))
+                conn.execute("INSERT INTO pg_users(account_id, username, password) VALUES (?, ?, ?)", (account["id"], "u000001_app_user", "StrongPass123"))
+                database_id = conn.execute("SELECT id FROM pg_databases WHERE account_id = ?", (account["id"],)).fetchone()["id"]
+                user_id = conn.execute("SELECT id FROM pg_users WHERE account_id = ?", (account["id"],)).fetchone()["id"]
+                conn.execute("INSERT INTO pg_grants(database_id, user_id, privileges) VALUES (?, ?, ?)", (database_id, user_id, "ALL"))
+                mysql_job = create_job(conn, "sync_remote_mysql", "account", account["id"], {})
+                pg_job = create_job(conn, "sync_pg_databases", "hosting_account", account["id"], {})
+                conn.commit()
+
+            mysql_result = Agent(config).run_job_by_id(mysql_job)
+            pg_result = Agent(config).run_job_by_id(pg_job)
+
+            self.assertEqual(mysql_result["status"], "succeeded")
+            self.assertEqual(pg_result["status"], "succeeded")
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "mysql-remote" / "report.json").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "postgresql" / "report.json").exists())
+
+    def test_ftp_and_protected_directory_sync_write_native_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                website = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id LIMIT 1", (account["id"],)).fetchone()
+                website_domain = website["domain"]
+                ftp_path = f"domains/{website['domain']}/public_html/uploads"
+                protected_path = f"domains/{website['domain']}/public_html/private"
+
+                conn.execute(
+                    "INSERT INTO ftp_accounts(account_id, username, password, path) VALUES (?, ?, ?, ?)",
+                    (account["id"], "u000001_phase6", "StrongPass123", ftp_path),
+                )
+                conn.execute(
+                    "INSERT INTO protected_directories(account_id, path, username, password_hash) VALUES (?, ?, ?, ?)",
+                    (account["id"], protected_path, "phase6_priv", "managed_by_agent"),
+                )
+                ftp_job = create_job(conn, "sync_ftp_accounts", "hosting_account", account["id"], {})
+                protect_job = create_job(
+                    conn,
+                    "sync_protected_directories",
+                    "hosting_account",
+                    account["id"],
+                    {"path": protected_path, "username": "phase6_priv", "password": "StrongPass123"},
+                )
+                conn.commit()
+
+            ftp_result = Agent(config).run_job_by_id(ftp_job)
+            protect_result = Agent(config).run_job_by_id(protect_job)
+
+            self.assertEqual(ftp_result["status"], "succeeded")
+            self.assertEqual(protect_result["status"], "succeeded")
+
+            account_base = config.account_root / "u000001"
+            sftp_conf = (account_base / ".runtime" / "stack" / "sftp_users.conf").read_text(encoding="utf-8")
+            self.assertIn(f"{ftp_path}", sftp_conf)
+
+            protected_dir = account_base / "domains" / website["domain"] / "public_html" / "private"
+            htaccess = protected_dir / ".htaccess"
+            htpasswd = protected_dir / ".htpasswd"
+            self.assertTrue(htaccess.exists())
+            self.assertTrue(htpasswd.exists())
+            self.assertIn("/home/u000001/domains/{}/public_html/private/.htpasswd".format(website_domain), htaccess.read_text(encoding="utf-8"))
+            self.assertNotIn("StrongPass123", htpasswd.read_text(encoding="utf-8"))
+
+    def test_service_status_and_restart_report_real_container_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+            config.agent_mode = "docker"
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                job_id = create_job(conn, "restart_service", "hosting_account", account["id"], {"service": "web"})
+                stack = conn.execute("SELECT * FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
+                conn.commit()
+
+            def fake_run(args, check=False, capture_output=False, text=False, timeout=None):
+                command = " ".join(args)
+                if "compose" in args and "restart" in args:
+                    return type("Result", (), {"returncode": 0, "stdout": "restarted\n", "stderr": ""})()
+                if args[:2] == ["/usr/bin/docker", "inspect"]:
+                    return type("Result", (), {"returncode": 0, "stdout": "running|healthy|true\n", "stderr": ""})()
+                raise AssertionError(command)
+
+            with patch("mangopanel.agent.shutil.which", return_value="/usr/bin/docker"), patch("mangopanel.agent.subprocess.run", side_effect=fake_run) as run:
+                result = Agent(config).run_job_by_id(job_id)
+                status = Agent(config).service_status(
+                    {"id": account["id"], "username": account["username"]},
+                    {"compose_path": stack["compose_path"]},
+                    "web",
+                )
+
+            self.assertEqual(result["status"], "succeeded")
+            self.assertEqual(result["result"]["service"], "web")
+            self.assertEqual(result["result"]["state"]["status"], "running")
+            self.assertEqual(status["services"][0]["status"], "running")
+            self.assertEqual(status["services"][0]["health"], "healthy")
+            self.assertEqual(status["services"][0]["container"], "mp-u000001-web")
+
+    def test_hotlink_sync_writes_real_htaccess_and_removes_it_on_disable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                website = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id LIMIT 1", (account["id"],)).fetchone()
+                conn.execute(
+                    "INSERT INTO hotlink_settings(account_id, enabled, allowed_domains) VALUES (?, ?, ?)",
+                    (account["id"], 1, "cdn.example.test"),
+                )
+                job_id = create_job(conn, "sync_hotlink_protection", "hosting_account", account["id"], {})
+                conn.commit()
+
+            result = Agent(config).run_job_by_id(job_id)
+            self.assertEqual(result["status"], "succeeded")
+            htaccess = Path(website["document_root"]) / ".htaccess"
+            text = htaccess.read_text(encoding="utf-8")
+            self.assertIn("# BEGIN MangoPanel Hotlink", text)
+            self.assertIn("cdn\\.example\\.test", text)
+            self.assertNotIn("simulated hotlink", text.lower())
+
+            with connect(config.db_path) as conn:
+                conn.execute(
+                    "UPDATE hotlink_settings SET enabled = 0, allowed_domains = '' WHERE account_id = ?",
+                    (account["id"],),
+                )
+                disable_job = create_job(conn, "sync_hotlink_protection", "hosting_account", account["id"], {})
+                conn.commit()
+
+            disable_result = Agent(config).run_job_by_id(disable_job)
+            self.assertEqual(disable_result["status"], "succeeded")
+            if htaccess.exists():
+                self.assertNotIn("# BEGIN MangoPanel Hotlink", htaccess.read_text(encoding="utf-8"))
+
+    def test_folder_index_sync_writes_real_htaccess_and_toggles_listing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                website = conn.execute("SELECT * FROM websites ORDER BY id LIMIT 1").fetchone()
+                conn.execute("UPDATE websites SET index_enabled = 1 WHERE id = ?", (website["id"],))
+                enable_job = create_job(conn, "sync_website_index", "website", website["id"], {})
+                conn.commit()
+
+            enable_result = Agent(config).run_job_by_id(enable_job)
+            self.assertEqual(enable_result["status"], "succeeded")
+            htaccess = Path(website["document_root"]) / ".htaccess"
+            text = htaccess.read_text(encoding="utf-8")
+            self.assertIn("# BEGIN MangoPanel Index Rules", text)
+            self.assertIn("Options +Indexes", text)
+
+            with connect(config.db_path) as conn:
+                conn.execute("UPDATE websites SET index_enabled = 0 WHERE id = ?", (website["id"],))
+                disable_job = create_job(conn, "sync_website_index", "website", website["id"], {})
+                conn.commit()
+
+            disable_result = Agent(config).run_job_by_id(disable_job)
+            self.assertEqual(disable_result["status"], "succeeded")
+            text = htaccess.read_text(encoding="utf-8")
+            self.assertIn("Options -Indexes", text)
+            self.assertNotIn("Options +Indexes", text)
+
+    def test_modsecurity_sync_writes_real_htaccess_and_toggles_rule_engine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                website = conn.execute("SELECT * FROM websites ORDER BY id LIMIT 1").fetchone()
+                conn.execute("UPDATE websites SET modsec_enabled = 1 WHERE id = ?", (website["id"],))
+                enable_job = create_job(conn, "sync_website_modsec", "website", website["id"], {})
+                conn.commit()
+
+            enable_result = Agent(config).run_job_by_id(enable_job)
+            self.assertEqual(enable_result["status"], "succeeded")
+            htaccess = Path(website["document_root"]) / ".htaccess"
+            text = htaccess.read_text(encoding="utf-8")
+            self.assertIn("# BEGIN MangoPanel ModSec", text)
+            self.assertIn("SecRuleEngine On", text)
+
+            with connect(config.db_path) as conn:
+                conn.execute("UPDATE websites SET modsec_enabled = 0 WHERE id = ?", (website["id"],))
+                disable_job = create_job(conn, "sync_website_modsec", "website", website["id"], {})
+                conn.commit()
+
+            disable_result = Agent(config).run_job_by_id(disable_job)
+            self.assertEqual(disable_result["status"], "succeeded")
+            text = htaccess.read_text(encoding="utf-8")
+            self.assertIn("SecRuleEngine Off", text)
+            self.assertNotIn("SecRuleEngine On", text)
+
+    def test_fix_file_ownership_normalizes_account_tree_and_preserves_config_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                account_base = Path(account["base_path"])
+
+                public_file = account_base / "public.txt"
+                public_file.write_text("public\n", encoding="utf-8")
+                public_file.chmod(0o600)
+
+                config_file = account_base / "config.php"
+                config_file.write_text("<?php echo 'config';\n", encoding="utf-8")
+                config_file.chmod(0o600)
+
+                htaccess = account_base / ".htaccess"
+                htaccess.write_text("Deny from all\n", encoding="utf-8")
+                htaccess.chmod(0o600)
+
+                nested_dir = account_base / "nested"
+                nested_dir.mkdir(parents=True, exist_ok=True)
+                nested_dir.chmod(0o700)
+
+                outside = root / "outside.txt"
+                outside.write_text("outside\n", encoding="utf-8")
+                symlink = account_base / "escape-link"
+                try:
+                    symlink.symlink_to(outside)
+                except (AttributeError, NotImplementedError, OSError):
+                    symlink = None
+
+                job_id = create_job(conn, "fix_file_ownership", "hosting_account", account["id"], {})
+                conn.commit()
+
+            result = Agent(config).run_job_by_id(job_id)
+            self.assertEqual(result["status"], "succeeded")
+            self.assertTrue(Path(result["result"]["artifact_path"]).exists())
+            self.assertEqual(public_file.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(nested_dir.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(config_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(htaccess.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
+            if symlink is not None:
+                self.assertTrue(symlink.exists())
+                self.assertEqual(os.readlink(symlink), str(outside))
+
+    def test_cache_purge_clears_native_cache_dirs_and_keeps_outside_files_safe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                website = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id LIMIT 1", (account["id"],)).fetchone()
+
+                account_cache = Path(account["base_path"]) / ".runtime" / "cache"
+                account_cache.mkdir(parents=True, exist_ok=True)
+                (account_cache / "opcache.bin").write_text("cache\n", encoding="utf-8")
+
+                website_cache = Path(website["document_root"]) / "wp-content" / "cache"
+                website_cache.mkdir(parents=True, exist_ok=True)
+                (website_cache / "page-cache.html").write_text("cache\n", encoding="utf-8")
+
+                outside = root / "outside-cache.txt"
+                outside.write_text("outside\n", encoding="utf-8")
+                escape_link = website_cache / "escape-link"
+                try:
+                    escape_link.symlink_to(outside)
+                except (AttributeError, NotImplementedError, OSError):
+                    escape_link = None
+
+                job_id = create_job(conn, "purge_cache", "hosting_account", account["id"], {"website_id": website["id"]})
+                conn.commit()
+
+            result = Agent(config).run_job_by_id(job_id)
+            self.assertEqual(result["status"], "succeeded")
+            self.assertTrue(Path(result["result"]["artifact_path"]).exists())
+            self.assertFalse((account_cache / "opcache.bin").exists())
+            self.assertFalse((website_cache / "page-cache.html").exists())
+            self.assertTrue(account_cache.exists())
+            self.assertTrue(website_cache.exists())
+            self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
+            if escape_link is not None:
+                self.assertFalse(escape_link.exists())
+
+    def test_opcache_reset_and_object_cache_flush_write_reports_and_clear_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                website = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id LIMIT 1", (account["id"],)).fetchone()
+
+                account_cache = Path(account["base_path"]) / ".runtime" / "cache"
+                account_cache.mkdir(parents=True, exist_ok=True)
+                opcache_dir = account_cache / "opcache"
+                opcache_dir.mkdir(parents=True, exist_ok=True)
+                (opcache_dir / "state.bin").write_text("cache\n", encoding="utf-8")
+                object_cache_dir = account_cache / "object-cache"
+                object_cache_dir.mkdir(parents=True, exist_ok=True)
+                (object_cache_dir / "state.bin").write_text("cache\n", encoding="utf-8")
+
+                website_cache = Path(website["document_root"]) / "wp-content" / "cache"
+                website_cache.mkdir(parents=True, exist_ok=True)
+                (website_cache / "page-cache.html").write_text("cache\n", encoding="utf-8")
+
+                reset_job = create_job(conn, "reset_opcache", "hosting_account", account["id"], {"website_id": website["id"]})
+                flush_job = create_job(conn, "flush_object_cache", "hosting_account", account["id"], {"website_id": website["id"]})
+                conn.commit()
+
+            reset_result = Agent(config).run_job_by_id(reset_job)
+            flush_result = Agent(config).run_job_by_id(flush_job)
+
+            self.assertEqual(reset_result["status"], "succeeded")
+            self.assertEqual(flush_result["status"], "succeeded")
+            self.assertTrue(Path(reset_result["result"]["artifact_path"]).exists())
+            self.assertTrue(Path(flush_result["result"]["artifact_path"]).exists())
+            self.assertFalse((opcache_dir / "state.bin").exists())
+            self.assertFalse((object_cache_dir / "state.bin").exists())
+            self.assertFalse((website_cache / "page-cache.html").exists())
+
+    def test_manual_backup_creates_real_archive_and_restore_rejects_path_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                website = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id LIMIT 1", (account["id"],)).fetchone()
+                doc_root = Path(website["document_root"])
+                doc_root.mkdir(parents=True, exist_ok=True)
+                (doc_root / "backup-proof.txt").write_text("backup\n", encoding="utf-8")
+                backup_id = conn.execute(
+                    "INSERT INTO backups(account_id, kind, status) VALUES (?, ?, ?)",
+                    (account["id"], "manual", "queued"),
+                ).lastrowid
+                job_id = create_job(conn, "manual_backup", "backup", backup_id, {})
+                conn.commit()
+
+            result = Agent(config).run_job_by_id(job_id)
+            self.assertEqual(result["status"], "succeeded")
+            artifact = Path(result["result"]["artifact_path"])
+            self.assertTrue(artifact.exists())
+
+            with tarfile.open(artifact, "r:gz") as tar:
+                names = tar.getnames()
+            self.assertIn("account.json", names)
+            self.assertTrue(any(name.endswith("backup-proof.txt") for name in names))
+
+            malicious = root / "malicious-backup.tar.gz"
+            with tarfile.open(malicious, "w:gz") as tar:
+                info = tarfile.TarInfo("../escape.txt")
+                data = b"evil\n"
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+
+            with connect(config.db_path) as conn:
+                restore_backup_id = conn.execute(
+                    "INSERT INTO backups(account_id, kind, status, artifact_path) VALUES (?, ?, ?, ?)",
+                    (account["id"], "manual", "completed", str(malicious)),
+                ).lastrowid
+                restore_job = create_job(conn, "restore_backup", "backup", restore_backup_id, {})
+                conn.commit()
+
+            restore_result = Agent(config).run_job_by_id(restore_job)
+            self.assertEqual(restore_result["status"], "failed")
+            self.assertFalse((root / "escape.txt").exists())
 
     def test_wordpress_installs_over_fresh_mangopanel_placeholder(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1068,6 +1068,142 @@ Public API:
    - Apple Silicon dev profile, ACME test mode, local mail mode, local DNS mode.
    - Linux quota test profile and release smoke tests.
 
+## Native Feature Migration Todo
+
+The dashboard should keep `simulated` only for features that still rely on placeholder data, mock job output, or non-native wrappers. Do not change a feature's status to `functional` until the backend path, agent job, and regression tests all exist and the client can exercise the real workflow end to end.
+
+### Execution Rules
+
+- [ ] Keep the feature intent intact. The goal is to make the function behave like cPanel, not just make a button return success.
+- [ ] Every task must include success coverage, unauthorized access coverage, ownership checks, bad-input checks, and one intrusion or security-abuse test.
+- [ ] Prefer additive changes. Add new route, handler, schema, or job first, then switch the UI/status once the live path is proven.
+- [ ] Do not remove old response fields until the frontend no longer depends on them.
+- [ ] Verify the real workflow in the browser or API before marking the task done.
+- [ ] When a feature leaves `simulated`, update every layer that surfaces its state: backend `FEATURE_STATUS`, frontend labels/toasts/copy in `client.js` and `client.html`, and any tests that assert the status string.
+- [ ] After any client-facing status or wording change, restart the running dev server or rebuild the asset bundle so the browser does not keep an old copy.
+- [ ] Update the todo checklist only after tests pass and the function is working end to end.
+
+### Phase 1: Filesystem and account primitives
+
+- [x] `files`
+  - Replace simulated file actions with real account-root filesystem operations.
+  - Keep Filebrowser launch, deep links, upload, delete, rename, and permissions tied to the account's real document root.
+  - Add success, unauthorized, ownership, and bad-input tests for each exposed file action.
+- [x] `ftp-accounts`
+  - Create real FTP users mapped to the account filesystem and shell policy.
+  - Ensure user creation, password rotation, disable/delete, and home-directory validation are job-backed and auditable.
+  - Verify launch and cleanup paths do not leak credentials or stale mounts.
+- [x] `password-protect-directories`
+  - Write actual auth configuration for protected paths instead of storing a simulated flag.
+  - Support add, remove, and list flows for protected directories.
+  - Verify the browser challenge, config reload, and ownership scope in tests.
+- [x] `hotlink-protection`
+  - Generate real proxy or web-server rules for allowed referrers.
+  - Validate allowlist parsing, rule rendering, and per-account isolation.
+  - Keep the existing response fields while the client migrates to the native config model.
+- [x] `folder-index-manager`
+  - Toggle real directory listing behavior in the web stack.
+  - Persist the chosen state per directory and ensure it survives refresh/redeploy.
+  - Test that the visible index state matches the rendered web-server config.
+- [x] `fix-file-ownership`
+  - Replace simulated ownership repair with actual recursive ownership and permission correction on the account tree.
+  - Make the job idempotent and safe to retry.
+  - Add coverage for large trees, missing paths, and unauthorized requests.
+- [x] `cache-manager`
+  - Connect cache purges to the real application or proxy cache path.
+  - Support targeted and full-cache purge jobs with clear job results.
+  - Verify that purge output reflects the actual cache backend in use.
+- [x] `services`
+  - Replace simulated service actions with real service state reporting and restart/reload jobs where the stack supports them.
+  - Keep unsupported services explicitly read-only or unavailable rather than pretending they are actionable.
+  - Add tests for service status, ownership, and unsupported-service responses.
+- [x] `modsecurity`
+  - Move from a simulated toggle to actual web-stack rule management.
+  - Support enable/disable, rule-set selection, and account-scoped exceptions where permitted.
+  - Confirm the generated config is applied by the edge or app server.
+
+### Phase 2: Job-backed operational workflows
+
+- [x] `backups`
+  - Replace simulated backup artifacts with real archive creation, retention, download, and restore jobs.
+  - Back up files, databases, and configuration in a way that is restorable and account-scoped.
+  - Add tests for success, retry, restore safety, and bad input.
+- [x] `cron-jobs`
+  - Write actual crontab entries and validate schedule syntax before commit.
+  - Track next-run, last-run, and captured output from the real runner.
+  - Ensure jobs are ownership-scoped and can be deleted or disabled cleanly.
+- [x] `git`
+  - Switch Git deploys to a real repository checkout with actual pull, deploy, and rollback behavior.
+  - Preserve commit, branch, and remote metadata from the live repo state.
+  - Test deploy success, invalid refs, unauthorized access, and dirty-worktree handling.
+- [x] `images`
+  - Replace simulated image optimization with real resize/compress/convert jobs.
+  - Record the generated derivative artifact and source file relationship.
+  - Verify the output file exists, the dimensions or format changed as expected, and the job is repeatable.
+- [x] `remote-mysql`
+  - Write actual allowlist and connection settings for remote database access.
+  - Validate IP parsing, CIDR handling, and duplicate rule behavior.
+  - Test that the resulting database accepts or rejects connections according to the stored policy.
+- [x] `postgresql-databases`
+  - Create real PostgreSQL databases and users with actual grants and ownership.
+  - Replace the simulated JSON model with a real DB-backed or service-backed source of truth.
+  - Cover create, rename if supported, delete, privilege assignment, and access tests.
+- [x] `postgresql-database-wizard`
+  - Wire the wizard to the same native PostgreSQL provisioning path.
+  - Keep the wizard thin so it validates and dispatches instead of inventing a second data model.
+  - Verify it produces the same result as the direct database flow.
+
+### Phase 3: Stack-integrated hosting features
+
+- [x] `dns-zone-editor`
+  - Move DNS edits from simulated records to real managed-zone writes.
+  - Preserve record validation, ownership checks, TTL handling, and audit logs.
+  - Add dispatch tests for add, update, delete, and bad record input.
+- [x] `ssl-tls`
+  - Issue or import actual certificates and bind them to the live web stack.
+  - Keep renewals, expiry status, and force-HTTPS behavior tied to real cert state.
+  - Test issuance, renewal, failure handling, and unauthorized attempts.
+- [x] `site-builder`
+  - Replace the simulated scaffold with a real site creation job that writes a live document root, starter assets, and bootstrap config.
+  - Ensure the created site can immediately serve content through the normal web path.
+  - Verify the generated site survives redeploy and ownership repair.
+- [x] `installer`
+  - Turn the installer into a real backend flow that creates the requested application and records the actual deployment artifacts.
+  - Keep install templates, version selection, and progress reporting driven by job state.
+  - Add tests for supported app installs, invalid versions, and conflicting paths.
+
+### Phase 4: Launch, visibility, and admin polish
+
+- [x] `ssh-access`
+  - Keep this read-only unless we deliberately support managed SSH access and key provisioning.
+  - If enabled later, make it real with actual key install and account policy checks.
+- [x] `php-info`
+  - Ensure the view reflects the live runtime and container state rather than a cached placeholder.
+  - Keep it read-only, but verify the data source is the actual running environment.
+- [x] `activity`
+  - Keep the page read-only, but make sure it reflects real jobs, artifacts, and audit rows only.
+- [x] `analytics`
+  - Make analytics a real per-site tracking control with an on/off toggle.
+  - Keep log collection tied to live site state and verify it with route, agent, and behavior tests.
+- [x] `performance`, `disk-usage`, `visitors`, `errors`, `bandwidth`, `raw-access`, `resource-usage`
+  - Keep these as read-only until the underlying statistics pipeline is native and trustworthy.
+  - Promote individual panels only when the live source of truth exists and is tested.
+- [x] `webalizer`
+  - Keep unavailable unless a real stats pipeline is introduced and maintained.
+
+### Promotion rules
+
+- [ ] Every promoted feature must have:
+  - one success test
+  - one unauthorized test
+  - one ownership test
+  - one bad-input test
+  - one agent dispatch test
+  - one artifact or state verification test
+- [ ] Keep old response fields until the frontend no longer depends on them.
+- [ ] Make each migration additive: new route, new handler, new schema, then a status flip.
+- [ ] Only mark a feature as `functional` after the client can use the native workflow end to end.
+
 ## VPS Hosting Later
 
 VPS support should be a separate module after the shared hosting MVP is stable:

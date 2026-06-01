@@ -43,6 +43,7 @@ dev-e2e:
 	$(PYTHON) -m unittest discover -s tests
 
 dev-reset:
+	-$(PYTHON) scripts/dev_free_ports.py
 	-MP_ENV=development MP_DEV_AUTH_TEST_MODE=true MP_AGENT_MODE=docker $(PYTHON) scripts/dev_agent.py --down-all
 	rm -rf user_files
 	rm -rf var/dev

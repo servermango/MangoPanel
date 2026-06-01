@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import time
+import base64
 import urllib.error
 import urllib.request
 
@@ -35,12 +36,13 @@ def login(prefix, email):
     return auth["access_token"]
 
 
-def wait_http(url, contains=None, timeout=180):
+def wait_http(url, contains=None, timeout=180, headers=None):
     last_error = None
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=10) as response:
+            req = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(req, timeout=10) as response:
                 body = response.read()
             if contains is None or contains in body:
                 return body
@@ -65,10 +67,13 @@ def main():
     runtime = account["runtime"]
     assert runtime["web_url"], "account stack has no web URL"
 
+    mailbox_auth = "Basic " + base64.b64encode(f"hello@example.mango.test:{PASSWORD}".encode("utf-8")).decode("ascii")
+
     wait_http(runtime["web_url"], b"MangoPanel dev site")
     wait_http(runtime["filebrowser_url"], b"File Browser")
     wait_http(runtime["phpmyadmin_url"], b"phpMyAdmin")
-    wait_http(runtime["mailpit_url"], b"Mailpit")
+    wait_http(runtime["mailpit_url"], b"Mailpit", headers={"Authorization": mailbox_auth})
+    wait_http(f"{runtime['mailpit_url']}/mailpit.svg", b"MangoPanel")
 
     ping = docker_exec(
         [

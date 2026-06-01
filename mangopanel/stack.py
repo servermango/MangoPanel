@@ -4,6 +4,7 @@ from pathlib import Path
 
 STACK_SERVICES = [
     "web",
+    "redis",
     "filebrowser",
     "phpmyadmin",
     "db",
@@ -16,7 +17,6 @@ STACK_SERVICES = [
 
 
 def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
-    import secrets
     account_id = int(account["id"])
     slot = port_base + (account_id * 10)
     username = account["username"]
@@ -39,6 +39,10 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "adminer_url": f"http://adminer-{username}.localhost",
         "webmail_url": f"http://mail-{username}.localhost",
         "mailpit_url": f"http://mail-{username}.localhost",
+        "redis_host": "redis",
+        "redis_port": 6379,
+        "object_cache_backend": "redis",
+        "opcode_cache_backend": "opcache",
         "db_host": public_host,
         "db_name": "{}_app".format(username),
         "db_user": "{}_app".format(username),
@@ -46,8 +50,8 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "db_root_password": "dev-root-password-change-me",
         "sftp_password": "dev-sftp-password",
         "filebrowser_password": "dev-fb-password",
-        "filebrowser_secret_path": f"fb_{secrets.token_hex(16)}",
-        "phpmyadmin_secret_path": f"pma_{secrets.token_hex(16)}",
+        "filebrowser_secret_path": "files",
+        "phpmyadmin_secret_path": "db",
     }
     
     if public_host != "127.0.0.1":
@@ -70,6 +74,7 @@ def account_paths(account):
         "backups": base / "backups",
         "git": base / "git",
         "ssl": base / "ssl",
+        "redis": base / ".runtime" / "stack" / "redis",
         "runtime": base / ".runtime",
         "stack": base / ".runtime" / "stack",
         "compose": base / ".runtime" / "stack" / "docker-compose.yml",
@@ -113,16 +118,18 @@ def render_account_metadata(account, plan, node, websites, runtime):
                 "php_version": website["php_version"],
                 "ssl_status": website["ssl_status"],
                 "status": website["status"],
+                "analytics_enabled": int(website.get("analytics_enabled", 1) or 0),
             }
             for website in websites
         ],
     }
 
 
-def ensure_account_layout(account, plan, node, websites, runtime=None):
+def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes=None):
     runtime = runtime or build_account_runtime(account)
+    mailboxes = mailboxes or []
     paths = account_paths(account)
-    for key in ["base", "domains", "databases", "mail", "backups", "git", "ssl", "runtime", "stack"]:
+    for key in ["base", "domains", "databases", "mail", "backups", "git", "ssl", "redis", "runtime", "stack"]:
         paths[key].mkdir(parents=True, exist_ok=True)
         
     (paths["base"] / "pg_databases").mkdir(parents=True, exist_ok=True)
@@ -178,8 +185,18 @@ def ensure_account_layout(account, plan, node, websites, runtime=None):
     sftp_users_conf = paths["stack"] / "sftp_users.conf"
     if not sftp_users_conf.exists():
         sftp_users_conf.write_text(f"{account['username']}:{runtime['sftp_password']}:1001\n", encoding="utf-8")
-        
-    paths["compose"].write_text(render_compose(account, plan, websites, runtime), encoding="utf-8")
+
+    mailpit_auth_text = render_mailpit_auth_file(mailboxes)
+    mailpit_auth_file = paths["stack"] / "mailpit-users.txt"
+    if mailpit_auth_text:
+        mailpit_auth_file.write_text(mailpit_auth_text, encoding="utf-8")
+    elif mailpit_auth_file.exists():
+        mailpit_auth_file.unlink()
+
+    paths["compose"].write_text(
+        render_compose(account, plan, websites, runtime, mailpit_auth_enabled=bool(mailpit_auth_text)),
+        encoding="utf-8",
+    )
     
     # Generate custom web Dockerfile
     web_build_dir = paths["stack"] / "web"
@@ -188,6 +205,7 @@ def ensure_account_layout(account, plan, node, websites, runtime=None):
 RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     lsphp82-mysql lsphp83-mysql lsphp84-mysql \\
     lsphp82-curl lsphp83-curl lsphp84-curl \\
+    lsphp82-opcache lsphp83-opcache lsphp84-opcache \\
     && rm -rf /var/lib/apt/lists/*
 """
     (web_build_dir / "Dockerfile").write_text(dockerfile_content, encoding="utf-8")
@@ -210,6 +228,12 @@ def render_apache_vhosts(account, websites):
     for index, website in enumerate(websites):
         root = container_path(account, website["document_root"])
         logs_dir = container_path(account, str(Path(website["document_root"]).parent / "logs"))
+        analytics_enabled = int(website.get("analytics_enabled", 1) or 0) != 0
+        custom_log = (
+            f'  CustomLog "{logs_dir}/access.log" combined\n'
+            if analytics_enabled
+            else ""
+        )
         blocks.append(
             """
 <VirtualHost *:80>
@@ -224,9 +248,8 @@ def render_apache_vhosts(account, websites):
   </Directory>
 
   ErrorLog "{logs_dir}/error.log"
-  CustomLog "{logs_dir}/access.log" combined
-</VirtualHost>
-""".strip().format(domain=website["domain"], root=root, logs_dir=logs_dir)
+{custom_log}</VirtualHost>
+""".strip().format(domain=website["domain"], root=root, logs_dir=logs_dir, custom_log=custom_log)
         )
     if not blocks:
         fallback_root = container_path(account, str(Path(account["base_path"]) / "domains" / "default" / "public_html"))
@@ -470,6 +493,18 @@ def render_ols_vhconf(account, website):
     doc_root = container_path(account, website["document_root"])
     base_dir = container_path(account, str(Path(website["document_root"]).parent))
     logs_dir = container_path(account, str(Path(website["document_root"]).parent / "logs"))
+    analytics_enabled = int(website.get("analytics_enabled", 1) or 0) != 0
+    accesslog_block = (
+        f"""
+accesslog {logs_dir}/access.log {{
+  useServer               0
+  rollingSize             10M
+  keepDays                30
+}}
+""".rstrip()
+        if analytics_enabled
+        else ""
+    )
     return f"""
 docRoot                   {doc_root}
 enableGzip                1
@@ -485,11 +520,7 @@ errorlog {logs_dir}/error.log {{
   rollingSize             10M
 }}
 
-accesslog {logs_dir}/access.log {{
-  useServer               0
-  rollingSize             10M
-  keepDays                30
-}}
+{accesslog_block}
 
 context / {{
   type                    NULL
@@ -526,14 +557,24 @@ def render_crontab(account, cron_jobs=None):
     for job in cron_jobs or []:
         if job["status"] != "enabled":
             continue
-        command = str(job["command"]).replace("\n", " ").strip()
+        command = str(job.get("runner_command") or job["command"]).replace("\n", " ").strip()
         if not command:
             continue
         lines.append("{} {}".format(job["schedule"], command))
     return "\n".join(lines) + "\n"
 
 
-def render_compose(account, plan, websites, runtime):
+def render_mailpit_auth_file(mailboxes):
+    lines = []
+    for mailbox in mailboxes or []:
+        email = str(mailbox.get("email") or "").strip()
+        auth_hash = str(mailbox.get("mailpit_auth_hash") or "").strip()
+        if email and auth_hash:
+            lines.append(f"{email}:{auth_hash}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def render_compose(account, plan, websites, runtime, mailpit_auth_enabled=False):
     uid = 5000 + int(account["id"])
     domains_str = ", ".join([w["domain"] for w in websites]) if websites else f"{account['username']}.mango.test"
     username = account["username"]
@@ -545,6 +586,15 @@ def render_compose(account, plan, websites, runtime):
     backup_retention_days = int(plan["backup_retention_days"])
     default_domain = websites[0]["domain"] if websites else "{}.mango.test".format(username)
     project = "mp-{}".format(username)
+    mailpit_auth_block = ""
+    if mailpit_auth_enabled:
+        mailpit_auth_block = (
+            "    volumes:\n"
+            "      - {base_path}/.runtime/stack/mailpit-users.txt:/etc/mailpit/users:ro\n"
+            "    environment:\n"
+            '      MP_UI_AUTH_FILE: "/etc/mailpit/users"\n'
+            '      MP_TAGS_USERNAME: "true"\n'
+        )
     composed = """name: {project}
 services:
   web:
@@ -570,24 +620,34 @@ services:
       - account
       - mangopanel-edge
 
+  redis:
+    image: redis:7-alpine
+    container_name: mp-{username}-redis
+    restart: unless-stopped
+    mem_limit: 128m
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - {base_path}/.runtime/stack/redis:/data
+    networks:
+      - account
+
   filebrowser:
     image: filebrowser/filebrowser:latest
     container_name: mp-{username}-filebrowser
     restart: unless-stopped
     mem_limit: 128m
-    command: ["--noauth", "--baseURL", "/{filebrowser_secret_path}", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
+    command: ["--noauth", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
     environment:
       FB_BRANDING_DISABLE_USED_PERCENTAGE: "true"
       FB_BRANDING_FILES: "/branding"
     labels:
       caddy: "http://{filebrowser_domain}"
-      caddy.handle_path: "/{filebrowser_secret_path}/auth/*"
-      caddy.handle_path.0_rewrite: "* /api/public/tool-launch/filebrowser{{uri}}"
+      caddy.handle_path: "/auth/*"
+      caddy.handle_path.0_rewrite: "* /api/public/tool-launch/filebrowser/auth{{uri}}"
       caddy.handle_path.1_reverse_proxy: "host.docker.internal:8000"
-      caddy.route: "/{filebrowser_secret_path}/*"
+      caddy.route: "/files*"
       caddy.route.0_forward_auth: "host.docker.internal:8000"
       caddy.route.0_forward_auth.uri: "/api/public/auth-verify"
-      caddy.route.1_uri: "strip_prefix /{filebrowser_secret_path}"
       caddy.route.2_reverse_proxy: "{{upstreams 80}}"
     volumes:
       - {base_path}/domains:/srv/domains
@@ -610,19 +670,19 @@ services:
     mem_limit: 256m
     labels:
       caddy: "http://{phpmyadmin_domain}"
-      caddy.handle_path: "/{phpmyadmin_secret_path}/auth/*"
-      caddy.handle_path.0_rewrite: "* /api/public/tool-launch/phpmyadmin{{uri}}"
+      caddy.handle_path: "/auth/*"
+      caddy.handle_path.0_rewrite: "* /api/public/tool-launch/phpmyadmin/auth{{uri}}"
       caddy.handle_path.1_reverse_proxy: "host.docker.internal:8000"
-      caddy.route: "/{phpmyadmin_secret_path}/*"
+      caddy.route: "/db*"
       caddy.route.0_forward_auth: "host.docker.internal:8000"
       caddy.route.0_forward_auth.uri: "/api/public/auth-verify"
-      caddy.route.1_uri: "strip_prefix /{phpmyadmin_secret_path}"
+      caddy.route.1_uri: "strip_prefix /db"
       caddy.route.2_reverse_proxy: "{{upstreams 80}}"
     environment:
       PMA_HOST: db
       PMA_USER: {db_user}
       PMA_PASSWORD: {db_password}
-      PMA_ABSOLUTE_URI: "http://{phpmyadmin_domain}/{phpmyadmin_secret_path}/"
+      PMA_ABSOLUTE_URI: "http://{phpmyadmin_domain}/db/"
       UPLOAD_LIMIT: 256M
     networks:
       - account
@@ -716,8 +776,11 @@ services:
     mem_limit: 128m
     ports:
       - "127.0.0.1:{smtp_port}:1025"
-    labels:
+{mailpit_auth_block}    labels:
       caddy: "http://{webmail_domain}"
+      caddy.handle_path: "/mailpit.svg"
+      caddy.handle_path.0_rewrite: "* /api/public/mailpit-brand.svg"
+      caddy.handle_path.1_reverse_proxy: "host.docker.internal:8000"
       caddy.reverse_proxy: "{{upstreams 8025}}"
     networks:
       - account
@@ -765,10 +828,15 @@ volumes:
         filebrowser_password=runtime.get("filebrowser_password", "admin"),
         filebrowser_secret_path=runtime.get("filebrowser_secret_path", "files"),
         phpmyadmin_secret_path=runtime.get("phpmyadmin_secret_path", "db"),
+        redis_host=runtime.get("redis_host", "redis"),
+        redis_port=runtime.get("redis_port", 6379),
+        object_cache_backend=runtime.get("object_cache_backend", "redis"),
+        opcode_cache_backend=runtime.get("opcode_cache_backend", "opcache"),
         filebrowser_domain=runtime["filebrowser_url"].split("://")[1],
         phpmyadmin_domain=runtime["phpmyadmin_url"].split("://")[1],
         adminer_domain=runtime["adminer_url"].split("://")[1],
         webmail_domain=runtime["webmail_url"].split("://")[1],
+        mailpit_auth_block=mailpit_auth_block.format(base_path=base_path) if mailpit_auth_block else "",
     )
     # caddy-docker-proxy requires {{upstreams N}} with literal double-braces.
     # Python .format() collapses {{ to { so we restore them after formatting.

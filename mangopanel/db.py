@@ -3,7 +3,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .security import hash_password
+from .security import hash_mailpit_password, hash_password
 
 
 SCHEMA = """
@@ -645,6 +645,15 @@ def ensure_schema(conn):
         ON resource_usage_samples(account_id, sampled_at)
         """
     )
+    ensure_table_columns(
+        conn,
+        "resource_usage_samples",
+        {
+            "memory_limit_mb": "REAL NOT NULL DEFAULT 0",
+            "storage_limit_mb": "REAL NOT NULL DEFAULT 0",
+            "source": "TEXT NOT NULL DEFAULT 'panel'",
+        },
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS access_logs (
@@ -715,10 +724,36 @@ def ensure_schema(conn):
             "php_ini": "TEXT NOT NULL DEFAULT '{}'",
             "index_enabled": "INTEGER NOT NULL DEFAULT 0",
             "modsec_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "analytics_enabled": "INTEGER NOT NULL DEFAULT 1",
+        },
+    )
+    ensure_table_columns(
+        conn,
+        "cron_jobs",
+        {
+            "next_run_at": "TEXT",
+        },
+    )
+    ensure_table_columns(
+        conn,
+        "git_deployments",
+        {
+            "last_commit": "TEXT",
+            "previous_commit": "TEXT",
+            "last_deployed_at": "TEXT",
+            "last_error": "TEXT",
         },
     )
     ensure_table_columns(conn, "users", {"totp_secret": "TEXT"})
     ensure_table_columns(conn, "admins", {"totp_secret": "TEXT"})
+    ensure_table_columns(
+        conn,
+        "mailboxes",
+        {
+            "password_hash": "TEXT NOT NULL DEFAULT ''",
+            "mailpit_auth_hash": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
     ensure_table_columns(
         conn,
         "plans",
@@ -936,6 +971,8 @@ def seed_dev_data(db_path, account_root=None):
         admin_secret = "JBSWY3DPEHPK3PXP"
         user_secret = "JBSWY3DPEHPK3PXP"
         password_hash = hash_password("ChangeMe-DevOnly-123!")
+        mailbox_password = hash_password("ChangeMe-DevOnly-123!")
+        mailbox_mailpit_hash = hash_mailpit_password("ChangeMe-DevOnly-123!")
 
         conn.execute(
             """
@@ -983,8 +1020,8 @@ def seed_dev_data(db_path, account_root=None):
 
         conn.execute(
             """
-            INSERT OR IGNORE INTO websites(account_id, domain, document_root, php_version, ssl_status, status)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO websites(account_id, domain, document_root, php_version, ssl_status, analytics_enabled, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 account_id,
@@ -992,6 +1029,7 @@ def seed_dev_data(db_path, account_root=None):
                 str(Path(account_base_path) / "domains" / "example.mango.test" / "public_html"),
                 "8.3",
                 "local-dev",
+                1,
                 "active",
             ),
         )
@@ -1029,6 +1067,15 @@ def seed_dev_data(db_path, account_root=None):
         conn.execute(
             "INSERT OR IGNORE INTO mailboxes(account_id, email, quota_mb, status) VALUES (?, ?, ?, ?)",
             (account_id, "hello@example.mango.test", 1024, "active"),
+        )
+        conn.execute(
+            """
+            UPDATE mailboxes
+            SET password_hash = COALESCE(NULLIF(password_hash, ''), ?),
+                mailpit_auth_hash = COALESCE(NULLIF(mailpit_auth_hash, ''), ?)
+            WHERE account_id = ? AND email = ?
+            """,
+            (mailbox_password, mailbox_mailpit_hash, account_id, "hello@example.mango.test"),
         )
         conn.execute(
             "INSERT OR IGNORE INTO cron_jobs(account_id, schedule, command, status, last_exit_code, last_output) VALUES (?, ?, ?, ?, ?, ?)",
