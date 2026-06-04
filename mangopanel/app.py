@@ -1,5 +1,8 @@
 import json
+import hashlib
 import ipaddress
+from email import policy as email_policy
+from email.parser import BytesParser
 import re
 import secrets
 import shutil
@@ -15,6 +18,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .agent import Agent, AgentError, cron_next_run_at, decorate_cron_jobs, validate_cron_schedule
 from .config import load_config
+from .mail import build_mail_message_bytes, dkim_dns_value, ensure_mailbox_storage, generate_dkim_material, mailbox_storage_inode_count, mailbox_storage_path, mailbox_storage_size_bytes, mail_auth_health, move_mailbox_storage, recommended_dmarc_record, recommended_spf_record, remove_mailbox_storage, sanitize_mailbox_component, split_mailbox_address
 from .db import (
     connect,
     create_job,
@@ -25,7 +29,8 @@ from .db import (
     rows_to_dicts,
     seed_dev_data,
 )
-from .security import create_jwt, generate_totp_secret, hash_mailpit_password, hash_password, verify_jwt, verify_password, verify_totp
+from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, verify_jwt, verify_password, verify_totp
+from .snappymail import request_login_session
 
 
 CONFIG = load_config()
@@ -86,6 +91,11 @@ MAILPIT_BRAND_SVG = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1
   <circle cx=\"94\" cy=\"34\" r=\"8\" fill=\"#34d399\"/>
 </svg>"""
 
+WEBMAIL_LOGIN_MAX_FAILURES = 5
+WEBMAIL_LOGIN_WINDOW_SECONDS = 10 * 60
+WEBMAIL_LOGIN_LOCK_SECONDS = 15 * 60
+DNS_RECORD_TYPES = {"A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"}
+
 
 class ApiError(Exception):
     def __init__(self, status, message):
@@ -122,6 +132,24 @@ def auth_cookie_headers(token, host_header):
     return [auth_cookie_header(token, host_header, CONFIG.token_ttl_seconds)]
 
 
+def named_cookie_header(name, token, host_header, max_age=None):
+    cookie_domain = get_cookie_domain(host_header)
+    domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
+    ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
+    return f"{name}={token}; Path=/; Max-Age={ttl}; SameSite=Lax{domain_attr}"
+
+
+def named_cookie_headers(name, token, host_header, max_age=None):
+    cookie_domain = get_cookie_domain(host_header)
+    ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
+    if cookie_domain == ".localhost":
+        return [
+            f"{name}={token}; Path=/; Max-Age={ttl}; SameSite=Lax; Domain=localhost",
+            f"{name}={token}; Path=/; Max-Age={ttl}; SameSite=Lax; Domain=.localhost",
+        ]
+    return [named_cookie_header(name, token, host_header, ttl)]
+
+
 def expired_auth_cookie_header(host_header):
     cookie_domain = get_cookie_domain(host_header)
     domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
@@ -136,6 +164,17 @@ def expired_auth_cookie_headers(host_header):
             "mp_client_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; Domain=.localhost",
         ]
     return [expired_auth_cookie_header(host_header)]
+
+
+def expired_named_cookie_headers(name, host_header):
+    cookie_domain = get_cookie_domain(host_header)
+    if cookie_domain == ".localhost":
+        return [
+            f"{name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; Domain=localhost",
+            f"{name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; Domain=.localhost",
+        ]
+    domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
+    return [f"{name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax{domain_attr}"]
 
 
 def normalize_account_relative_path(account, raw_path, label="path", allow_empty=False):
@@ -200,7 +239,7 @@ class MangoHandler(BaseHTTPRequestHandler):
     def dispatch(self, method):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
-        query = parse_qs(parsed.query)
+        self.query_params = parse_qs(parsed.query)
         panel = getattr(self.server, "panel", "combined")
 
         try:
@@ -216,6 +255,15 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if panel == "admin":
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
                 return self.serve_file(PUBLIC_DIR / "login.html")
+            if method == "GET" and (path in {"/webmail", "/webmail.html"} or path.startswith("/webmail/login")):
+                if panel == "admin":
+                    raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
+                if path.startswith("/webmail/login"):
+                    return self.webmail_direct_login(path)
+                launch_token = self.query_params.get("launch", [""])[0].strip()
+                if launch_token:
+                    return self.webmail_launch_redirect(launch_token)
+                return self.redirect_response("/")
             if path == "/admin/setup":
                 if panel == "client":
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
@@ -240,7 +288,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"status": "ok", "service": "mangopanel-api"})
 
             if path.startswith("/api/") or path.startswith("/auth/"):
-                return self.route_api(method, path, query)
+                return self.route_api(method, path, self.query_params)
 
             self.json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except ApiError as exc:
@@ -299,8 +347,10 @@ class MangoHandler(BaseHTTPRequestHandler):
     def public_api(self, method, path):
         if path.startswith("/api/public/status"):
             return self.public_status(path)
-        if path == "/api/public/mailpit-brand.svg" and method == "GET":
+        if path == "/api/public/mail-brand.svg" and method == "GET":
             return self.svg_response(MAILPIT_BRAND_SVG)
+        if path == "/api/public/mail-edge/manifest" and method == "GET":
+            return self.public_mail_edge_manifest()
         if path == "/api/public/bootstrap" and method == "GET":
             return self.json_response({"admin_setup_required": admin_count() == 0})
         if path == "/api/public/signup" and method == "POST":
@@ -309,6 +359,23 @@ class MangoHandler(BaseHTTPRequestHandler):
         if path == "/api/public/admin-setup" and method == "POST":
             body = self.read_json()
             return self.setup_first_admin(body)
+        if path == "/api/public/webmail/session" and method == "GET":
+            return self.public_webmail_session()
+        if path == "/api/public/webmail/exchange" and method == "POST":
+            return self.public_webmail_exchange()
+        if path == "/api/public/webmail/login" and method == "POST":
+            return self.public_webmail_login()
+        if path == "/api/public/webmail/messages" and method == "GET":
+            return self.public_webmail_messages()
+        if path.startswith("/api/public/webmail/messages/"):
+            if method in {"PATCH", "GET"}:
+                return self.public_webmail_message(path, method)
+        if path == "/api/public/webmail/send" and method == "POST":
+            return self.public_webmail_send()
+        if path == "/api/public/webmail/logout" and method == "POST":
+            return self.public_webmail_logout()
+        if path == "/api/public/mail-jmap" and method == "GET":
+            return self.public_mail_jmap()
         if path.startswith("/auth/") and method == "GET":
             return self.public_tool_launch(path)
         if path.startswith("/api/public/tool-launch/") and method == "GET":
@@ -316,6 +383,14 @@ class MangoHandler(BaseHTTPRequestHandler):
         if path == "/api/public/auth-verify":
             return self.forward_auth_verify()
         raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
+
+    def public_mail_edge_manifest(self):
+        forwarded_host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(":")[0].strip().lower()
+        edge_host = shared_mail_edge_host().lower()
+        if forwarded_host and forwarded_host != edge_host:
+            raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
+        with connect(CONFIG.db_path) as conn:
+            return self.json_response(shared_mail_edge_manifest(conn))
 
     def public_tool_launch(self, path):
         forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
@@ -326,6 +401,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 tool = "filebrowser"
             elif host_part.startswith("pma-") or host_part.startswith("pma."):
                 tool = "phpmyadmin"
+            elif host_part.startswith("mail-") or host_part.startswith("mail."):
+                tool = "webmail"
 
         token = None
         suffix = ""
@@ -337,7 +414,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             suffix = match.group("suffix") or ""
         else:
             match = re.match(
-                r"^/api/public/tool-launch/(?P<tool>filebrowser|phpmyadmin)/auth/(?P<token>[A-Za-z0-9._-]{20,})(?P<suffix>/.*)?$",
+                r"^/api/public/tool-launch/(?P<tool>filebrowser|phpmyadmin|webmail)/auth/(?P<token>[A-Za-z0-9._-]{20,})(?P<suffix>/.*)?$",
                 path,
             )
             if not match:
@@ -349,7 +426,7 @@ class MangoHandler(BaseHTTPRequestHandler):
         username = None
         if forwarded_host:
             host_part = forwarded_host.split(":")[0]
-            match = re.match(r"^(?:files|pma)[-.](\w+)\.", host_part)
+            match = re.match(r"^(?:files|pma|mail)[-.](\w+)\.", host_part)
             if match:
                 username = match.group(1)
 
@@ -387,13 +464,646 @@ class MangoHandler(BaseHTTPRequestHandler):
                 (actor_type, actor_id, access_payload["jti"], int(time.time()) + 600),
             )
             default_path = "/files" if tool == "filebrowser" else "/db/"
+            if tool == "webmail":
+                default_path = "/webmail"
             clean_path = suffix or default_path
             self.send_response(HTTPStatus.FOUND)
-            for cookie_header in auth_cookie_headers(access_token, forwarded_host):
+            cookie_headers = auth_cookie_headers(access_token, forwarded_host)
+            if tool == "webmail":
+                mail_access_token = create_jwt(
+                    {
+                        "sub": actor_id,
+                        "actor_type": actor_type,
+                        "purpose": "mail_webmail",
+                        "mailbox_id": payload.get("mailbox_id"),
+                        "account_id": payload.get("account_id"),
+                        "jti": secrets.token_urlsafe(16),
+                    },
+                    CONFIG.jwt_secret,
+                    3600,
+                )
+                cookie_headers = named_cookie_headers("mp_mail_token", mail_access_token, forwarded_host, 3600)
+            for cookie_header in cookie_headers:
                 self.send_header("Set-Cookie", cookie_header)
             self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path))
             self.end_headers()
             return
+
+    def webmail_session_context(self):
+        from http.cookies import SimpleCookie
+        cookie_header = self.headers.get("Cookie", "")
+        cookies = SimpleCookie(cookie_header)
+        token_cookie = cookies.get("mp_mail_token")
+        token = token_cookie.value if token_cookie else None
+        if not token:
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth.removeprefix("Bearer ").strip()
+        if not token:
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "missing_mail_session")
+        payload = verify_jwt(token, CONFIG.jwt_secret)
+        if not payload or payload.get("purpose") != "mail_webmail":
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_mail_session")
+        mailbox_id = int(payload.get("mailbox_id") or 0)
+        if mailbox_id <= 0:
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_mail_session")
+        return payload, mailbox_id
+
+    def load_webmail_mailbox(self, conn, payload, mailbox_id):
+        mailbox = conn.execute(
+            """
+            SELECT m.*, ha.username AS account_username, ha.base_path AS account_base_path,
+                   ha.id AS account_id, ha.user_id AS owner_user_id, p.daily_email_limit
+            FROM mailboxes m
+            JOIN hosting_accounts ha ON ha.id = m.account_id
+            JOIN plans p ON p.id = ha.plan_id
+            WHERE m.id = ? AND m.status = 'active' AND ha.status = 'active'
+            """,
+            (mailbox_id,),
+        ).fetchone()
+        if not mailbox:
+            raise ApiError(HTTPStatus.NOT_FOUND, "mailbox_not_found")
+        if int(payload.get("sub") or 0) != int(mailbox["account_id"]):
+            raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+        return mailbox
+
+    def load_mailbox_for_direct_login(self, conn, mailbox_id=None, email=None):
+        if mailbox_id:
+            mailbox = conn.execute(
+                """
+                SELECT m.*, ha.username AS account_username, ha.base_path AS account_base_path,
+                       ha.id AS account_id, ha.user_id AS owner_user_id, p.daily_email_limit
+                FROM mailboxes m
+                JOIN hosting_accounts ha ON ha.id = m.account_id
+                JOIN plans p ON p.id = ha.plan_id
+                WHERE m.id = ? AND m.status = 'active' AND ha.status = 'active'
+                """,
+                (mailbox_id,),
+            ).fetchone()
+        else:
+            mailbox = conn.execute(
+                """
+                SELECT m.*, ha.username AS account_username, ha.base_path AS account_base_path,
+                       ha.id AS account_id, ha.user_id AS owner_user_id, p.daily_email_limit
+                FROM mailboxes m
+                JOIN hosting_accounts ha ON ha.id = m.account_id
+                JOIN plans p ON p.id = ha.plan_id
+                WHERE m.email = ? AND m.status = 'active' AND ha.status = 'active'
+                """,
+                (email,),
+            ).fetchone()
+        if not mailbox:
+            raise ApiError(HTTPStatus.NOT_FOUND, "mailbox_not_found")
+        return mailbox
+
+    def snappymail_launch_url(self, conn, mailbox, password=None):
+        runtime = account_runtime(conn, mailbox["account_id"])
+        mail_host = runtime.get("mail_edge_host") or runtime.get("mail_host", "")
+        if not mail_host:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "mail_webmail_unavailable")
+        launch_url = mailbox_row_payload(conn, mailbox).get("webmail_url") or runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url") or f"http://{mail_host}/webmail"
+        return launch_url
+
+    def snappymail_backend_url(self, conn, mailbox):
+        runtime = account_runtime(conn, mailbox["account_id"])
+        backend_url = runtime.get("mail_edge_url") or runtime.get("mail_webmail_backend_url") or ""
+        if backend_url:
+            return backend_url
+        mail_host = runtime.get("mail_edge_host") or runtime.get("mail_host", "")
+        if not mail_host:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "mail_webmail_unavailable")
+        return f"http://{mail_host}"
+
+    def snappymail_login_session(self, conn, mailbox):
+        mailbox_payload = row_to_dict(mailbox)
+        password = decrypt_secret(mailbox_payload.get("password_secret") or "", CONFIG.jwt_secret)
+        if not password:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "mail_webmail_unavailable")
+        backend_url = self.snappymail_backend_url(conn, mailbox)
+        return request_login_session(backend_url, email=mailbox_payload["email"], password=password)
+
+    def redirect_response(self, location, cookies=None, status=HTTPStatus.FOUND):
+        self.send_response(status)
+        for cookie_header in cookies or []:
+            self.send_header("Set-Cookie", cookie_header)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Location", location)
+        self.end_headers()
+        return
+
+    def webmail_launch_redirect(self, launch_token):
+        payload = verify_jwt(launch_token, CONFIG.jwt_secret)
+        if not payload or payload.get("purpose") != "tool_launch" or payload.get("tool") != "webmail":
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_tool_launch")
+        mailbox_id = int(payload.get("mailbox_id") or 0)
+        account_id = int(payload.get("account_id") or 0)
+        if mailbox_id <= 0 or account_id <= 0:
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_tool_launch")
+        with connect(CONFIG.db_path) as conn:
+            user = conn.execute("SELECT status FROM users WHERE id = ?", (payload.get("sub"),)).fetchone()
+            if not user or user["status"] != "active":
+                raise ApiError(HTTPStatus.UNAUTHORIZED, "inactive_user")
+            account = conn.execute(
+                "SELECT * FROM hosting_accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+                (account_id, payload.get("sub")),
+            ).fetchone()
+            if not account:
+                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+            mailbox = self.load_webmail_mailbox(conn, payload, mailbox_id)
+            cookies = []
+            if CONFIG.agent_mode == "docker":
+                session = self.snappymail_login_session(conn, mailbox)
+                cookies = session.get("cookies") or []
+            self.redirect_response(self.snappymail_launch_url(conn, mailbox), cookies)
+        return
+
+    def webmail_direct_login(self, path):
+        mailbox_id = path_int_id(path, "/webmail/login/")
+        email_raw = str(self.query_params.get("email", [""])[0] or "").strip()
+        email = normalize_email(email_raw) if email_raw else ""
+        with connect(CONFIG.db_path) as conn:
+            mailbox = self.load_mailbox_for_direct_login(conn, mailbox_id=mailbox_id or None, email=email or None)
+            if email and normalize_email(mailbox["email"]) != email:
+                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+            cookies = []
+            if CONFIG.agent_mode == "docker":
+                session = self.snappymail_login_session(conn, mailbox)
+                cookies = session.get("cookies") or []
+            self.webmail_login_clear(conn, self.webmail_login_attempt_key(mailbox_id=mailbox["id"], email=mailbox["email"]))
+            self.redirect_response(self.snappymail_launch_url(conn, mailbox), cookies)
+        return
+
+    def webmail_login_attempt_key(self, mailbox_id=None, email=None):
+        ip = client_ip(self) or "unknown"
+        if mailbox_id:
+            target = f"mailbox:{int(mailbox_id)}"
+        elif email:
+            target = f"email:{str(email).strip().lower()}"
+        else:
+            target = "unknown"
+        return f"{target}|ip:{ip}"
+
+    def webmail_login_attempt_row(self, conn, attempt_key):
+        row = conn.execute(
+            "SELECT * FROM webmail_login_attempts WHERE attempt_key = ?",
+            (attempt_key,),
+        ).fetchone()
+        if not row:
+            return None
+        now = int(time.time())
+        first_failed_at = int(row["first_failed_at"] or 0)
+        locked_until = int(row["locked_until"] or 0)
+        if first_failed_at and now - first_failed_at > WEBMAIL_LOGIN_WINDOW_SECONDS:
+            conn.execute("DELETE FROM webmail_login_attempts WHERE attempt_key = ?", (attempt_key,))
+            return None
+        if locked_until and locked_until > now:
+            return row
+        if locked_until and locked_until <= now:
+            conn.execute(
+                """
+                UPDATE webmail_login_attempts
+                SET locked_until = 0, attempts = 0, first_failed_at = 0, last_failed_at = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE attempt_key = ?
+                """,
+                (attempt_key,),
+            )
+            return None
+        return row
+
+    def webmail_login_failure(self, conn, attempt_key, email="", mailbox_id=None):
+        now = int(time.time())
+        row = self.webmail_login_attempt_row(conn, attempt_key)
+        attempts = int(row["attempts"] or 0) if row else 0
+        first_failed_at = int(row["first_failed_at"] or now) if row else now
+        locked_until = int(row["locked_until"] or 0) if row else 0
+        attempts += 1
+        if attempts >= WEBMAIL_LOGIN_MAX_FAILURES:
+            locked_until = now + WEBMAIL_LOGIN_LOCK_SECONDS
+        conn.execute(
+            """
+            INSERT INTO webmail_login_attempts(attempt_key, attempts, first_failed_at, last_failed_at, locked_until, last_ip, last_email, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(attempt_key) DO UPDATE SET
+              attempts = excluded.attempts,
+              first_failed_at = excluded.first_failed_at,
+              last_failed_at = excluded.last_failed_at,
+              locked_until = excluded.locked_until,
+              last_ip = excluded.last_ip,
+              last_email = excluded.last_email,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                attempt_key,
+                attempts,
+                first_failed_at,
+                now,
+                locked_until,
+                client_ip(self) or "",
+                str(email or ""),
+            ),
+        )
+        return locked_until > now
+
+    def webmail_login_clear(self, conn, attempt_key):
+        conn.execute("DELETE FROM webmail_login_attempts WHERE attempt_key = ?", (attempt_key,))
+
+    def public_webmail_session(self):
+        with connect(CONFIG.db_path) as conn:
+            payload, mailbox_id = self.webmail_session_context()
+            mailbox = self.load_webmail_mailbox(conn, payload, mailbox_id)
+            mailbox_payload = mailbox_row_payload(conn, mailbox)
+            settings = {
+                "smtp_host": mailbox_payload.get("smtp_host", ""),
+                "smtp_port": mailbox_payload.get("smtp_port", 0),
+                "smtp_tls_port": mailbox_payload.get("smtp_tls_port", 0),
+                "imap_host": mailbox_payload.get("imap_host", ""),
+                "imap_port": mailbox_payload.get("imap_port", 0),
+                "imap_tls_port": mailbox_payload.get("imap_tls_port", 0),
+                "pop_host": mailbox_payload.get("pop_host", ""),
+                "pop_port": mailbox_payload.get("pop_port", 0),
+                "pop_tls_port": mailbox_payload.get("pop_tls_port", 0),
+                "sieve_port": mailbox_payload.get("sieve_port", 0),
+                "webmail_login_url": mailbox_payload.get("mailbox_login_url", ""),
+                "webmail_url": mailbox_payload.get("webmail_url", ""),
+                "jmap_url": mailbox_payload.get("jmap_url", ""),
+                "mail_host": mailbox_payload.get("mail_host", ""),
+                "storage_path": mailbox_payload.get("storage_path", ""),
+                "storage_bytes": mailbox_payload.get("storage_bytes", 0),
+                "storage_used_percent": mailbox_payload.get("storage_used_percent", 0),
+            }
+            return self.json_response(
+                {
+                    "mailbox": mailbox_payload,
+                    "settings": settings,
+                    "daily_email_limit": int(mailbox["daily_email_limit"] or 0),
+                    "remaining_today": self.mailbox_remaining_today(conn, mailbox["id"], int(mailbox["daily_email_limit"] or 0)),
+                }
+            )
+
+    def public_webmail_exchange(self):
+        body = self.read_json()
+        launch_token = str(body.get("launch_token") or "").strip()
+        if not launch_token:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "launch_token_required")
+        payload = verify_jwt(launch_token, CONFIG.jwt_secret)
+        if not payload or payload.get("purpose") != "tool_launch" or payload.get("tool") != "webmail":
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_tool_launch")
+        mailbox_id = int(payload.get("mailbox_id") or 0)
+        account_id = int(payload.get("account_id") or 0)
+        if mailbox_id <= 0 or account_id <= 0:
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_tool_launch")
+        with connect(CONFIG.db_path) as conn:
+            user = conn.execute("SELECT status FROM users WHERE id = ?", (payload.get("sub"),)).fetchone()
+            if not user or user["status"] != "active":
+                raise ApiError(HTTPStatus.UNAUTHORIZED, "inactive_user")
+            account = conn.execute(
+                "SELECT * FROM hosting_accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+                (account_id, payload.get("sub")),
+            ).fetchone()
+            if not account:
+                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+            mailbox = self.load_webmail_mailbox(conn, payload, mailbox_id)
+            runtime = account_runtime(conn, mailbox["account_id"])
+            launch_url = mailbox_row_payload(conn, mailbox).get("webmail_url") or f"http://{runtime.get('mail_host')}/"
+            mail_access_token = create_jwt(
+                {
+                    "sub": mailbox["account_id"],
+                    "actor_type": payload.get("actor_type"),
+                    "purpose": "mail_webmail",
+                    "mailbox_id": mailbox["id"],
+                    "account_id": account["id"],
+                    "user_id": payload.get("sub"),
+                    "jti": secrets.token_urlsafe(16),
+                },
+                CONFIG.jwt_secret,
+                3600,
+            )
+            self.send_response(HTTPStatus.OK)
+            for cookie_header in named_cookie_headers("mp_mail_token", mail_access_token, self.headers.get("Host", ""), 3600):
+                self.send_header("Set-Cookie", cookie_header)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "exchanged": True,
+                        "expires_in": 3600,
+                        "launch_url": launch_url,
+                        "email": mailbox["email"],
+                    }
+                ).encode("utf-8")
+            )
+            return
+
+    def public_webmail_login(self):
+        body = self.read_json()
+        mailbox_id_raw = body.get("mailbox_id")
+        mailbox_id = int(mailbox_id_raw or 0)
+        email_raw = str(body.get("email") or "").strip()
+        email = normalize_email(email_raw) if email_raw else ""
+        password = str(body.get("password") or "").strip()
+        if not password:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "mailbox_password_required")
+        attempt_key = self.webmail_login_attempt_key(mailbox_id=mailbox_id or None, email=email or email_raw)
+        with connect(CONFIG.db_path) as conn:
+            attempt_row = self.webmail_login_attempt_row(conn, attempt_key)
+            if attempt_row and int(attempt_row["locked_until"] or 0) > int(time.time()):
+                raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "mailbox_login_locked")
+            try:
+                mailbox = self.load_mailbox_for_direct_login(conn, mailbox_id=mailbox_id or None, email=email or None)
+                if email and normalize_email(mailbox["email"]) != email:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+                if not verify_password(password, mailbox["password_hash"]):
+                    raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_mailbox_credentials")
+            except ApiError as exc:
+                if exc.status in {HTTPStatus.NOT_FOUND, HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
+                    locked = self.webmail_login_failure(
+                        conn,
+                        attempt_key,
+                        email=email or email_raw,
+                        mailbox_id=mailbox_id or None,
+                    )
+                    if locked:
+                        raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "mailbox_login_locked") from exc
+                raise
+            runtime = account_runtime(conn, mailbox["account_id"])
+            launch_url = self.snappymail_launch_url(conn, mailbox, password=password)
+            mail_access_token = create_jwt(
+                {
+                    "sub": mailbox["account_id"],
+                    "actor_type": "user",
+                    "purpose": "mail_webmail",
+                    "mailbox_id": mailbox["id"],
+                    "account_id": mailbox["account_id"],
+                    "user_id": mailbox["owner_user_id"],
+                    "jti": secrets.token_urlsafe(16),
+                },
+                CONFIG.jwt_secret,
+                3600,
+            )
+            self.webmail_login_clear(conn, attempt_key)
+            self.send_response(HTTPStatus.OK)
+            for cookie_header in named_cookie_headers("mp_mail_token", mail_access_token, self.headers.get("Host", ""), 3600):
+                self.send_header("Set-Cookie", cookie_header)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "logged_in": True,
+                        "expires_in": 3600,
+                        "launch_url": launch_url,
+                        "email": mailbox["email"],
+                        "mailbox": mailbox_row_payload(conn, mailbox),
+                    }
+                ).encode("utf-8")
+            )
+            return
+
+    def mailbox_remaining_today(self, conn, mailbox_id, limit):
+        row = conn.execute("SELECT sent_today_count, sent_today_on FROM mailboxes WHERE id = ?", (mailbox_id,)).fetchone()
+        if not row:
+            return 0
+        today = time.strftime("%Y-%m-%d")
+        if str(row["sent_today_on"] or "") != today:
+            return limit
+        remaining = limit - int(row["sent_today_count"] or 0)
+        return remaining if remaining > 0 else 0
+
+    def public_webmail_messages(self):
+        with connect(CONFIG.db_path) as conn:
+            payload, mailbox_id = self.webmail_session_context()
+            mailbox = self.load_webmail_mailbox(conn, payload, mailbox_id)
+            qp = getattr(self, "query_params", {})
+            folder = str((qp.get("folder") or ["all"])[0]).strip().lower()
+            search = str((qp.get("q") or [""])[0]).strip().lower()
+            page = max(1, positive_int((qp.get("page") or ["1"])[0], "invalid_page", minimum=1, maximum=100000))
+            limit = positive_int((qp.get("limit") or ["20"])[0], "invalid_limit", minimum=1, maximum=100)
+            offset = (page - 1) * limit
+            params = [mailbox["id"]]
+            where = ["mailbox_id = ?"]
+            if folder and folder != "all":
+                where.append("folder = ?")
+                params.append(folder)
+            if search:
+                where.append("(lower(subject) LIKE ? OR lower(sender_email) LIKE ? OR lower(body_preview) LIKE ?)")
+                needle = f"%{search}%"
+                params.extend([needle, needle, needle])
+            where_sql = " AND ".join(where)
+            total = conn.execute(f"SELECT COUNT(*) AS count FROM mail_messages WHERE {where_sql}", tuple(params)).fetchone()["count"]
+            unread = conn.execute(
+                "SELECT COUNT(*) AS count FROM mail_messages WHERE mailbox_id = ? AND folder = 'inbox' AND is_read = 0",
+                (mailbox["id"],),
+            ).fetchone()["count"]
+            rows = conn.execute(
+                f"""
+                SELECT * FROM mail_messages
+                WHERE {where_sql}
+                ORDER BY datetime(created_at) DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params + [limit, offset]),
+            ).fetchall()
+            messages = rows_to_dicts(rows)
+            for message in messages:
+                message["recipients"] = parse_json_field(message.get("recipients_json"), [])
+                message["headers"] = parse_json_field(message.get("headers_json"), {})
+            return self.json_response(
+                {
+                    "messages": messages,
+                    "mailbox": mailbox_row_payload(conn, mailbox),
+                    "folder": folder or "inbox",
+                    "query": search,
+                    "page": page,
+                    "limit": limit,
+                    "total": total,
+                    "has_more": offset + len(messages) < total,
+                    "unread_count": unread,
+                }
+            )
+
+    def public_webmail_message(self, path, method):
+        with connect(CONFIG.db_path) as conn:
+            payload, mailbox_id = self.webmail_session_context()
+            mailbox = self.load_webmail_mailbox(conn, payload, mailbox_id)
+            message_id = path_int_id(path, "/api/public/webmail/messages/")
+            message = conn.execute(
+                "SELECT * FROM mail_messages WHERE id = ? AND mailbox_id = ?",
+                (message_id, mailbox["id"]),
+            ).fetchone()
+            if not message:
+                raise ApiError(HTTPStatus.NOT_FOUND, "message_not_found")
+            if method == "GET":
+                if int(message["is_read"] or 0) == 0:
+                    conn.execute("UPDATE mail_messages SET is_read = 1 WHERE id = ?", (message_id,))
+                payload = row_to_dict(message)
+                payload["recipients"] = parse_json_field(payload.get("recipients_json"), [])
+                payload["headers"] = parse_json_field(payload.get("headers_json"), {})
+                payload["content"] = parse_mail_message_file(payload.get("storage_path"))
+                return self.json_response({"message": payload, "mailbox": mailbox_row_payload(conn, mailbox)})
+            body = self.read_json()
+            updates = []
+            params = []
+            if "is_read" in body:
+                updates.append("is_read = ?")
+                params.append(1 if body.get("is_read") else 0)
+            if "folder" in body:
+                folder = clean_text(body.get("folder"), message["folder"] or "inbox")
+                updates.append("folder = ?")
+                params.append(folder or "inbox")
+            if not updates:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "message_update_required")
+            params.append(message_id)
+            conn.execute(f"UPDATE mail_messages SET {', '.join(updates)} WHERE id = ?", tuple(params))
+            updated = conn.execute("SELECT * FROM mail_messages WHERE id = ?", (message_id,)).fetchone()
+            payload = row_to_dict(updated)
+            payload["recipients"] = parse_json_field(payload.get("recipients_json"), [])
+            payload["headers"] = parse_json_field(payload.get("headers_json"), {})
+            payload["content"] = parse_mail_message_file(payload.get("storage_path"))
+            return self.json_response({"message": payload, "mailbox": mailbox_row_payload(conn, mailbox)})
+
+    def public_webmail_send(self):
+        body = self.read_json()
+        recipient = normalize_email(body.get("to"))
+        subject = clean_text(body.get("subject"), "No subject")
+        message_body = str(body.get("body") or "").strip()
+        if not message_body:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "message_body_required")
+        with connect(CONFIG.db_path) as conn:
+            payload, mailbox_id = self.webmail_session_context()
+            mailbox = self.load_webmail_mailbox(conn, payload, mailbox_id)
+            limit = mailbox_send_budget(conn, mailbox["account_id"])
+            today = time.strftime("%Y-%m-%d")
+            mailbox_reset_send_count_if_needed(conn, mailbox["id"], today)
+            current = conn.execute("SELECT sent_today_count, sent_today_on FROM mailboxes WHERE id = ?", (mailbox["id"],)).fetchone()
+            sent_today = int(current["sent_today_count"] or 0) if current and current["sent_today_on"] == today else 0
+            if limit and sent_today >= limit:
+                raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "daily_email_limit_reached")
+            mailbox_increment_send_count(conn, mailbox["id"], today)
+            recipient_targets = mailbox_resolve_recipients(conn, mailbox["account_id"], recipient)
+            outbound_id = mailbox_store_message(
+                conn,
+                mailbox["account_id"],
+                mailbox,
+                "outbound",
+                mailbox["email"],
+                [recipient],
+                subject,
+                message_body,
+                "outbound",
+                status="sent",
+            )
+            conn.execute(
+                "UPDATE mailboxes SET last_outbound_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (mailbox["id"],),
+            )
+            for target in recipient_targets:
+                if target["type"] == "mailbox" or target["type"] in {"alias", "forwarder", "catch_all"}:
+                    target_mailbox = target["mailbox"]
+                    mailbox_store_message(
+                        conn,
+                        mailbox["account_id"],
+                        target_mailbox,
+                        "inbound",
+                        mailbox["email"],
+                        [recipient],
+                        subject,
+                        message_body,
+                        "inbound",
+                        status="stored",
+                    )
+                    conn.execute("UPDATE mailboxes SET last_inbound_at = CURRENT_TIMESTAMP WHERE id = ?", (target_mailbox["id"],))
+                    log_mail_delivery(
+                        conn,
+                        mailbox["account_id"],
+                        "message_delivered",
+                        source_email=mailbox["email"],
+                        destination_email=target_mailbox["email"],
+                        mailbox_id=target_mailbox["id"],
+                        direction="inbound",
+                        details={"message_id": outbound_id},
+                        status="stored",
+                    )
+                else:
+                    log_mail_delivery(
+                        conn,
+                        mailbox["account_id"],
+                        "message_forwarded_external",
+                        source_email=mailbox["email"],
+                        destination_email=target["email"],
+                        mailbox_id=mailbox["id"],
+                        direction="outbound",
+                        details={"message_id": outbound_id},
+                        status="sent",
+                    )
+            log_mail_delivery(
+                conn,
+                mailbox["account_id"],
+                "message_sent",
+                source_email=mailbox["email"],
+                destination_email=recipient,
+                mailbox_id=mailbox["id"],
+                direction="outbound",
+                details={"message_id": outbound_id},
+                status="sent",
+            )
+            return self.json_response(
+                {
+                    "sent": True,
+                    "message_id": outbound_id,
+                    "remaining_today": self.mailbox_remaining_today(conn, mailbox["id"], limit),
+                },
+                HTTPStatus.CREATED,
+            )
+
+    def public_webmail_logout(self):
+        host = self.headers.get("Host", "localhost")
+        self.send_response(HTTPStatus.NO_CONTENT)
+        for cookie_header in expired_named_cookie_headers("mp_mail_token", host):
+            self.send_header("Set-Cookie", cookie_header)
+        self.end_headers()
+        return
+
+    def public_mail_jmap(self):
+        with connect(CONFIG.db_path) as conn:
+            payload, mailbox_id = self.webmail_session_context()
+            mailbox = self.load_webmail_mailbox(conn, payload, mailbox_id)
+            mailbox_payload = mailbox_row_payload(conn, mailbox)
+            return self.json_response(
+                {
+                    "enabled": True,
+                    "implementation": "compatibility-adapter",
+                    "capabilities": {
+                        "mailbox_native": True,
+                        "submission": True,
+                        "imap": True,
+                        "pop": True,
+                        "webmail": True,
+                    },
+                    "mailbox": {
+                        "id": mailbox_payload["id"],
+                        "email": mailbox_payload["email"],
+                        "username": mailbox_payload.get("mail_username", mailbox_payload["email"]),
+                        "host": mailbox_payload.get("mail_edge_host") or mailbox_payload.get("smtp_host") or "",
+                        "submission_host": mailbox_payload.get("smtp_host") or "",
+                        "submission_port": mailbox_payload.get("smtp_port") or 0,
+                        "submission_encryption": mailbox_payload.get("smtp_encryption") or "STARTTLS",
+                        "imap_host": mailbox_payload.get("imap_host") or "",
+                        "imap_port": mailbox_payload.get("imap_port") or 0,
+                        "imap_encryption": mailbox_payload.get("imap_encryption") or "STARTTLS",
+                        "pop_host": mailbox_payload.get("pop_host") or "",
+                        "pop_port": mailbox_payload.get("pop_port") or 0,
+                        "pop_encryption": mailbox_payload.get("pop_encryption") or "STARTTLS",
+                        "webmail_url": mailbox_payload.get("webmail_url") or "",
+                        "webmail_login_url": mailbox_payload.get("webmail_login_url") or "",
+                        "jmap_url": mailbox_payload.get("jmap_url") or "",
+                    },
+                    "user": {
+                        "account_id": mailbox["account_id"],
+                        "account_username": mailbox["account_username"],
+                    },
+                }
+            )
 
     def forward_auth_verify(self):
         from http.cookies import SimpleCookie
@@ -860,6 +1570,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     if not domain:
                         raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
                     rows = conn.execute("SELECT * FROM dns_records WHERE domain_id = ? ORDER BY type, name", (domain_id,)).fetchall()
+                    zone_rows = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ? ORDER BY zone_name", (domain_id,)).fetchall()
                 else:
                     rows = conn.execute(
                         """
@@ -870,11 +1581,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                         """,
                         (account["id"],),
                     ).fetchall()
-                return self.json_response({"dns_records": rows_to_dicts(rows)})
+                    zone_rows = conn.execute("SELECT * FROM dns_zones WHERE account_id = ? ORDER BY zone_name", (account["id"],)).fetchall()
+                dns_zones = []
+                for row in rows_to_dicts(zone_rows):
+                    row["nameservers"] = parse_json_field(row.get("nameservers_json"), [])
+                    row["provider_state"] = parse_json_field(row.get("provider_state_json"), {})
+                    dns_zones.append(row)
+                return self.json_response({"dns_records": rows_to_dicts(rows), "dns_zones": dns_zones})
             if path == "/api/client/dns-records" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
-                domain_id = int(body.get("domain_id"))
+                record_payload = validate_dns_record_payload(body)
+                domain_id = record_payload["domain_id"]
                 domain = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (domain_id, account["id"])).fetchone()
                 if not domain:
                     raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
@@ -882,17 +1600,23 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "INSERT INTO dns_records(domain_id, type, name, value, ttl, priority) VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         domain_id,
-                        body.get("type", "A").upper(),
-                        body.get("name", "@"),
-                        body.get("value", ""),
-                        int(body.get("ttl", 300)),
-                        body.get("priority"),
+                        record_payload["type"],
+                        record_payload["name"],
+                        record_payload["value"],
+                        record_payload["ttl"],
+                        record_payload["priority"],
                     ),
                 )
                 job_id = enqueue_agent_job(conn, "sync_dns_record", "dns_record", cur.lastrowid, {})
-                log_activity(conn, actor["id"], "dns_record_created", {"domain_id": domain_id, "type": body.get("type", "A")})
+                log_activity(conn, actor["id"], "dns_record_created", {"domain_id": domain_id, "type": record_payload["type"]})
                 all_records = conn.execute("SELECT * FROM dns_records WHERE domain_id = ? ORDER BY type, name", (domain_id,)).fetchall()
-                return self.json_response({"dns_record_id": cur.lastrowid, "job_id": job_id, "dns_records": rows_to_dicts(all_records)}, HTTPStatus.CREATED)
+                zone_rows = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ? ORDER BY zone_name", (domain_id,)).fetchall()
+                dns_zones = []
+                for row in rows_to_dicts(zone_rows):
+                    row["nameservers"] = parse_json_field(row.get("nameservers_json"), [])
+                    row["provider_state"] = parse_json_field(row.get("provider_state_json"), {})
+                    dns_zones.append(row)
+                return self.json_response({"dns_record_id": cur.lastrowid, "job_id": job_id, "dns_records": rows_to_dicts(all_records), "dns_zones": dns_zones}, HTTPStatus.CREATED)
             if path.startswith("/api/client/dns-records/") and method == "DELETE":
                 require_active_account(account)
                 record_id = path_int_id(path, "/api/client/dns-records/")
@@ -910,17 +1634,30 @@ class MangoHandler(BaseHTTPRequestHandler):
                 job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", record["domain_id"], {})
                 log_activity(conn, actor["id"], "dns_record_deleted", {"record_id": record_id})
                 all_records = conn.execute("SELECT * FROM dns_records WHERE domain_id = ? ORDER BY type, name", (record["domain_id"],)).fetchall()
-                return self.json_response({"deleted": True, "job_id": job_id, "dns_records": rows_to_dicts(all_records)})
+                zone_rows = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ? ORDER BY zone_name", (record["domain_id"],)).fetchall()
+                dns_zones = []
+                for row in rows_to_dicts(zone_rows):
+                    row["nameservers"] = parse_json_field(row.get("nameservers_json"), [])
+                    row["provider_state"] = parse_json_field(row.get("provider_state_json"), {})
+                    dns_zones.append(row)
+                return self.json_response({"deleted": True, "job_id": job_id, "dns_records": rows_to_dicts(all_records), "dns_zones": dns_zones})
             if path == "/api/client/ssl/issue" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
-                website_id = int(body.get("website_id"))
+                website_id = positive_int(body.get("website_id"), "invalid_website_id")
                 website = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone()
                 if not website:
                     raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
                 job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "local-dev"})
                 refreshed = conn.execute("SELECT ssl_status FROM websites WHERE id = ?", (website_id,)).fetchone()
-                return self.json_response({"ssl_status": refreshed["ssl_status"], "job_id": job_id})
+                order = conn.execute(
+                    "SELECT * FROM acme_certificate_orders WHERE account_id = ? AND domain = ? ORDER BY id DESC LIMIT 1",
+                    (account["id"], website["domain"]),
+                ).fetchone()
+                acme_order = row_to_dict(order) if order else None
+                if acme_order:
+                    acme_order["provider_state"] = parse_json_field(acme_order.get("provider_state_json"), {})
+                return self.json_response({"ssl_status": refreshed["ssl_status"], "job_id": job_id, "acme_order": acme_order})
             if path == "/api/client/ssl/custom" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -1018,15 +1755,29 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/webmail/launch" and method == "GET":
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
-                return self.json_response({"launch_url": runtime.get("mailpit_url"), "expires_in": 300})
+                return self.json_response({"launch_url": runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url", ""), "expires_in": 3600})
             if path.startswith("/api/client/mailboxes/") and path.endswith("/webmail/launch") and method == "GET":
-                require_account(account)
-                mailbox_id = path_int_id(path, "/api/client/mailboxes/")
+                require_active_account(account)
+                mailbox_id = path_int_id(path.replace("/webmail/launch", ""), "/api/client/mailboxes/")
                 mailbox = require_owned_mailbox(conn, account["id"], mailbox_id)
                 runtime = account_runtime(conn, account["id"])
-                mailbox_query = quote(f'addressed:"{mailbox["email"]}"', safe="")
-                launch_url = f"{runtime.get('mailpit_url', '').rstrip('/')}/search?q={mailbox_query}"
-                return self.json_response({"launch_url": launch_url, "mailbox": {"id": mailbox_id, "email": mailbox["email"]}, "expires_in": 300})
+                launch_token = create_jwt(
+                    {
+                        "sub": account["user_id"],
+                        "actor_type": "user",
+                        "purpose": "tool_launch",
+                        "tool": "webmail",
+                        "account_id": account["id"],
+                        "mailbox_id": mailbox["id"],
+                        "jti": secrets.token_urlsafe(16),
+                    },
+                    CONFIG.jwt_secret,
+                    3600,
+                )
+                mail_host = runtime.get("mail_edge_host") or runtime.get("mail_host", "")
+                launch_path = f"/webmail?launch={launch_token}"
+                launch_url = f"http://{mail_host}{launch_path}" if mail_host else launch_path
+                return self.json_response({"launch_url": launch_url, "expires_in": 3600, "mailbox": mailbox_row_payload(conn, mailbox)})
             if path == "/api/client/databases" and method == "GET":
                 require_account(account)
                 return self.json_response(client_databases_payload(conn, account["id"]))
@@ -1262,17 +2013,41 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_plan_capacity(conn, account["id"], "mailboxes", "max_mailboxes", "mailbox_limit_reached")
                 body = self.read_json()
                 email = normalize_email(body.get("email"))
+                local_part, domain = split_mailbox_address(email)
+                if not local_part or not domain:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mailbox_address")
+                mail_domain = require_owned_mail_domain(conn, account["id"], domain)
                 password = validate_password(body.get("password", ""))
                 confirm_password = str(body.get("confirm_password") or "").strip()
                 if confirm_password and confirm_password != password:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "mailbox_password_mismatch")
                 quota_mb = positive_int(body.get("quota_mb", 1024), "invalid_mailbox_quota", minimum=100, maximum=100000)
+                storage_path = str(mailbox_storage_path(account["base_path"], email))
+                ensure_mailbox_storage(storage_path)
+                password_secret = encrypt_secret(password, CONFIG.jwt_secret)
                 cur = conn.execute(
-                    "INSERT INTO mailboxes(account_id, email, quota_mb, status, password_hash, mailpit_auth_hash) VALUES (?, ?, ?, ?, ?, ?)",
-                    (account["id"], email, quota_mb, "active", hash_password(password), hash_mailpit_password(password)),
+                    """
+                    INSERT INTO mailboxes(
+                      account_id, email, local_part, domain, storage_path, mail_domain_id, quota_mb, status, password_hash, password_secret
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account["id"],
+                        email,
+                        local_part,
+                        domain,
+                        storage_path,
+                        mail_domain["mail_domain_id"],
+                        quota_mb,
+                        "active",
+                        hash_password(password),
+                        password_secret,
+                    ),
                 )
-                job_id = enqueue_agent_job(conn, "create_mailbox", "mailbox", cur.lastrowid, {"email": email})
-                return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id}, HTTPStatus.CREATED)
+                job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": cur.lastrowid, "email": email})
+                log_activity(conn, actor["id"], "mailbox_created", {"mailbox_id": cur.lastrowid, "email": email})
+                created = conn.execute("SELECT * FROM mailboxes WHERE id = ?", (cur.lastrowid,)).fetchone()
+                return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id, "mailbox": mailbox_row_payload(conn, created)}, HTTPStatus.CREATED)
             if path == "/api/client/backups" and method == "POST":
                 require_active_account(account)
                 cur = conn.execute(
@@ -1376,63 +2151,303 @@ class MangoHandler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_git_deployment_route")
             if path == "/api/client/mailboxes" and method == "GET":
                 require_account(account)
-                rows = conn.execute(
-                    "SELECT id, account_id, email, quota_mb, status, created_at FROM mailboxes WHERE account_id = ? ORDER BY id",
-                    (account["id"],),
-                ).fetchall()
-                return self.json_response({"mailboxes": rows_to_dicts(rows)})
+                return self.json_response(client_mailboxes_payload(conn, account["id"]))
             if path == "/api/client/mailboxes" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "mailboxes", "max_mailboxes", "mailbox_limit_reached")
                 body = self.read_json()
                 email = normalize_email(body.get("email"))
+                local_part, domain = split_mailbox_address(email)
+                if not local_part or not domain:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mailbox_address")
+                require_owned_mail_domain(conn, account["id"], domain)
                 password = validate_password(body.get("password", ""))
                 confirm_password = str(body.get("confirm_password") or "").strip()
                 if confirm_password and confirm_password != password:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "mailbox_password_mismatch")
                 quota_mb = positive_int(body.get("quota_mb", 1024), "invalid_mailbox_quota", minimum=100, maximum=100000)
-                cur = conn.execute(
-                    "INSERT INTO mailboxes(account_id, email, quota_mb, status, password_hash, mailpit_auth_hash) VALUES (?, ?, ?, ?, ?, ?)",
-                    (account["id"], email, quota_mb, "active", hash_password(password), hash_mailpit_password(password)),
-                )
-                job_id = enqueue_agent_job(conn, "create_mailbox", "mailbox", cur.lastrowid, {"email": email})
-                return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id}, HTTPStatus.CREATED)
+                storage_path = str(mailbox_storage_path(account["base_path"], email))
+                ensure_mailbox_storage(storage_path)
+                password_secret = encrypt_secret(password, CONFIG.jwt_secret)
+                try:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO mailboxes(
+                          account_id, email, local_part, domain, storage_path, mail_domain_id,
+                          quota_mb, status, password_hash, password_secret
+                        ) VALUES (?, ?, ?, ?, ?, (SELECT id FROM mail_domains md JOIN domains d ON d.id = md.domain_id WHERE md.account_id = ? AND d.name = ? LIMIT 1), ?, ?, ?, ?)
+                        """,
+                        (
+                            account["id"],
+                            email,
+                            local_part,
+                            domain,
+                            storage_path,
+                            account["id"],
+                            domain,
+                            quota_mb,
+                            "active",
+                            hash_password(password),
+                            password_secret,
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ApiError(HTTPStatus.CONFLICT, "mailbox_already_exists") from exc
+                job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": cur.lastrowid, "email": email})
+                log_activity(conn, actor["id"], "mailbox_created", {"mailbox_id": cur.lastrowid, "email": email})
+                created = conn.execute("SELECT * FROM mailboxes WHERE id = ?", (cur.lastrowid,)).fetchone()
+                return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id, "mailbox": mailbox_row_payload(conn, created)}, HTTPStatus.CREATED)
             if path.startswith("/api/client/mailboxes/"):
                 require_active_account(account)
                 mailbox_id = path_int_id(path, "/api/client/mailboxes/")
                 mailbox = require_owned_mailbox(conn, account["id"], mailbox_id)
                 if method == "PATCH":
                     body = self.read_json()
+                    raw_email = str(body.get("email") or mailbox["email"]).strip()
+                    email = normalize_email(raw_email)
+                    local_part, domain = split_mailbox_address(email)
+                    if not local_part or not domain:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mailbox_address")
+                    mail_domain = require_owned_mail_domain(conn, account["id"], domain)
                     quota_mb = positive_int(body.get("quota_mb", mailbox["quota_mb"]), "invalid_mailbox_quota", minimum=100, maximum=100000)
                     status = body.get("status", mailbox["status"])
                     if status not in {"active", "suspended"}:
                         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mailbox_status")
-                    password_sql = ""
-                    params = [quota_mb, status]
+                    new_storage_path = str(mailbox_storage_path(account["base_path"], email))
+                    old_storage_path = str(mailbox["storage_path"] or "")
+                    if new_storage_path != old_storage_path:
+                        move_mailbox_storage(old_storage_path, new_storage_path, account["base_path"])
+                    else:
+                        ensure_mailbox_storage(new_storage_path)
+                    params = [email, local_part, domain, new_storage_path, mail_domain["mail_domain_id"], quota_mb, status]
+                    update_sql = """
+                        UPDATE mailboxes
+                        SET email = ?, local_part = ?, domain = ?, storage_path = ?, mail_domain_id = ?, quota_mb = ?, status = ?
+                    """
                     if body.get("password"):
                         password = validate_password(body.get("password", ""))
                         confirm_password = str(body.get("confirm_password") or "").strip()
                         if confirm_password and confirm_password != password:
                             raise ApiError(HTTPStatus.BAD_REQUEST, "mailbox_password_mismatch")
-                        password_sql = ", password_hash = ?, mailpit_auth_hash = ?"
-                        params.extend([hash_password(password), hash_mailpit_password(password)])
-                    conn.execute(
-                        f"UPDATE mailboxes SET quota_mb = ?, status = ?{password_sql} WHERE id = ?",
-                        tuple(params + [mailbox_id]),
-                    )
-                    job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": mailbox_id})
-                    log_activity(conn, actor["id"], "mailbox_updated", {"mailbox_id": mailbox_id})
+                        update_sql += ", password_hash = ?, password_secret = ?"
+                        params.append(hash_password(password))
+                        params.append(encrypt_secret(password, CONFIG.jwt_secret))
+                    update_sql += " WHERE id = ?"
+                    duplicate = conn.execute("SELECT id FROM mailboxes WHERE email = ? AND id != ?", (email, mailbox_id)).fetchone()
+                    if duplicate:
+                        raise ApiError(HTTPStatus.CONFLICT, "mailbox_already_exists")
+                    conn.execute(update_sql, tuple(params + [mailbox_id]))
+                    job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": mailbox_id, "email": email})
+                    log_activity(conn, actor["id"], "mailbox_updated", {"mailbox_id": mailbox_id, "email": email})
                     updated = conn.execute(
-                        "SELECT id, account_id, email, quota_mb, status, created_at FROM mailboxes WHERE id = ?",
+                        "SELECT * FROM mailboxes WHERE id = ?",
                         (mailbox_id,),
                     ).fetchone()
-                    return self.json_response({"mailbox": row_to_dict(updated), "job_id": job_id})
+                    return self.json_response({"mailbox": mailbox_row_payload(conn, updated), "job_id": job_id})
                 if method == "DELETE":
+                    conn.execute("DELETE FROM mail_messages WHERE mailbox_id = ?", (mailbox_id,))
                     conn.execute("DELETE FROM mailboxes WHERE id = ?", (mailbox_id,))
+                    remove_mailbox_storage(mailbox["storage_path"], account["base_path"])
                     job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": mailbox_id, "email": mailbox["email"]})
                     log_activity(conn, actor["id"], "mailbox_deleted", {"email": mailbox["email"]})
                     return self.json_response({"deleted": True, "job_id": job_id})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_mailbox_route")
+            if path == "/api/client/mail-routing" and method == "GET":
+                require_account(account)
+                return self.json_response(client_mail_routing_payload(conn, account["id"]))
+            if path == "/api/client/mail-domains" and method == "GET":
+                require_account(account)
+                return self.json_response(client_mail_routing_payload(conn, account["id"]))
+            if path.startswith("/api/client/mail-domains/"):
+                require_active_account(account)
+                mail_domain_id = path_int_id(path, "/api/client/mail-domains/")
+                mail_domain = require_owned_mail_domain_id(conn, account["id"], mail_domain_id)
+                if path.endswith("/dkim/rotate") and method == "POST":
+                    selector = str(mail_domain["dkim_selector"] or "mango").strip().lower()
+                    selector = re.sub(r"[^a-z0-9_-]", "", selector) or "mango"
+                    material = generate_dkim_material(selector)
+                    conn.execute(
+                        """
+                        UPDATE mail_domains
+                        SET dkim_selector = ?, dkim_private_key = ?, dkim_public_key = ?, status = 'active'
+                        WHERE id = ?
+                        """,
+                        (material["selector"], material["private_key"], material["public_key"], mail_domain_id),
+                    )
+                    log_activity(conn, actor["id"], "mail_dkim_rotated", {"mail_domain_id": mail_domain_id, "selector": material["selector"]})
+                    job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_domain_id": mail_domain_id, "selector": material["selector"], "action": "mail_dkim_rotated"})
+                    updated = require_owned_mail_domain_id(conn, account["id"], mail_domain_id)
+                    return self.json_response({"mail_domain": row_to_dict(updated), "job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])})
+                if method == "PATCH":
+                    body = self.read_json()
+                    selector_raw = str(body.get("dkim_selector", mail_domain["dkim_selector"]) or "mango").strip().lower()
+                    selector = re.sub(r"[^a-z0-9_-]", "", selector_raw) or "mango"
+                    spf_policy = str(body.get("spf_policy", mail_domain["spf_policy"]) or recommended_spf_record()).strip()
+                    dmarc_policy = str(body.get("dmarc_policy", mail_domain["dmarc_policy"]) or recommended_dmarc_record(mail_domain["name"])).strip()
+                    catch_all_enabled = 1 if body.get("catch_all_enabled") else 0
+                    catch_all_destination = ""
+                    if catch_all_enabled:
+                        catch_all_destination = normalize_email(body.get("catch_all_destination"))
+                    regenerate_dkim = bool(body.get("regenerate_dkim"))
+                    params = [selector, spf_policy, dmarc_policy, catch_all_enabled, catch_all_destination, body.get("status", mail_domain["status"])]
+                    sql = """
+                        UPDATE mail_domains
+                        SET dkim_selector = ?, spf_policy = ?, dmarc_policy = ?, catch_all_enabled = ?, catch_all_destination = ?, status = ?
+                    """
+                    if regenerate_dkim:
+                        material = generate_dkim_material(selector)
+                        sql += ", dkim_private_key = ?, dkim_public_key = ?"
+                        params.extend([material["private_key"], material["public_key"]])
+                    sql += " WHERE id = ?"
+                    params.append(mail_domain_id)
+                    conn.execute(sql, tuple(params))
+                    if catch_all_enabled:
+                        log_mail_delivery(conn, account["id"], "catch_all_updated", destination_email=catch_all_destination, mailbox_id=None, direction="inbound", details={"mail_domain_id": mail_domain_id}, status="configured")
+                    log_activity(conn, actor["id"], "mail_domain_updated", {"mail_domain_id": mail_domain_id, "selector": selector})
+                    job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_domain_id": mail_domain_id, "selector": selector, "action": "mail_domain_updated"})
+                    updated = require_owned_mail_domain_id(conn, account["id"], mail_domain_id)
+                    return self.json_response({"mail_domain": row_to_dict(updated), "job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])})
+                raise ApiError(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
+            if path == "/api/client/mail-aliases" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                source_email = normalize_email(body.get("source_email"))
+                destination_email = normalize_email(body.get("destination_email"))
+                source_local, source_domain = split_mailbox_address(source_email)
+                if not source_local or not source_domain:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mail_alias_source")
+                require_owned_mail_domain(conn, account["id"], source_domain)
+                require_owned_mail_domain(conn, account["id"], split_mailbox_address(destination_email)[1])
+                cur = conn.execute(
+                    "INSERT INTO mail_aliases(account_id, source_email, destination_email, status) VALUES (?, ?, ?, ?)",
+                    (account["id"], source_email, destination_email, "active"),
+                )
+                log_activity(conn, actor["id"], "mail_alias_created", {"alias_id": cur.lastrowid, "source_email": source_email})
+                log_mail_delivery(conn, account["id"], "alias_created", source_email=source_email, destination_email=destination_email, status="configured")
+                job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_alias_id": cur.lastrowid, "source_email": source_email, "action": "mail_alias_created"})
+                return self.json_response({"mail_alias_id": cur.lastrowid, "job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])}, HTTPStatus.CREATED)
+            if path.startswith("/api/client/mail-aliases/"):
+                require_active_account(account)
+                alias_id = path_int_id(path, "/api/client/mail-aliases/")
+                alias = conn.execute("SELECT * FROM mail_aliases WHERE id = ? AND account_id = ?", (alias_id, account["id"])).fetchone()
+                if not alias:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "mail_alias_not_found")
+                if method == "PATCH":
+                    body = self.read_json()
+                    source_email = normalize_email(body.get("source_email", alias["source_email"]))
+                    destination_email = normalize_email(body.get("destination_email", alias["destination_email"]))
+                    if split_mailbox_address(source_email)[0] == "":
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mail_alias_source")
+                    require_owned_mail_domain(conn, account["id"], split_mailbox_address(source_email)[1])
+                    require_owned_mail_domain(conn, account["id"], split_mailbox_address(destination_email)[1])
+                    status = body.get("status", alias["status"])
+                    if status not in {"active", "suspended"}:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mail_alias_status")
+                    conn.execute(
+                        "UPDATE mail_aliases SET source_email = ?, destination_email = ?, status = ? WHERE id = ?",
+                        (source_email, destination_email, status, alias_id),
+                    )
+                    log_activity(conn, actor["id"], "mail_alias_updated", {"alias_id": alias_id})
+                    job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_alias_id": alias_id, "source_email": source_email, "action": "mail_alias_updated"})
+                    return self.json_response({"job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])})
+                if method == "DELETE":
+                    conn.execute("DELETE FROM mail_aliases WHERE id = ?", (alias_id,))
+                    log_activity(conn, actor["id"], "mail_alias_deleted", {"alias_id": alias_id})
+                    job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_alias_id": alias_id, "action": "mail_alias_deleted"})
+                    return self.json_response({"deleted": True, "job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])})
+                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_mail_alias_route")
+            if path == "/api/client/mail-forwarders" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                source_email = normalize_email(body.get("source_email"))
+                destination_email = normalize_email(body.get("destination_email"))
+                if split_mailbox_address(source_email)[0] == "":
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mail_forwarder_source")
+                require_owned_mail_domain(conn, account["id"], split_mailbox_address(source_email)[1])
+                cur = conn.execute(
+                    "INSERT INTO mail_forwarders(account_id, source_email, destination_email, status) VALUES (?, ?, ?, ?)",
+                    (account["id"], source_email, destination_email, "active"),
+                )
+                log_activity(conn, actor["id"], "mail_forwarder_created", {"forwarder_id": cur.lastrowid, "source_email": source_email})
+                log_mail_delivery(conn, account["id"], "forwarder_created", source_email=source_email, destination_email=destination_email, status="configured")
+                job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_forwarder_id": cur.lastrowid, "source_email": source_email, "action": "mail_forwarder_created"})
+                return self.json_response({"mail_forwarder_id": cur.lastrowid, "job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])}, HTTPStatus.CREATED)
+            if path.startswith("/api/client/mail-forwarders/"):
+                require_active_account(account)
+                forwarder_id = path_int_id(path, "/api/client/mail-forwarders/")
+                forwarder = conn.execute("SELECT * FROM mail_forwarders WHERE id = ? AND account_id = ?", (forwarder_id, account["id"])).fetchone()
+                if not forwarder:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "mail_forwarder_not_found")
+                if method == "PATCH":
+                    body = self.read_json()
+                    source_email = normalize_email(body.get("source_email", forwarder["source_email"]))
+                    destination_email = normalize_email(body.get("destination_email", forwarder["destination_email"]))
+                    if split_mailbox_address(source_email)[0] == "":
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mail_forwarder_source")
+                    require_owned_mail_domain(conn, account["id"], split_mailbox_address(source_email)[1])
+                    status = body.get("status", forwarder["status"])
+                    if status not in {"active", "suspended"}:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mail_forwarder_status")
+                    conn.execute(
+                        "UPDATE mail_forwarders SET source_email = ?, destination_email = ?, status = ? WHERE id = ?",
+                        (source_email, destination_email, status, forwarder_id),
+                    )
+                    log_activity(conn, actor["id"], "mail_forwarder_updated", {"forwarder_id": forwarder_id})
+                    job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_forwarder_id": forwarder_id, "source_email": source_email, "action": "mail_forwarder_updated"})
+                    return self.json_response({"job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])})
+                if method == "DELETE":
+                    conn.execute("DELETE FROM mail_forwarders WHERE id = ?", (forwarder_id,))
+                    log_activity(conn, actor["id"], "mail_forwarder_deleted", {"forwarder_id": forwarder_id})
+                    job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_forwarder_id": forwarder_id, "action": "mail_forwarder_deleted"})
+                    return self.json_response({"deleted": True, "job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])})
+                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_mail_forwarder_route")
+            if path == "/api/client/mail-autoresponders" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                mailbox_id = int(body.get("mailbox_id", 0))
+                mailbox = require_owned_mailbox(conn, account["id"], mailbox_id)
+                subject = clean_text(body.get("subject", "Auto-reply"), "Auto-reply")
+                reply_body = str(body.get("body") or "").strip()
+                if not reply_body:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "autoresponder_body_required")
+                enabled = 1 if body.get("enabled", True) else 0
+                cur = conn.execute(
+                    "INSERT INTO mail_autoresponders(account_id, mailbox_id, subject, body, enabled) VALUES (?, ?, ?, ?, ?)",
+                    (account["id"], mailbox_id, subject, reply_body, enabled),
+                )
+                log_activity(conn, actor["id"], "mail_autoresponder_created", {"autoresponder_id": cur.lastrowid, "mailbox_id": mailbox_id, "email": mailbox["email"]})
+                log_mail_delivery(conn, account["id"], "autoresponder_created", source_email=mailbox["email"], destination_email=mailbox["email"], mailbox_id=mailbox_id, direction="inbound", status="configured")
+                job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_autoresponder_id": cur.lastrowid, "mailbox_id": mailbox_id, "action": "mail_autoresponder_created"})
+                return self.json_response({"mail_autoresponder_id": cur.lastrowid, "job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])}, HTTPStatus.CREATED)
+            if path.startswith("/api/client/mail-autoresponders/"):
+                require_active_account(account)
+                autoresponder_id = path_int_id(path, "/api/client/mail-autoresponders/")
+                autoresponder = conn.execute("SELECT * FROM mail_autoresponders WHERE id = ? AND account_id = ?", (autoresponder_id, account["id"])).fetchone()
+                if not autoresponder:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "mail_autoresponder_not_found")
+                if method == "PATCH":
+                    body = self.read_json()
+                    subject = clean_text(body.get("subject", autoresponder["subject"]), autoresponder["subject"])
+                    reply_body = str(body.get("body", autoresponder["body"]) or "").strip()
+                    enabled = 1 if body.get("enabled", bool(autoresponder["enabled"])) else 0
+                    if not reply_body:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "autoresponder_body_required")
+                    conn.execute(
+                        "UPDATE mail_autoresponders SET subject = ?, body = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (subject, reply_body, enabled, autoresponder_id),
+                    )
+                    log_activity(conn, actor["id"], "mail_autoresponder_updated", {"autoresponder_id": autoresponder_id})
+                    job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_autoresponder_id": autoresponder_id, "mailbox_id": autoresponder["mailbox_id"], "action": "mail_autoresponder_updated"})
+                    return self.json_response({"job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])})
+                if method == "DELETE":
+                    conn.execute("DELETE FROM mail_autoresponders WHERE id = ?", (autoresponder_id,))
+                    log_activity(conn, actor["id"], "mail_autoresponder_deleted", {"autoresponder_id": autoresponder_id})
+                    job_id = enqueue_mail_policy_sync(conn, account["id"], {"mail_autoresponder_id": autoresponder_id, "action": "mail_autoresponder_deleted"})
+                    return self.json_response({"deleted": True, "job_id": job_id, "mail": client_mail_routing_payload(conn, account["id"])})
+                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_mail_autoresponder_route")
+            if path == "/api/client/mail-logs" and method == "GET":
+                require_account(account)
+                return self.json_response({"mail": client_mail_routing_payload(conn, account["id"])})
             if path == "/api/client/cron-jobs" and method == "GET":
                 require_account(account)
                 rows = conn.execute(
@@ -1499,7 +2514,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 service_name = body.get("service")
                 if not service_name:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "service_required")
-                valid_services = ["web", "db", "filebrowser", "phpmyadmin", "cron", "sftp", "smtp-relay"]
+                valid_services = ["web", "db", "filebrowser", "phpmyadmin", "cron", "sftp"]
                 if service_name not in valid_services:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_service")
                 job_id = enqueue_agent_job(conn, "restart_service", "hosting_account", account["id"], {"service": service_name})
@@ -1510,7 +2525,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_account(account)
                 service_name = query.get("service", [""])[0].strip()
                 if service_name:
-                    valid_services = ["web", "db", "filebrowser", "phpmyadmin", "cron", "sftp", "smtp-relay"]
+                    valid_services = ["web", "db", "filebrowser", "phpmyadmin", "cron", "sftp"]
                     if service_name not in valid_services:
                         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_service")
                 stack = conn.execute(
@@ -1864,12 +2879,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 name = body.get("name", "").strip()
                 if not name:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "name_required")
-                
-                import secrets
-                import hashlib
+
                 raw_token = secrets.token_hex(32)
                 token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-                
+
                 cursor = conn.execute(
                     "INSERT INTO api_tokens (account_id, name, token_hash) VALUES (?, ?, ?)",
                     (account["id"], name, token_hash)
@@ -2600,6 +3613,34 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "INSERT INTO domains(account_id, name, kind, status, linked_website_id) VALUES (?, ?, ?, ?, ?)",
                     (account_id, domain, "managed", "active", website_id),
                 ).lastrowid
+                dkim_material = generate_dkim_material("mango")
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO mail_domains(
+                      account_id, domain_id, spf_policy, dkim_private_key, dkim_public_key, dkim_selector,
+                      dmarc_policy, catch_all_enabled, catch_all_destination, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account_id,
+                        domain_id,
+                        recommended_spf_record(),
+                        dkim_material["private_key"],
+                        dkim_material["public_key"],
+                        dkim_material["selector"],
+                        recommended_dmarc_record(domain),
+                        0,
+                        "",
+                        "active",
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (domain_id, "TXT", "mango._domainkey", dkim_dns_value(dkim_material["public_key"]), 300),
+                )
                 conn.execute(
                     "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
                     (domain_id, "A", "@", "127.0.0.1", 300),
@@ -3438,7 +4479,7 @@ def docker_resource_usage(account):
     if not docker:
         return None
     username = account["username"]
-    containers = [f"mp-{username}-{service}" for service in ["web", "filebrowser", "phpmyadmin", "db", "cron", "sftp", "smtp-relay"]]
+    containers = [f"mp-{username}-{service}" for service in ["web", "filebrowser", "phpmyadmin", "db", "cron", "sftp"]]
     try:
         result = subprocess.run(
             [docker, "stats", "--no-stream", "--format", "{{json .}}", *containers],
@@ -3755,6 +4796,602 @@ def require_owned_mailbox(conn, account_id, mailbox_id):
     return row
 
 
+def mailbox_storage_metrics(storage_path, quota_mb=0):
+    path = Path(storage_path or "")
+    storage_bytes = mailbox_storage_size_bytes(path) if str(path) else 0
+    inode_count = mailbox_storage_inode_count(path) if str(path) else 0
+    quota_bytes = max(int(quota_mb or 0), 0) * 1024 * 1024
+    used_percent = round((storage_bytes / quota_bytes) * 100, 2) if quota_bytes else 0.0
+    remaining_bytes = max(quota_bytes - storage_bytes, 0) if quota_bytes else 0
+    return {
+        "storage_bytes": storage_bytes,
+        "storage_mb": round(storage_bytes / (1024 * 1024), 2),
+        "storage_inode_count": inode_count,
+        "storage_quota_bytes": quota_bytes,
+        "storage_quota_mb": round(quota_bytes / (1024 * 1024), 2),
+        "storage_remaining_bytes": remaining_bytes,
+        "storage_remaining_mb": round(remaining_bytes / (1024 * 1024), 2),
+        "storage_used_percent": used_percent,
+    }
+
+
+def mailbox_message_folder(direction):
+    return "inbox" if direction == "inbound" else "sent"
+
+
+def mailbox_message_uid(mailbox_id, message_id):
+    return f"{int(mailbox_id)}-{int(message_id)}-{secrets.token_hex(6)}"
+
+
+def parse_mail_message_file(storage_path):
+    path = Path(storage_path or "")
+    if not path.exists() or not path.is_file():
+        return {"body_text": "", "attachments": [], "content_type": "", "subject": "", "headers": {}}
+    try:
+        parsed = BytesParser(policy=email_policy.default).parsebytes(path.read_bytes())
+    except Exception:
+        return {"body_text": "", "attachments": [], "content_type": "", "subject": "", "headers": {}}
+    body_part = parsed.get_body(preferencelist=("plain", "html"))
+    body_text = ""
+    if body_part is not None:
+        try:
+            body_text = body_part.get_content()
+        except Exception:
+            body_text = ""
+    attachments = []
+    for part in parsed.iter_attachments():
+        attachments.append(
+            {
+                "filename": part.get_filename() or "attachment",
+                "content_type": part.get_content_type(),
+                "size_bytes": len(part.get_payload(decode=True) or b""),
+            }
+        )
+    headers = {key.lower(): value for key, value in parsed.items()}
+    return {
+        "body_text": body_text,
+        "attachments": attachments,
+        "content_type": parsed.get_content_type(),
+        "subject": parsed.get("Subject", ""),
+        "headers": headers,
+    }
+
+
+def require_owned_mail_domain(conn, account_id, domain_name):
+    domain = conn.execute(
+        """
+        SELECT d.*, md.id AS mail_domain_id, md.spf_policy, md.dkim_private_key, md.dkim_public_key,
+               md.dkim_selector, md.dmarc_policy, md.catch_all_enabled, md.catch_all_destination,
+               md.status AS mail_status
+        FROM domains d
+        LEFT JOIN mail_domains md ON md.domain_id = d.id
+        WHERE d.account_id = ? AND d.name = ?
+        """,
+        (account_id, domain_name),
+    ).fetchone()
+    if not domain:
+        raise ApiError(HTTPStatus.NOT_FOUND, "mail_domain_not_found")
+    if str(domain["status"]) != "active":
+        raise ApiError(HTTPStatus.BAD_REQUEST, "mail_domain_inactive")
+    if domain["mail_domain_id"]:
+        return domain
+    dkim_material = generate_dkim_material("mango")
+    cur = conn.execute(
+        """
+        INSERT INTO mail_domains(
+          account_id, domain_id, spf_policy, dkim_private_key, dkim_public_key, dkim_selector,
+          dmarc_policy, catch_all_enabled, catch_all_destination, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_id,
+            domain["id"],
+            recommended_spf_record(),
+            dkim_material["private_key"],
+            dkim_material["public_key"],
+            dkim_material["selector"],
+            recommended_dmarc_record(domain["name"]),
+            0,
+            "",
+            "active",
+        ),
+    )
+    return conn.execute(
+        """
+        SELECT d.*, md.id AS mail_domain_id, md.spf_policy, md.dkim_private_key, md.dkim_public_key,
+               md.dkim_selector, md.dmarc_policy, md.catch_all_enabled, md.catch_all_destination,
+               md.status AS mail_status
+        FROM domains d
+        JOIN mail_domains md ON md.id = ?
+        WHERE d.id = ?
+        """,
+        (cur.lastrowid, domain["id"]),
+    ).fetchone()
+
+
+def require_owned_mail_domain_id(conn, account_id, mail_domain_id):
+    row = conn.execute(
+        """
+        SELECT d.*, md.id AS mail_domain_id, md.spf_policy, md.dkim_private_key, md.dkim_public_key,
+               md.dkim_selector, md.dmarc_policy, md.catch_all_enabled, md.catch_all_destination,
+               md.status AS mail_status
+        FROM mail_domains md
+        JOIN domains d ON d.id = md.domain_id
+        WHERE md.id = ? AND md.account_id = ? AND d.account_id = ?
+        """,
+        (mail_domain_id, account_id, account_id),
+    ).fetchone()
+    if not row:
+        raise ApiError(HTTPStatus.NOT_FOUND, "mail_domain_not_found")
+    return row
+
+
+def mailbox_row_payload(conn, mailbox):
+    payload = row_to_dict(mailbox)
+    payload.pop("password_hash", None)
+    payload.pop("password_secret", None)
+    payload.update(mailbox_storage_metrics(payload.get("storage_path"), payload.get("quota_mb", 0)))
+    runtime = account_runtime(conn, payload.get("account_id"))
+    if runtime:
+        edge_host = runtime.get("mail_edge_host") or runtime.get("mail_host")
+        edge_url = runtime.get("mail_edge_url") or (f"http://{edge_host}" if edge_host else "")
+        payload["smtp_host"] = edge_host
+        payload["smtp_port"] = runtime.get("smtp_port")
+        payload["smtp_tls_port"] = runtime.get("smtp_tls_port")
+        payload["smtp_encryption"] = "STARTTLS" if payload["smtp_port"] not in {0, 465} else "SSL/TLS"
+        payload["imap_host"] = edge_host
+        payload["imap_port"] = runtime.get("imap_port", runtime.get("smtp_port", 0) + 1)
+        payload["imap_tls_port"] = runtime.get("imap_tls_port")
+        payload["imap_encryption"] = "STARTTLS" if payload["imap_port"] not in {0, 993} else "SSL/TLS"
+        payload["pop_host"] = edge_host
+        payload["pop_port"] = runtime.get("pop_port", runtime.get("smtp_port", 0) + 2)
+        payload["pop_tls_port"] = runtime.get("pop_tls_port")
+        payload["pop_encryption"] = "STARTTLS" if payload["pop_port"] not in {0, 995} else "SSL/TLS"
+        payload["sieve_port"] = runtime.get("sieve_port")
+        payload["webmail_url"] = runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url") or (f"http://{edge_host}/webmail" if edge_host else "")
+        payload["mail_webmail_url"] = payload["webmail_url"]
+        payload["mail_webmail_login_url"] = runtime.get("mail_edge_login_url") or runtime.get("mail_webmail_login_url") or ""
+        payload["mail_edge_host"] = runtime.get("mail_edge_host") or ""
+        payload["mail_edge_url"] = edge_url
+        payload["mail_edge_webmail_url"] = runtime.get("mail_edge_webmail_url") or (f"{edge_url}/webmail" if edge_url else "")
+        payload["mail_edge_login_url"] = runtime.get("mail_edge_login_url") or (f"{edge_url}/webmail/login" if edge_url else "")
+        payload["mail_host"] = runtime.get("mail_host")
+        payload["mail_username"] = payload.get("email", "")
+        payload["jmap_url"] = f"{edge_url}/api/public/mail-jmap" if edge_url else ""
+        mailbox_login_base = payload["mail_webmail_login_url"] or ""
+        mailbox_suffix = "/{}".format(payload["id"]) if payload.get("id") else ""
+        mailbox_query = "?email={}".format(quote(payload.get("email") or "", safe="")) if payload.get("email") else ""
+        payload["mailbox_login_url"] = f"{mailbox_login_base}{mailbox_suffix}{mailbox_query}"
+        payload["webmail_login_url"] = payload["mailbox_login_url"]
+    if "mail_domain_id" in payload and payload.get("mail_domain_id"):
+        domain = conn.execute("SELECT * FROM mail_domains WHERE id = ?", (payload["mail_domain_id"],)).fetchone()
+        if domain:
+            payload["mail_domain_status"] = domain["status"]
+            payload["mail_domain_selector"] = domain["dkim_selector"]
+    return payload
+
+
+def client_mailboxes_payload(conn, account_id):
+    account = conn.execute(
+        """
+        SELECT ha.id, p.daily_email_limit
+        FROM hosting_accounts ha
+        JOIN plans p ON p.id = ha.plan_id
+        WHERE ha.id = ?
+        """,
+        (account_id,),
+    ).fetchone()
+    mailbox_rows = conn.execute(
+        """
+        SELECT m.id, m.account_id, m.email, m.local_part, m.domain, m.storage_path, m.mail_domain_id,
+               m.quota_mb, m.status, m.created_at, m.sent_today_count, m.sent_today_on,
+               m.last_inbound_at, m.last_outbound_at,
+               md.status AS mail_domain_status, md.dkim_selector AS mail_domain_selector
+        FROM mailboxes m
+        LEFT JOIN mail_domains md ON md.id = m.mail_domain_id
+        WHERE m.account_id = ?
+        ORDER BY m.id
+        """,
+        (account_id,),
+    ).fetchall()
+    runtime = account_runtime(conn, account_id)
+    mail_host = runtime.get("mail_edge_host") if runtime else ""
+    imap_port = runtime.get("imap_port", runtime.get("smtp_port", 0) + 1) if runtime else 0
+    pop_port = runtime.get("pop_port", runtime.get("smtp_port", 0) + 2) if runtime else 0
+    login_base = runtime.get("mail_edge_login_url") if runtime else ""
+    webmail_base = runtime.get("mail_edge_webmail_url") if runtime else ""
+    jmap_url = f"{runtime.get('mail_edge_url')}/api/public/mail-jmap" if runtime and runtime.get("mail_edge_url") else ""
+    mail_domains = conn.execute(
+        """
+        SELECT d.id, d.name, d.status, md.id AS mail_domain_id, md.dkim_selector, md.dkim_public_key, md.status AS mail_status
+        FROM domains d
+        LEFT JOIN mail_domains md ON md.domain_id = d.id
+        WHERE d.account_id = ?
+        ORDER BY d.name
+        """,
+        (account_id,),
+    ).fetchall()
+    mailbox_dicts = rows_to_dicts(mailbox_rows)
+    for mailbox in mailbox_dicts:
+        mailbox.update(mailbox_storage_metrics(mailbox.get("storage_path"), mailbox.get("quota_mb", 0)))
+        mailbox["smtp_host"] = mail_host
+        mailbox["smtp_port"] = runtime.get("smtp_port") if runtime else 0
+        mailbox["smtp_tls_port"] = runtime.get("smtp_tls_port") if runtime else 0
+        mailbox["smtp_encryption"] = "STARTTLS" if mailbox["smtp_port"] not in {0, 465} else "SSL/TLS"
+        mailbox["imap_host"] = mail_host
+        mailbox["imap_port"] = imap_port
+        mailbox["imap_tls_port"] = runtime.get("imap_tls_port") if runtime else 0
+        mailbox["imap_encryption"] = "STARTTLS" if mailbox["imap_port"] not in {0, 993} else "SSL/TLS"
+        mailbox["pop_host"] = mail_host
+        mailbox["pop_port"] = pop_port
+        mailbox["pop_tls_port"] = runtime.get("pop_tls_port") if runtime else 0
+        mailbox["pop_encryption"] = "STARTTLS" if mailbox["pop_port"] not in {0, 995} else "SSL/TLS"
+        mailbox["sieve_port"] = runtime.get("sieve_port") if runtime else 0
+        mailbox["webmail_url"] = webmail_base or (f"http://{mail_host}/webmail" if mail_host else "")
+        mailbox["webmail_login_url"] = "{}{}?email={}".format(login_base, f"/{mailbox['id']}" if login_base else "", quote(mailbox["email"], safe=""))
+        mailbox["mailbox_login_url"] = mailbox["webmail_login_url"]
+        mailbox["jmap_url"] = jmap_url
+        mailbox["mail_edge_host"] = runtime.get("mail_edge_host") if runtime else ""
+        mailbox["mail_edge_url"] = runtime.get("mail_edge_url") if runtime else ""
+        mailbox["mail_edge_webmail_url"] = runtime.get("mail_edge_webmail_url") if runtime else ""
+        mailbox["mail_edge_login_url"] = runtime.get("mail_edge_login_url") if runtime else ""
+        mailbox["mail_username"] = mailbox["email"]
+    return {
+        "mailboxes": mailbox_dicts,
+        "mail_domains": rows_to_dicts(mail_domains),
+        "daily_email_limit": account["daily_email_limit"] if account else 0,
+        "mail_host": mail_host,
+        "smtp_port": runtime.get("smtp_port") if runtime else 0,
+        "smtp_tls_port": runtime.get("smtp_tls_port") if runtime else 0,
+        "imap_port": imap_port,
+        "imap_tls_port": runtime.get("imap_tls_port") if runtime else 0,
+        "pop_port": pop_port,
+        "pop_tls_port": runtime.get("pop_tls_port") if runtime else 0,
+        "sieve_port": runtime.get("sieve_port") if runtime else 0,
+        "mail_webmail_login_url": login_base,
+        "mail_edge_host": runtime.get("mail_edge_host") if runtime else "",
+        "mail_edge_url": runtime.get("mail_edge_url") if runtime else "",
+        "mail_edge_webmail_url": runtime.get("mail_edge_webmail_url") if runtime else "",
+        "mail_edge_login_url": runtime.get("mail_edge_login_url") if runtime else "",
+        "jmap_url": jmap_url,
+    }
+
+
+def shared_mail_edge_host():
+    if CONFIG.public_host == "127.0.0.1":
+        return "mail.mango.test"
+    return f"mail.{CONFIG.public_host}"
+
+
+def shared_mail_edge_url():
+    return f"http://{shared_mail_edge_host()}"
+
+
+def shared_mail_edge_manifest(conn):
+    edge_host = shared_mail_edge_host()
+    edge_url = shared_mail_edge_url()
+    edge_webmail_url = f"{edge_url}/webmail"
+    edge_login_url = f"{edge_url}/webmail/login"
+    accounts = []
+    account_rows = conn.execute(
+        """
+        SELECT ha.id, ha.username, ha.status
+        FROM hosting_accounts ha
+        WHERE ha.status = 'active'
+        ORDER BY ha.id
+        """
+    ).fetchall()
+    for account in account_rows:
+        mailboxes = client_mailboxes_payload(conn, account["id"])
+        routing = client_mail_routing_payload(conn, account["id"])
+        accounts.append(
+            {
+                "account_id": account["id"],
+                "username": account["username"],
+                "status": account["status"],
+                "mail_host": mailboxes["mail_host"],
+                "smtp_port": mailboxes["smtp_port"],
+                "smtp_tls_port": mailboxes["smtp_tls_port"],
+                "imap_port": mailboxes["imap_port"],
+                "imap_tls_port": mailboxes["imap_tls_port"],
+                "pop_port": mailboxes["pop_port"],
+                "pop_tls_port": mailboxes["pop_tls_port"],
+                "sieve_port": mailboxes["sieve_port"],
+                "mail_edge_host": edge_host,
+                "mail_edge_url": edge_url,
+                "mail_edge_webmail_url": edge_webmail_url,
+                "mail_edge_login_url": edge_login_url,
+                "daily_email_limit": mailboxes["daily_email_limit"],
+                "mailboxes": mailboxes["mailboxes"],
+                "mail_domains": routing["mail_domains"],
+                "mail_aliases": routing["mail_aliases"],
+                "mail_forwarders": routing["mail_forwarders"],
+                "mail_autoresponders": routing["mail_autoresponders"],
+                "mail_edge_routes": routing["mail_edge_routes"],
+                "mail_delivery_logs": routing["mail_delivery_logs"][:25],
+            }
+        )
+    return {
+        "provider": "shared-mail-edge",
+        "edge_host": edge_host,
+        "edge_url": edge_url,
+        "edge_webmail_url": edge_webmail_url,
+        "edge_login_url": edge_login_url,
+        "accounts": accounts,
+    }
+
+
+def client_mail_routing_payload(conn, account_id):
+    runtime = account_runtime(conn, account_id)
+    account = conn.execute(
+        """
+        SELECT ha.id, p.daily_email_limit
+        FROM hosting_accounts ha
+        JOIN plans p ON p.id = ha.plan_id
+        WHERE ha.id = ?
+        """,
+        (account_id,),
+    ).fetchone()
+    mail_domain_rows = conn.execute(
+        """
+        SELECT d.id AS domain_id, d.name, d.status AS domain_status,
+               md.id AS mail_domain_id, md.spf_policy, md.dkim_private_key, md.dkim_public_key,
+               md.dkim_selector, md.dmarc_policy, md.catch_all_enabled, md.catch_all_destination,
+               md.status AS mail_status
+        FROM domains d
+        LEFT JOIN mail_domains md ON md.domain_id = d.id
+        WHERE d.account_id = ?
+        ORDER BY d.name
+        """,
+        (account_id,),
+    ).fetchall()
+    auth_rows = []
+    for row in mail_domain_rows:
+        dns_records = conn.execute("SELECT * FROM dns_records WHERE domain_id = ? ORDER BY type, name", (row["domain_id"],)).fetchall()
+        auth = mail_auth_health(row_to_dict(row), rows_to_dicts(dns_records), runtime.get("mail_host"))
+        auth_rows.append({**row_to_dict(row), "auth": auth, "dkim_dns": dkim_dns_value(row["dkim_public_key"])})
+    aliases = conn.execute(
+        "SELECT * FROM mail_aliases WHERE account_id = ? ORDER BY id DESC",
+        (account_id,),
+    ).fetchall()
+    forwarders = conn.execute(
+        "SELECT * FROM mail_forwarders WHERE account_id = ? ORDER BY id DESC",
+        (account_id,),
+    ).fetchall()
+    autoresponders = conn.execute(
+        """
+        SELECT ma.*, m.email AS mailbox_email
+        FROM mail_autoresponders ma
+        JOIN mailboxes m ON m.id = ma.mailbox_id
+        WHERE ma.account_id = ?
+        ORDER BY ma.id DESC
+        """,
+        (account_id,),
+    ).fetchall()
+    logs = conn.execute(
+        """
+        SELECT l.*, m.email AS mailbox_email
+        FROM mail_delivery_logs l
+        LEFT JOIN mailboxes m ON m.id = l.mailbox_id
+        WHERE l.account_id = ?
+        ORDER BY l.id DESC
+        LIMIT 100
+        """,
+        (account_id,),
+    ).fetchall()
+    route_rows = conn.execute(
+        "SELECT * FROM mail_edge_routes WHERE account_id = ? ORDER BY domain",
+        (account_id,),
+    ).fetchall()
+    mail_edge_routes = []
+    for route in rows_to_dicts(route_rows):
+        route["manifest"] = parse_json_field(route.get("manifest_json"), {})
+        mail_edge_routes.append(route)
+    return {
+        "mail_domains": auth_rows,
+        "mail_aliases": rows_to_dicts(aliases),
+        "mail_forwarders": rows_to_dicts(forwarders),
+        "mail_autoresponders": rows_to_dicts(autoresponders),
+        "mail_edge_routes": mail_edge_routes,
+        "mail_delivery_logs": rows_to_dicts(logs),
+        "daily_email_limit": account["daily_email_limit"] if account else 0,
+    }
+
+
+def log_mail_delivery(conn, account_id, action, source_email="", destination_email="", mailbox_id=None, direction="outbound", details=None, status="queued"):
+    conn.execute(
+        """
+        INSERT INTO mail_delivery_logs(account_id, mailbox_id, action, direction, source_email, destination_email, details_json, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (account_id, mailbox_id, action, direction, source_email, destination_email, json.dumps(details or {}), status),
+    )
+
+
+def mailbox_send_budget(conn, account_id):
+    row = conn.execute(
+        """
+        SELECT ha.id, p.daily_email_limit
+        FROM hosting_accounts ha
+        JOIN plans p ON p.id = ha.plan_id
+        WHERE ha.id = ?
+        """,
+        (account_id,),
+    ).fetchone()
+    return int(row["daily_email_limit"] if row else 0)
+
+
+def mailbox_reset_send_count_if_needed(conn, mailbox_id, today):
+    conn.execute(
+        """
+        UPDATE mailboxes
+        SET sent_today_count = 0, sent_today_on = ?
+        WHERE id = ? AND sent_today_on != ?
+        """,
+        (today, mailbox_id, today),
+    )
+
+
+def mailbox_increment_send_count(conn, mailbox_id, today):
+    mailbox_reset_send_count_if_needed(conn, mailbox_id, today)
+    conn.execute(
+        """
+        UPDATE mailboxes
+        SET sent_today_count = sent_today_count + 1, sent_today_on = ?, last_outbound_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (today, mailbox_id),
+    )
+
+
+def mailbox_delivery_subject_preview(subject, body):
+    preview = " ".join(str(body or "").split())
+    if not preview:
+        preview = str(subject or "").strip()
+    return preview[:180]
+
+
+def mailbox_resolve_recipients(conn, account_id, recipient_email):
+    recipient_email = normalize_email(recipient_email)
+    targets = []
+    mailbox = conn.execute("SELECT * FROM mailboxes WHERE account_id = ? AND email = ?", (account_id, recipient_email)).fetchone()
+    if mailbox:
+        targets.append({"type": "mailbox", "mailbox": mailbox, "email": mailbox["email"]})
+        return targets
+
+    alias = conn.execute(
+        "SELECT * FROM mail_aliases WHERE account_id = ? AND source_email = ? AND status = 'active'",
+        (account_id, recipient_email),
+    ).fetchone()
+    if alias:
+        resolved = conn.execute("SELECT * FROM mailboxes WHERE account_id = ? AND email = ?", (account_id, alias["destination_email"])).fetchone()
+        if resolved:
+            targets.append({"type": "alias", "mailbox": resolved, "email": resolved["email"]})
+        else:
+            targets.append({"type": "external", "email": alias["destination_email"]})
+        return targets
+
+    forwarder = conn.execute(
+        "SELECT * FROM mail_forwarders WHERE account_id = ? AND source_email = ? AND status = 'active'",
+        (account_id, recipient_email),
+    ).fetchone()
+    if forwarder:
+        resolved = conn.execute("SELECT * FROM mailboxes WHERE account_id = ? AND email = ?", (account_id, forwarder["destination_email"])).fetchone()
+        if resolved:
+            targets.append({"type": "forwarder", "mailbox": resolved, "email": resolved["email"]})
+        else:
+            targets.append({"type": "external", "email": forwarder["destination_email"]})
+        return targets
+
+    domain_name = split_mailbox_address(recipient_email)[1]
+    if domain_name:
+        domain = conn.execute(
+            """
+            SELECT md.*
+            FROM mail_domains md
+            JOIN domains d ON d.id = md.domain_id
+            WHERE d.account_id = ? AND d.name = ? AND md.catch_all_enabled = 1
+            """,
+            (account_id, domain_name),
+        ).fetchone()
+        if domain and domain["catch_all_destination"]:
+            resolved = conn.execute("SELECT * FROM mailboxes WHERE account_id = ? AND email = ?", (account_id, domain["catch_all_destination"])).fetchone()
+            if resolved:
+                targets.append({"type": "catch_all", "mailbox": resolved, "email": resolved["email"]})
+            else:
+                targets.append({"type": "external", "email": domain["catch_all_destination"]})
+            return targets
+
+    targets.append({"type": "external", "email": recipient_email})
+    return targets
+
+
+def mailbox_store_message(conn, account_id, mailbox, direction, sender_email, recipients, subject, body, storage_label, status="stored", attachments=None):
+    preview = mailbox_delivery_subject_preview(subject, body)
+    storage_path = mailbox["storage_path"] if "storage_path" in mailbox.keys() else ""
+    mailbox_dir = Path(storage_path) if storage_path else None
+    if mailbox_dir:
+        ensure_mailbox_storage(mailbox_dir)
+    raw_message_bytes = build_mail_message_bytes(
+        sender_email,
+        recipients,
+        subject,
+        body,
+        attachments=attachments,
+        extra_headers={
+            "X-MangoPanel-Account-ID": account_id,
+            "X-MangoPanel-Mailbox-ID": mailbox["id"],
+            "X-MangoPanel-Delivery-Direction": direction,
+        },
+    )
+    size_bytes = len(raw_message_bytes)
+    quota_mb = mailbox["quota_mb"] if "quota_mb" in mailbox.keys() else 0
+    quota_bytes = max(int(quota_mb or 0), 0) * 1024 * 1024
+    if mailbox_dir and quota_bytes:
+        current_bytes = mailbox_storage_size_bytes(mailbox_dir)
+        if current_bytes + size_bytes > quota_bytes:
+            raise ApiError(HTTPStatus.INSUFFICIENT_STORAGE, "mailbox_quota_reached")
+    payload = {
+        "account_id": account_id,
+        "mailbox_id": mailbox["id"],
+        "direction": direction,
+        "sender_email": sender_email,
+        "recipients_json": json.dumps(recipients),
+        "subject": subject,
+        "body_preview": preview,
+        "storage_path": storage_path,
+        "size_bytes": size_bytes,
+        "status": status,
+        "folder": mailbox_message_folder(direction),
+        "is_read": 0 if direction == "inbound" else 1,
+        "headers_json": json.dumps(
+            {
+                "from": sender_email,
+                "to": recipients,
+                "subject": subject,
+                "direction": direction,
+            }
+        ),
+    }
+    cur = conn.execute(
+        """
+        INSERT INTO mail_messages(
+          account_id, mailbox_id, direction, sender_email, recipients_json, subject, body_preview, storage_path, size_bytes, status, folder, is_read, message_uid, headers_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload["account_id"],
+            payload["mailbox_id"],
+            payload["direction"],
+            payload["sender_email"],
+            payload["recipients_json"],
+            payload["subject"],
+            payload["body_preview"],
+            payload["storage_path"],
+            payload["size_bytes"],
+            payload["status"],
+            payload["folder"],
+            payload["is_read"],
+            "",
+            payload["headers_json"],
+        ),
+    )
+    message_id = cur.lastrowid
+    message_uid = mailbox_message_uid(mailbox["id"], message_id)
+    conn.execute("UPDATE mail_messages SET message_uid = ? WHERE id = ?", (message_uid, message_id))
+    if mailbox_dir:
+        message_leaf = "{}.{}.{}-{}.eml".format(int(time.time_ns()), secrets.token_hex(8), sanitize_mailbox_component(storage_label, "message"), message_id)
+        folder = "new" if direction == "inbound" else "cur"
+        message_file = mailbox_dir / folder / message_leaf
+        try:
+            message_file.write_bytes(raw_message_bytes)
+        except Exception:
+            conn.execute("DELETE FROM mail_messages WHERE id = ?", (message_id,))
+            raise
+        conn.execute("UPDATE mail_messages SET storage_path = ? WHERE id = ?", (str(message_file), message_id))
+    return message_id
+
+
 def require_owned_pg_database(conn, account_id, database_id):
     row = conn.execute("SELECT * FROM pg_databases WHERE id = ? AND account_id = ?", (database_id, account_id)).fetchone()
     if not row:
@@ -3905,6 +5542,33 @@ def positive_int(value, error, minimum=1, maximum=None):
     return number
 
 
+def validate_dns_record_payload(body):
+    domain_id = positive_int(body.get("domain_id"), "invalid_domain_id")
+    record_type = str(body.get("type", "A") or "A").strip().upper()
+    if record_type not in DNS_RECORD_TYPES:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_record_type")
+    name = str(body.get("name", "@") or "@").strip()
+    if not name or len(name) > 253 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-@*" for ch in name):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_record_name")
+    value = str(body.get("value", "") or "").strip()
+    if not value or len(value) > 4096 or "\n" in value or "\r" in value:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_record_value")
+    ttl = positive_int(body.get("ttl", 300), "invalid_dns_ttl", minimum=60, maximum=86400)
+    priority = body.get("priority")
+    if priority in ("", None):
+        priority = None
+    else:
+        priority = positive_int(priority, "invalid_dns_priority", minimum=0, maximum=65535)
+    return {
+        "domain_id": domain_id,
+        "type": record_type,
+        "name": name,
+        "value": value,
+        "ttl": ttl,
+        "priority": priority,
+    }
+
+
 def normalize_cpu_limit(value):
     raw = str(value or "").strip().lower().replace("cores", "").replace("core", "").strip()
     try:
@@ -3958,8 +5622,48 @@ def create_initial_hosting_account(conn, user_id):
         (account_id, domain, "managed", "active", website_id),
     ).lastrowid
     conn.execute(
+        "INSERT OR IGNORE INTO mail_domains(account_id, domain_id, status) VALUES (?, ?, ?)",
+        (account_id, domain_id, "active"),
+    )
+    mail_domain_id = conn.execute(
+        "SELECT id FROM mail_domains WHERE account_id = ? AND domain_id = ?",
+        (account_id, domain_id),
+    ).fetchone()["id"]
+    dkim_material = generate_dkim_material("mango")
+    mail_host = "mail-{}.localhost".format(username) if CONFIG.public_host == "127.0.0.1" else "mail.{}.{}".format(username, CONFIG.public_host)
+    conn.execute(
+        """
+        UPDATE mail_domains
+        SET spf_policy = ?, dkim_private_key = ?, dkim_public_key = ?, dkim_selector = ?, dmarc_policy = ?, catch_all_enabled = ?, catch_all_destination = ?, status = ?
+        WHERE id = ?
+        """,
+        (
+            recommended_spf_record(mail_host),
+            dkim_material["private_key"],
+            dkim_material["public_key"],
+            dkim_material["selector"],
+            recommended_dmarc_record(domain),
+            0,
+            "",
+            "active",
+            mail_domain_id,
+        ),
+    )
+    conn.execute(
         "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
         (domain_id, "A", "@", "127.0.0.1", 300),
+    )
+    conn.execute(
+        "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "TXT", "@", recommended_spf_record(mail_host), 300),
+    )
+    conn.execute(
+        "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "TXT", "_dmarc", recommended_dmarc_record(domain), 300),
+    )
+    conn.execute(
+        "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "TXT", "mango._domainkey", dkim_dns_value(dkim_material["public_key"]), 300),
     )
     job_id = enqueue_agent_job(conn, "provision_hosting_account", "hosting_account", account_id, {"signup": True})
     account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -3989,6 +5693,12 @@ def enqueue_agent_job(conn, job_type, target_type, target_id=None, payload=None)
     return job_id
 
 
+def enqueue_mail_policy_sync(conn, account_id, payload=None):
+    payload = dict(payload or {})
+    payload.setdefault("reason", "mail_policy_changed")
+    return enqueue_agent_job(conn, "sync_mail_policy", "hosting_account", account_id, payload)
+
+
 def sanitize_domain(value):
     domain = str(value or "").strip().lower()
     allowed = set("abcdefghijklmnopqrstuvwxyz0123456789.-")
@@ -4004,6 +5714,7 @@ def delete_client_website(conn, account, website):
     conn.execute("DELETE FROM script_installs WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM wordpress_installs WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE access_logs SET website_id = NULL WHERE website_id = ?", (website_id,))
+    conn.execute("UPDATE acme_certificate_orders SET website_id = NULL WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE ssl_certificates SET website_id = NULL, status = 'removed' WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE domains SET linked_website_id = NULL WHERE linked_website_id = ?", (website_id,))
     conn.execute("DELETE FROM websites WHERE id = ?", (website_id,))
@@ -4062,13 +5773,46 @@ def delete_client(conn, user_id):
         conn.execute("DELETE FROM dns_records WHERE domain_id IN ({})".format(sql_placeholders(domain_ids)), domain_ids)
     if website_ids:
         conn.execute("DELETE FROM wordpress_installs WHERE website_id IN ({})".format(sql_placeholders(website_ids)), website_ids)
+        conn.execute("DELETE FROM script_installs WHERE website_id IN ({})".format(sql_placeholders(website_ids)), website_ids)
     if account_ids:
         database_ids = select_ids_for_accounts(conn, "databases", account_ids)
         if database_ids:
             conn.execute("DELETE FROM database_grants WHERE database_id IN ({})".format(sql_placeholders(database_ids)), database_ids)
         conn.execute("DELETE FROM database_users WHERE account_id IN ({})".format(sql_placeholders(account_ids)), account_ids)
-        for table in ["domains", "websites", "databases", "mailboxes", "cron_jobs", "git_deployments", "account_stacks"]:
+        for table in [
+            "mailbox_launch_tokens",
+            "mail_messages",
+            "mail_delivery_logs",
+            "mail_autoresponders",
+            "mail_aliases",
+            "mail_forwarders",
+            "mailboxes",
+            "mail_edge_routes",
+            "mail_domains",
+            "access_logs",
+            "acme_certificate_orders",
+            "api_tokens",
+            "cron_jobs",
+            "dns_zones",
+            "ftp_accounts",
+            "git_deployments",
+            "hotlink_settings",
+            "ip_rules",
+            "pg_users",
+            "pg_databases",
+            "protected_directories",
+            "redirects",
+            "remote_mysql_hosts",
+            "resource_usage_samples",
+            "ssl_certificates",
+            "account_stacks",
+            "domains",
+            "websites",
+            "databases",
+        ]:
             conn.execute("DELETE FROM {} WHERE account_id IN ({})".format(table, sql_placeholders(account_ids)), account_ids)
+        conn.execute("DELETE FROM collaborators WHERE hosting_account_id IN ({}) OR owner_user_id = ?".format(sql_placeholders(account_ids)), [*account_ids, user_id])
+        conn.execute("DELETE FROM support_notes WHERE hosting_account_id IN ({}) OR user_id = ?".format(sql_placeholders(account_ids)), [*account_ids, user_id])
         for row in backup_rows:
             artifact_path = row["artifact_path"]
             if artifact_path:
@@ -4079,6 +5823,7 @@ def delete_client(conn, user_id):
         conn.execute("DELETE FROM hosting_accounts WHERE id IN ({})".format(sql_placeholders(account_ids)), account_ids)
     conn.execute("DELETE FROM sessions WHERE actor_type = 'user' AND actor_id = ?", (user_id,))
     conn.execute("DELETE FROM activity_logs WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM recovery_codes WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     return {"user_id": user_id, "account_ids": account_ids, "website_ids": website_ids}
 

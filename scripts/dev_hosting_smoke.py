@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import time
-import base64
 import urllib.error
 import urllib.request
 
@@ -67,13 +66,14 @@ def main():
     runtime = account["runtime"]
     assert runtime["web_url"], "account stack has no web URL"
 
-    mailbox_auth = "Basic " + base64.b64encode(f"hello@example.mango.test:{PASSWORD}".encode("utf-8")).decode("ascii")
-
     wait_http(runtime["web_url"], b"MangoPanel dev site")
     wait_http(runtime["filebrowser_url"], b"File Browser")
     wait_http(runtime["phpmyadmin_url"], b"phpMyAdmin")
-    wait_http(runtime["mailpit_url"], b"Mailpit", headers={"Authorization": mailbox_auth})
-    wait_http(f"{runtime['mailpit_url']}/mailpit.svg", b"MangoPanel")
+
+    routing_path = os.path.join(account["base_path"], "mail", "routing.json")
+    mailbox_path = os.path.join(account["base_path"], "mail", "mailboxes.json")
+    assert os.path.exists(routing_path), routing_path
+    assert os.path.exists(mailbox_path), mailbox_path
 
     ping = docker_exec(
         [
@@ -93,7 +93,7 @@ def main():
     print(f"Website: {runtime['web_url']}")
     print(f"File manager: {runtime['filebrowser_url']}")
     print(f"phpMyAdmin: {runtime['phpmyadmin_url']}")
-    print(f"Mailpit: {runtime['mailpit_url']}")
+    print(f"Mail host: {runtime['mail_host']}")
     print(f"Database: {runtime['db_host']}:{runtime['db_port']}")
     print(f"SFTP: {runtime['sftp_host']}:{runtime['sftp_port']}")
 

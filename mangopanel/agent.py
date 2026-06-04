@@ -30,6 +30,20 @@ from pathlib import Path
 
 from .config import load_config
 from .db import connect, log_job_event, row_to_dict, rows_to_dicts
+from .providers import (
+    ACME_PROVIDER_LOCAL,
+    DNS_PROVIDER_LOCAL,
+    MAIL_EDGE_PROVIDER_SHARED,
+    ACMECertificateIntent,
+    DNSRecordIntent,
+    DNSZoneIntent,
+    LocalACMEProvider,
+    LocalDNSProvider,
+    MailDomainRouteIntent,
+    MailboxRouteIntent,
+    SharedMailEdgeProvider,
+)
+from .security import decrypt_secret
 from .stack import STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, stack_summary
 
 
@@ -481,6 +495,8 @@ class Agent:
             return self.provision_hosting_account(conn, mailbox["account_id"])
         if job_type == "sync_mailboxes":
             return self.sync_mailboxes(conn, job["target_id"])
+        if job_type == "sync_mail_policy":
+            return self.sync_mailboxes(conn, job["target_id"])
         if job_type == "manual_backup":
             return self.manual_backup(conn, job["target_id"])
         if job_type == "restore_backup":
@@ -825,6 +841,180 @@ class Agent:
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return str(path)
 
+    def publish_dns_zone_state(self, conn, account, domain, records, zone_path):
+        zone_intent = DNSZoneIntent(
+            account_id=account["id"],
+            domain_id=domain["id"],
+            zone_name=domain["name"],
+            records=[
+                DNSRecordIntent(
+                    name=record["name"],
+                    type=record["type"],
+                    value=record["value"],
+                    ttl=record["ttl"],
+                    priority=record["priority"],
+                )
+                for record in records
+            ],
+        )
+        existing = conn.execute("SELECT serial FROM dns_zones WHERE domain_id = ?", (domain["id"],)).fetchone()
+        serial = int(existing["serial"]) + 1 if existing else 1
+        provider_state = LocalDNSProvider().publish_zone(zone_intent, artifact_path=str(zone_path), serial=serial)
+        conn.execute(
+            """
+            INSERT INTO dns_zones(account_id, domain_id, zone_name, provider, status, serial, nameservers_json, provider_state_json, last_synced_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(domain_id) DO UPDATE SET
+              account_id = excluded.account_id,
+              zone_name = excluded.zone_name,
+              provider = excluded.provider,
+              status = excluded.status,
+              serial = excluded.serial,
+              nameservers_json = excluded.nameservers_json,
+              provider_state_json = excluded.provider_state_json,
+              last_synced_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                account["id"],
+                domain["id"],
+                domain["name"],
+                DNS_PROVIDER_LOCAL,
+                provider_state["status"],
+                serial,
+                json.dumps(provider_state["nameservers"]),
+                json.dumps(provider_state, sort_keys=True),
+            ),
+        )
+        return provider_state
+
+    def publish_acme_order_state(self, conn, account, website, certificate_id, cert_path, key_path):
+        domain = conn.execute(
+            "SELECT id FROM domains WHERE account_id = ? AND name = ?",
+            (account["id"], website["domain"]),
+        ).fetchone()
+        domain_id = domain["id"] if domain else None
+        intent = ACMECertificateIntent(
+            account_id=account["id"],
+            website_id=website["id"],
+            domain_id=domain_id,
+            domain=website["domain"],
+        )
+        provider_state = LocalACMEProvider().request_certificate(
+            intent,
+            cert_path=str(cert_path),
+            key_path=str(key_path),
+            certificate_id=certificate_id,
+        )
+        conn.execute(
+            """
+            INSERT INTO acme_certificate_orders(
+              account_id, website_id, domain_id, certificate_id, domain, provider, status,
+              challenge_type, challenge_token, challenge_value, issued_at, expires_at, provider_state_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, datetime('now', '+90 days'), ?)
+            ON CONFLICT(account_id, domain, provider) DO UPDATE SET
+              website_id = excluded.website_id,
+              domain_id = excluded.domain_id,
+              certificate_id = excluded.certificate_id,
+              status = excluded.status,
+              challenge_type = excluded.challenge_type,
+              challenge_token = excluded.challenge_token,
+              challenge_value = excluded.challenge_value,
+              issued_at = CURRENT_TIMESTAMP,
+              expires_at = datetime('now', '+90 days'),
+              provider_state_json = excluded.provider_state_json
+            """,
+            (
+                account["id"],
+                website["id"],
+                domain_id,
+                certificate_id,
+                website["domain"],
+                ACME_PROVIDER_LOCAL,
+                provider_state["status"],
+                provider_state["challenge_type"],
+                provider_state["challenge_token"],
+                provider_state["challenge_value"],
+                json.dumps(provider_state, sort_keys=True),
+            ),
+        )
+        return provider_state
+
+    def publish_mail_edge_state(self, conn, account, runtime, mailboxes, mail_policy):
+        edge_host = runtime.get("mail_edge_host") or runtime.get("mail_host") or ""
+        mailbox_routes_by_domain = {}
+        for mailbox in mailboxes:
+            route = MailboxRouteIntent(
+                mailbox_id=mailbox["id"],
+                email=mailbox["email"],
+                storage_path=mailbox.get("storage_path") or "",
+                quota_mb=int(mailbox.get("quota_mb") or 0),
+                status=mailbox.get("status") or "active",
+            )
+            mailbox_routes_by_domain.setdefault(mailbox.get("domain") or mailbox["email"].split("@", 1)[-1], []).append(route)
+        route_intents = []
+        for domain in mail_policy["domains"]:
+            route_intents.append(
+                MailDomainRouteIntent(
+                    account_id=account["id"],
+                    mail_domain_id=domain["mail_domain_id"],
+                    domain=domain["name"],
+                    edge_host=edge_host,
+                    mailboxes=mailbox_routes_by_domain.get(domain["name"], []),
+                )
+            )
+        manifest = SharedMailEdgeProvider().publish_routes(route_intents)
+        active_ids = []
+        for route in route_intents:
+            route_payload = route.payload()
+            domain_id = next((item.get("domain_id") for item in mail_policy["domains"] if item["mail_domain_id"] == route.mail_domain_id), None)
+            conn.execute(
+                """
+                INSERT INTO mail_edge_routes(
+                  account_id, mail_domain_id, domain_id, domain, provider, edge_host,
+                  smtp_enabled, pop_enabled, imap_enabled, jmap_enabled, webmail_enabled,
+                  manifest_json, status, last_synced_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(mail_domain_id) DO UPDATE SET
+                  account_id = excluded.account_id,
+                  domain_id = excluded.domain_id,
+                  domain = excluded.domain,
+                  provider = excluded.provider,
+                  edge_host = excluded.edge_host,
+                  smtp_enabled = excluded.smtp_enabled,
+                  pop_enabled = excluded.pop_enabled,
+                  imap_enabled = excluded.imap_enabled,
+                  jmap_enabled = excluded.jmap_enabled,
+                  webmail_enabled = excluded.webmail_enabled,
+                  manifest_json = excluded.manifest_json,
+                  status = excluded.status,
+                  last_synced_at = CURRENT_TIMESTAMP,
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    account["id"],
+                    route.mail_domain_id,
+                    domain_id,
+                    route.domain,
+                    MAIL_EDGE_PROVIDER_SHARED,
+                    edge_host,
+                    json.dumps({**route_payload, "provider": MAIL_EDGE_PROVIDER_SHARED}, sort_keys=True),
+                    "active",
+                ),
+            )
+            active_ids.append(route.mail_domain_id)
+        if active_ids:
+            placeholders = ",".join("?" for _ in active_ids)
+            conn.execute(
+                f"DELETE FROM mail_edge_routes WHERE account_id = ? AND mail_domain_id NOT IN ({placeholders})",
+                [account["id"], *active_ids],
+            )
+        else:
+            conn.execute("DELETE FROM mail_edge_routes WHERE account_id = ?", (account["id"],))
+        return manifest
+
     def issue_ssl(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
         if not website:
@@ -861,19 +1051,20 @@ class Agent:
             cert_path.write_text("-----BEGIN CERTIFICATE-----\ndev\n-----END CERTIFICATE-----\n", encoding="utf-8")
             key_path.write_text("-----BEGIN PRIVATE KEY-----\ndev\n-----END PRIVATE KEY-----\n", encoding="utf-8")
         conn.execute("UPDATE websites SET ssl_status = 'local-dev' WHERE id = ?", (website_id,))
-        conn.execute(
+        cur = conn.execute(
             """
             INSERT INTO ssl_certificates(account_id, website_id, domain, status, issued_at, expires_at)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, datetime('now', '+90 days'))
             """,
             (account["id"], website_id, website["domain"], "local-dev"),
         )
+        provider_state = self.publish_acme_order_state(conn, account, website, cur.lastrowid, cert_path, key_path)
         artifact = write_account_json(
             account,
             Path(".runtime") / "ssl" / f"{website['domain']}-issued.json",
-            {"mode": "native", "domain": website["domain"], "status": "local-dev", "website_id": website_id, "cert_path": str(cert_path), "key_path": str(key_path)},
+            {"mode": "native", "domain": website["domain"], "status": "local-dev", "website_id": website_id, "cert_path": str(cert_path), "key_path": str(key_path), "provider_state": provider_state},
         )
-        return {"mode": "native", "ssl_status": "local-dev", "website_id": website_id, "artifact_path": artifact, "cert_path": str(cert_path), "key_path": str(key_path)}
+        return {"mode": "native", "ssl_status": "local-dev", "website_id": website_id, "artifact_path": artifact, "cert_path": str(cert_path), "key_path": str(key_path), "provider": ACME_PROVIDER_LOCAL, "provider_state": provider_state}
 
     def sync_dns_record(self, conn, record_id):
         record = conn.execute("SELECT * FROM dns_records WHERE id = ?", (record_id,)).fetchone()
@@ -900,12 +1091,13 @@ class Agent:
         artifact = Path(account["base_path"]) / ".runtime" / "dns" / "zones" / "{}.zone".format(domain["name"])
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text("\n".join(zone_lines) + "\n", encoding="utf-8")
+        provider_state = self.publish_dns_zone_state(conn, account, domain, records, artifact)
         report = write_account_json(
             account,
             Path(".runtime") / "dns" / f"{domain['name']}.json",
-            {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "zone_path": str(artifact)},
+            {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "zone_path": str(artifact), "provider_state": provider_state},
         )
-        return {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "artifact_path": report, "zone_path": str(artifact)}
+        return {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "artifact_path": report, "zone_path": str(artifact), "provider": DNS_PROVIDER_LOCAL, "provider_state": provider_state}
 
     def sync_remote_mysql(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -1392,9 +1584,64 @@ class Agent:
         plan = conn.execute("SELECT * FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
         node = conn.execute("SELECT * FROM nodes WHERE id = ?", (account["node_id"],)).fetchone()
         websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
-        mailboxes = conn.execute("SELECT * FROM mailboxes WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
+        mailboxes = rows_to_dicts(conn.execute("SELECT * FROM mailboxes WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
+        for mailbox in mailboxes:
+            mailbox["password"] = decrypt_secret(mailbox.get("password_secret", ""), self.config.jwt_secret)
+        mail_domains = conn.execute(
+            """
+            SELECT md.*, d.name AS domain_name, d.status AS domain_status
+            FROM mail_domains md
+            JOIN domains d ON d.id = md.domain_id
+            WHERE md.account_id = ?
+            ORDER BY d.name
+            """,
+            (account_id,),
+        ).fetchall()
+        aliases = conn.execute("SELECT * FROM mail_aliases WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
+        forwarders = conn.execute("SELECT * FROM mail_forwarders WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
+        autoresponders = conn.execute(
+            """
+            SELECT ma.*, m.email AS mailbox_email
+            FROM mail_autoresponders ma
+            JOIN mailboxes m ON m.id = ma.mailbox_id
+            WHERE ma.account_id = ?
+            ORDER BY ma.id
+            """,
+            (account_id,),
+        ).fetchall()
         runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
-        paths = ensure_account_layout(row_to_dict(account), row_to_dict(plan), row_to_dict(node), rows_to_dicts(websites), runtime, rows_to_dicts(mailboxes))
+        mail_policy = {
+            "daily_email_limit": int(plan["daily_email_limit"] or 0),
+            "domains": [],
+            "aliases": rows_to_dicts(aliases),
+            "forwarders": rows_to_dicts(forwarders),
+            "autoresponders": rows_to_dicts(autoresponders),
+        }
+        for row in rows_to_dicts(mail_domains):
+            mail_policy["domains"].append(
+                {
+                    "mail_domain_id": row["id"],
+                    "domain_id": row["domain_id"],
+                    "name": row["domain_name"],
+                    "domain_status": row["domain_status"],
+                    "status": row["status"],
+                    "spf_policy": row["spf_policy"],
+                    "dkim_selector": row["dkim_selector"],
+                    "dmarc_policy": row["dmarc_policy"],
+                    "catch_all_enabled": int(row["catch_all_enabled"] or 0),
+                    "catch_all_destination": row["catch_all_destination"] or "",
+                }
+            )
+        paths = ensure_account_layout(
+            row_to_dict(account),
+            row_to_dict(plan),
+            row_to_dict(node),
+            rows_to_dicts(websites),
+            runtime,
+            mailboxes,
+            mail_policy,
+        )
+        mail_edge_provider = self.publish_mail_edge_state(conn, account, runtime, mailboxes, mail_policy)
         cron_jobs = rows_to_dicts(conn.execute("SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         ensure_cron_runtime_artifacts(row_to_dict(account), cron_jobs)
         apply_result = self.apply_stack(paths["compose"], account["username"])
@@ -1423,6 +1670,7 @@ class Agent:
         summary = stack_summary(paths)
         summary.update(apply_result)
         summary["runtime"] = runtime
+        summary["mail_edge_provider"] = mail_edge_provider
         if touched_website_id:
             summary["website_id"] = touched_website_id
         return summary

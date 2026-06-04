@@ -29,7 +29,7 @@ The first release focuses on shared hosting. VPS/KVM hosting is a later module a
 - SSL certificate issue, install, force HTTPS, renew, revoke.
 - File manager and SFTP/FTP credential management.
 - MySQL-compatible database management with phpMyAdmin access.
-- Email hosting basics: mailboxes, SMTP/IMAP details, aliases, forwarders, catch-all, autoresponders, DNS records, DKIM.
+- Email platform roadmap: shared public mail edge, mailbox-native storage, DNS/auth setup, SMTP/POP/IMAP/JMAP access, independent webmail, and plan-based mail limits.
 - Backups: automatic files and database backups, manual backup, download, restore.
 - Cron jobs.
 - Git deployment for public/private repositories.
@@ -62,6 +62,12 @@ The following client dashboard features are configured in the frontend dashboard
   - [ ] PostgreSQL Databases manager
   - [ ] PostgreSQL Database Wizard
   - [ ] phpPgAdmin web interface launch
+- **Email:**
+  - [ ] Phase 1 mailbox creation, editing, quotas, and MX/inbound mail foundation.
+  - [ ] Phase 2 SPF, DKIM, DMARC, aliases, forwarders, catch-all, and autoresponders.
+  - [ ] Phase 3 SMTP, POP, IMAP, JMAP, one-click panel launch, and independent per-mailbox webmail login URLs.
+  - [ ] Replace the current mail-capture flow with the shared mail edge and mailbox-native storage path.
+  - [ ] Deliver a Hostinger-style mailbox experience with a one-click launch button and a separate direct webmail URL.
 - **Metrics:**
   - [ ] Visitors list & details
   - [ ] Errors log explorer
@@ -95,10 +101,20 @@ The following client dashboard features are configured in the frontend dashboard
 - `mangopanel-agent`: privileged local agent running on each hosting node. It owns Docker, filesystem, quota, firewall, DNS, mail, backup, and certificate operations.
 - `mangopanel-edge`: public HTTP/HTTPS edge proxy that routes domains to the correct account container and handles ACME challenges.
 - `mangopanel-dns`: authoritative DNS service for managed zones.
-- `mangopanel-mail`: shared mail gateway stack for SMTP/IMAP/webmail.
+- `mangopanel-mail`: shared public mail edge plus mailbox-native storage and webmail handoff.
 - `mangopanel-backup`: scheduled backup worker using restic or borg.
 - `mangopanel-status`: public status page and status API.
 - Customer account stacks: isolated Docker networks and containers per hosting account.
+
+### Mail Architecture
+
+- Mail storage is mailbox-native: each mailbox gets its own on-disk directory and the mailbox directory is the source of truth for messages and attachments.
+- A shared public mail edge handles the standard Internet-facing mail ports and maps each authenticated session to the correct hosting account and mailbox backend.
+- MangoPanel remains the control plane for users, hosting accounts, domains, mailboxes, quotas, aliases, and DNS intent.
+- Mailboxes are isolated logically by account ownership, domain ownership, session scope, and quota enforcement.
+- The client panel provides one-click webmail launch for a mailbox.
+- The same mailbox also has a standalone login URL that can be opened directly, independent of the hosting panel session.
+- The webmail portal is a separate UI layer on top of the mailbox store, so it can be branded and iterated without changing mail delivery.
 
 ### Frontend
 
@@ -177,7 +193,7 @@ Each hosting account gets an isolated Docker network and at least:
 - `mp-u000001-db`: MySQL-compatible database service for MVP isolation, using MariaDB or MySQL.
 - `mp-u000001-cron`: cron runner for customer scheduled jobs.
 - `mp-u000001-sftp`: SFTP access container with chroot to account base directory.
-- `mp-u000001-smtp-relay`: account-local submission/relay helper that forwards through the shared mail gateway with rate limits.
+- `mp-u000001-mail`: account-local mailbox storage and routing metadata used for inbound mail delivery and future submission services.
 
 Notes:
 
@@ -332,18 +348,60 @@ Implementation requirements:
   - Suspend/unsuspend mailbox.
   - Delete mailbox with recovery period if storage backend supports it.
 - Webmail:
-  - Launch Roundcube or equivalent webmail.
+  - Launch independent per-mailbox webmail login URLs.
 - Aliases and forwarders:
   - Create alias.
   - Create forwarder.
   - Create catch-all address.
   - Add autoresponder.
 - Client configuration:
-  - IMAP, SMTP, ports, encryption, username.
+  - IMAP, SMTP, POP3, JMAP, ports, encryption, username.
 - Logs:
   - Delivery log.
   - Login/access log.
   - Rate-limit status.
+
+### Shared Mail Edge Checklist
+
+This is the sequential build plan for replacing the current mail path with a shared public mail edge and mailbox-native storage where each mailbox has its own on-disk directory and quota can be measured from real storage usage.
+
+#### Phase 1: Mailbox Storage and Identity
+
+- [x] Add mailbox storage helpers in `mangopanel/mail.py` for `Maildir` paths, directory creation, directory size calculation, and safe recursive cleanup.
+- [x] Change `mailboxes.storage_path` to point to the mailbox’s real directory under `user_files/accounts/<account>/mail/<domain>/<local_part>/Maildir`.
+- [x] Add shared-edge identity metadata and a routing manifest so the control plane can resolve each mailbox to the shared mail edge.
+- [x] Update `seed_dev_data()` in `mangopanel/db.py` to create the per-mailbox directory tree and seed the initial mailbox storage path.
+- [x] Update mailbox create, patch, and delete handlers in `mangopanel/app.py` so the filesystem directory is created, renamed, or removed together with the database row.
+- [x] Add mailbox move/rename logic so changing the mailbox address migrates the on-disk directory without duplicating content.
+- [x] Store mailbox size and inode usage in the control plane for display and quota checks.
+- [x] Update the account usage dashboard so mailbox disk usage comes from the real directory, not from a cached counter.
+- [x] Add job-backed sync hooks in `mangopanel/agent.py` and `mangopanel/stack.py` for mailbox directory provisioning and ownership fixes.
+- [x] Add tests in `tests/test_agent.py` and `tests/test_phase6_hardening.py` for mailbox directory creation, rename, delete, and quota lookup.
+
+#### Phase 2: Shared Mail Edge, DNS, and Routing
+
+- [x] Add SPF, DKIM, and DMARC record generators in `mangopanel/mail.py` and persist the resulting policy values in `mail_domains` rows.
+- [x] Add a domain-auth health helper that reads DNS records and reports SPF/DKIM/DMARC status in the client panel.
+- [x] Add alias, forwarder, catch-all, and autoresponder sync code in `mangopanel/app.py`, `mangopanel/agent.py`, and the mail-edge provider module.
+- [x] Add mailbox and domain audit events for auth policy changes, routing changes, and quota changes.
+- [x] Add delivery-log persistence for inbound delivery, outbound delivery, forwarding, and autoresponder actions.
+- [x] Enforce quota and send-limit checks before accepting inbound delivery, submission, or forwarded delivery.
+- [x] Add mailbox and domain management UI payloads for auth status, routing targets, and live delivery totals.
+- [x] Surface real mailbox disk usage and quota consumption in the panel next to auth/routing status.
+- [x] Expose a shared mail-edge manifest API so the edge proxy can consume a single routing map for all active accounts.
+- [x] Add tests for SPF/DKIM/DMARC generation, alias routing, forward routing, catch-all delivery, autoresponder triggers, and quota-limit rejection.
+
+#### Phase 3: Mail Access and Webmail Handoff
+
+- [x] Add a shared SMTP submission edge and expose the submission host/ports in the client panel.
+- [ ] Add shared POP and IMAP listeners with mailbox-scoped authentication and folder sync support.
+- [x] Add JMAP endpoints or a JMAP-compatible adapter if the selected mail stack supports it.
+- [x] Create a direct `/webmail/login/:mailbox_id` flow that issues a mailbox-scoped session token without requiring the hosting panel session.
+- [x] Keep the one-click panel launch flow and the direct login URL in sync through shared launch-token code in `mangopanel/app.py`.
+- [x] Make the webmail launch behave as a true handoff into SnappyMail with branded account selection and cookie/session exchange.
+- [x] Expose host, ports, username, encryption, and endpoint details in the client mailbox settings screen.
+- [x] Add session expiry, logout, and host-scoped token validation for mailbox sessions.
+- [x] Add end-to-end coverage in `tests/test_phase6_hardening.py` and `scripts/dev_smoke.py` for login, submission, POP/IMAP/JMAP, and webmail launch.
 
 ### SSL
 
@@ -544,12 +602,12 @@ Implementation requirements:
 
 ### Create Mailbox
 
-1. Customer selects email domain and mailbox name.
-2. API validates DNS/domain ownership and quota.
-3. Agent creates mailbox storage and mail user.
-4. Mail gateway reloads virtual mailbox maps.
-5. DKIM key is generated if missing.
-6. Panel shows DNS checklist and mail client settings.
+1. Phase 1: customer selects email domain and mailbox name.
+2. API validates DNS/domain ownership, quota, and plan send limits.
+3. Agent creates mailbox storage and records mailbox metadata.
+4. Mail service reloads virtual mailbox maps and inbound routing.
+5. Phase 2 adds SPF, DKIM, DMARC, aliases, forwarders, catch-all, and autoresponders.
+6. Phase 3 enables SMTP, POP, IMAP, JMAP, one-click panel launch, and an independent mailbox webmail login URL.
 
 ### Backup and Restore
 
@@ -601,7 +659,7 @@ Expected behavior:
 - `dev-init`: verifies Docker Desktop, Docker Compose, available ports, local resolver setup, and Apple Silicon image compatibility.
 - `dev-up`: starts the complete local stack using `docker-compose.dev.yml`.
 - `dev-seed`: creates an admin, customer, plan, node, hosting account, test domains, DNS zone, mailbox, database, and sample website.
-- `dev-smoke`: runs fast checks for API health, login, TOTP test flow, provisioning, website routing, DNS, TLS, mail capture, backup, restore, and status page.
+- `dev-smoke`: runs fast checks for API health, login, TOTP test flow, provisioning, website routing, DNS, TLS, phased email checks, backup, restore, and status page.
 - `dev-e2e`: runs browser/API integration tests against the local stack.
 - `dev-reset`: deletes local containers, volumes, generated certificates, seed data, and test account files.
 - `dev-down`: stops the stack while preserving volumes.
@@ -654,17 +712,18 @@ Rules:
 
 ### Local Email
 
-The dev stack must support two email modes:
+The dev stack must support the same three-phase email roadmap as production:
 
-- Capture mode: SMTP routes to Mailpit or equivalent for easy inspection and no external delivery.
-- Full local mode: Postfix, Dovecot, DKIM signing, and Roundcube or equivalent webmail for mailbox, IMAP, SMTP, alias, forwarder, catch-all, and autoresponder testing.
+- Phase 1 local mode: mailbox CRUD, shared edge identity mapping, mailbox storage, and outbound limit configuration without external delivery.
+- Phase 2 local mode: SPF, DKIM, DMARC, aliases, forwarders, catch-all, autoresponder, and delivery logging.
+- Phase 3 local mode: SMTP submission plus POP/IMAP/JMAP plus a one-click launch button and an independent per-mailbox webmail login URL.
 
 Rules:
 
 - Outbound internet email is disabled in local development.
 - Mail delivery between local `.test` mailboxes must work.
 - DNS setup checklist must validate local MX, SPF, DKIM, and DMARC records.
-- `dev-smoke` must create a mailbox, send a test message through SMTP, receive it through IMAP or webmail, and expose it in the mail capture UI.
+- `dev-smoke` must exercise mailbox creation, inbound mail routing, SMTP submission, JMAP/IMAP/POP access, the one-click webmail launch, and the standalone mailbox login flow for the active phase.
 
 ### Local Hosting Stack
 
@@ -676,7 +735,7 @@ The dev profile provisions the same account stack as production, with dev-safe s
 - MariaDB or MySQL container.
 - SFTP container exposed on a non-privileged host port such as `2222`.
 - Cron runner.
-- Local SMTP relay.
+- Local shared mail edge plus mailbox-native storage components.
 - Edge proxy on `8080` and `8443` by default, with optional `80` and `443` binding if the developer enables privileged ports.
 
 The seed account should use:
@@ -724,7 +783,9 @@ The API must refuse deterministic credentials and TOTP bypass outside `MP_ENV=de
 - SFTP upload.
 - Database creation and phpMyAdmin launch token.
 - Remote MySQL allow/revoke flow against local network addresses.
-- Mailbox creation, SMTP send, IMAP/webmail receive, alias, forwarder, and DKIM record generation.
+- Phase 1 mailbox creation and shared-edge MX/inbound routing.
+- Phase 2 SPF, DKIM, DMARC, aliases, forwarder, and rate-limit behavior.
+- Phase 3 SMTP submission, POP/IMAP access, and per-mailbox webmail login.
 - Cron job execution and output capture.
 - Git deployment from local Gitea.
 - WordPress install.
@@ -767,8 +828,7 @@ Public page requirements:
   - API.
   - Website hosting edge.
   - DNS.
-  - Email SMTP.
-  - Email IMAP/webmail.
+  - Email stack.
   - Databases.
   - Backups.
   - SSL certificate automation.
@@ -977,7 +1037,7 @@ Client API:
 - `POST /api/client/databases`
 - `GET /api/client/phpmyadmin/launch`
 - `POST /api/client/mailboxes`
-- `GET /api/client/webmail/launch`
+- `PATCH /api/client/mailboxes/:id`
 - `POST /api/client/backups`
 - `POST /api/client/restores`
 - `POST /api/client/cron-jobs`
@@ -1016,7 +1076,7 @@ Public API:
 - The website serves PHP through OpenLiteSpeed behind the edge proxy.
 - A customer can issue SSL, force HTTPS, and see renewal status.
 - A customer can create a MySQL-compatible database and open phpMyAdmin.
-- A customer can create an email mailbox, view DNS records, send mail through SMTP, and receive mail through IMAP/webmail when DNS is correct.
+- A customer can complete the phased email experience: mailbox creation, DNS/auth setup, SMTP submission, POP/IMAP/JMAP access, one-click webmail launch, and independent webmail login URLs backed by the shared mail edge.
 - A customer can edit DNS records for managed domains.
 - A customer can create and run a cron job and inspect its last output.
 - A customer can trigger a manual backup, download it, and restore files or a database.
@@ -1025,7 +1085,7 @@ Public API:
 - Admin can see job status, node health, audit logs, backup failures, and quota usage.
 - Failed provisioning jobs are visible with actionable errors and can be retried when safe.
 - A developer on an Apple Silicon Mac can run `make dev-up`, seed a local account, and complete the MVP smoke test without public domains.
-- The local dev profile can test DNS, TLS, email, databases, backups, cron, Git deploy, WordPress install, and status page flows.
+- The local dev profile can test DNS, TLS, the shared mail edge, databases, backups, cron, Git deploy, WordPress install, and status page flows.
 - Public visitors can view the status page, current incidents, scheduled maintenance, and uptime history.
 - Admin can publish and resolve status incidents and maintenance events.
 
@@ -1051,10 +1111,9 @@ Public API:
    - MySQL-compatible database provisioning.
    - phpMyAdmin launch.
 5. Email
-   - Mail domains, mailboxes, aliases, forwarders.
-   - DKIM and DNS checklist.
-   - Webmail launch.
-   - Mail logs and rate limits.
+   - Phase 1: mailbox CRUD, mailbox storage, shared-edge identity mapping, inbound routing, MX checklist, and plan send limits.
+   - Phase 2: SPF, DKIM, DMARC, aliases, forwarders, catch-all, autoresponders, and delivery logs.
+   - Phase 3: SMTP, POP, IMAP, and independent per-mailbox webmail login URLs.
 6. Backups, cron, Git, WordPress
    - Backup worker and restore flows.
    - Cron runner.

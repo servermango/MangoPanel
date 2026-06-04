@@ -322,7 +322,7 @@
                         <a :href="stack.runtime.web_url" target="_blank" rel="noreferrer">web</a>
                         <a :href="stack.runtime.filebrowser_url" target="_blank" rel="noreferrer">files</a>
                         <a :href="stack.runtime.phpmyadmin_url" target="_blank" rel="noreferrer">db</a>
-                        <a :href="stack.runtime.mailpit_url" target="_blank" rel="noreferrer">mail</a>
+                        <a :href="`http://${stack.runtime.mail_host}`" target="_blank" rel="noreferrer">mail</a>
                       </div>
                     </td>
                     <td>{{ stack.generated_at }}</td>

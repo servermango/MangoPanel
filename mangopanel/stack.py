@@ -1,5 +1,11 @@
+import crypt
 import json
+import secrets
+import subprocess
 from pathlib import Path
+
+from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes
+from .snappymail import SNAPPYMAIL_APP_VERSION, SNAPPYMAIL_IMAGE, ensure_snappymail_layout, load_snappymail_state
 
 
 STACK_SERVICES = [
@@ -7,13 +13,16 @@ STACK_SERVICES = [
     "redis",
     "filebrowser",
     "phpmyadmin",
+    "mailserver",
+    "mailproxy",
     "db",
     "pg",
     "adminer",
     "cron",
     "sftp",
-    "smtp-relay",
 ]
+
+SHA512_CRYPT_SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./"
 
 
 def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
@@ -25,20 +34,35 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "web_port": slot,
         "filebrowser_port": slot + 1,
         "phpmyadmin_port": slot + 2,
-        "mailpit_port": slot + 3,
-        "db_port": slot + 4,
-        "sftp_port": slot + 5,
-        "smtp_port": slot + 6,
-        "pg_port": slot + 7,
-        "adminer_port": slot + 8,
+        "db_port": slot + 3,
+        "sftp_port": slot + 4,
+        "smtp_port": 1587 if public_host == "127.0.0.1" else 587,
+        "smtp_tls_port": 1465 if public_host == "127.0.0.1" else 465,
+        "imap_port": 1143 if public_host == "127.0.0.1" else 143,
+        "imap_tls_port": 1993 if public_host == "127.0.0.1" else 993,
+        "pop_port": 1110 if public_host == "127.0.0.1" else 110,
+        "pop_tls_port": 1995 if public_host == "127.0.0.1" else 995,
+        "sieve_port": 1190 if public_host == "127.0.0.1" else 4190,
+        "pg_port": slot + 8,
+        "adminer_port": slot + 9,
         "sftp_host": public_host,
         "sftp_user": username,
         "web_url": f"http://web-{username}.localhost",
         "filebrowser_url": f"http://files-{username}.localhost",
         "phpmyadmin_url": f"http://pma-{username}.localhost",
         "adminer_url": f"http://adminer-{username}.localhost",
-        "webmail_url": f"http://mail-{username}.localhost",
-        "mailpit_url": f"http://mail-{username}.localhost",
+        "mail_host": f"mail-{username}.localhost" if public_host == "127.0.0.1" else f"mail.{username}.{public_host}",
+        "mail_backend_host": "mailserver",
+        "mail_backend_imap_port": 993,
+        "mail_backend_smtp_port": 465,
+        "mail_backend_sieve_port": 4190,
+        "mail_webmail_backend_url": f"http://mail-{username}.localhost" if public_host == "127.0.0.1" else f"http://mail.{username}.{public_host}",
+        "mail_webmail_url": f"http://mail-{username}.localhost/webmail" if public_host == "127.0.0.1" else f"http://mail.{username}.{public_host}/webmail",
+        "mail_webmail_login_url": f"http://mail-{username}.localhost/webmail/login" if public_host == "127.0.0.1" else f"http://mail.{username}.{public_host}/webmail/login",
+        "mail_edge_host": "mail.mango.test" if public_host == "127.0.0.1" else f"mail.{public_host}",
+        "mail_edge_url": "http://mail.mango.test" if public_host == "127.0.0.1" else f"http://mail.{public_host}",
+        "mail_edge_webmail_url": "http://mail.mango.test/webmail" if public_host == "127.0.0.1" else f"http://mail.{public_host}/webmail",
+        "mail_edge_login_url": "http://mail.mango.test/webmail/login" if public_host == "127.0.0.1" else f"http://mail.{public_host}/webmail/login",
         "redis_host": "redis",
         "redis_port": 6379,
         "object_cache_backend": "redis",
@@ -58,8 +82,18 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         base["filebrowser_url"] = f"http://files.{username}.{public_host}"
         base["phpmyadmin_url"] = f"http://pma.{username}.{public_host}"
         base["adminer_url"] = f"http://adminer.{username}.{public_host}"
-        base["webmail_url"] = f"http://mail.{username}.{public_host}"
-        base["mailpit_url"] = f"http://mail.{username}.{public_host}"
+        base["mail_host"] = f"mail.{username}.{public_host}"
+        base["mail_backend_host"] = "mailserver"
+        base["mail_backend_imap_port"] = 993
+        base["mail_backend_smtp_port"] = 465
+        base["mail_backend_sieve_port"] = 4190
+        base["mail_webmail_backend_url"] = f"http://mail.{username}.{public_host}"
+        base["mail_webmail_url"] = f"http://mail.{username}.{public_host}/webmail"
+        base["mail_webmail_login_url"] = f"http://mail.{username}.{public_host}/webmail/login"
+        base["mail_edge_host"] = f"mail.{public_host}"
+        base["mail_edge_url"] = f"http://mail.{public_host}"
+        base["mail_edge_webmail_url"] = f"http://mail.{public_host}/webmail"
+        base["mail_edge_login_url"] = f"http://mail.{public_host}/webmail/login"
 
     return base
 
@@ -125,14 +159,166 @@ def render_account_metadata(account, plan, node, websites, runtime):
     }
 
 
-def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes=None):
+def render_mailserver_accounts(mailboxes, mail_policy=None):
+    lines = []
+    quotas = []
+    aliases = []
+    mail_policy = mail_policy or {}
+    for alias in mail_policy.get("aliases") or []:
+        source = str(alias.get("source_email") or "").strip().lower()
+        destination = str(alias.get("destination_email") or "").strip().lower()
+        if source and destination and str(alias.get("status") or "active") == "active":
+            aliases.append(f"{source} {destination}")
+    for forwarder in mail_policy.get("forwarders") or []:
+        source = str(forwarder.get("source_email") or "").strip().lower()
+        destination = str(forwarder.get("destination_email") or "").strip().lower()
+        if source and destination and str(forwarder.get("status") or "active") == "active":
+            aliases.append(f"{source} {destination}")
+    for domain in mail_policy.get("domains") or []:
+        if int(domain.get("catch_all_enabled") or 0) and domain.get("catch_all_destination"):
+            domain_name = str(domain.get("name") or "").strip().lower()
+            destination = str(domain.get("catch_all_destination") or "").strip().lower()
+            if domain_name and destination:
+                aliases.append(f"@{domain_name} {destination}")
+    for mailbox in mailboxes or []:
+        email = str(mailbox.get("email") or "").strip().lower()
+        if not email:
+            continue
+        password = str(mailbox.get("password") or "").strip()
+        if not password:
+            continue
+        password_hash = mailserver_password_hash(password)
+        lines.append(f"{email}|{password_hash}")
+        quota_mb = int(mailbox.get("quota_mb") or 0)
+        if quota_mb > 0:
+            quotas.append(f"{email}:{quota_mb * 1024 * 1024}")
+    return {
+        "accounts": "\n".join(lines) + ("\n" if lines else ""),
+        "quotas": "\n".join(quotas) + ("\n" if quotas else ""),
+        "aliases": "\n".join(aliases) + ("\n" if aliases else ""),
+    }
+
+
+def mailserver_password_hash(password):
+    password = str(password or "")
+    salt = "".join(secrets.choice(SHA512_CRYPT_SALT_CHARS) for _ in range(16))
+    try:
+        result = subprocess.run(
+            ["openssl", "passwd", "-6", "-salt", salt, "-stdin"],
+            input=password,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        password_hash = result.stdout.strip()
+        if password_hash.startswith("$6$") and password_hash.count("$") >= 3:
+            return password_hash
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    fallback_salt = f"$6${salt}"
+    password_hash = crypt.crypt(password, fallback_salt)
+    if password_hash and password_hash.startswith("$6$") and password_hash.count("$") >= 3:
+        return password_hash
+    raise RuntimeError("mailserver_password_hash_failed")
+
+
+def ensure_mailserver_tls(mailserver_config_dir, mail_host):
+    ssl_dir = Path(mailserver_config_dir) / "ssl"
+    ca_dir = ssl_dir / "demoCA"
+    ssl_dir.mkdir(parents=True, exist_ok=True)
+    ca_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = ssl_dir / f"{mail_host}-cert.pem"
+    key_path = ssl_dir / f"{mail_host}-key.pem"
+    ca_cert_path = ca_dir / "cacert.pem"
+    if cert_path.exists() and key_path.exists() and ca_cert_path.exists():
+        return {"cert": cert_path, "key": key_path, "ca_cert": ca_cert_path, "created": False}
+
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-nodes",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-days",
+            "3650",
+            "-subj",
+            f"/CN={mail_host}",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    ca_cert_path.write_text(cert_path.read_text(encoding="utf-8"), encoding="utf-8")
+    key_path.chmod(0o600)
+    cert_path.chmod(0o644)
+    ca_cert_path.chmod(0o644)
+    return {"cert": cert_path, "key": key_path, "ca_cert": ca_cert_path, "created": True}
+
+
+def render_mail_edge_manifest(runtime, mailboxes, mail_policy=None):
+    mail_policy = mail_policy or {}
+    mailbox_map = []
+    for mailbox in mailboxes or []:
+        mailbox_map.append(
+            {
+                "id": mailbox.get("id"),
+                "email": mailbox.get("email"),
+                "account_id": mailbox.get("account_id"),
+                "mail_domain_id": mailbox.get("mail_domain_id"),
+                "storage_path": mailbox.get("storage_path"),
+                "quota_mb": mailbox.get("quota_mb"),
+                "status": mailbox.get("status"),
+                "edge_host": runtime.get("mail_edge_host"),
+                "edge_url": runtime.get("mail_edge_url"),
+                "edge_webmail_url": runtime.get("mail_edge_webmail_url"),
+                "edge_login_url": runtime.get("mail_edge_login_url"),
+            }
+        )
+    domain_map = []
+    for domain in mail_policy.get("domains") or []:
+        domain_map.append(
+            {
+                "id": domain.get("id"),
+                "name": domain.get("name"),
+                "status": domain.get("status"),
+                "mail_domain_id": domain.get("mail_domain_id"),
+                "catch_all_enabled": int(domain.get("catch_all_enabled") or 0),
+                "catch_all_destination": domain.get("catch_all_destination") or "",
+            }
+        )
+    return {
+        "provider": "shared-mail-edge",
+        "edge_host": runtime.get("mail_edge_host"),
+        "edge_url": runtime.get("mail_edge_url"),
+        "edge_webmail_url": runtime.get("mail_edge_webmail_url"),
+        "edge_login_url": runtime.get("mail_edge_login_url"),
+        "mail_host": runtime.get("mail_host"),
+        "mail_webmail_backend_url": runtime.get("mail_webmail_backend_url"),
+        "mailboxes": mailbox_map,
+        "domains": domain_map,
+    }
+
+
+def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes=None, mail_policy=None):
     runtime = runtime or build_account_runtime(account)
     mailboxes = mailboxes or []
+    mail_policy = mail_policy or {}
     paths = account_paths(account)
     for key in ["base", "domains", "databases", "mail", "backups", "git", "ssl", "redis", "runtime", "stack"]:
         paths[key].mkdir(parents=True, exist_ok=True)
         
     (paths["base"] / "pg_databases").mkdir(parents=True, exist_ok=True)
+    (paths["mail"] / "mailboxes").mkdir(parents=True, exist_ok=True)
+    (paths["mail"] / "spool" / "incoming").mkdir(parents=True, exist_ok=True)
+    (paths["mail"] / "spool" / "outgoing").mkdir(parents=True, exist_ok=True)
 
     for website in websites:
         root = Path(website["document_root"])
@@ -150,9 +336,107 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
                 encoding="utf-8",
             )
 
+    mailbox_map = []
+    for mailbox in mailboxes:
+        mailbox_path = Path(str(mailbox.get("storage_path") or ""))
+        if not mailbox_path.is_absolute():
+            mailbox_path = mailbox_storage_path(paths["base"], mailbox.get("email") or "mailbox@example.invalid")
+        ensure_mailbox_storage(mailbox_path)
+        mailbox_map.append(
+            {
+                "id": mailbox.get("id"),
+                "email": mailbox.get("email"),
+                "local_part": mailbox.get("local_part", ""),
+                "domain": mailbox.get("domain", ""),
+                "quota_mb": mailbox.get("quota_mb"),
+                "status": mailbox.get("status"),
+                "storage_path": str(mailbox_path),
+                "storage_bytes": mailbox_storage_size_bytes(mailbox_path),
+            }
+        )
+
     metadata = render_account_metadata(account, plan, node, websites, runtime)
     paths["account_json"].write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     (paths["stack"] / "quota.json").write_text(json.dumps(metadata["plan"], indent=2) + "\n", encoding="utf-8")
+    (paths["mail"] / "mailboxes.json").write_text(json.dumps(mailbox_map, indent=2) + "\n", encoding="utf-8")
+    (paths["mail"] / "plane.json").write_text(
+        json.dumps(
+            {
+                "provider": "snappymail",
+                "mail_host": runtime.get("mail_host"),
+                "mail_webmail_url": runtime.get("mail_webmail_url"),
+                "mail_webmail_login_url": runtime.get("mail_webmail_login_url"),
+                "mail_root": str(paths["mail"]),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (paths["mail"] / "policy.json").write_text(
+        json.dumps(
+            {
+                "provider": "snappymail",
+                "mail_host": runtime.get("mail_host"),
+                "daily_email_limit": mail_policy.get("daily_email_limit", plan["daily_email_limit"]),
+                "domains": mail_policy.get("domains", []),
+                "aliases": mail_policy.get("aliases", []),
+                "forwarders": mail_policy.get("forwarders", []),
+                "autoresponders": mail_policy.get("autoresponders", []),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (paths["mail"] / "routing.json").write_text(
+        json.dumps(
+            {
+                "mail_host": runtime.get("mail_host"),
+                "mailboxes": mailbox_map,
+                "mail_root": str(paths["mail"]),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (paths["stack"] / "mail-edge.json").write_text(
+        json.dumps(render_mail_edge_manifest(runtime, mailbox_map, mail_policy), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    mailserver_dir = paths["stack"] / "mailserver"
+    mailserver_dir.mkdir(parents=True, exist_ok=True)
+    mailserver_config_dir = mailserver_dir / "config"
+    mailserver_state_dir = mailserver_dir / "state"
+    mailserver_logs_dir = mailserver_dir / "logs"
+    mailserver_config_dir.mkdir(parents=True, exist_ok=True)
+    mailserver_state_dir.mkdir(parents=True, exist_ok=True)
+    mailserver_logs_dir.mkdir(parents=True, exist_ok=True)
+    ensure_mailserver_tls(mailserver_config_dir, runtime.get("mail_host") or f"mail-{account['username']}.localhost")
+    mailserver_payload = render_mailserver_accounts(mailboxes, mail_policy)
+    (mailserver_config_dir / "postfix-accounts.cf").write_text(mailserver_payload["accounts"], encoding="utf-8")
+    (mailserver_config_dir / "postfix-virtual.cf").write_text(mailserver_payload["aliases"], encoding="utf-8")
+    (mailserver_config_dir / "dovecot-quotas.cf").write_text(mailserver_payload["quotas"], encoding="utf-8")
+    (mailserver_config_dir / "postfix-main.cf").write_text(
+        "\n".join(
+            [
+                "message_size_limit = 26214400",
+                "mailbox_size_limit = 0",
+                "recipient_delimiter = +",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    snappymail_domains = [domain.get("name") for domain in (mail_policy.get("domains") or []) if domain.get("name")]
+    snappymail_state = load_snappymail_state(paths["stack"] / "snappymail")
+    ensure_snappymail_layout(
+        paths["stack"] / "snappymail",
+        runtime,
+        snappymail_domains,
+        sso_key=mail_policy.get("snappymail_sso_key") or snappymail_state.get("sso_key"),
+    )
     (paths["stack"] / "filebrowser").mkdir(parents=True, exist_ok=True)
     fb_config_dir = paths["stack"] / "filebrowser-config"
     fb_config_dir.mkdir(parents=True, exist_ok=True)
@@ -186,15 +470,8 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     if not sftp_users_conf.exists():
         sftp_users_conf.write_text(f"{account['username']}:{runtime['sftp_password']}:1001\n", encoding="utf-8")
 
-    mailpit_auth_text = render_mailpit_auth_file(mailboxes)
-    mailpit_auth_file = paths["stack"] / "mailpit-users.txt"
-    if mailpit_auth_text:
-        mailpit_auth_file.write_text(mailpit_auth_text, encoding="utf-8")
-    elif mailpit_auth_file.exists():
-        mailpit_auth_file.unlink()
-
     paths["compose"].write_text(
-        render_compose(account, plan, websites, runtime, mailpit_auth_enabled=bool(mailpit_auth_text)),
+        render_compose(account, plan, websites, runtime),
         encoding="utf-8",
     )
     
@@ -564,17 +841,7 @@ def render_crontab(account, cron_jobs=None):
     return "\n".join(lines) + "\n"
 
 
-def render_mailpit_auth_file(mailboxes):
-    lines = []
-    for mailbox in mailboxes or []:
-        email = str(mailbox.get("email") or "").strip()
-        auth_hash = str(mailbox.get("mailpit_auth_hash") or "").strip()
-        if email and auth_hash:
-            lines.append(f"{email}:{auth_hash}")
-    return "\n".join(lines) + ("\n" if lines else "")
-
-
-def render_compose(account, plan, websites, runtime, mailpit_auth_enabled=False):
+def render_compose(account, plan, websites, runtime):
     uid = 5000 + int(account["id"])
     domains_str = ", ".join([w["domain"] for w in websites]) if websites else f"{account['username']}.mango.test"
     username = account["username"]
@@ -586,15 +853,6 @@ def render_compose(account, plan, websites, runtime, mailpit_auth_enabled=False)
     backup_retention_days = int(plan["backup_retention_days"])
     default_domain = websites[0]["domain"] if websites else "{}.mango.test".format(username)
     project = "mp-{}".format(username)
-    mailpit_auth_block = ""
-    if mailpit_auth_enabled:
-        mailpit_auth_block = (
-            "    volumes:\n"
-            "      - {base_path}/.runtime/stack/mailpit-users.txt:/etc/mailpit/users:ro\n"
-            "    environment:\n"
-            '      MP_UI_AUTH_FILE: "/etc/mailpit/users"\n'
-            '      MP_TAGS_USERNAME: "true"\n'
-        )
     composed = """name: {project}
 services:
   web:
@@ -688,6 +946,75 @@ services:
       - account
       - mangopanel-edge
 
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: mp-{username}-mailserver
+    hostname: {mail_host}
+    domainname: {public_host}
+    restart: unless-stopped
+    mem_limit: 768m
+    ports:
+      - "127.0.0.1:{smtp_port}:587"
+      - "127.0.0.1:{smtp_tls_port}:465"
+      - "127.0.0.1:{imap_port}:143"
+      - "127.0.0.1:{imap_tls_port}:993"
+      - "127.0.0.1:{pop_port}:110"
+      - "127.0.0.1:{pop_tls_port}:995"
+      - "127.0.0.1:{sieve_port}:4190"
+    environment:
+      ACCOUNT_PROVISIONER: FILE
+      ENABLE_IMAP: "1"
+      ENABLE_POP3: "1"
+      ENABLE_MANAGESIEVE: "1"
+      ENABLE_QUOTAS: "1"
+      ENABLE_FAIL2BAN: "0"
+      ENABLE_CLAMAV: "0"
+      ENABLE_SPAMASSASSIN: "0"
+      ENABLE_POLICYD_SPF: "0"
+      ENABLE_OPENDKIM: "0"
+      ENABLE_OPENDMARC: "0"
+      ENABLE_SRS: "0"
+      ENABLE_UPDATE_CHECK: "0"
+      OVERRIDE_HOSTNAME: {mail_host}
+      POSTMASTER_ADDRESS: postmaster@{default_domain}
+      PERMIT_DOCKER: none
+      SSL_TYPE: self-signed
+      DMS_DEBUG: "0"
+    volumes:
+      - {base_path}/mail:/var/mail
+      - {base_path}/.runtime/stack/mailserver/config:/tmp/docker-mailserver
+      - mailserver-state:/var/mail-state
+      - {base_path}/.runtime/stack/mailserver/logs:/var/log/mail
+    networks:
+      - account
+      - mangopanel-edge
+
+  mailproxy:
+    image: {SNAPPYMAIL_IMAGE}
+    container_name: mp-{username}-mailproxy
+    restart: unless-stopped
+    mem_limit: 384m
+    labels:
+      caddy: "http://{mail_host}, http://{mail_edge_host}"
+      caddy.route.0_handle_path: "/assets*"
+      caddy.route.0_handle_path.0_rewrite: "* /assets{{uri}}"
+      caddy.route.0_handle_path.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.1_handle_path: "/webmail*"
+      caddy.route.1_handle_path.0_rewrite: "* /webmail{{uri}}"
+      caddy.route.1_handle_path.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.2_handle_path: "/api/public/webmail*"
+      caddy.route.2_handle_path.0_rewrite: "* /api/public/webmail{{uri}}"
+      caddy.route.2_handle_path.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.3_reverse_proxy: "{{upstreams 8888}}"
+    environment:
+      DEBUG: "false"
+    volumes:
+      - {base_path}/.runtime/stack/snappymail:/var/lib/snappymail
+      - {base_path}/.runtime/stack/snappymail/themes/MangoPanel:/snappymail/snappymail/v/{SNAPPYMAIL_APP_VERSION}/themes/MangoPanel:ro
+    networks:
+      - account
+      - mangopanel-edge
+
   db:
     image: mariadb:10.11
     container_name: mp-{username}-db
@@ -769,23 +1096,6 @@ services:
       - account
       - mangopanel-edge
 
-  smtp-relay:
-    image: axllent/mailpit:latest
-    container_name: mp-{username}-smtp-relay
-    restart: unless-stopped
-    mem_limit: 128m
-    ports:
-      - "127.0.0.1:{smtp_port}:1025"
-{mailpit_auth_block}    labels:
-      caddy: "http://{webmail_domain}"
-      caddy.handle_path: "/mailpit.svg"
-      caddy.handle_path.0_rewrite: "* /api/public/mailpit-brand.svg"
-      caddy.handle_path.1_reverse_proxy: "host.docker.internal:8000"
-      caddy.reverse_proxy: "{{upstreams 8025}}"
-    networks:
-      - account
-      - mangopanel-edge
-
 networks:
   account:
     name: mp-{username}-net
@@ -795,6 +1105,8 @@ networks:
 volumes:
   db-data:
     name: mp-{username}-db-data
+  mailserver-state:
+    name: mp-{username}-mailserver-state
 """
     import re
     composed = composed.format(
@@ -819,7 +1131,17 @@ volumes:
         adminer_port=runtime["adminer_port"],
         sftp_port=runtime["sftp_port"],
         smtp_port=runtime["smtp_port"],
-        mailpit_port=runtime["mailpit_port"],
+        smtp_tls_port=runtime["smtp_tls_port"],
+        imap_port=runtime["imap_port"],
+        imap_tls_port=runtime["imap_tls_port"],
+        pop_port=runtime["pop_port"],
+        pop_tls_port=runtime["pop_tls_port"],
+        sieve_port=runtime["sieve_port"],
+        mail_host=runtime["mail_host"],
+        mail_edge_host=runtime.get("mail_edge_host", runtime["mail_host"]),
+        mail_edge_url=runtime.get("mail_edge_url", f"http://{runtime.get('mail_edge_host', runtime['mail_host'])}"),
+        mail_edge_webmail_url=runtime.get("mail_edge_webmail_url", f"http://{runtime.get('mail_edge_host', runtime['mail_host'])}/webmail"),
+        mail_edge_login_url=runtime.get("mail_edge_login_url", f"http://{runtime.get('mail_edge_host', runtime['mail_host'])}/webmail/login"),
         db_name=runtime["db_name"],
         db_user=runtime["db_user"],
         db_password=runtime["db_password"],
@@ -835,8 +1157,8 @@ volumes:
         filebrowser_domain=runtime["filebrowser_url"].split("://")[1],
         phpmyadmin_domain=runtime["phpmyadmin_url"].split("://")[1],
         adminer_domain=runtime["adminer_url"].split("://")[1],
-        webmail_domain=runtime["webmail_url"].split("://")[1],
-        mailpit_auth_block=mailpit_auth_block.format(base_path=base_path) if mailpit_auth_block else "",
+        SNAPPYMAIL_APP_VERSION=SNAPPYMAIL_APP_VERSION,
+        SNAPPYMAIL_IMAGE=SNAPPYMAIL_IMAGE,
     )
     # caddy-docker-proxy requires {{upstreams N}} with literal double-braces.
     # Python .format() collapses {{ to { so we restore them after formatting.

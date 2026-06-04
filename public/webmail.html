@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Server Mango Windz mailbox handoff and login page.">
+    <title>Server Mango Windz · Webmail</title>
+    <link rel="icon" href="/snappymail/v/2.38.2/themes/MangoPanel/images/wind.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/assets/app.css">
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: 'Inter', sans-serif;
+        background:
+          radial-gradient(circle at 20% 20%, rgba(253, 181, 40, 0.16), transparent 30%),
+          radial-gradient(circle at 80% 0%, rgba(56, 189, 248, 0.14), transparent 24%),
+          linear-gradient(135deg, #f8fafc 0%, #eef2ff 45%, #e2e8f0 100%);
+        color: var(--text);
+      }
+
+      .handoff-shell {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: minmax(320px, 1.1fr) minmax(360px, 0.9fr);
+      }
+
+      .brand-panel {
+        position: relative;
+        overflow: hidden;
+        background:
+          linear-gradient(145deg, rgba(11, 15, 25, 0.96) 0%, rgba(21, 29, 48, 0.94) 55%, rgba(30, 27, 75, 0.92) 100%),
+          url('https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1600&q=80') center/cover;
+        color: #fff;
+        padding: 44px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        gap: 32px;
+      }
+
+      .brand-panel::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(7, 10, 18, 0.1), rgba(7, 10, 18, 0.45));
+        pointer-events: none;
+      }
+
+      .brand-top,
+      .brand-copy,
+      .brand-foot {
+        position: relative;
+        z-index: 1;
+      }
+
+      .brand-top {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .brand-top .logo {
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.12);
+        display: grid;
+        place-items: center;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25);
+        overflow: hidden;
+      }
+
+      .brand-top .logo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .brand-top h1 {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+
+      .brand-top span {
+        display: inline-block;
+        margin-left: 8px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #fdb528;
+        border: 1px solid rgba(253, 181, 40, 0.28);
+        background: rgba(253, 181, 40, 0.12);
+        padding: 4px 8px;
+        border-radius: 999px;
+      }
+
+      .brand-copy h2 {
+        margin: 0 0 12px;
+        font-size: clamp(2rem, 3vw, 3.4rem);
+        line-height: 1.08;
+        letter-spacing: -0.05em;
+      }
+
+      .brand-copy p {
+        margin: 0;
+        max-width: 42rem;
+        color: rgba(226, 232, 240, 0.86);
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+
+      .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .feature {
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: rgba(15, 23, 42, 0.42);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(18px);
+      }
+
+      .feature strong {
+        display: block;
+        font-size: 14px;
+        margin-bottom: 4px;
+      }
+
+      .feature small {
+        color: rgba(226, 232, 240, 0.7);
+      }
+
+      .brand-foot {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        color: rgba(226, 232, 240, 0.72);
+        font-size: 13px;
+      }
+
+      .handoff-panel {
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        display: grid;
+        place-items: center;
+        padding: 32px;
+      }
+
+      .handoff-card {
+        width: min(100%, 460px);
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
+        border-radius: 28px;
+        padding: 28px;
+        backdrop-filter: blur(18px);
+      }
+
+      .handoff-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+
+      .handoff-card-header .title {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .handoff-card-header h2 {
+        margin: 0;
+        font-size: 24px;
+        letter-spacing: -0.03em;
+      }
+
+      .handoff-card-header p {
+        margin: 0;
+        color: #64748b;
+        font-size: 14px;
+      }
+
+      .spinner-wrap {
+        display: grid;
+        place-items: center;
+        gap: 14px;
+        padding: 26px 0 18px;
+      }
+
+      .spinner {
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        border: 4px solid rgba(59, 130, 246, 0.18);
+        border-top-color: #3b82f6;
+        animation: spin 0.9s linear infinite;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      .status-copy {
+        text-align: center;
+        color: #0f172a;
+        line-height: 1.6;
+      }
+
+      .status-copy strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .login-form {
+        display: grid;
+        gap: 14px;
+        margin-top: 18px;
+      }
+
+      .field {
+        display: grid;
+        gap: 8px;
+      }
+
+      .field label {
+        font-size: 13px;
+        font-weight: 600;
+        color: #475569;
+      }
+
+      .field input {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #d7dde8;
+        border-radius: 14px;
+        background: #fff;
+        color: #0f172a;
+        padding: 14px 16px;
+        font: inherit;
+      }
+
+      .field input:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12);
+      }
+
+      .login-button {
+        width: 100%;
+        border: 0;
+        border-radius: 14px;
+        padding: 14px 18px;
+        background: linear-gradient(135deg, #fdb528 0%, #f59e0b 100%);
+        color: #111827;
+        font-weight: 800;
+        font-size: 15px;
+        cursor: pointer;
+        box-shadow: 0 14px 30px rgba(253, 181, 40, 0.32);
+      }
+
+      .login-button:disabled {
+        opacity: 0.75;
+        cursor: wait;
+      }
+
+      .link-row {
+        margin-top: 18px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        color: #64748b;
+        font-size: 13px;
+      }
+
+      .link-row a {
+        color: #2563eb;
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .alert {
+        margin-top: 16px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        color: #1e40af;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      @media (max-width: 960px) {
+        .handoff-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .brand-panel {
+          padding: 28px;
+          min-height: 320px;
+        }
+
+        .handoff-panel {
+          padding: 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="handoff-shell">
+      <section class="brand-panel">
+        <div class="brand-top">
+          <div class="logo"><img src="/snappymail/v/2.38.2/themes/MangoPanel/images/wind.png" alt="Windz logo"></div>
+          <div>
+            <h1>Server Mango Windz <span>Webmail</span></h1>
+          </div>
+        </div>
+        <div class="brand-copy">
+          <h2>Secure mailbox handoff, without exposing the mail client shell.</h2>
+          <p>Launch from the client panel for one-click access, or sign in directly using the mailbox link. Your session will be forwarded into the real mailbox interface automatically.</p>
+          <div class="feature-grid">
+            <div class="feature"><strong>One-click login</strong><small>Token handoff from the panel.</small></div>
+            <div class="feature"><strong>Direct mailbox URL</strong><small>Unique login link per mailbox.</small></div>
+            <div class="feature"><strong>Brand matched</strong><small>Consistent Mango styling.</small></div>
+            <div class="feature"><strong>Automatic redirect</strong><small>Sent to the mailbox app after auth.</small></div>
+          </div>
+        </div>
+        <div class="brand-foot">
+          <span>Private access</span>
+          <span>IMAP / SMTP ready</span>
+          <span>Client-panel launch supported</span>
+        </div>
+      </section>
+
+      <section class="handoff-panel">
+        <div class="handoff-card">
+          <div class="handoff-card-header">
+            <div class="title">
+              <h2>Sign in to your mailbox</h2>
+              <p id="login-copy">Waiting for a mailbox launch token or login.</p>
+            </div>
+          </div>
+
+          <div id="spinner-state" class="spinner-wrap hidden">
+            <div class="spinner" aria-hidden="true"></div>
+            <div class="status-copy">
+              <strong id="status-title">Opening your mailbox</strong>
+              <span id="status-subtitle">You will be redirected automatically.</span>
+            </div>
+          </div>
+
+          <form id="login-form" class="login-form">
+            <div class="field">
+              <label for="mailbox-id">Mailbox ID</label>
+              <input id="mailbox-id" name="mailbox_id" inputmode="numeric" placeholder="1" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="login-email">Email</label>
+              <input id="login-email" name="email" type="email" placeholder="mailbox@example.com" autocomplete="username">
+            </div>
+            <div class="field">
+              <label for="login-password">Password</label>
+              <input id="login-password" name="password" type="password" placeholder="Mailbox password" autocomplete="current-password">
+            </div>
+            <button id="login-btn" class="login-button" type="submit">login</button>
+          </form>
+
+          <div class="alert">
+            <strong>Waiting for a mailbox launch token or login.</strong><br>
+            Use the direct mailbox link below, or launch from the client panel for one-click access.
+          </div>
+
+          <div class="link-row">
+            <span>Need a direct mailbox link?</span>
+            <a id="login-link" href="/webmail/login">Open login URL</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      (function () {
+        const $ = (id) => document.getElementById(id);
+        const state = {
+          busy: false,
+        };
+
+        const els = {
+          form: $("login-form"),
+          loginBtn: $("login-btn"),
+          loginCopy: $("login-copy"),
+          loginLink: $("login-link"),
+          mailboxId: $("mailbox-id"),
+          email: $("login-email"),
+          password: $("login-password"),
+          spinner: $("spinner-state"),
+          title: $("status-title"),
+          subtitle: $("status-subtitle"),
+        };
+
+        function setBusy(busy, title, subtitle) {
+          state.busy = busy;
+          els.form.classList.toggle("hidden", busy);
+          els.spinner.classList.toggle("hidden", !busy);
+          if (title) els.title.textContent = title;
+          if (subtitle) els.subtitle.textContent = subtitle;
+          if (els.loginBtn) {
+            els.loginBtn.disabled = busy;
+            els.loginBtn.textContent = busy ? "opening..." : "login";
+          }
+        }
+
+        async function api(path, body) {
+          const response = await fetch(path, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body || {}),
+          });
+          const text = await response.text();
+          let data = {};
+          if (text) {
+            try { data = JSON.parse(text); } catch (error) { data = { raw: text }; }
+          }
+          if (!response.ok) {
+            throw new Error(data.error || data.message || `request_failed_${response.status}`);
+          }
+          return data;
+        }
+
+        function redirectToMailbox(url) {
+          window.location.replace(url || "/");
+        }
+
+        async function exchangeLaunchToken(token) {
+          setBusy(true, "Opening your mailbox", "Your one-click launch is being validated.");
+          const payload = await api("/api/public/webmail/exchange", { launch_token: token });
+          redirectToMailbox(payload.launch_url || "/");
+        }
+
+        async function submitLogin(event) {
+          event.preventDefault();
+          const body = {
+            mailbox_id: els.mailboxId.value.trim(),
+            email: els.email.value.trim(),
+            password: els.password.value,
+          };
+          if (!body.mailbox_id && !body.email) {
+            els.loginCopy.textContent = "Enter a mailbox ID or mailbox email to continue.";
+            return;
+          }
+          if (!body.password) {
+            els.loginCopy.textContent = "Enter the mailbox password to continue.";
+            return;
+          }
+          setBusy(true, "Signing you in", "You will be redirected into the mailbox automatically.");
+          const payload = await api("/api/public/webmail/login", body);
+          redirectToMailbox(payload.launch_url || "/");
+        }
+
+        const params = new URLSearchParams(window.location.search);
+        const pathMatch = window.location.pathname.match(/\/webmail\/login\/(\d+)$/);
+        const mailboxId = params.get("mailbox_id") || (pathMatch ? pathMatch[1] : "");
+        const email = params.get("email") || "";
+        const launch = params.get("launch") || "";
+
+        if (mailboxId) els.mailboxId.value = mailboxId;
+        if (email) els.email.value = email;
+        if (mailboxId && !email) {
+          els.loginCopy.textContent = `Ready to sign in to mailbox #${mailboxId}.`;
+          els.loginLink.href = `/webmail/login/${mailboxId}${email ? `?email=${encodeURIComponent(email)}` : ""}`;
+        }
+
+        els.form.addEventListener("submit", submitLogin);
+
+        if (launch) {
+          exchangeLaunchToken(launch).catch((error) => {
+            setBusy(false);
+            els.loginCopy.textContent = error.message || "Unable to open the mailbox.";
+          });
+        }
+      }());
+    </script>
+  </body>
+</html>

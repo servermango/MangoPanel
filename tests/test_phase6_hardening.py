@@ -71,6 +71,110 @@ class Phase6HardeningTests(unittest.TestCase):
         self.assertTrue(artifact["exists"])
         self.assertNotIn(str(config.account_root), artifact["path"])
 
+    def test_phase2_provider_state_is_visible_to_client_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config, server_ctx = self.prepared_server(Path(tmp))
+            with server_ctx as server:
+                owner_token = server.login()
+                domains = server.request("GET", "/api/client/domains", token=owner_token)["domains"]
+                websites = server.request("GET", "/api/client/home", token=owner_token)["websites"]
+
+                dns_payload = server.request(
+                    "POST",
+                    "/api/client/dns-records",
+                    {"domain_id": domains[0]["id"], "type": "TXT", "name": "_phase2", "value": "provider-state", "ttl": 300},
+                    owner_token,
+                )
+                self.assertEqual(dns_payload["dns_zones"][0]["provider"], "local-dev-dns")
+                self.assertEqual(dns_payload["dns_zones"][0]["status"], "published")
+                self.assertTrue(dns_payload["dns_zones"][0]["provider_state"]["records"])
+
+                ssl_payload = server.request("POST", "/api/client/ssl/issue", {"website_id": websites[0]["id"]}, owner_token)
+                self.assertEqual(ssl_payload["acme_order"]["provider"], "local-dev-acme")
+                self.assertEqual(ssl_payload["acme_order"]["status"], "issued")
+                self.assertEqual(ssl_payload["acme_order"]["provider_state"]["status"], "issued")
+
+                mail_payload = server.request("GET", "/api/client/mail-routing", token=owner_token)
+                self.assertTrue(mail_payload["mail_edge_routes"])
+                self.assertEqual(mail_payload["mail_edge_routes"][0]["provider"], "shared-mail-edge")
+                self.assertTrue(mail_payload["mail_edge_routes"][0]["manifest"]["mailboxes"])
+
+                manifest, _ = server.request_with_headers("GET", "/api/public/mail-edge/manifest", host="mail.mango.test")
+                self.assertEqual(manifest["provider"], "shared-mail-edge")
+                self.assertTrue(manifest["accounts"][0]["mail_edge_routes"])
+
+    def test_phase3_provider_routes_validate_auth_ownership_input_and_host_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config, server_ctx = self.prepared_server(Path(tmp))
+            with server_ctx as server:
+                owner_token = server.login()
+                other_token, _ = self.create_peer_account_token(config)
+                Agent(config).run_all()
+                owner_domains = server.request("GET", "/api/client/domains", token=owner_token)["domains"]
+                other_domains = server.request("GET", "/api/client/domains", token=other_token)["domains"]
+                owner_site = server.request("GET", "/api/client/home", token=owner_token)["websites"][0]
+                other_site = server.request("GET", "/api/client/home", token=other_token)["websites"][0]
+                owner_records = server.request("GET", f"/api/client/dns-records?domain_id={owner_domains[0]['id']}", token=owner_token)["dns_records"]
+                other_records = server.request("GET", f"/api/client/dns-records?domain_id={other_domains[0]['id']}", token=other_token)["dns_records"]
+
+                self.assertEqual(server.request_error("GET", "/api/client/dns-records")[0], 401)
+                self.assertEqual(server.request_error("GET", "/api/client/dns-records?domain_id=abc", token=owner_token)[0], 400)
+                self.assertEqual(server.request_error("GET", f"/api/client/dns-records?domain_id={other_domains[0]['id']}", token=owner_token)[0], 404)
+                self.assertEqual(server.request_error("POST", "/api/client/dns-records", {"domain_id": owner_domains[0]["id"], "type": "TXT", "name": "_x", "value": "ok"})[0], 401)
+                self.assertEqual(server.request_error("POST", "/api/client/dns-records", {"domain_id": "abc", "type": "TXT", "name": "_x", "value": "ok"}, owner_token)[0], 400)
+                self.assertEqual(server.request_error("POST", "/api/client/dns-records", {"domain_id": owner_domains[0]["id"], "type": "BAD", "name": "_x", "value": "ok"}, owner_token)[0], 400)
+                self.assertEqual(server.request_error("POST", "/api/client/dns-records", {"domain_id": owner_domains[0]["id"], "type": "TXT", "name": "bad/name", "value": "ok"}, owner_token)[0], 400)
+                self.assertEqual(server.request_error("POST", "/api/client/dns-records", {"domain_id": owner_domains[0]["id"], "type": "TXT", "name": "_x", "value": ""}, owner_token)[0], 400)
+                self.assertEqual(server.request_error("POST", "/api/client/dns-records", {"domain_id": owner_domains[0]["id"], "type": "TXT", "name": "_x", "value": "ok", "ttl": 1}, owner_token)[0], 400)
+                self.assertEqual(server.request_error("POST", "/api/client/dns-records", {"domain_id": other_domains[0]["id"], "type": "TXT", "name": "_x", "value": "ok"}, owner_token)[0], 404)
+                self.assertEqual(server.request_error("DELETE", f"/api/client/dns-records/{other_records[0]['id']}", token=owner_token)[0], 404)
+                deleted = server.request("DELETE", f"/api/client/dns-records/{owner_records[0]['id']}", token=owner_token)
+                self.assertEqual(deleted["dns_zones"][0]["provider"], "local-dev-dns")
+
+                self.assertEqual(server.request_error("POST", "/api/client/ssl/issue", {"website_id": owner_site["id"]})[0], 401)
+                self.assertEqual(server.request_error("POST", "/api/client/ssl/issue", {"website_id": "abc"}, owner_token)[0], 400)
+                self.assertEqual(server.request_error("POST", "/api/client/ssl/issue", {"website_id": other_site["id"]}, owner_token)[0], 404)
+                issued = server.request("POST", "/api/client/ssl/issue", {"website_id": owner_site["id"]}, owner_token)
+                self.assertEqual(issued["acme_order"]["provider"], "local-dev-acme")
+
+                self.assertEqual(server.request_error("GET", "/api/client/mail-routing")[0], 401)
+                owner_mail = server.request("GET", "/api/client/mail-routing", token=owner_token)
+                other_mail = server.request("GET", "/api/client/mail-routing", token=other_token)
+                self.assertTrue(owner_mail["mail_edge_routes"])
+                self.assertTrue(other_mail["mail_edge_routes"])
+                self.assertNotEqual(owner_mail["mail_edge_routes"][0]["account_id"], other_mail["mail_edge_routes"][0]["account_id"])
+
+                wrong_host_status, _, wrong_host_payload = server.request_raw(
+                    "GET",
+                    "/api/public/mail-edge/manifest",
+                    host="files-u000001.localhost",
+                )
+                self.assertEqual(wrong_host_status, 404)
+                self.assertEqual(wrong_host_payload["error"], "unknown_public_route")
+
+    def test_phase3_browser_entry_pages_are_served_for_client_admin_and_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self.make_config(root)
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with ClientApiServer(config, panel="client") as client_server:
+                client_status, client_headers, client_body = client_server.request_bytes("GET", "/client")
+                status_status, status_headers, status_body = client_server.request_bytes("GET", "/status")
+            with ClientApiServer(config, panel="admin") as admin_server:
+                admin_status, admin_headers, admin_body = admin_server.request_bytes("GET", "/admin")
+
+        self.assertEqual(client_status, 200)
+        self.assertEqual(admin_status, 200)
+        self.assertEqual(status_status, 200)
+        self.assertEqual(client_headers["Content-Type"].split(";")[0], "text/html")
+        self.assertEqual(admin_headers["Content-Type"].split(";")[0], "text/html")
+        self.assertEqual(status_headers["Content-Type"].split(";")[0], "text/html")
+        self.assertIn(b'id="client-app"', client_body)
+        self.assertIn(b"MangoPanel Admin", admin_body)
+        self.assertIn(b'id="status-app"', status_body)
+
     def test_postgresql_routes_validate_auth_ownership_and_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             config, server_ctx = self.prepared_server(Path(tmp))
@@ -327,17 +431,17 @@ class Phase6HardeningTests(unittest.TestCase):
         self.assertIn("Content-Disposition", headers)
         self.assertTrue(body.startswith(b"\x1f\x8b"))
 
-    def test_mailpit_brand_svg_is_public_and_rebranded(self):
+    def test_mail_brand_svg_is_public_and_rebranded(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, server_ctx = self.prepared_server(Path(tmp))
             with server_ctx as server:
-                status, headers, body = server.request_bytes("GET", "/api/public/mailpit-brand.svg")
+                status, headers, body = server.request_bytes("GET", "/api/public/mail-brand.svg")
 
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"].split(";")[0], "image/svg+xml")
         self.assertIn(b"MangoPanel", body)
 
-    def test_mailbox_routes_require_password_and_launch_specific_mailpit_inbox(self):
+    def test_mailbox_routes_require_password_and_skip_webmail_launch(self):
         with tempfile.TemporaryDirectory() as tmp:
             config, server_ctx = self.prepared_server(Path(tmp))
             with server_ctx as server:
@@ -360,13 +464,15 @@ class Phase6HardeningTests(unittest.TestCase):
 
                 mailboxes = server.request("GET", "/api/client/mailboxes", token=owner_token)["mailboxes"]
                 self.assertTrue(mailboxes)
-                self.assertNotIn("password_hash", mailboxes[0])
-                self.assertNotIn("mailpit_auth_hash", mailboxes[0])
+                created_mailbox = next(mailbox for mailbox in mailboxes if mailbox["id"] == created["mailbox_id"])
+                self.assertNotIn("password_hash", created_mailbox)
+                self.assertIn("storage_path", created_mailbox)
+                self.assertIn("storage_bytes", created_mailbox)
+                self.assertTrue(created_mailbox["storage_path"].endswith("mailbox-route"))
+                self.assertTrue((config.account_root / "u000001" / "mail" / "example.mango.test" / "mailbox-route").exists())
 
                 self.assertEqual(server.request_error("GET", f"/api/client/mailboxes/{created['mailbox_id']}/webmail/launch", token=other_token)[0], 404)
-                launch = server.request("GET", f"/api/client/mailboxes/{created['mailbox_id']}/webmail/launch", token=owner_token)
-                self.assertIn("/search", launch["launch_url"])
-                self.assertIn("addressed%3A%22mailbox-route%40example.mango.test%22", launch["launch_url"])
+                self.assertEqual(server.request("GET", f"/api/client/mailboxes/{created['mailbox_id']}/webmail/launch", token=owner_token)["expires_in"], 3600)
 
                 self.assertEqual(server.request_error("PATCH", f"/api/client/mailboxes/{created['mailbox_id']}", {"password": "short"}, owner_token)[0], 400)
                 updated = server.request(
@@ -376,8 +482,223 @@ class Phase6HardeningTests(unittest.TestCase):
                     owner_token,
                 )
                 self.assertEqual(updated["mailbox"]["email"], "mailbox-route@example.mango.test")
+                original_storage = config.account_root / "u000001" / "mail" / "example.mango.test" / "mailbox-route"
+                renamed = server.request(
+                    "PATCH",
+                    f"/api/client/mailboxes/{created['mailbox_id']}",
+                    {"email": "mailbox-route-renamed@example.mango.test"},
+                    owner_token,
+                )
+                renamed_storage = config.account_root / "u000001" / "mail" / "example.mango.test" / "mailbox-route-renamed"
+                self.assertFalse(original_storage.exists())
+                self.assertTrue(renamed_storage.exists())
+                self.assertEqual(renamed["mailbox"]["email"], "mailbox-route-renamed@example.mango.test")
+                deleted = server.request("DELETE", f"/api/client/mailboxes/{created['mailbox_id']}", token=owner_token)
+                self.assertTrue(deleted["deleted"])
+                self.assertFalse(renamed_storage.exists())
                 jobs = server.request("GET", "/api/client/sync-jobs", token=owner_token)["jobs"]
                 self.assertTrue(any(job["type"] == "sync_mailboxes" for job in jobs))
+
+    def test_mail_routing_phase_two_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config, server_ctx = self.prepared_server(Path(tmp))
+            with server_ctx as server:
+                owner_token = server.login()
+
+                routing = server.request("GET", "/api/client/mail-routing", token=owner_token)
+                self.assertIn("daily_email_limit", routing)
+                self.assertTrue(routing["mail_domains"])
+                domain = routing["mail_domains"][0]
+
+                created_mailbox = server.request(
+                    "POST",
+                    "/api/client/mailboxes",
+                    {
+                        "email": "phase2-mailbox@example.mango.test",
+                        "quota_mb": 1024,
+                        "password": "MailboxPass123",
+                        "confirm_password": "MailboxPass123",
+                    },
+                    owner_token,
+                )
+                mailbox_id = created_mailbox["mailbox_id"]
+                self.assertIn("webmail_login_url", created_mailbox["mailbox"])
+                self.assertIn("mailbox_login_url", created_mailbox["mailbox"])
+                self.assertIn("mail_edge_host", created_mailbox["mailbox"])
+
+                mailboxes = server.request("GET", "/api/client/mailboxes", token=owner_token)["mailboxes"]
+                self.assertTrue(any(mailbox["webmail_login_url"] for mailbox in mailboxes))
+                self.assertTrue(any(mailbox["mailbox_login_url"] for mailbox in mailboxes))
+                self.assertTrue(any(mailbox["mail_edge_url"] for mailbox in mailboxes))
+                self.assertTrue(any(mailbox["jmap_url"] for mailbox in mailboxes))
+
+                launch = server.request("GET", f"/api/client/mailboxes/{mailbox_id}/webmail/launch", token=owner_token)
+                self.assertIn("/webmail", launch["launch_url"])
+                self.assertIn("launch=", launch["launch_url"])
+                launch_host = launch["launch_url"].split("/", 3)[2]
+                launch_path = launch["launch_url"].replace(f"http://{launch_host}", "")
+                status, headers, _ = server.request_raw("GET", launch_path, host=launch_host)
+                self.assertEqual(status, 302)
+                self.assertIn("Location", headers)
+                self.assertEqual(headers["Location"], f"http://{launch_host}/webmail")
+
+                launch_token = launch["launch_url"].split("launch=", 1)[1]
+                exchange_status, headers, exchange_payload = server.request_raw(
+                    "POST",
+                    "/api/public/webmail/exchange",
+                    {"launch_token": launch_token},
+                    host=launch_host,
+                )
+                self.assertEqual(exchange_status, 200)
+                self.assertTrue(exchange_payload["exchanged"])
+                self.assertIn("Set-Cookie", headers)
+                self.assertIn("mp_mail_token=", headers["Set-Cookie"])
+                mail_cookie = headers["Set-Cookie"].split("mp_mail_token=", 1)[1].split(";", 1)[0]
+                webmail_status, _, session_payload = server.request_raw(
+                    "GET",
+                    "/api/public/webmail/session",
+                    host=launch_host,
+                    extra_headers={"Cookie": f"mp_mail_token={mail_cookie}"},
+                )
+                self.assertEqual(webmail_status, 200)
+                self.assertEqual(session_payload["mailbox"]["email"], "phase2-mailbox@example.mango.test")
+                initial_remaining = session_payload["remaining_today"]
+
+                edge_status, edge_headers, edge_payload = server.request_raw(
+                    "GET",
+                    "/api/public/mail-edge/manifest",
+                    host="mail.mango.test",
+                )
+                self.assertEqual(edge_status, 200)
+                self.assertEqual(edge_headers["Content-Type"].split(";")[0], "application/json")
+                self.assertEqual(edge_payload["provider"], "shared-mail-edge")
+                self.assertEqual(edge_payload["edge_host"], "mail.mango.test")
+                self.assertTrue(edge_payload["accounts"])
+                self.assertTrue(any(account["mailboxes"] for account in edge_payload["accounts"]))
+                self.assertTrue(any(account["mailboxes"][0]["jmap_url"] for account in edge_payload["accounts"] if account["mailboxes"]))
+
+                login_status, login_headers, _ = server.request_raw(
+                    "GET",
+                    f"/webmail/login/{mailbox_id}",
+                    host=launch_host,
+                )
+                self.assertEqual(login_status, 302)
+                self.assertIn("Location", login_headers)
+                self.assertEqual(login_headers["Location"], f"http://{launch_host}/webmail")
+                direct_login_status, direct_login_headers, direct_login_payload = server.request_raw(
+                    "POST",
+                    "/api/public/webmail/login",
+                    {"mailbox_id": mailbox_id, "password": "MailboxPass123"},
+                    host=launch_host,
+                )
+                self.assertEqual(direct_login_status, 200)
+                self.assertTrue(direct_login_payload["logged_in"])
+                self.assertIn("Set-Cookie", direct_login_headers)
+                direct_cookie = direct_login_headers["Set-Cookie"].split("mp_mail_token=", 1)[1].split(";", 1)[0]
+                direct_session_status, _, direct_session_payload = server.request_raw(
+                    "GET",
+                    "/api/public/webmail/session",
+                    host=launch_host,
+                    extra_headers={"Cookie": f"mp_mail_token={direct_cookie}"},
+                )
+                self.assertEqual(direct_session_status, 200)
+                self.assertEqual(direct_session_payload["mailbox"]["id"], mailbox_id)
+                jmap_status, _, jmap_payload = server.request_raw(
+                    "GET",
+                    "/api/public/mail-jmap",
+                    host=launch_host,
+                    extra_headers={"Cookie": f"mp_mail_token={direct_cookie}"},
+                )
+                self.assertEqual(jmap_status, 200)
+                self.assertTrue(jmap_payload["enabled"])
+                self.assertEqual(jmap_payload["mailbox"]["email"], "phase2-mailbox@example.mango.test")
+                self.assertTrue(jmap_payload["mailbox"]["jmap_url"])
+
+                send_status, _, send_payload = server.request_raw(
+                    "POST",
+                    "/api/public/webmail/send",
+                    {"to": "external@example.com", "subject": "Hello", "body": "Hello from webmail"},
+                    host=launch_host,
+                    extra_headers={"Cookie": f"mp_mail_token={mail_cookie}"},
+                )
+                self.assertEqual(send_status, 201)
+                self.assertTrue(send_payload["sent"])
+                self.assertEqual(send_payload["remaining_today"], max(0, initial_remaining - 1))
+                messages_status, _, messages_payload = server.request_raw(
+                    "GET",
+                    "/api/public/webmail/messages",
+                    host=launch_host,
+                    extra_headers={"Cookie": f"mp_mail_token={mail_cookie}"},
+                )
+                self.assertEqual(messages_status, 200)
+                self.assertTrue(messages_payload["messages"])
+
+                updated = server.request(
+                    "PATCH",
+                    f"/api/client/mail-domains/{domain['mail_domain_id']}",
+                    {
+                        "dkim_selector": "mango2",
+                        "spf_policy": "v=spf1 mx -all",
+                        "dmarc_policy": "v=DMARC1; p=quarantine",
+                        "catch_all_enabled": True,
+                        "catch_all_destination": "catchall@example.mango.test",
+                        "status": "active",
+                        "regenerate_dkim": True,
+                    },
+                    owner_token,
+                )
+                self.assertTrue(updated["mail"]["mail_domains"][0]["catch_all_enabled"])
+                self.assertIn("job_id", updated)
+
+                alias = server.request(
+                    "POST",
+                    "/api/client/mail-aliases",
+                    {
+                        "source_email": "info@example.mango.test",
+                        "destination_email": "owner@example.mango.test",
+                    },
+                    owner_token,
+                )
+                self.assertIn("mail_alias_id", alias)
+                self.assertIn("job_id", alias)
+
+                forwarder = server.request(
+                    "POST",
+                    "/api/client/mail-forwarders",
+                    {
+                        "source_email": "sales@example.mango.test",
+                        "destination_email": "external@example.com",
+                    },
+                    owner_token,
+                )
+                self.assertIn("mail_forwarder_id", forwarder)
+                self.assertIn("job_id", forwarder)
+
+                autoresponder = server.request(
+                    "POST",
+                    "/api/client/mail-autoresponders",
+                    {
+                        "mailbox_id": mailbox_id,
+                        "subject": "Auto reply",
+                        "body": "We got your message.",
+                        "enabled": True,
+                    },
+                    owner_token,
+                )
+                self.assertIn("mail_autoresponder_id", autoresponder)
+                self.assertIn("job_id", autoresponder)
+
+                logs = server.request("GET", "/api/client/mail-logs", token=owner_token)["mail"]["mail_delivery_logs"]
+                self.assertTrue(any(log["action"] == "alias_created" for log in logs))
+                self.assertTrue(any(log["action"] == "forwarder_created" for log in logs))
+                self.assertTrue(any(log["action"] == "autoresponder_created" for log in logs))
+
+                rotated = server.request("POST", f"/api/client/mail-domains/{domain['mail_domain_id']}/dkim/rotate", token=owner_token)
+                self.assertIn("mail", rotated)
+                refreshed = server.request("GET", "/api/client/mail-routing", token=owner_token)
+                self.assertTrue(refreshed["mail_domains"][0]["auth"]["dkim"]["configured"])
+                jobs = server.request("GET", "/api/client/sync-jobs", token=owner_token)["jobs"]
+                self.assertTrue(any(job["type"] == "sync_mail_policy" for job in jobs))
 
     def test_forward_auth_tools_refresh_shared_cookie_on_launch(self):
         with tempfile.TemporaryDirectory() as tmp:

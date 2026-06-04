@@ -1,0 +1,824 @@
+@font-face {
+	font-family: "Roboto";
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url("fonts/roboto-400.ttf") format("truetype");
+}
+
+@font-face {
+	font-family: "Roboto";
+	font-style: normal;
+	font-weight: 500;
+	font-display: swap;
+	src: url("fonts/roboto-500.ttf") format("truetype");
+}
+
+@font-face {
+	font-family: "Roboto";
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src: url("fonts/roboto-700.ttf") format("truetype");
+}
+
+:root {
+	color-scheme: light;
+
+	/* Gmail-inspired workspace */
+	--gmail-blue: #0b57d0;
+	--gmail-blue-hover: #0b4eb8;
+	--gmail-blue-soft: #d3e3fd;
+	--gmail-blue-selected: #c2e7ff;
+	--gmail-red: #c5221f;
+	--gmail-yellow: #f9ab00;
+	--gmail-green: #188038;
+	--gmail-ink: #1f1f1f;
+	--gmail-muted: #5f6368;
+	--gmail-border: #e0e0e0;
+	--gmail-canvas: #f6f8fc;
+	--gmail-hover: #f2f6fc;
+	--gmail-search: #eaf1fb;
+
+	/* SnappyMail theme variables */
+	--main-color: var(--gmail-ink);
+	--main-bg-color: var(--gmail-canvas);
+	--main-bg-image: none;
+	--loading-color: var(--gmail-blue);
+	--loading-text-shadow: none;
+	--login-color: var(--gmail-ink);
+	--login-bg-color: #fff;
+	--login-box-shadow: 0 8px 28px rgba(60, 64, 67, 0.18);
+	--login-border: 1px solid #dadce0;
+	--login-border-radius: 24px;
+	--dropdown-menu-color: var(--gmail-ink);
+	--dropdown-menu-bg-color: #fff;
+	--dropdown-menu-hover-bg-color: var(--gmail-hover);
+	--dropdown-menu-hover-color: var(--gmail-ink);
+	--dropdown-menu-disabled-color: #9aa0a6;
+	--dropdown-menu-border-clr: transparent;
+	--folders-color: #202124;
+	--folders-disabled-color: #80868b;
+	--folders-selected-color: #001d35;
+	--folders-selected-bg-color: var(--gmail-blue-selected);
+	--folders-focused-color: #001d35;
+	--folders-focused-bg-color: var(--gmail-blue-soft);
+	--folders-hover-color: #202124;
+	--folders-hover-bg-color: #e9eef6;
+	--folders-drop-color: #001d35;
+	--folders-drop-bg-color: var(--gmail-blue-soft);
+	--settings-menu-color: #202124;
+	--settings-menu-selected-color: #001d35;
+	--settings-menu-selected-bg-color: var(--gmail-blue-selected);
+	--settings-menu-hover-color: #202124;
+	--settings-menu-hover-bg-color: #e9eef6;
+	--message-list-toolbar-bg-color: #fff;
+	--border-color: #e0e0e0;
+	--border-radius: 16px;
+	--input-border-radius: 4px;
+	--unread-count-bg-color: transparent;
+	--unread-count-color: #001d35;
+}
+
+html,
+body,
+button,
+input,
+select,
+textarea {
+	font-family: "Roboto", Arial, sans-serif !important;
+}
+
+html,
+body {
+	background: var(--gmail-canvas) !important;
+	color: var(--gmail-ink) !important;
+	font-size: 14px;
+}
+
+body::before {
+	background: linear-gradient(90deg, #4285f4 0 25%, #ea4335 25% 50%, #fbbc04 50% 75%, #34a853 75% 100%);
+	content: "";
+	height: 3px;
+	left: 0;
+	position: fixed;
+	right: 0;
+	top: 0;
+	z-index: 10000;
+}
+
+::selection {
+	background: var(--gmail-blue-soft);
+	color: #001d35;
+}
+
+/* App shell */
+#rl-left {
+	background: var(--gmail-canvas) !important;
+	border-right: 0 !important;
+	padding-top: 3px;
+}
+
+#rl-right {
+	background: var(--gmail-canvas) !important;
+	padding: 11px 12px 12px 4px;
+}
+
+#V-MailMessageList,
+#V-MailMessageView,
+#V-SettingsPane,
+#V-AdminPane {
+	background: #fff !important;
+	border: 0 !important;
+	border-radius: 16px !important;
+	box-shadow: none !important;
+	overflow: hidden;
+}
+
+.messageList,
+.messageView,
+.settings-content {
+	background: #fff !important;
+	color: var(--gmail-ink) !important;
+}
+
+/* Search */
+.search-input-wrp {
+	position: relative;
+}
+
+.messageList .second-toolbar {
+	align-items: center;
+	background: #fff !important;
+	border: 0 !important;
+	border-radius: 16px 16px 0 0 !important;
+	gap: 8px;
+	padding: 10px 16px !important;
+}
+
+.messageList .search-input-wrp {
+	margin: 0 6px;
+}
+
+.messageList .inputSearch,
+.search-input-wrp input {
+	background: var(--gmail-search) !important;
+	border: 1px solid transparent !important;
+	border-radius: 24px !important;
+	box-shadow: none !important;
+	box-sizing: border-box;
+	color: var(--gmail-ink) !important;
+	font-size: 16px !important;
+	height: 46px;
+	padding: 0 46px 0 18px !important;
+	transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.messageList .inputSearch:focus,
+.search-input-wrp input:focus {
+	background: #fff !important;
+	border-color: transparent !important;
+	box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15) !important;
+	outline: none !important;
+}
+
+.search-input-wrp a {
+	align-items: center;
+	border-radius: 50%;
+	color: var(--gmail-muted) !important;
+	display: flex;
+	height: 32px;
+	justify-content: center;
+	margin: 0 7px !important;
+	opacity: 1 !important;
+	right: 2px !important;
+	top: 7px !important;
+	width: 32px;
+}
+
+.search-input-wrp a:hover {
+	background: rgba(60, 64, 67, 0.08);
+}
+
+/* Left sidebar and compose */
+.b-folders {
+	background: var(--gmail-canvas) !important;
+	color: var(--folders-color) !important;
+	padding-right: 8px !important;
+}
+
+.b-folders .b-toolbar {
+	background: transparent !important;
+	border: 0 !important;
+	color: var(--gmail-ink) !important;
+	display: flex;
+	gap: 6px;
+	padding: 14px 8px 12px 8px !important;
+}
+
+@media screen and (min-width: 800px) {
+	.b-folders .b-toolbar {
+		flex-direction: column;
+		align-items: stretch;
+		gap: 0;
+	}
+
+	.b-folders .b-toolbar::before {
+		align-items: center;
+		background: url("images/wind.png") no-repeat 16px center / 40px 40px, url("images/windz-wordmark.svg") no-repeat 62px center / 116px 40px;
+		content: "";
+		display: block;
+		flex: 0 0 auto;
+		height: 56px;
+		margin: 0 0 8px 0;
+		width: 100%;
+	}
+
+	html.rl-left-panel-disabled .b-folders .b-toolbar {
+		flex-direction: column;
+	}
+
+	html.rl-left-panel-disabled .b-folders .b-toolbar::before {
+		display: none;
+	}
+}
+
+#rl-left .buttonCompose,
+.b-folders .b-toolbar .btn.buttonCompose {
+	background: var(--gmail-blue-selected) !important;
+	border: 0 !important;
+	border-radius: 16px !important;
+	box-shadow: none !important;
+	color: #001d35 !important;
+	font-size: 14px !important;
+	font-weight: 500 !important;
+	height: 56px !important;
+	letter-spacing: 0 !important;
+	line-height: 56px !important;
+	margin: 0 !important;
+	max-height: 56px !important;
+	max-width: none !important;
+	padding: 0 22px !important;
+	text-shadow: none !important;
+	transition: box-shadow 120ms ease, background-color 120ms ease;
+	width: auto !important;
+}
+
+#rl-left .buttonCompose:hover,
+.b-folders .b-toolbar .btn.buttonCompose:hover {
+	background: #b7ddf7 !important;
+	box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15) !important;
+	transform: none !important;
+}
+
+.b-folders .b-toolbar .buttonContacts {
+	background: transparent !important;
+	border: 0 !important;
+	border-radius: 50% !important;
+	box-shadow: none !important;
+	color: var(--gmail-muted) !important;
+	height: 40px !important;
+	margin: 8px 0 !important;
+	min-width: 40px !important;
+	padding: 0 !important;
+	width: 40px !important;
+}
+
+.b-folders .b-toolbar .buttonContacts:hover {
+	background: rgba(60, 64, 67, 0.08) !important;
+}
+
+.b-folders .b-content {
+	background: transparent !important;
+	color: var(--folders-color) !important;
+	padding: 2px 8px 8px 0 !important;
+}
+
+.b-folders li a,
+.b-folders li a.selectable {
+	border: 0 !important;
+	border-radius: 0 18px 18px 0 !important;
+	box-sizing: border-box;
+	color: var(--folders-color) !important;
+	font-size: 14px;
+	height: 32px;
+	line-height: 32px !important;
+	margin: 1px 0;
+	padding: 0 28px 0 24px !important;
+	transition: background-color 100ms ease;
+}
+
+.b-folders li a.selectable:hover {
+	background: var(--folders-hover-bg-color) !important;
+	color: var(--folders-hover-color) !important;
+}
+
+.b-folders li a.selectable.selected {
+	background: var(--folders-selected-bg-color) !important;
+	color: var(--folders-selected-color) !important;
+	font-weight: 700;
+}
+
+.b-folders li a[data-unread] {
+	font-weight: 700;
+}
+
+.b-folders .b-folders-system a[data-unread]::after,
+.b-folders .b-folders-user a[data-unread]:not(.system)::after {
+	background: transparent !important;
+	color: #001d35 !important;
+	font-size: 12px !important;
+	font-weight: 700;
+	line-height: 20px !important;
+	margin: 0 !important;
+	min-width: 20px !important;
+	padding: 0 !important;
+	right: 12px !important;
+	text-shadow: none !important;
+	top: 6px !important;
+}
+
+.b-folders hr {
+	border: 0 !important;
+	border-top: 1px solid #e5e7eb !important;
+	margin: 10px 18px !important;
+}
+
+.b-folders .flag-icon::after,
+.messageListItem .flagParent::after {
+	color: #9aa0a6;
+}
+
+.b-folders .is-flagged .flag-icon::after,
+.messageListItem.msgflag-\\flagged .flagParent::after,
+.messageListItem.hasFlaggedSubMessage .flagParent::after {
+	color: var(--gmail-yellow) !important;
+}
+
+.b-folders .b-footer {
+	background: transparent !important;
+	padding: 10px 12px !important;
+}
+
+/* Account control and dropdown */
+#V-SystemDropDown {
+	padding: 12px 16px 0 8px !important;
+}
+
+#V-SystemDropDown .btn-toolbar {
+	align-items: center;
+	background: transparent !important;
+	border: 0 !important;
+	box-shadow: none !important;
+	display: flex;
+	height: 40px;
+	padding: 0 !important;
+}
+
+#V-SystemDropDown .accountPlace {
+	background: transparent !important;
+	border: 0 !important;
+	color: var(--gmail-muted) !important;
+	font-size: 14px;
+	font-weight: 500;
+	text-shadow: none !important;
+}
+
+#V-SystemDropDown #top-system-dropdown-id {
+	background-color: #fff !important;
+	background-image: url("images/wind.png") !important;
+	background-position: center !important;
+	background-repeat: no-repeat !important;
+	background-size: 24px 24px !important;
+	border: 1px solid #dadce0 !important;
+	border-radius: 50% !important;
+	box-shadow: none !important;
+	color: transparent !important;
+	height: 38px !important;
+	margin-left: 8px;
+	overflow: hidden;
+	padding: 0 !important;
+	text-shadow: none !important;
+	width: 38px !important;
+}
+
+#V-SystemDropDown #top-system-dropdown-id::after {
+	content: "" !important;
+}
+
+#V-SystemDropDown #top-system-dropdown-id:hover,
+#V-SystemDropDown #top-system-dropdown-id:focus {
+	box-shadow: 0 0 0 4px rgba(60, 64, 67, 0.1) !important;
+}
+
+.dropdown.show {
+	box-shadow: none !important;
+}
+
+.dropdown-menu {
+	background: #fff !important;
+	border: 0 !important;
+	border-radius: 16px !important;
+	box-shadow: 0 8px 24px rgba(60, 64, 67, 0.2), 0 1px 3px rgba(60, 64, 67, 0.12) !important;
+	color: var(--gmail-ink) !important;
+	margin-top: 8px !important;
+	overflow: hidden;
+	padding: 8px 0 !important;
+}
+
+.dropdown-menu a {
+	background: #fff !important;
+	color: var(--gmail-ink) !important;
+	font-size: 14px;
+	line-height: 36px !important;
+	padding: 0 18px !important;
+}
+
+.dropdown-menu li:not(.disabled) > a:hover,
+.dropdown-menu li:not(.disabled) > a:focus {
+	background: var(--gmail-hover) !important;
+	color: var(--gmail-ink) !important;
+}
+
+.dropdown-menu * + .dividerbar {
+	border-top-color: #e5e7eb !important;
+	margin-top: 8px !important;
+	padding-top: 8px !important;
+}
+
+/* Toolbars and controls */
+.top-toolbar,
+.second-toolbar,
+.thm-message-list-top-toolbar,
+.thm-message-list-bottom-toolbar,
+.messageList .b-footer {
+	background: #fff !important;
+	border-color: #e5e7eb !important;
+	box-shadow: none !important;
+}
+
+#V-MailMessageList .btn-toolbar {
+	align-items: center;
+	background: #fff !important;
+	border: 0 !important;
+	min-height: 48px;
+	padding: 6px 12px !important;
+}
+
+.btn,
+.btn.btn-transparent,
+.btn-toolbar .btn {
+	background: transparent !important;
+	border: 0 !important;
+	border-radius: 18px !important;
+	box-shadow: none !important;
+	color: var(--gmail-muted) !important;
+	font-family: inherit !important;
+	font-size: 14px;
+	text-shadow: none !important;
+	transition: background-color 100ms ease, color 100ms ease;
+}
+
+.btn:hover,
+.btn:focus,
+.btn.btn-transparent:hover,
+.btn-toolbar .btn:hover {
+	background: rgba(60, 64, 67, 0.08) !important;
+	color: var(--gmail-ink) !important;
+	opacity: 1 !important;
+	transform: none !important;
+}
+
+.btn-primary,
+.btn-success,
+.buttonLogin,
+.buttonYes {
+	background: var(--gmail-blue) !important;
+	border: 0 !important;
+	border-radius: 20px !important;
+	box-shadow: none !important;
+	color: #fff !important;
+	font-weight: 500 !important;
+	letter-spacing: 0 !important;
+	padding-left: 20px !important;
+	padding-right: 20px !important;
+	text-shadow: none !important;
+}
+
+.btn-primary:hover,
+.btn-success:hover,
+.buttonLogin:hover,
+.buttonYes:hover {
+	background: var(--gmail-blue-hover) !important;
+	box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15) !important;
+	color: #fff !important;
+}
+
+.btn-danger,
+.buttonNo {
+	background: transparent !important;
+	color: var(--gmail-red) !important;
+}
+
+.btn-danger:hover,
+.buttonNo:hover {
+	background: #fce8e6 !important;
+	color: #b31412 !important;
+}
+
+.btn-group > .btn:not(:last-child),
+.btn-group > .btn:not(:first-child),
+.btn-toolbar .btn {
+	border-radius: 18px !important;
+}
+
+#rl-left .btn.buttonCompose,
+.b-folders .b-toolbar .btn.buttonCompose {
+	background: var(--gmail-blue-selected) !important;
+	border-radius: 16px !important;
+	color: #001d35 !important;
+}
+
+#rl-left .btn.buttonCompose:hover,
+.b-folders .b-toolbar .btn.buttonCompose:hover {
+	background: #b7ddf7 !important;
+}
+
+.checkboxCheckAll,
+.checkboxMessage {
+	color: #5f6368 !important;
+}
+
+/* Message list */
+.messageList .b-content {
+	background: #fff !important;
+	scrollbar-color: #dadce0 transparent;
+}
+
+.messageList .groupLabel {
+	background: #f8fafd !important;
+	border: 0 !important;
+	color: var(--gmail-muted) !important;
+	font-size: 12px;
+	font-weight: 500;
+	padding: 6px 16px !important;
+}
+
+.messageListItem {
+	background: #f2f6fc !important;
+	border: 0 !important;
+	border-bottom: 1px solid #e5e7eb !important;
+	border-left: 0 !important;
+	box-shadow: inset 0 -1px 0 rgba(100, 121, 143, 0.08);
+	color: var(--gmail-ink) !important;
+	font-size: 14px !important;
+	line-height: 20px !important;
+	min-height: 40px;
+	transition: box-shadow 100ms ease, background-color 100ms ease;
+}
+
+.messageListItem > div + div {
+	align-items: center;
+	padding: 9px 0 8px 4px !important;
+}
+
+.messageListItem:hover,
+.messageListItem.focused:hover {
+	background: #fff !important;
+	border-color: #e5e7eb !important;
+	box-shadow: inset 1px 0 0 #dadce0, inset -1px 0 0 #dadce0, 0 1px 2px rgba(60, 64, 67, 0.18) !important;
+	z-index: 2;
+}
+
+.messageListItem.unseen {
+	background: #fff !important;
+	border-color: #e5e7eb !important;
+}
+
+.messageListItem.selected,
+.messageListItem.checked,
+.messageListItem.selected:hover,
+.messageListItem.checked:hover {
+	background: var(--gmail-blue-soft) !important;
+	border-color: #b7cff2 !important;
+	box-shadow: none !important;
+}
+
+.messageListItem.focused {
+	background: var(--gmail-hover) !important;
+	border-color: #e5e7eb !important;
+}
+
+.messageListItem .senderParent {
+	color: #202124;
+	flex-basis: 28% !important;
+	font-weight: 400;
+}
+
+.messageListItem .subjectParent {
+	color: #5f6368;
+}
+
+.messageListItem.unseen .senderParent,
+.messageListItem.unseen .subjectParent {
+	color: #202124;
+	font-weight: 700 !important;
+}
+
+.messageListItem time,
+.messageListItem .sizeParent {
+	color: #5f6368 !important;
+	font-size: 12px !important;
+	font-weight: 400;
+	opacity: 1 !important;
+}
+
+.messageListItem.unseen time {
+	color: #202124 !important;
+	font-weight: 700;
+}
+
+.messageListItem .messageCheckbox {
+	padding: 9px 8px 0 14px !important;
+}
+
+.messageListItem .attachmentParent,
+.messageListItem .flagParent {
+	color: #9aa0a6 !important;
+	margin: 0 10px 0 4px !important;
+}
+
+.messageListItem .threads-len,
+.messageListItem .threadsCountParent {
+	background: transparent !important;
+	border: 0 !important;
+	border-radius: 10px !important;
+	color: #5f6368 !important;
+	font-size: 12px !important;
+	font-weight: 500;
+}
+
+.messageList .b-footer {
+	border-top: 1px solid #e5e7eb !important;
+	border-radius: 0 0 16px 16px !important;
+	color: var(--gmail-muted);
+	min-height: 34px;
+}
+
+.e-quota {
+	background: var(--gmail-blue-soft) !important;
+	border: 0 !important;
+	border-radius: 12px !important;
+	color: #001d35 !important;
+	font-size: 12px !important;
+	padding: 2px 8px;
+}
+
+/* Message reader and compose surfaces */
+.messageView .b-message {
+	background: #fff !important;
+	color: var(--gmail-ink) !important;
+}
+
+.messageView .messageItemHeader {
+	border-bottom: 1px solid #e5e7eb !important;
+	padding: 20px 24px !important;
+}
+
+.messageView .messageItemHeader .subject {
+	color: #202124 !important;
+	font-size: 22px !important;
+	font-weight: 400 !important;
+	line-height: 28px !important;
+}
+
+.messageView .messageItemHeader .informationShort,
+.messageView .messageItemHeader .informationShort a {
+	color: #5f6368 !important;
+}
+
+.modal,
+.e-popup,
+.panel,
+.controls,
+.modal-body {
+	background: #fff !important;
+	border-color: #dadce0 !important;
+	border-radius: 16px !important;
+	box-shadow: 0 8px 24px rgba(60, 64, 67, 0.2) !important;
+	color: var(--gmail-ink) !important;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="email"],
+input[type="search"],
+textarea,
+select {
+	background: #fff !important;
+	border: 1px solid #dadce0 !important;
+	border-radius: 4px !important;
+	box-shadow: none !important;
+	color: var(--gmail-ink) !important;
+	font-size: 14px !important;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+	border-color: var(--gmail-blue) !important;
+	box-shadow: 0 0 0 1px var(--gmail-blue) !important;
+	outline: none !important;
+}
+
+/* Settings */
+#V-SettingsMenu {
+	background: var(--gmail-canvas) !important;
+	color: var(--gmail-ink) !important;
+}
+
+#V-SettingsMenu nav {
+	padding: 12px 8px 12px 0 !important;
+}
+
+#V-SettingsMenu nav a {
+	border: 0 !important;
+	border-radius: 0 18px 18px 0 !important;
+	color: var(--settings-menu-color) !important;
+	font-size: 14px;
+	height: 36px;
+	line-height: 36px !important;
+	margin: 1px 0;
+	padding: 0 20px !important;
+}
+
+#V-SettingsMenu nav a:hover,
+#V-SettingsMenu nav a:focus {
+	background: var(--settings-menu-hover-bg-color) !important;
+	color: var(--settings-menu-hover-color) !important;
+}
+
+#V-SettingsMenu nav a.selected {
+	background: var(--settings-menu-selected-bg-color) !important;
+	color: var(--settings-menu-selected-color) !important;
+	font-weight: 700;
+}
+
+/* Login and loading remain clean when SnappyMail is opened directly */
+#rl-loading {
+	background: var(--gmail-canvas) !important;
+}
+
+.descWrapper,
+.loadingDesc {
+	color: var(--gmail-blue) !important;
+	text-shadow: none !important;
+}
+
+#rl-login .login-screen,
+#rl-login form,
+#V-Login,
+.loginScreen,
+.login-screen {
+	background: #fff !important;
+	border: 1px solid #dadce0 !important;
+	border-radius: 24px !important;
+	box-shadow: none !important;
+	color: var(--gmail-ink) !important;
+}
+
+.icon-spinner {
+	color: var(--gmail-blue) !important;
+}
+
+/* Mobile keeps the same language without forcing desktop spacing */
+@media screen and (max-width: 799px) {
+	#rl-left {
+		background: var(--gmail-canvas) !important;
+		border-right: 1px solid #dadce0 !important;
+		padding-top: 3px;
+	}
+
+	#rl-right {
+		padding: 3px 0 0;
+	}
+
+	#V-MailMessageList,
+	#V-MailMessageView,
+	#V-SettingsPane {
+		border-radius: 0 !important;
+	}
+
+	.messageList .second-toolbar {
+		border-radius: 0 !important;
+		padding: 8px !important;
+	}
+
+	.messageList .inputSearch {
+		height: 42px;
+	}
+
+	#V-SystemDropDown {
+		padding: 7px 8px 0 4px !important;
+	}
+}

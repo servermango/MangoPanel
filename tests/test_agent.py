@@ -11,6 +11,7 @@ from unittest.mock import patch
 from mangopanel.agent import Agent, cron_next_run_at
 from mangopanel.config import Config
 from mangopanel.db import connect, create_job, seed_dev_data
+from mangopanel.mail import mailbox_storage_path
 
 
 class AgentTests(unittest.TestCase):
@@ -32,6 +33,9 @@ class AgentTests(unittest.TestCase):
             compose_text = compose_path.read_text(encoding="utf-8")
             self.assertIn("mp-u000001-web", compose_text)
             self.assertIn("mp-u000001-redis", compose_text)
+            self.assertIn("mp-u000001-mailserver", compose_text)
+            self.assertIn("djmaze/snappymail:latest@sha256:", compose_text)
+            self.assertIn("docker-mailserver/docker-mailserver", compose_text)
             self.assertIn("127.0.0.1:", compose_text)
             self.assertIn('cpus: "1"', compose_text)
             self.assertIn('mangopanel.storage_mb: "10240"', compose_text)
@@ -50,17 +54,69 @@ class AgentTests(unittest.TestCase):
                 self.assertIn(f"/home/u000001/.runtime/cron/jobs/job-{cron_job['id']}.sh", cron_text)
                 cron_script = cron_script_path.read_text(encoding="utf-8")
                 self.assertIn("php /home/u000001/domains/example.mango.test/public_html/cron.php", cron_script)
-                mailpit_users = (config.account_root / "u000001" / ".runtime" / "stack" / "mailpit-users.txt").read_text(encoding="utf-8")
-                self.assertIn("hello@example.mango.test:{SHA}", mailpit_users)
+                mailboxes_json = json.loads((config.account_root / "u000001" / "mail" / "mailboxes.json").read_text(encoding="utf-8"))
+                self.assertTrue(any(mailbox["email"] == "hello@example.mango.test" for mailbox in mailboxes_json))
+                mailbox_root = config.account_root / "u000001" / "mail" / "example.mango.test" / "hello"
+                self.assertTrue(mailbox_root.exists())
+                self.assertTrue((mailbox_root / "cur").exists())
+                self.assertTrue((mailbox_root / "new").exists())
+                self.assertTrue((mailbox_root / "tmp").exists())
             quota_text = (config.account_root / "u000001" / ".runtime" / "stack" / "quota.json").read_text(encoding="utf-8")
             self.assertIn('"storage_mb": 10240', quota_text)
             self.assertIn('"inode_limit": 100000', quota_text)
             self.assertIn('"backup_retention_days": 7', quota_text)
+            account_json = (config.account_root / "u000001" / "account.json").read_text(encoding="utf-8")
+            self.assertIn('"mail_webmail_login_url": "http://mail-u000001.localhost/webmail/login"', account_json)
+            self.assertIn('"mail_edge_host": "mail.mango.test"', account_json)
+            self.assertTrue((config.account_root / "u000001" / "mail" / "plane.json").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "mail-edge.json").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "snappymail" / "snappymail.json").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "snappymail" / "themes" / "MangoPanel" / "styles.css").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "snappymail" / "themes" / "MangoPanel" / "images" / "wind.png").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "snappymail" / "themes" / "MangoPanel" / "images" / "windz-wordmark.svg").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "snappymail" / "themes" / "MangoPanel" / "fonts" / "roboto-500.ttf").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "mailserver" / "config" / "postfix-accounts.cf").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "mailserver" / "config" / "dovecot-quotas.cf").exists())
+            accounts_text = (config.account_root / "u000001" / ".runtime" / "stack" / "mailserver" / "config" / "postfix-accounts.cf").read_text(encoding="utf-8")
+            self.assertRegex(accounts_text, r"hello@example\.mango\.test\|\$6\$[^\n]+\$[^\n]+")
+            quotas_text = (config.account_root / "u000001" / ".runtime" / "stack" / "mailserver" / "config" / "dovecot-quotas.cf").read_text(encoding="utf-8")
+            self.assertIn("hello@example.mango.test:1073741824", quotas_text)
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "mailserver" / "config" / "ssl" / "mail-u000001.localhost-cert.pem").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "mailserver" / "config" / "ssl" / "mail-u000001.localhost-key.pem").exists())
+            self.assertTrue((config.account_root / "u000001" / ".runtime" / "stack" / "mailserver" / "config" / "ssl" / "demoCA" / "cacert.pem").exists())
+            application_ini = (config.account_root / "u000001" / ".runtime" / "stack" / "snappymail" / "_data_" / "_default_" / "configs" / "application.ini").read_text(encoding="utf-8")
+            self.assertIn('favicon_url = "/snappymail/v/2.38.2/themes/MangoPanel/images/wind.png"', application_ini)
+            self.assertNotIn("https://servermango.com", application_ini)
+            default_domain_json = (config.account_root / "u000001" / ".runtime" / "stack" / "snappymail" / "_data_" / "_default_" / "domains" / "default.json").read_text(encoding="utf-8")
+            self.assertIn('"host": "mailserver"', default_domain_json)
+            self.assertIn('"port": 993', default_domain_json)
+            policy_json = json.loads((config.account_root / "u000001" / "mail" / "policy.json").read_text(encoding="utf-8"))
+            self.assertEqual(policy_json["provider"], "snappymail")
+            self.assertEqual(policy_json["daily_email_limit"], 250)
+            routing_text = (config.account_root / "u000001" / "mail" / "routing.json").read_text(encoding="utf-8")
+            self.assertIn('"mail_host"', routing_text)
+            self.assertNotIn('"mail_plane_url"', routing_text)
+            generated_compose = compose_path.read_text(encoding="utf-8")
+            self.assertIn("/snappymail/snappymail/v/2.38.2/themes/MangoPanel:ro", generated_compose)
+            self.assertIn("mp-u000001-mailproxy", generated_compose)
+            self.assertIn("mailserver-state:/var/mail-state", generated_compose)
+            self.assertIn("name: mp-u000001-mailserver-state", generated_compose)
+            self.assertNotIn("/.runtime/stack/mailserver/state:/var/mail-state", generated_compose)
+            self.assertIn("http://mail.mango.test", generated_compose)
+            dev_compose = (Path(__file__).resolve().parent.parent / "docker-compose.dev.yml").read_text(encoding="utf-8")
+            self.assertIn("mangopanel:", dev_compose)
+            self.assertNotIn("stalwart", dev_compose)
 
             with connect(config.db_path) as conn:
                 stack = conn.execute("SELECT * FROM account_stacks WHERE account_id = 1").fetchone()
                 self.assertIsNotNone(stack)
                 self.assertEqual(stack["status"], "generated")
+                route = conn.execute("SELECT * FROM mail_edge_routes WHERE account_id = 1 AND domain = ?", ("example.mango.test",)).fetchone()
+                self.assertIsNotNone(route)
+                self.assertEqual(route["provider"], "shared-mail-edge")
+                route_manifest = json.loads(route["manifest_json"])
+                self.assertEqual(route_manifest["edge_host"], "mail.mango.test")
+                self.assertTrue(route_manifest["mailboxes"])
 
     def test_simulated_sync_jobs_write_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,8 +151,21 @@ class AgentTests(unittest.TestCase):
                 )
                 jobs.append(create_job(conn, "sync_hotlink_protection", "hosting_account", account["id"], {}))
                 conn.execute(
-                    "INSERT INTO mailboxes(account_id, email, quota_mb, status, password_hash, mailpit_auth_hash) VALUES (?, ?, ?, ?, ?, ?)",
-                    (account["id"], "second@example.mango.test", 1024, "active", "pbkdf2_sha256$1$abc$def", "{SHA}dGVzdA=="),
+                    """
+                    INSERT INTO mailboxes(account_id, email, local_part, domain, storage_path, mail_domain_id, quota_mb, status, password_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account["id"],
+                        "second@example.mango.test",
+                        "second",
+                        "example.mango.test",
+                        str(mailbox_storage_path(account["base_path"], "second@example.mango.test")),
+                        conn.execute("SELECT id FROM mail_domains WHERE account_id = ? LIMIT 1", (account["id"],)).fetchone()["id"],
+                        1024,
+                        "active",
+                        "pbkdf2_sha256$1$abc$def",
+                    ),
                 )
                 jobs.append(create_job(conn, "sync_mailboxes", "hosting_account", account["id"], {}))
                 conn.commit()
@@ -111,15 +180,62 @@ class AgentTests(unittest.TestCase):
 
                 self.assertTrue((config.account_root / "u000001" / ".runtime" / "dns" / "example.mango.test.json").exists())
                 self.assertTrue((config.account_root / "u000001" / ".runtime" / "ssl" / "example.mango.test-issued.json").exists())
+                dns_zone = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ?", (domain["id"],)).fetchone()
+                self.assertIsNotNone(dns_zone)
+                self.assertEqual(dns_zone["provider"], "local-dev-dns")
+                self.assertEqual(dns_zone["status"], "published")
+                dns_state = json.loads(dns_zone["provider_state_json"])
+                self.assertEqual(dns_state["zone_name"], "example.mango.test")
+                self.assertTrue(any(record["type"] == "A" for record in dns_state["records"]))
+                acme_order = conn.execute("SELECT * FROM acme_certificate_orders WHERE website_id = ? AND domain = ?", (website["id"], website["domain"])).fetchone()
+                self.assertIsNotNone(acme_order)
+                self.assertEqual(acme_order["provider"], "local-dev-acme")
+                self.assertEqual(acme_order["status"], "issued")
+                self.assertEqual(json.loads(acme_order["provider_state_json"])["status"], "issued")
+                route = conn.execute("SELECT * FROM mail_edge_routes WHERE account_id = ? AND domain = ?", (account["id"], domain["name"])).fetchone()
+                self.assertIsNotNone(route)
+                self.assertEqual(route["provider"], "shared-mail-edge")
+                self.assertEqual(route["status"], "active")
+                self.assertTrue(any(item["email"] == "second@example.mango.test" for item in json.loads(route["manifest_json"])["mailboxes"]))
                 self.assertTrue((config.account_root / "u000001" / ".runtime" / "mysql-remote" / "report.json").exists())
                 self.assertTrue((config.account_root / "u000001" / ".runtime" / "images" / "report.json").exists())
                 self.assertTrue((config.account_root / "u000001" / ".runtime" / "cron" / "report.json").exists())
-                self.assertIn("second@example.mango.test:{SHA}", (config.account_root / "u000001" / ".runtime" / "stack" / "mailpit-users.txt").read_text(encoding="utf-8"))
+                mailboxes_json = json.loads((config.account_root / "u000001" / "mail" / "mailboxes.json").read_text(encoding="utf-8"))
+                self.assertTrue(any(mailbox["email"] == "second@example.mango.test" for mailbox in mailboxes_json))
+                self.assertTrue((config.account_root / "u000001" / "mail" / "example.mango.test" / "second").exists())
+                policy_json = json.loads((config.account_root / "u000001" / "mail" / "policy.json").read_text(encoding="utf-8"))
+                self.assertTrue(policy_json["domains"])
+                self.assertEqual(policy_json["domains"][0]["name"], "example.mango.test")
                 self.assertTrue(Path(website["document_root"], "index.html").exists())
                 hotlink_htaccess = Path(website["document_root"]) / ".htaccess"
                 hotlink_text = hotlink_htaccess.read_text(encoding="utf-8")
                 self.assertIn("# BEGIN MangoPanel Hotlink", hotlink_text)
                 self.assertIn("RewriteCond %{HTTP_REFERER} !^https?://(?:[^/]+\\.)?example\\.mango\\.test(?:/|$)", hotlink_text)
+
+    def test_provider_sync_jobs_fail_closed_for_missing_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            with connect(config.db_path) as conn:
+                jobs = [
+                    create_job(conn, "sync_dns_zone", "domain", 999999, {}),
+                    create_job(conn, "issue_ssl", "website", 999999, {}),
+                    create_job(conn, "sync_mailboxes", "hosting_account", 999999, {}),
+                ]
+                conn.commit()
+
+            results = [Agent(config).run_job_by_id(job_id) for job_id in jobs]
+
+            self.assertEqual([result["status"] for result in results], ["failed", "failed", "failed"])
+            self.assertEqual(results[0]["error"], "domain_not_found")
+            self.assertEqual(results[1]["error"], "website_not_found")
+            self.assertEqual(results[2]["error"], "hosting_account_not_found")
 
     def test_analytics_sync_toggles_access_logs_in_stack_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -31,6 +31,60 @@ def hash_mailpit_password(password):
     return "{SHA}" + base64.b64encode(digest).decode("ascii")
 
 
+def _secret_key(master_secret):
+    return hashlib.sha256(str(master_secret or "").encode("utf-8")).digest()
+
+
+def _xor_bytes(left, right):
+    return bytes(a ^ b for a, b in zip(left, right))
+
+
+def encrypt_secret(plaintext, master_secret):
+    if plaintext is None:
+        return ""
+    raw = str(plaintext).encode("utf-8")
+    if not raw:
+        return ""
+    key = _secret_key(master_secret)
+    nonce = os.urandom(16)
+    stream = bytearray()
+    block = 0
+    while len(stream) < len(raw):
+        stream.extend(hmac.new(key, nonce + block.to_bytes(4, "big"), hashlib.sha256).digest())
+        block += 1
+    ciphertext = _xor_bytes(raw, bytes(stream[: len(raw)]))
+    mac = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(nonce + mac + ciphertext).decode("ascii")
+
+
+def decrypt_secret(token, master_secret):
+    if not token:
+        return ""
+    try:
+        payload = base64.urlsafe_b64decode(str(token).encode("ascii"))
+    except (ValueError, TypeError):
+        return ""
+    if len(payload) < 48:
+        return ""
+    nonce = payload[:16]
+    mac = payload[16:48]
+    ciphertext = payload[48:]
+    key = _secret_key(master_secret)
+    expected_mac = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(mac, expected_mac):
+        return ""
+    stream = bytearray()
+    block = 0
+    while len(stream) < len(ciphertext):
+        stream.extend(hmac.new(key, nonce + block.to_bytes(4, "big"), hashlib.sha256).digest())
+        block += 1
+    plaintext = _xor_bytes(ciphertext, bytes(stream[: len(ciphertext)]))
+    try:
+        return plaintext.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
 def verify_password(password, encoded):
     try:
         algorithm, iterations, salt, expected = encoded.split("$", 3)

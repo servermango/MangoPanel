@@ -12,4 +12,9 @@ services:
       - "8000:8000"
     volumes:
       - ./var/dev/docker-data:/data
+    networks:
+      - mangopanel-edge
 
+networks:
+  mangopanel-edge:
+    name: mangopanel-edge

@@ -87,9 +87,11 @@ const AppIcon = {
         dashboard: `<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>`,
         bell: `<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path>`,
         download: `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`,
+        refresh: `<path d="M21 12a9 9 0 1 1-3.03-6.7"/><polyline points="21 3 21 9 15 9"/>`,
         search: `<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>`,
         user: `<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>`,
         logout: `<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>`,
+        login: `<path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M21 3v18a2 2 0 0 1-2 2h-8"/>`,
         chevron: `<polyline points="6 9 12 15 18 9"/>`,
         settings: `<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>`,
         plus: `<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>`,
@@ -210,7 +212,6 @@ const app = createApp({
         { id: "filebrowser", name: "File Manager", icon: "folder", description: "Web-based file manager interface." },
         { id: "sftp", name: "SFTP Service", icon: "sftp", description: "Secure FTP access." },
         { id: "cron", name: "Cron Daemon", icon: "cron", description: "Scheduled task execution engine." },
-        { id: "smtp-relay", name: "Mail Relay", icon: "email", description: "Outgoing mail delivery service." },
       ],
       activePage: pageFromLocation(),
       login: {
@@ -248,6 +249,7 @@ const app = createApp({
       resourceUsage: { range: "30m", windows: ["1m", "5m", "10m", "30m", "2h", "1d", "7d", "30d"], current: {}, samples: [] },
       resourceRange: "30m",
       resourcePoll: null,
+      resourceUsageLoading: false,
       analytics: {
         domain: "",
         website_id: null,
@@ -305,7 +307,53 @@ const app = createApp({
       },
       siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false },
       mailboxes: [],
-      mailboxWizard: { isOpen: false, step: 1, isCreating: false, createdMailbox: null, email: "", quota_mb: 1024, password: "", confirm_password: "" },
+      mailRouting: {
+        mail_domains: [],
+        mail_aliases: [],
+        mail_forwarders: [],
+        mail_autoresponders: [],
+        mail_edge_routes: [],
+        mail_delivery_logs: [],
+      },
+      mailDomainEditor: {
+        isOpen: false,
+        isSaving: false,
+        mailDomainId: null,
+        dkim_selector: "mango",
+        spf_policy: "",
+        dmarc_policy: "",
+        catch_all_enabled: false,
+        catch_all_destination: "",
+        status: "active",
+        regenerate_dkim: false,
+      },
+      mailAliasEditor: {
+        isOpen: false,
+        isSaving: false,
+        aliasId: null,
+        source_email: "",
+        destination_email: "",
+        status: "active",
+      },
+      mailForwarderEditor: {
+        isOpen: false,
+        isSaving: false,
+        forwarderId: null,
+        source_email: "",
+        destination_email: "",
+        status: "active",
+      },
+      mailAutoresponderEditor: {
+        isOpen: false,
+        isSaving: false,
+        autoresponderId: null,
+        mailbox_id: "",
+        subject: "Auto-reply",
+        body: "",
+        enabled: true,
+      },
+      mailboxWizard: { isOpen: false, mode: "create", step: 1, isCreating: false, createdMailbox: null, mailboxId: null, email: "", quota_mb: 1024, password: "", confirm_password: "", status: "active" },
+      mailboxEditor: { isOpen: false, isSaving: false, mailboxId: null, email: "", quota_mb: 1024, status: "active", password: "", confirm_password: "" },
       cronJobs: [],
       newCronJob: { schedule: "*/15 * * * *", command: "" },
       backups: [],
@@ -313,6 +361,7 @@ const app = createApp({
       newGitDeployment: { repository_url: "", branch: "main", deploy_path: "" },
       // DNS Zone Editor
       dnsRecords: [],
+      dnsZones: [],
       selectedDomainId: "",
       newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300 },
       // Cache Manager
@@ -412,46 +461,71 @@ const app = createApp({
       const limit = Number(this.home.resources.inodes_limit || 1);
       return Math.min(100, limit > 0 ? (used / limit) * 100 : 0).toFixed(1);
     },
-    primaryMenuItems() {
+    sidebarSections() {
       return [
-        { label: "Dashboard", target: "dashboard", icon: "dashboard", description: "Resource usage, warnings, and account overview." },
-        { label: "App Installer", target: "installer", icon: "wordpress", description: "Install WordPress, Joomla, and other apps." },
-        { label: "Hosting Plan", target: "hosting-plan", icon: "plan", description: "Current plan, limits, and account status." },
-        { label: "Performance", target: "performance", icon: "performance", description: "Runtime health for CPU, memory, and cache." },
-        { label: "Analytics", target: "analytics", icon: "analytics", description: "Traffic and object counts across your account." },
-        { label: "Security", target: "security", icon: "security", description: "SSL, warnings, and protection status." },
-        { label: "Domains", target: "domains", icon: "domains", description: "Domains and DNS status." },
-        { label: "Website", target: "website", icon: "website", description: "Websites, PHP versions, SSL, and actions." },
-        { label: "Files", target: "files", icon: "files", description: "File manager, SFTP, and service access." },
-        { label: "MySQL Databases", target: "databases", icon: "databases", description: "Database names, users, and connection details." },
-      ];
-    },
-    hostingMenuItems() {
-      return [
-        { label: "Email", target: "email", icon: "email", description: "Mailboxes, SMTP, and IMAP connection details." },
-        { label: "Cron Jobs", target: "cron-jobs", icon: "cron", description: "Scheduled command automation." },
-        { label: "Backups", target: "backups", icon: "backup", description: "Account backups and restore points." },
-        { label: "Git Version Control", target: "git", icon: "git", description: "Repository deployments." },
-      ];
-    },
-    advancedMenuItems() {
-      return [
-        { label: "SSH Access", target: "ssh-access", icon: "terminal", group: "Advanced", description: "SFTP and shell access details." },
-        { label: "PHP Configuration", target: "php-configuration", icon: "php", group: "Advanced", description: "PHP version and runtime options." },
-        { label: "DNS Zone Editor", target: "dns-zone-editor", icon: "dns", group: "Advanced", description: "DNS records and zones." },
-        { label: "PHP Info", target: "php-info", icon: "info", group: "Advanced", description: "PHP runtime information." },
-        { label: "Cache Manager", target: "cache-manager", icon: "cache", group: "Advanced", description: "Cache controls for websites." },
-        { label: "Directory Privacy", target: "password-protect-directories", icon: "password-protect", group: "Advanced", description: "Folder access restrictions." },
-        { label: "IP Blocker", target: "ip-manager", icon: "ip", group: "Advanced", description: "Allow and block IP access." },
-        { label: "Hotlink Protection", target: "hotlink-protection", icon: "hotlink", group: "Advanced", description: "Protect media from external embedding." },
-        { label: "Folder Index Manager", target: "folder-index-manager", icon: "folder-index", group: "Advanced", description: "Directory listing controls." },
-        { label: "Fix File Ownership", target: "fix-file-ownership", icon: "fix", group: "Advanced", description: "Repair file ownership and permissions." },
-        { label: "Services", target: "services", icon: "services", group: "Advanced", description: "Manage and restart background services." },
-        { label: "Activity Log", target: "activity", icon: "activity", group: "Advanced", description: "Recent account events." },
+        {
+          label: "Overview",
+          items: [
+            { label: "Dashboard", target: "dashboard", icon: "dashboard", description: "Resource usage, warnings, and account overview." },
+            { label: "Hosting Plan", target: "hosting-plan", icon: "plan", description: "Current plan, limits, and account status." },
+            { label: "Performance", target: "performance", icon: "performance", description: "Runtime health for CPU, memory, and cache." },
+            { label: "Analytics", target: "analytics", icon: "analytics", description: "Traffic and object counts across your account." },
+          ],
+        },
+        {
+          label: "Build & Sites",
+          items: [
+            { label: "Website", target: "website", icon: "website", description: "Websites, PHP versions, SSL, and actions." },
+            { label: "Domains", target: "domains", icon: "domains", description: "Domains and DNS status." },
+            { label: "Redirects", target: "redirects", icon: "redirects", description: "Forwarding and redirect rules." },
+            { label: "DNS Zone Editor", target: "dns-zone-editor", icon: "dns", description: "DNS records and zones." },
+            { label: "Site Builder", target: "site-builder", icon: "site-builder", description: "Template-based website creation." },
+            { label: "App Installer", target: "installer", icon: "wordpress", description: "Install WordPress, Joomla, and other apps." },
+            { label: "PHP Configuration", target: "php-configuration", icon: "php", description: "PHP version and runtime options." },
+            { label: "PHP Info", target: "php-info", icon: "info", description: "PHP runtime information." },
+          ],
+        },
+        {
+          label: "Files & Data",
+          items: [
+            { label: "Files", target: "files", icon: "files", description: "File manager, SFTP, and service access." },
+            { label: "Disk Usage", target: "disk-usage", icon: "disk-usage", description: "Storage usage by folder and path." },
+            { label: "Databases", target: "databases", icon: "databases", description: "Database names, users, and connection details." },
+            { label: "Email", target: "email", icon: "email", description: "Mailboxes, SMTP, and IMAP connection details." },
+            { label: "FTP Accounts", target: "ftp-accounts", icon: "ftp", description: "Manage FTP users and access." },
+            { label: "Cron Jobs", target: "cron-jobs", icon: "cron", description: "Scheduled command automation." },
+            { label: "Backups", target: "backups", icon: "backup", description: "Account backups and restore points." },
+            { label: "Git Version Control", target: "git", icon: "git", description: "Repository deployments." },
+          ],
+        },
+        {
+          label: "Security",
+          items: [
+            { label: "Security", target: "security", icon: "security", description: "SSL, warnings, and protection status." },
+            { label: "SSL/TLS", target: "ssl-tls", icon: "ssl", description: "Issue and manage certificates." },
+            { label: "SSH Access", target: "ssh-access", icon: "terminal", description: "SFTP and shell access details." },
+            { label: "IP Blocker", target: "ip-manager", icon: "ip", description: "Allow and block IP access." },
+            { label: "API Tokens", target: "api-tokens", icon: "key", description: "Create and revoke API tokens." },
+            { label: "ModSecurity", target: "modsecurity", icon: "shield", description: "Request filtering and protection." },
+            { label: "Two-Factor Authentication", target: "two-factor-auth", icon: "totp", description: "Extra login protection." },
+            { label: "Hotlink Protection", target: "hotlink-protection", icon: "hotlink", description: "Protect media from external embedding." },
+            { label: "Directory Privacy", target: "password-protect-directories", icon: "password-protect", description: "Folder access restrictions." },
+          ],
+        },
+        {
+          label: "System",
+          items: [
+            { label: "Cache Manager", target: "cache-manager", icon: "cache", description: "Cache controls for websites." },
+            { label: "Folder Index Manager", target: "folder-index-manager", icon: "folder-index", description: "Directory listing controls." },
+            { label: "Fix File Ownership", target: "fix-file-ownership", icon: "fix", description: "Repair file ownership and permissions." },
+            { label: "Services", target: "services", icon: "services", description: "Manage and restart background services." },
+            { label: "Activity Log", target: "activity", icon: "activity", description: "Recent account events." },
+          ],
+        },
       ];
     },
     activeMenuItem() {
-      return this.menuItems.find((item) => item.target === this.activePage) || this.primaryMenuItems[0];
+      return this.menuItems.find((item) => item.target === this.activePage) || this.menuItems[0];
     },
     activeFeatureStatus() {
       return this.featureStatus(this.activePage);
@@ -477,10 +551,10 @@ const app = createApp({
         .slice(0, 8);
     },
     menuItems() {
-      return [...this.primaryMenuItems, ...this.hostingMenuItems, ...this.advancedMenuItems];
+      return this.sidebarSections.flatMap((section) => section.items);
     },
     activeAdvancedTool() {
-      return this.advancedMenuItems.find((item) => item.target === this.activePage);
+      return this.sidebarSections.flatMap((section) => section.items).find((item) => item.target === this.activePage);
     },
     resourceChartPoints() {
       return this.resourceUsage.samples || [];
@@ -494,6 +568,94 @@ const app = createApp({
         { key: "memory_mb", label: "RAM", color: "#245a97", unit: "MB", max: Math.max(Number(this.latestResourceUsage.memory_limit_mb || 0), ...this.resourceChartPoints.map((point) => Number(point.memory_mb || 0)), 1) },
         { key: "storage_mb", label: "Storage", color: "#a75d12", unit: "MB", max: Math.max(Number(this.latestResourceUsage.storage_limit_mb || 0), ...this.resourceChartPoints.map((point) => Number(point.storage_mb || 0)), 1) },
       ];
+    },
+    hostingPlanMetrics() {
+      const account = this.home.accounts?.[0] || {};
+      const resources = this.home.resources || {};
+      const latest = this.latestResourceUsage || {};
+      const websitesUsed = this.websites.length;
+      const bandwidthUsedMb = Number(this.analytics?.summary?.bandwidth_bytes || 0) / (1024 * 1024);
+      const bandwidthLimitMb = Number(account.bandwidth_mb || 0);
+
+      const metrics = [
+        {
+          key: "storage",
+          icon: "disk-usage",
+          label: "Disk Space",
+          used: Number(resources.disk_used_mb || 0),
+          limit: Number(resources.disk_limit_mb || account.storage_mb || 0),
+          unit: "mb",
+        },
+        {
+          key: "memory",
+          icon: "analytics",
+          label: "RAM",
+          used: Number(latest.memory_mb || 0),
+          limit: Number(latest.memory_limit_mb || account.memory_mb || 0),
+          unit: "mb",
+        },
+        {
+          key: "cpu",
+          icon: "cpu",
+          label: "CPU Cores",
+          used: Number(latest.cpu_percent || 0),
+          limit: Number(account.cpu_limit || 0) * 100,
+          unit: "percent",
+          value: `${Number(latest.cpu_percent || 0).toFixed(1)}%`,
+          metaLimit: `${Number(account.cpu_limit || 0)} cores`,
+        },
+        {
+          key: "inodes",
+          icon: "files",
+          label: "Inodes",
+          used: Number(resources.inodes_used || 0),
+          limit: Number(resources.inodes_limit || account.inode_limit || 0),
+          unit: "count",
+        },
+        {
+          key: "websites",
+          icon: "domains",
+          label: "Addons/Websites",
+          used: websitesUsed,
+          limit: Number(account.max_websites || 0),
+          unit: "count",
+        },
+        {
+          key: "processes",
+          icon: "performance",
+          label: "Max Processes",
+          used: null,
+          limit: Number(account.max_processes || 0),
+          unit: "count",
+          metaOverride: "No live usage feed",
+        },
+        {
+          key: "php-workers",
+          icon: "server",
+          label: "PHP Workers",
+          used: null,
+          limit: Number(account.php_workers || 0),
+          unit: "count",
+          metaOverride: "No live usage feed",
+        },
+        {
+          key: "bandwidth",
+          icon: "bandwidth",
+          label: "Bandwidth",
+          used: bandwidthUsedMb,
+          limit: bandwidthLimitMb,
+          unit: "mb",
+          metaOverride: bandwidthLimitMb > 0 ? null : "Unlimited plan",
+        },
+      ];
+
+      return metrics.map((metric) => {
+        const percent = this.planUsagePercent(metric.used, metric.limit);
+        const tone = this.planUsageTone(percent);
+        const value = metric.value || this.formatPlanMetricValue(metric.used, metric.unit);
+        const meta = metric.metaOverride || this.planUsageMeta(metric.used, metric.limit, metric.unit, metric.metaLimit);
+        return { ...metric, percent, tone, value, meta };
+      });
     },
     // cPanel dashboard icon grid — all features
     cpanelTiles() {
@@ -524,7 +686,7 @@ const app = createApp({
 
         // Email
         { label: "Email", target: "email", icon: "email", color: "#06b6d4", group: "Email" },
-        { label: "Webmail", target: "email", icon: "webmail", color: "#0891b2", group: "Email", action: () => this.launch("webmail") },
+        { label: "Webmail", target: "email", icon: "webmail", color: "#0891b2", group: "Email", action: () => this.goTo("email") },
 
         // Metrics
         { label: "Visitors", target: "visitors", icon: "visitors", color: "#dc2626", group: "Metrics" },
@@ -579,6 +741,10 @@ const app = createApp({
     },
     selectedDomain() {
       return this.domains.find((d) => String(d.id) === String(this.selectedDomainId)) || null;
+    },
+    selectedDnsZone() {
+      if (!this.selectedDomainId) return null;
+      return this.dnsZones.find((zone) => String(zone.domain_id) === String(this.selectedDomainId)) || null;
     },
     filteredDnsRecords() {
       if (!this.selectedDomainId) return this.dnsRecords;
@@ -783,6 +949,7 @@ const app = createApp({
           await this.loadDiskUsage();
         }
         this.mailboxes = (await this.api("/api/client/mailboxes")).mailboxes || [];
+        await this.loadMailRouting();
         this.cronJobs = (await this.api("/api/client/cron-jobs")).cron_jobs || [];
         this.backups = (await this.api("/api/client/backups")).backups || [];
         this.gitDeployments = (await this.api("/api/client/git-deployments")).git_deployments || [];
@@ -848,6 +1015,255 @@ const app = createApp({
         this.installer.scripts = payload.scripts || [];
       } catch (err) {
         console.error("Failed to load scripts:", err);
+      }
+    },
+    async loadMailRouting() {
+      try {
+        const payload = await this.api("/api/client/mail-routing");
+        this.mailRouting = {
+          mail_domains: payload.mail_domains || [],
+          mail_aliases: payload.mail_aliases || [],
+          mail_forwarders: payload.mail_forwarders || [],
+          mail_autoresponders: payload.mail_autoresponders || [],
+          mail_edge_routes: payload.mail_edge_routes || [],
+          mail_delivery_logs: payload.mail_delivery_logs || [],
+        };
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    normalizeMailAddress(value) {
+      return String(value || "").trim().toLowerCase();
+    },
+    mailAuthPillClass(status) {
+      const value = String(status || "").toLowerCase();
+      if (value === "ok") return "ok";
+      if (value === "warning") return "warning";
+      if (value === "missing") return "danger";
+      return "active";
+    },
+    mailRuleStatusClass(status) {
+      const value = String(status || "").toLowerCase();
+      return value === "active" ? "active" : "danger";
+    },
+    mailEdgeRouteForDomain(domain) {
+      return (this.mailRouting.mail_edge_routes || []).find((route) => (
+        String(route.mail_domain_id) === String(domain.mail_domain_id)
+        || String(route.domain_id) === String(domain.domain_id)
+        || String(route.domain) === String(domain.name)
+      )) || null;
+    },
+    openMailDomainEditor(domain) {
+      this.mailDomainEditor = {
+        isOpen: true,
+        isSaving: false,
+        mailDomainId: domain.mail_domain_id,
+        dkim_selector: domain.dkim_selector || "mango",
+        spf_policy: domain.spf_policy || "",
+        dmarc_policy: domain.dmarc_policy || "",
+        catch_all_enabled: Boolean(domain.catch_all_enabled),
+        catch_all_destination: domain.catch_all_destination || "",
+        status: domain.mail_status || "active",
+        regenerate_dkim: false,
+      };
+    },
+    closeMailDomainEditor() {
+      if (this.mailDomainEditor.isSaving) return;
+      this.mailDomainEditor.isOpen = false;
+    },
+    async saveMailDomainEditor() {
+      if (this.mailDomainEditor.isSaving) return;
+      try {
+        this.mailDomainEditor.isSaving = true;
+        await this.api(`/api/client/mail-domains/${this.mailDomainEditor.mailDomainId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            dkim_selector: this.mailDomainEditor.dkim_selector,
+            spf_policy: this.mailDomainEditor.spf_policy,
+            dmarc_policy: this.mailDomainEditor.dmarc_policy,
+            catch_all_enabled: this.mailDomainEditor.catch_all_enabled,
+            catch_all_destination: this.mailDomainEditor.catch_all_destination,
+            status: this.mailDomainEditor.status,
+            regenerate_dkim: this.mailDomainEditor.regenerate_dkim,
+          }),
+        });
+        this.mailDomainEditor.isSaving = false;
+        this.mailDomainEditor.isOpen = false;
+        await this.loadMailRouting();
+        this.notify("Mail domain updated", "success");
+      } catch (error) {
+        this.mailDomainEditor.isSaving = false;
+        this.notify(error.message, "error");
+      }
+    },
+    async rotateMailDomainDkim(domain) {
+      try {
+        await this.api(`/api/client/mail-domains/${domain.mail_domain_id}/dkim/rotate`, { method: "POST" });
+        await this.loadMailRouting();
+        this.notify(`DKIM rotated for ${domain.name}`, "success");
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    openMailAliasEditor(alias = null) {
+      this.mailAliasEditor = {
+        isOpen: true,
+        isSaving: false,
+        aliasId: alias?.id || null,
+        source_email: alias?.source_email || "",
+        destination_email: alias?.destination_email || "",
+        status: alias?.status || "active",
+      };
+    },
+    closeMailAliasEditor() {
+      if (this.mailAliasEditor.isSaving) return;
+      this.mailAliasEditor.isOpen = false;
+    },
+    async saveMailAliasEditor() {
+      if (this.mailAliasEditor.isSaving) return;
+      const payload = {
+        source_email: this.normalizeMailAddress(this.mailAliasEditor.source_email),
+        destination_email: this.normalizeMailAddress(this.mailAliasEditor.destination_email),
+        status: this.mailAliasEditor.status,
+      };
+      try {
+        this.mailAliasEditor.isSaving = true;
+        if (this.mailAliasEditor.aliasId) {
+          await this.api(`/api/client/mail-aliases/${this.mailAliasEditor.aliasId}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await this.api("/api/client/mail-aliases", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+        }
+        this.mailAliasEditor.isSaving = false;
+        this.mailAliasEditor.isOpen = false;
+        await this.loadMailRouting();
+        this.notify("Mail alias saved", "success");
+      } catch (error) {
+        this.mailAliasEditor.isSaving = false;
+        this.notify(error.message, "error");
+      }
+    },
+    async deleteMailAlias(alias) {
+      if (!window.confirm(`Delete mail alias ${alias.source_email}?`)) return;
+      try {
+        await this.api(`/api/client/mail-aliases/${alias.id}`, { method: "DELETE" });
+        await this.loadMailRouting();
+        this.notify("Mail alias deleted", "success");
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    openMailForwarderEditor(forwarder = null) {
+      this.mailForwarderEditor = {
+        isOpen: true,
+        isSaving: false,
+        forwarderId: forwarder?.id || null,
+        source_email: forwarder?.source_email || "",
+        destination_email: forwarder?.destination_email || "",
+        status: forwarder?.status || "active",
+      };
+    },
+    closeMailForwarderEditor() {
+      if (this.mailForwarderEditor.isSaving) return;
+      this.mailForwarderEditor.isOpen = false;
+    },
+    async saveMailForwarderEditor() {
+      if (this.mailForwarderEditor.isSaving) return;
+      const payload = {
+        source_email: this.normalizeMailAddress(this.mailForwarderEditor.source_email),
+        destination_email: this.normalizeMailAddress(this.mailForwarderEditor.destination_email),
+        status: this.mailForwarderEditor.status,
+      };
+      try {
+        this.mailForwarderEditor.isSaving = true;
+        if (this.mailForwarderEditor.forwarderId) {
+          await this.api(`/api/client/mail-forwarders/${this.mailForwarderEditor.forwarderId}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await this.api("/api/client/mail-forwarders", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+        }
+        this.mailForwarderEditor.isSaving = false;
+        this.mailForwarderEditor.isOpen = false;
+        await this.loadMailRouting();
+        this.notify("Mail forwarder saved", "success");
+      } catch (error) {
+        this.mailForwarderEditor.isSaving = false;
+        this.notify(error.message, "error");
+      }
+    },
+    async deleteMailForwarder(forwarder) {
+      if (!window.confirm(`Delete mail forwarder ${forwarder.source_email}?`)) return;
+      try {
+        await this.api(`/api/client/mail-forwarders/${forwarder.id}`, { method: "DELETE" });
+        await this.loadMailRouting();
+        this.notify("Mail forwarder deleted", "success");
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    openMailAutoresponderEditor(autoresponder = null) {
+      this.mailAutoresponderEditor = {
+        isOpen: true,
+        isSaving: false,
+        autoresponderId: autoresponder?.id || null,
+        mailbox_id: autoresponder?.mailbox_id || "",
+        subject: autoresponder?.subject || "Auto-reply",
+        body: autoresponder?.body || "",
+        enabled: autoresponder ? Boolean(autoresponder.enabled) : true,
+      };
+    },
+    closeMailAutoresponderEditor() {
+      if (this.mailAutoresponderEditor.isSaving) return;
+      this.mailAutoresponderEditor.isOpen = false;
+    },
+    async saveMailAutoresponderEditor() {
+      if (this.mailAutoresponderEditor.isSaving) return;
+      const payload = {
+        mailbox_id: Number(this.mailAutoresponderEditor.mailbox_id),
+        subject: String(this.mailAutoresponderEditor.subject || "").trim() || "Auto-reply",
+        body: String(this.mailAutoresponderEditor.body || "").trim(),
+        enabled: Boolean(this.mailAutoresponderEditor.enabled),
+      };
+      try {
+        this.mailAutoresponderEditor.isSaving = true;
+        if (this.mailAutoresponderEditor.autoresponderId) {
+          await this.api(`/api/client/mail-autoresponders/${this.mailAutoresponderEditor.autoresponderId}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await this.api("/api/client/mail-autoresponders", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+        }
+        this.mailAutoresponderEditor.isSaving = false;
+        this.mailAutoresponderEditor.isOpen = false;
+        await this.loadMailRouting();
+        this.notify("Autoresponder saved", "success");
+      } catch (error) {
+        this.mailAutoresponderEditor.isSaving = false;
+        this.notify(error.message, "error");
+      }
+    },
+    async deleteMailAutoresponder(autoresponder) {
+      if (!window.confirm(`Delete autoresponder for ${autoresponder.mailbox_email}?`)) return;
+      try {
+        await this.api(`/api/client/mail-autoresponders/${autoresponder.id}`, { method: "DELETE" });
+        await this.loadMailRouting();
+        this.notify("Autoresponder deleted", "success");
+      } catch (error) {
+        this.notify(error.message, "error");
       }
     },
 
@@ -935,11 +1351,17 @@ const app = createApp({
 
     async loadResourceUsage() {
       if (!this.token) return;
+      this.resourceUsageLoading = true;
       try {
         this.resourceUsage = await this.api(`/api/client/resource-usage?range=${encodeURIComponent(this.resourceRange)}`);
       } catch (error) {
         this.notify(error.message, "error");
+      } finally {
+        this.resourceUsageLoading = false;
       }
+    },
+    async refreshResourceUsage() {
+      await this.loadResourceUsage();
     },
     async loadPhpInfo() {
       if (!this.token) return;
@@ -1006,6 +1428,7 @@ const app = createApp({
         const qs = this.selectedDomainId ? `?domain_id=${encodeURIComponent(this.selectedDomainId)}` : "";
         const payload = await this.api(`/api/client/dns-records${qs}`);
         this.dnsRecords = payload.dns_records || [];
+        this.dnsZones = payload.dns_zones || [];
       } catch (error) {
         this.notify(error.message, "error");
       }
@@ -1021,6 +1444,7 @@ const app = createApp({
           body: JSON.stringify(this.newDnsRecord),
         });
         this.dnsRecords = payload.dns_records || this.dnsRecords;
+        this.dnsZones = payload.dns_zones || this.dnsZones;
         this.notify(`DNS record synced in development mode (job #${payload.job_id})`, "success");
         this.newDnsRecord = { domain_id: this.newDnsRecord.domain_id, type: "A", name: "@", value: "", ttl: 300 };
       } catch (error) {
@@ -1032,6 +1456,7 @@ const app = createApp({
       try {
         const payload = await this.api(`/api/client/dns-records/${record.id}`, { method: "DELETE" });
         this.dnsRecords = payload.dns_records || this.dnsRecords.filter((r) => r.id !== record.id);
+        this.dnsZones = payload.dns_zones || this.dnsZones;
         this.notify(`DNS record removed from development zone (job #${payload.job_id})`, "success");
       } catch (error) {
         this.notify(error.message, "error");
@@ -1509,6 +1934,33 @@ const app = createApp({
       if (number >= 1024) return `${(number / 1024).toFixed(2)} GB`;
       return `${number.toFixed(1)} MB`;
     },
+    planUsagePercent(used, limit) {
+      const usedNumber = Number(used);
+      const limitNumber = Number(limit);
+      if (!Number.isFinite(usedNumber) || !Number.isFinite(limitNumber) || limitNumber <= 0) return null;
+      return Math.max(0, Math.min(100, (usedNumber / limitNumber) * 100));
+    },
+    planUsageTone(percent) {
+      if (percent == null) return "neutral";
+      if (percent <= 20) return "low";
+      if (percent <= 50) return "warn";
+      if (percent <= 70) return "elevated";
+      return "critical";
+    },
+    formatPlanMetricValue(value, unit) {
+      if (value == null || Number.isNaN(Number(value))) return "Not tracked";
+      const number = Number(value);
+      if (unit === "percent") return `${number.toFixed(1)}%`;
+      if (unit === "count") return `${Math.round(number)}`;
+      return this.formatResource(number, "MB");
+    },
+    planUsageMeta(used, limit, unit, limitLabel = null) {
+      if (limit == null || Number(limit) <= 0) return "Unlimited";
+      if (used == null || Number.isNaN(Number(used))) {
+        return limitLabel ? `${limitLabel} available` : "Not tracked";
+      }
+      return `${this.formatPlanMetricValue(used, unit)} used of ${limitLabel || this.formatPlanMetricValue(limit, unit)}`;
+    },
     formatSampleTime(value) {
       if (!value) return "";
       return new Date(Number(value) * 1000).toLocaleString();
@@ -1978,7 +2430,6 @@ const app = createApp({
         files: "/api/client/files/launch",
         phpmyadmin: "/api/client/phpmyadmin/launch",
         phppgadmin: "/api/client/phppgadmin/launch",
-        webmail: "/api/client/webmail/launch",
       };
       try {
         const payload = await this.api(paths[tool]);
@@ -2044,11 +2495,77 @@ const app = createApp({
     },
     // Mailbox methods
     openMailboxWizard() {
-      this.mailboxWizard = { isOpen: true, step: 1, isCreating: false, createdMailbox: null, email: "", quota_mb: 1024, password: "", confirm_password: "" };
+      this.mailboxWizard = { isOpen: true, mode: "create", step: 1, isCreating: false, createdMailbox: null, mailboxId: null, email: "", quota_mb: 1024, password: "", confirm_password: "", status: "active" };
     },
     closeMailboxWizard() {
       if (this.mailboxWizard.isCreating) return;
       this.mailboxWizard.isOpen = false;
+    },
+    openMailboxEditor(mailbox) {
+      this.mailboxEditor = {
+        isOpen: true,
+        isSaving: false,
+        mailboxId: mailbox.id,
+        email: mailbox.email,
+        quota_mb: mailbox.quota_mb,
+        status: mailbox.status,
+        password: "",
+        confirm_password: "",
+      };
+    },
+    async openMailboxWebmail(mailbox) {
+      try {
+        const payload = await this.api(`/api/client/mailboxes/${mailbox.id}/webmail/launch`);
+        if (!payload.launch_url) {
+          throw new Error("webmail_launch_unavailable");
+        }
+        window.location.assign(payload.launch_url);
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    openMailboxLogin(mailbox) {
+      const url = mailbox.webmail_login_url || mailbox.mailbox_login_url || mailbox.webmail_url;
+      if (!url) {
+        this.notify("Direct mailbox login is unavailable for this mailbox.", "warning");
+        return;
+      }
+      window.location.assign(url);
+    },
+    closeMailboxEditor() {
+      if (this.mailboxEditor.isSaving) return;
+      this.mailboxEditor.isOpen = false;
+    },
+    async saveMailboxEditor() {
+      if (this.mailboxEditor.isSaving) return;
+      try {
+        this.mailboxEditor.isSaving = true;
+        const payload = {
+          email: this.mailboxEditor.email,
+          quota_mb: this.mailboxEditor.quota_mb,
+          status: this.mailboxEditor.status,
+        };
+        if (this.mailboxEditor.password) {
+          payload.password = this.mailboxEditor.password;
+          payload.confirm_password = this.mailboxEditor.confirm_password;
+        }
+        const response = await this.api(`/api/client/mailboxes/${this.mailboxEditor.mailboxId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+        Object.assign(this.mailboxEditor, { isSaving: false });
+        const idx = this.mailboxes.findIndex((mailbox) => mailbox.id === this.mailboxEditor.mailboxId);
+        if (idx !== -1 && response.mailbox) {
+          this.mailboxes.splice(idx, 1, response.mailbox);
+        } else {
+          this.mailboxes = (await this.api("/api/client/mailboxes")).mailboxes || [];
+        }
+        this.notify(`Mailbox ${this.mailboxEditor.email} updated`, "success");
+        this.mailboxEditor.isOpen = false;
+      } catch (error) {
+        this.mailboxEditor.isSaving = false;
+        this.notify(error.message, "error");
+      }
     },
     prevMailboxWizardStep() {
       if (this.mailboxWizard.step > 1 && !this.mailboxWizard.isCreating) {
@@ -2093,21 +2610,6 @@ const app = createApp({
         await this.loadSyncJobs();
       } catch (error) {
         this.mailboxWizard.isCreating = false;
-        this.notify(error.message, "error");
-      }
-    },
-    async launchMailboxWebmail(mailbox) {
-      const preview = window.open("about:blank", "_blank", "noopener,noreferrer");
-      try {
-        const payload = await this.api(`/api/client/mailboxes/${mailbox.id}/webmail/launch`);
-        if (preview) {
-          preview.opener = null;
-          preview.location = payload.launch_url;
-        } else {
-          window.open(payload.launch_url, "_blank", "noopener,noreferrer");
-        }
-      } catch (error) {
-        if (preview) preview.close();
         this.notify(error.message, "error");
       }
     },
@@ -2217,7 +2719,7 @@ const app = createApp({
       this.activePage = target;
       this.userMenuOpen = false;
       if (target === "performance") {
-        this.loadResourceUsage();
+        this.refreshResourceUsage();
         if (!this.resourcePoll) this.resourcePoll = window.setInterval(() => this.loadResourceUsage(), 10000);
       } else if (target === "analytics") {
         this.loadAnalytics();

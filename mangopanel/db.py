@@ -3,7 +3,9 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .security import hash_mailpit_password, hash_password
+from .mail import dkim_dns_value, ensure_mailbox_storage, generate_dkim_material, mailbox_storage_path, recommended_dmarc_record, recommended_spf_record, split_mailbox_address
+from .providers import ACME_PROVIDER_LOCAL, DNS_PROVIDER_LOCAL, MAIL_EDGE_PROVIDER_SHARED
+from .security import encrypt_secret, hash_password
 
 
 SCHEMA = """
@@ -174,6 +176,21 @@ CREATE TABLE IF NOT EXISTS dns_records (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS dns_zones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  domain_id INTEGER NOT NULL UNIQUE REFERENCES domains(id),
+  zone_name TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'local-dev-dns',
+  status TEXT NOT NULL DEFAULT 'active',
+  serial INTEGER NOT NULL DEFAULT 1,
+  nameservers_json TEXT NOT NULL DEFAULT '[]',
+  provider_state_json TEXT NOT NULL DEFAULT '{}',
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS databases (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
@@ -237,6 +254,19 @@ CREATE TABLE IF NOT EXISTS mailboxes (
   email TEXT NOT NULL UNIQUE,
   quota_mb INTEGER NOT NULL DEFAULT 1024,
   status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS mailbox_launch_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id),
+  token_id TEXT NOT NULL UNIQUE,
+  purpose TEXT NOT NULL DEFAULT 'webmail',
+  status TEXT NOT NULL DEFAULT 'active',
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER,
+  provider_state_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -480,14 +510,58 @@ CREATE TABLE IF NOT EXISTS ssl_certificates (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS acme_certificate_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  website_id INTEGER REFERENCES websites(id),
+  domain_id INTEGER REFERENCES domains(id),
+  certificate_id INTEGER REFERENCES ssl_certificates(id),
+  domain TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'local-dev-acme',
+  status TEXT NOT NULL DEFAULT 'pending',
+  challenge_type TEXT NOT NULL DEFAULT 'http-01',
+  challenge_token TEXT NOT NULL DEFAULT '',
+  challenge_value TEXT NOT NULL DEFAULT '',
+  requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  issued_at TEXT,
+  expires_at TEXT,
+  provider_state_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(account_id, domain, provider)
+);
+
 CREATE TABLE IF NOT EXISTS mail_domains (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
   domain_id INTEGER REFERENCES domains(id),
+  spf_policy TEXT NOT NULL DEFAULT 'v=spf1 mx -all',
+  dkim_private_key TEXT NOT NULL DEFAULT '',
   dkim_public_key TEXT,
   dkim_selector TEXT NOT NULL DEFAULT 'mango',
+  dmarc_policy TEXT NOT NULL DEFAULT 'v=DMARC1; p=quarantine',
+  catch_all_enabled INTEGER NOT NULL DEFAULT 0,
+  catch_all_destination TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS mail_edge_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  mail_domain_id INTEGER NOT NULL UNIQUE REFERENCES mail_domains(id),
+  domain_id INTEGER REFERENCES domains(id),
+  domain TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'shared-mail-edge',
+  edge_host TEXT NOT NULL DEFAULT '',
+  smtp_enabled INTEGER NOT NULL DEFAULT 1,
+  pop_enabled INTEGER NOT NULL DEFAULT 1,
+  imap_enabled INTEGER NOT NULL DEFAULT 1,
+  jmap_enabled INTEGER NOT NULL DEFAULT 1,
+  webmail_enabled INTEGER NOT NULL DEFAULT 1,
+  manifest_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active',
+  last_synced_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS mail_aliases (
@@ -506,6 +580,43 @@ CREATE TABLE IF NOT EXISTS mail_forwarders (
   destination_email TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS mail_autoresponders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id),
+  subject TEXT NOT NULL DEFAULT 'Auto-reply',
+  body TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS mail_delivery_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  mailbox_id INTEGER REFERENCES mailboxes(id),
+  action TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT 'outbound',
+  source_email TEXT NOT NULL DEFAULT '',
+  destination_email TEXT NOT NULL DEFAULT '',
+  details_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'queued',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS webmail_login_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_key TEXT NOT NULL UNIQUE,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  first_failed_at INTEGER NOT NULL DEFAULT 0,
+  last_failed_at INTEGER NOT NULL DEFAULT 0,
+  locked_until INTEGER NOT NULL DEFAULT 0,
+  last_ip TEXT NOT NULL DEFAULT '',
+  last_email TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS collaborators (
@@ -727,6 +838,36 @@ def ensure_schema(conn):
             "analytics_enabled": "INTEGER NOT NULL DEFAULT 1",
         },
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dns_zones (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          domain_id INTEGER NOT NULL UNIQUE REFERENCES domains(id),
+          zone_name TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'local-dev-dns',
+          status TEXT NOT NULL DEFAULT 'active',
+          serial INTEGER NOT NULL DEFAULT 1,
+          nameservers_json TEXT NOT NULL DEFAULT '[]',
+          provider_state_json TEXT NOT NULL DEFAULT '{}',
+          last_synced_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    ensure_table_columns(
+        conn,
+        "dns_zones",
+        {
+            "provider": "TEXT NOT NULL DEFAULT 'local-dev-dns'",
+            "serial": "INTEGER NOT NULL DEFAULT 1",
+            "nameservers_json": "TEXT NOT NULL DEFAULT '[]'",
+            "provider_state_json": "TEXT NOT NULL DEFAULT '{}'",
+            "last_synced_at": "TEXT",
+            "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        },
+    )
     ensure_table_columns(
         conn,
         "cron_jobs",
@@ -750,9 +891,121 @@ def ensure_schema(conn):
         conn,
         "mailboxes",
         {
+            "local_part": "TEXT NOT NULL DEFAULT ''",
+            "domain": "TEXT NOT NULL DEFAULT ''",
+            "storage_path": "TEXT NOT NULL DEFAULT ''",
             "password_hash": "TEXT NOT NULL DEFAULT ''",
-            "mailpit_auth_hash": "TEXT NOT NULL DEFAULT ''",
+            "password_secret": "TEXT NOT NULL DEFAULT ''",
+            "mail_domain_id": "INTEGER REFERENCES mail_domains(id)",
+            "sent_today_count": "INTEGER NOT NULL DEFAULT 0",
+            "sent_today_on": "TEXT NOT NULL DEFAULT ''",
+            "last_inbound_at": "TEXT",
+            "last_outbound_at": "TEXT",
         },
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mailbox_launch_tokens (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id),
+          token_id TEXT NOT NULL UNIQUE,
+          purpose TEXT NOT NULL DEFAULT 'webmail',
+          status TEXT NOT NULL DEFAULT 'active',
+          expires_at INTEGER NOT NULL,
+          consumed_at INTEGER,
+          provider_state_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mail_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id),
+          direction TEXT NOT NULL DEFAULT 'inbound',
+          sender_email TEXT NOT NULL DEFAULT '',
+          recipients_json TEXT NOT NULL DEFAULT '[]',
+          subject TEXT NOT NULL DEFAULT '',
+          body_preview TEXT NOT NULL DEFAULT '',
+          storage_path TEXT NOT NULL DEFAULT '',
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'stored',
+          folder TEXT NOT NULL DEFAULT 'inbox',
+          is_read INTEGER NOT NULL DEFAULT 0,
+          message_uid TEXT NOT NULL DEFAULT '',
+          headers_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    ensure_table_columns(
+        conn,
+        "mail_messages",
+        {
+            "folder": "TEXT NOT NULL DEFAULT 'inbox'",
+            "is_read": "INTEGER NOT NULL DEFAULT 0",
+            "message_uid": "TEXT NOT NULL DEFAULT ''",
+            "headers_json": "TEXT NOT NULL DEFAULT '{}'",
+        },
+    )
+    ensure_table_columns(
+        conn,
+        "mail_domains",
+        {
+            "spf_policy": "TEXT NOT NULL DEFAULT 'v=spf1 mx -all'",
+            "dkim_private_key": "TEXT NOT NULL DEFAULT ''",
+            "dmarc_policy": "TEXT NOT NULL DEFAULT 'v=DMARC1; p=quarantine'",
+            "catch_all_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "catch_all_destination": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS acme_certificate_orders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          website_id INTEGER REFERENCES websites(id),
+          domain_id INTEGER REFERENCES domains(id),
+          certificate_id INTEGER REFERENCES ssl_certificates(id),
+          domain TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'local-dev-acme',
+          status TEXT NOT NULL DEFAULT 'pending',
+          challenge_type TEXT NOT NULL DEFAULT 'http-01',
+          challenge_token TEXT NOT NULL DEFAULT '',
+          challenge_value TEXT NOT NULL DEFAULT '',
+          requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          issued_at TEXT,
+          expires_at TEXT,
+          provider_state_json TEXT NOT NULL DEFAULT '{}',
+          UNIQUE(account_id, domain, provider)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mail_edge_routes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          mail_domain_id INTEGER NOT NULL UNIQUE REFERENCES mail_domains(id),
+          domain_id INTEGER REFERENCES domains(id),
+          domain TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'shared-mail-edge',
+          edge_host TEXT NOT NULL DEFAULT '',
+          smtp_enabled INTEGER NOT NULL DEFAULT 1,
+          pop_enabled INTEGER NOT NULL DEFAULT 1,
+          imap_enabled INTEGER NOT NULL DEFAULT 1,
+          jmap_enabled INTEGER NOT NULL DEFAULT 1,
+          webmail_enabled INTEGER NOT NULL DEFAULT 1,
+          manifest_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          last_synced_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
     )
     ensure_table_columns(
         conn,
@@ -821,6 +1074,62 @@ def ensure_schema(conn):
           destination_email TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'active',
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS mail_autoresponders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id),
+          subject TEXT NOT NULL DEFAULT 'Auto-reply',
+          body TEXT NOT NULL DEFAULT '',
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS mail_delivery_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          mailbox_id INTEGER REFERENCES mailboxes(id),
+          action TEXT NOT NULL,
+          direction TEXT NOT NULL DEFAULT 'outbound',
+          source_email TEXT NOT NULL DEFAULT '',
+          destination_email TEXT NOT NULL DEFAULT '',
+          details_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'queued',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS mail_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id),
+          direction TEXT NOT NULL DEFAULT 'inbound',
+          sender_email TEXT NOT NULL DEFAULT '',
+          recipients_json TEXT NOT NULL DEFAULT '[]',
+          subject TEXT NOT NULL DEFAULT '',
+          body_preview TEXT NOT NULL DEFAULT '',
+          storage_path TEXT NOT NULL DEFAULT '',
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'stored',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS webmail_login_attempts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          attempt_key TEXT NOT NULL UNIQUE,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          first_failed_at INTEGER NOT NULL DEFAULT 0,
+          last_failed_at INTEGER NOT NULL DEFAULT 0,
+          locked_until INTEGER NOT NULL DEFAULT 0,
+          last_ip TEXT NOT NULL DEFAULT '',
+          last_email TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """,
         """
@@ -971,8 +1280,9 @@ def seed_dev_data(db_path, account_root=None):
         admin_secret = "JBSWY3DPEHPK3PXP"
         user_secret = "JBSWY3DPEHPK3PXP"
         password_hash = hash_password("ChangeMe-DevOnly-123!")
-        mailbox_password = hash_password("ChangeMe-DevOnly-123!")
-        mailbox_mailpit_hash = hash_mailpit_password("ChangeMe-DevOnly-123!")
+        mailbox_password_plain = "ChangeMe-DevOnly-123!"
+        mailbox_password = hash_password(mailbox_password_plain)
+        mailbox_password_secret = encrypt_secret(mailbox_password_plain, "dev-only-change-me")
 
         conn.execute(
             """
@@ -1043,12 +1353,64 @@ def seed_dev_data(db_path, account_root=None):
             (account_id, "example.mango.test", "managed", "active", website_id),
         )
         domain_id = conn.execute("SELECT id FROM domains WHERE name = ?", ("example.mango.test",)).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO dns_zones(account_id, domain_id, zone_name, provider, status, nameservers_json, provider_state_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                domain_id,
+                "example.mango.test",
+                DNS_PROVIDER_LOCAL,
+                "active",
+                json.dumps(["ns1.mango.test", "ns2.mango.test"]),
+                json.dumps({"fixture": "dev-seed", "adapter": DNS_PROVIDER_LOCAL}),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO mail_domains(account_id, domain_id, dkim_selector, status)
+            VALUES (?, ?, ?, ?)
+            """,
+            (account_id, domain_id, "mango", "active"),
+        )
+        mail_domain_id = conn.execute(
+            "SELECT id FROM mail_domains WHERE account_id = ? AND domain_id = ?",
+            (account_id, domain_id),
+        ).fetchone()["id"]
+        dkim_material = generate_dkim_material("mango")
+        conn.execute(
+            """
+            UPDATE mail_domains
+            SET spf_policy = ?, dkim_private_key = ?, dkim_public_key = ?, dkim_selector = ?, dmarc_policy = ?, catch_all_enabled = ?, catch_all_destination = ?, status = ?
+            WHERE id = ?
+            """,
+            (
+                recommended_spf_record("mail-u000001.localhost"),
+                dkim_material["private_key"],
+                dkim_material["public_key"],
+                dkim_material["selector"],
+                recommended_dmarc_record("example.mango.test"),
+                1,
+                "hello@example.mango.test",
+                "active",
+                mail_domain_id,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (domain_id, "TXT", "mango._domainkey", dkim_dns_value(dkim_material["public_key"]), 300),
+        )
 
         default_records = [
             ("A", "@", "127.0.0.1", 300, None),
             ("CNAME", "www", "example.mango.test", 300, None),
             ("MX", "@", "mail.mango.test", 300, 10),
-            ("TXT", "@", "v=spf1 mx -all", 300, None),
+            ("TXT", "@", recommended_spf_record("mail-u000001.localhost"), 300, None),
             ("TXT", "_dmarc", "v=DMARC1; p=quarantine; rua=mailto:postmaster@example.mango.test", 300, None),
         ]
         for record in default_records:
@@ -1060,22 +1422,122 @@ def seed_dev_data(db_path, account_root=None):
                 (domain_id, *record),
             )
 
+        cert = conn.execute(
+            "SELECT id FROM ssl_certificates WHERE account_id = ? AND website_id = ? AND domain = ?",
+            (account_id, website_id, "example.mango.test"),
+        ).fetchone()
+        if cert:
+            certificate_id = cert["id"]
+        else:
+            certificate_id = conn.execute(
+                """
+                INSERT INTO ssl_certificates(account_id, website_id, domain, status, issued_at, expires_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, datetime('now', '+90 days'))
+                """,
+                (account_id, website_id, "example.mango.test", "local-dev"),
+            ).lastrowid
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO acme_certificate_orders(
+              account_id, website_id, domain_id, certificate_id, domain, provider, status, challenge_type, challenge_token, challenge_value, provider_state_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                website_id,
+                domain_id,
+                certificate_id,
+                "example.mango.test",
+                ACME_PROVIDER_LOCAL,
+                "issued",
+                "http-01",
+                "dev-acme-token-example",
+                "dev-acme-challenge-example",
+                json.dumps({"fixture": "dev-seed", "adapter": ACME_PROVIDER_LOCAL}),
+            ),
+        )
+
         conn.execute(
             "INSERT OR IGNORE INTO databases(account_id, name, username, status) VALUES (?, ?, ?, ?)",
             (account_id, "u000001_app", "u000001_app", "active"),
         )
         conn.execute(
-            "INSERT OR IGNORE INTO mailboxes(account_id, email, quota_mb, status) VALUES (?, ?, ?, ?)",
-            (account_id, "hello@example.mango.test", 1024, "active"),
+            """
+            INSERT OR IGNORE INTO mailboxes(
+              account_id, email, local_part, domain, storage_path, mail_domain_id, quota_mb, status, password_hash, password_secret
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                "hello@example.mango.test",
+                "hello",
+                "example.mango.test",
+                str(mailbox_storage_path(account_base_path, "hello@example.mango.test")),
+                mail_domain_id,
+                1024,
+                "active",
+                mailbox_password,
+                mailbox_password_secret,
+            ),
         )
+        ensure_mailbox_storage(mailbox_storage_path(account_base_path, "hello@example.mango.test"))
         conn.execute(
             """
             UPDATE mailboxes
-            SET password_hash = COALESCE(NULLIF(password_hash, ''), ?),
-                mailpit_auth_hash = COALESCE(NULLIF(mailpit_auth_hash, ''), ?)
+            SET password_hash = ?, password_secret = ?
             WHERE account_id = ? AND email = ?
             """,
-            (mailbox_password, mailbox_mailpit_hash, account_id, "hello@example.mango.test"),
+            (
+                mailbox_password,
+                mailbox_password_secret,
+                account_id,
+                "hello@example.mango.test",
+            ),
+        )
+        mailbox_id = conn.execute(
+            "SELECT id FROM mailboxes WHERE account_id = ? AND email = ?",
+            (account_id, "hello@example.mango.test"),
+        ).fetchone()["id"]
+        mail_edge_host = "mail.mango.test"
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO mail_edge_routes(
+              account_id, mail_domain_id, domain_id, domain, provider, edge_host, manifest_json, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                mail_domain_id,
+                domain_id,
+                "example.mango.test",
+                MAIL_EDGE_PROVIDER_SHARED,
+                mail_edge_host,
+                json.dumps(
+                    {
+                        "fixture": "dev-seed",
+                        "edge_host": mail_edge_host,
+                        "domain": "example.mango.test",
+                        "mailboxes": [{"id": mailbox_id, "email": "hello@example.mango.test"}],
+                    }
+                ),
+                "active",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO mailbox_launch_tokens(
+              account_id, mailbox_id, token_id, purpose, status, expires_at, provider_state_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                mailbox_id,
+                "dev-webmail-u000001-hello",
+                "webmail",
+                "active",
+                int(time.time()) + 3600,
+                json.dumps({"fixture": "dev-seed", "provider": MAIL_EDGE_PROVIDER_SHARED}),
+            ),
         )
         conn.execute(
             "INSERT OR IGNORE INTO cron_jobs(account_id, schedule, command, status, last_exit_code, last_output) VALUES (?, ?, ?, ?, ?, ?)",

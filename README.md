@@ -15,9 +15,9 @@ MangoPanel is an hPanel-style shared hosting control panel. This repository curr
 - Public status page at `/status` on the client port.
 - Development API coverage for hosting accounts, websites, DNS records, SSL jobs, launch tokens, databases, mailboxes, backups, cron jobs, Git deployments, jobs, audit logs, and status incidents.
 - Node-agent job runner with simulated and Docker Compose execution modes.
-- Account-stack generator for OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, and SMTP relay.
+- Account-stack generator for OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, and shared-mail-edge/mailbox-storage scaffolding.
 
-This is not the production hosting runtime yet. The agent now generates account filesystem layout and Docker Compose files, but real DNS, real mail, real ACME, and quota enforcement still need their production providers.
+This is not the production hosting runtime yet. The agent now generates account filesystem layout and Docker Compose files, but real DNS, the shared mail edge, real ACME, and quota enforcement still need their production providers.
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ MangoPanel is a single Python program ([`mangopanel/app.py`](mangopanel/app.py))
 - **Two panels, two ports.** `make dev-up` starts one process that binds two ports: the client panel on `8000` and the admin panel on `8001`. Each port only serves its own routes (`/api/client/*` vs `/api/admin/*`), so the panels stay isolated. Public routes (`/api/public/*`, `/status`) are reachable from either.
 - **Auth.** Login is two steps: email + password returns a short-lived challenge token, then a TOTP code exchanges it for an access token (a signed JWT). In development, `MP_DEV_AUTH_TEST_MODE=true` accepts the bypass code `000000`. All access tokens are checked on every `/api/client` and `/api/admin` request.
 - **Control plane (SQLite).** Every panel action writes desired-state rows (users, hosting accounts, websites, databases, mailboxes, etc.) and an audit/activity entry. The API never touches Docker or the filesystem directly.
-- **Node agent.** State-changing actions enqueue a row in the `jobs` table. The agent ([`mangopanel/agent.py`](mangopanel/agent.py)) picks up jobs and does the privileged work — creating the account directory layout and rendering Docker Compose files ([`mangopanel/stack.py`](mangopanel/stack.py)). In dev, `MP_AGENT_INLINE=true` runs jobs immediately in `simulate` mode (files written, no containers). Set `MP_AGENT_MODE=docker` to actually launch per-account containers (OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, SMTP relay).
+- **Node agent.** State-changing actions enqueue a row in the `jobs` table. The agent ([`mangopanel/agent.py`](mangopanel/agent.py)) picks up jobs and does the privileged work — creating the account directory layout and rendering Docker Compose files ([`mangopanel/stack.py`](mangopanel/stack.py)). In dev, `MP_AGENT_INLINE=true` runs jobs immediately in `simulate` mode (files written, no containers). Set `MP_AGENT_MODE=docker` to actually launch per-account containers (OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, and the mailbox storage/routing scaffolding that will sit behind the shared mail edge).
 - **Config.** Everything is driven by environment variables read in [`mangopanel/config.py`](mangopanel/config.py) (`MP_*`), with sensible local defaults — so the Makefile targets work with no setup.
 
 Request flow in one line: **browser → panel API (writes SQLite + enqueues job) → agent (provisions files/containers) → status reported back to SQLite → panel shows result.**
@@ -123,7 +123,7 @@ Run the full system with real local hosting containers — one command:
 make dev-up-docker
 ```
 
-This starts the panels and brings up the per-account Docker stack (OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, SMTP relay) in the same process. It requires Docker Desktop to be running. Then, in another terminal:
+This starts the panels and brings up the per-account Docker stack (OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, and the mailbox storage/routing scaffolding) in the same process. It requires Docker Desktop to be running. Then, in another terminal:
 
 ```bash
 make dev-hosting-smoke
@@ -134,7 +134,14 @@ The local Docker stack exposes:
 - Website: `http://127.0.0.1:18010`
 - Filebrowser: `http://127.0.0.1:18011`
 - phpMyAdmin: `http://127.0.0.1:18012`
-- Mailpit: `http://127.0.0.1:18013`
+- Mail web UI: `http://mail-u000001.localhost/webmail`
+- SMTP submission: `127.0.0.1:587`
+- SMTPS: `127.0.0.1:465`
+- IMAP: `127.0.0.1:143`
+- IMAPS: `127.0.0.1:993`
+- POP3: `127.0.0.1:110`
+- POP3S: `127.0.0.1:995`
+- ManageSieve: `127.0.0.1:4190`
 - MariaDB: `127.0.0.1:18014`
 - SFTP: `127.0.0.1:18015`
 
@@ -165,7 +172,29 @@ Keep the default `simulate` mode for fast M1 development. Docker mode may pull l
 ## Next Implementation Steps
 
 1. Add local DNS and local ACME providers behind the same provider interfaces that production will use.
-2. Add mail capture/full mail mode with Mailpit/Postfix/Dovecot/Roundcube.
+2. Implement the shared mail edge from `Project.md` with mailbox CRUD, MX/inbound routing, SPF/DKIM/DMARC, SMTP/POP/IMAP/JMAP, one-click webmail launch from the client panel, and independent per-mailbox webmail login URLs.
 3. Add browser E2E tests for the client/admin/status pages.
 4. Add the Linux quota test profile for real storage and inode enforcement.
 5. Harden Docker mode with image pinning, health checks, and per-service secrets.
+
+### Three-Phase Plan For The Next Two Steps
+
+The first two implementation steps belong together, so the cleanest way to land them is to treat them as one small program split into three passes.
+
+**Phase 1: Shared interfaces and control-plane schema — implemented**
+- Add provider interfaces for DNS, ACME, and mail-edge routing so the local development adapters and production adapters share the same contract.
+- Extend the control-plane schema for managed zones, certificate state, mailbox routing metadata, and mailbox-scoped launch tokens.
+- Add seed data and fixtures for one managed domain, one certificate target, and one mailbox/domain pair that exercises the new flow end to end.
+- Keep current routes, payloads, and UI fields intact while the new paths are introduced.
+
+**Phase 2: Local providers and mail edge — implemented**
+- Implement the local DNS provider and local ACME provider so the dev stack can create zones, issue certificates, and renew them through the same API used in production.
+- Implement the shared mail edge so mailbox CRUD, MX/inbound routing, SPF/DKIM/DMARC, SMTP submission, POP/IMAP, JMAP, and webmail launch all share one routing manifest.
+- Wire the client panel to display provider state, routing state, and launch URLs without exposing low-level provider details.
+- Add the first browser/API smoke coverage for DNS lookup, certificate issuance, mailbox launch, and direct mailbox login.
+
+**Phase 3: Hardening and promotion — implemented**
+- Verify the browser and API flows on the local stack before marking either step complete.
+- Add unauthorized, ownership, bad-input, and security-abuse coverage for every new route and job.
+- Keep the implementation additive until the API, agent, and UI all agree on the native workflow.
+- Only flip the checklist items after the local providers are stable and the smoke tests pass repeatedly.

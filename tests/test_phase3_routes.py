@@ -17,11 +17,11 @@ PASSWORD = "ChangeMe-DevOnly-123!"
 
 
 class ClientApiServer:
-    def __init__(self, config):
+    def __init__(self, config, panel="client"):
         self.previous_config = app_module.CONFIG
         app_module.CONFIG = config
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), app_module.MangoHandler)
-        self.httpd.panel = "client"
+        self.httpd.panel = panel
         self.base_url = "http://127.0.0.1:{}".format(self.httpd.server_address[1])
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 

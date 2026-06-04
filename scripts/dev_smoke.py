@@ -3,7 +3,6 @@ import os
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qs, urlparse
 
 
 CLIENT_BASE_URL = os.getenv("MP_CLIENT_BASE_URL", os.getenv("MP_BASE_URL", "http://127.0.0.1:8000")).rstrip("/")
@@ -100,7 +99,9 @@ def main():
     website = home["websites"][0]
 
     feature_status = request(CLIENT_BASE_URL, "GET", "/api/client/feature-status", token=client_token)
-    assert feature_status["features"]["dns-zone-editor"]["status"] == "simulated"
+    assert feature_status["features"]["dns-zone-editor"]["status"] == "functional"
+    assert feature_status["features"]["ssl-tls"]["status"] == "functional"
+    assert feature_status["features"]["email"]["status"] == "functional"
 
     domains = request(CLIENT_BASE_URL, "GET", "/api/client/domains", token=client_token)["domains"]
     dns_record = request(
@@ -111,8 +112,13 @@ def main():
         token=client_token,
     )
     assert dns_record["job_id"], "expected DNS sync job"
+    assert dns_record["dns_zones"], "expected DNS provider state"
+    assert dns_record["dns_zones"][0]["provider"] == "local-dev-dns"
+    assert dns_record["dns_zones"][0]["status"] == "published"
 
-    request(CLIENT_BASE_URL, "POST", "/api/client/ssl/issue", {"website_id": website["id"]}, token=client_token)
+    issued_ssl = request(CLIENT_BASE_URL, "POST", "/api/client/ssl/issue", {"website_id": website["id"]}, token=client_token)
+    assert issued_ssl["acme_order"]["provider"] == "local-dev-acme"
+    assert issued_ssl["acme_order"]["status"] == "issued"
     request(
         CLIENT_BASE_URL,
         "POST",
@@ -140,10 +146,18 @@ def main():
         token=client_token,
     )
     mailbox_launch = request(CLIENT_BASE_URL, "GET", f"/api/client/mailboxes/{mailbox['mailbox_id']}/webmail/launch", token=client_token)
-    parsed_launch = urlparse(mailbox_launch["launch_url"])
-    assert parsed_launch.path.endswith("/search"), parsed_launch.path
-    assert parse_qs(parsed_launch.query).get("q", [""])[0].startswith('addressed:"smoke-mail-')
-    request(CLIENT_BASE_URL, "GET", "/api/client/webmail/launch", token=client_token)
+    assert "/webmail?launch=" in mailbox_launch["launch_url"]
+    direct_login = mailbox["mailbox"]["webmail_login_url"]
+    assert direct_login.endswith(f"/webmail/login/{mailbox['mailbox_id']}?email=smoke-mail-{suffix}%40example.mango.test")
+    mail_routing = request(CLIENT_BASE_URL, "GET", "/api/client/mail-routing", token=client_token)
+    assert mail_routing["mail_edge_routes"], "expected shared mail-edge routes"
+    assert mail_routing["mail_edge_routes"][0]["provider"] == "shared-mail-edge"
+    edge_status, _, edge_body = request_raw(CLIENT_BASE_URL, "GET", "/api/public/mail-edge/manifest", host="mail.mango.test")
+    assert edge_status == 200, edge_body
+    edge_manifest = json.loads(edge_body)
+    assert edge_manifest["provider"] == "shared-mail-edge"
+    bad_edge_status, _, _ = request_raw(CLIENT_BASE_URL, "GET", "/api/public/mail-edge/manifest", host="files-u000001.localhost")
+    assert bad_edge_status == 404, "mail-edge manifest must be host-gated"
     request(CLIENT_BASE_URL, "POST", "/api/client/backups", {}, token=client_token)
     request(CLIENT_BASE_URL, "POST", "/api/client/restores", {"kind": "latest"}, token=client_token)
     pg_db = request(CLIENT_BASE_URL, "POST", "/api/client/pg-databases", {"name": f"u000001_smoke_{suffix}"}, token=client_token)

@@ -54,20 +54,13 @@
           </div>
         </div>
         <nav class="nav-list">
-          <button v-for="item in primaryMenuItems" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
-            <app-icon :name="item.icon"></app-icon>
-            <span>{{ item.label }}</span>
-          </button>
-          <span class="nav-group">Hosting</span>
-          <button v-for="item in hostingMenuItems" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
-            <app-icon :name="item.icon"></app-icon>
-            <span>{{ item.label }}</span>
-          </button>
-          <span class="nav-group">Advanced</span>
-          <button v-for="item in advancedMenuItems" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
-            <app-icon :name="item.icon"></app-icon>
-            <span>{{ item.label }}</span>
-          </button>
+          <div v-for="section in sidebarSections" :key="section.label" class="nav-section">
+            <span class="nav-group">{{ section.label }}</span>
+            <button v-for="item in section.items" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
+              <app-icon :name="item.icon"></app-icon>
+              <span>{{ item.label }}</span>
+            </button>
+          </div>
         </nav>
       </aside>
 
@@ -432,6 +425,14 @@
                       <span class="premium-item-label">Website IP address</span>
                       <strong class="premium-item-value">{{ home.accounts[0].node_hostname || '127.0.0.1' }}</strong>
                     </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Current nameserver 1</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].nameserver_1 || 'ns1.dns-parking.com' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Current nameserver 2</span>
+                      <strong class="premium-item-value">{{ home.accounts[0].nameserver_2 || 'ns2.dns-parking.com' }}</strong>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -445,73 +446,26 @@
                 </div>
                 <div class="premium-card-body">
                   <div class="premium-list grid-2">
-                    <div class="premium-item">
-                      <div class="premium-item-icon"><app-icon name="disk-usage"></app-icon></div>
-                      <div class="premium-item-content">
-                        <span class="premium-item-label">Disk Space</span>
-                        <strong class="premium-item-value">{{ home.accounts[0].storage_mb ? (home.accounts[0].storage_mb >= 1024 ? (home.accounts[0].storage_mb / 1024).toFixed(1) + ' GB' : home.accounts[0].storage_mb + ' MB') : '200 GB' }}</strong>
+                    <div v-for="metric in hostingPlanMetrics" :key="metric.key" class="premium-item premium-item-col premium-item-metric">
+                      <div class="premium-item-metric-top">
+                        <div class="premium-item-icon"><app-icon :name="metric.icon"></app-icon></div>
+                        <div class="premium-item-content">
+                          <span class="premium-item-label">{{ metric.label }}</span>
+                          <strong class="premium-item-value">{{ metric.value }}</strong>
+                        </div>
                       </div>
-                    </div>
-                    <div class="premium-item">
-                      <div class="premium-item-icon"><app-icon name="analytics"></app-icon></div>
-                      <div class="premium-item-content">
-                        <span class="premium-item-label">RAM</span>
-                        <strong class="premium-item-value">{{ home.accounts[0].memory_mb || '3072' }} MB</strong>
-                      </div>
-                    </div>
-                    <div class="premium-item">
-                      <div class="premium-item-icon"><app-icon name="cpu"></app-icon></div>
-                      <div class="premium-item-content">
-                        <span class="premium-item-label">CPU Cores</span>
-                        <strong class="premium-item-value">{{ home.accounts[0].cpu_limit || '2' }}</strong>
-                      </div>
-                    </div>
-                    <div class="premium-item">
-                      <div class="premium-item-icon"><app-icon name="files"></app-icon></div>
-                      <div class="premium-item-content">
-                        <span class="premium-item-label">Inodes</span>
-                        <strong class="premium-item-value">{{ home.accounts[0].inode_limit || '600000' }}</strong>
-                      </div>
-                    </div>
-                    <div class="premium-item">
-                      <div class="premium-item-icon"><app-icon name="domains"></app-icon></div>
-                      <div class="premium-item-content">
-                        <span class="premium-item-label">Addons/Websites</span>
-                        <strong class="premium-item-value">{{ home.accounts[0].max_websites || '100' }}</strong>
-                      </div>
-                    </div>
-                    <div class="premium-item">
-                      <div class="premium-item-icon"><app-icon name="performance"></app-icon></div>
-                      <div class="premium-item-content">
-                        <span class="premium-item-label">Max Processes</span>
-                        <strong class="premium-item-value">{{ home.accounts[0].max_processes || '120' }}</strong>
-                      </div>
-                    </div>
-                    <div class="premium-item">
-                      <div class="premium-item-icon"><app-icon name="server"></app-icon></div>
-                      <div class="premium-item-content">
-                        <span class="premium-item-label">PHP Workers</span>
-                        <strong class="premium-item-value">{{ home.accounts[0].php_workers || '60' }}</strong>
-                      </div>
-                    </div>
-                    <div class="premium-item">
-                      <div class="premium-item-icon"><app-icon name="bandwidth"></app-icon></div>
-                      <div class="premium-item-content">
-                        <span class="premium-item-label">Bandwidth</span>
-                        <strong class="premium-item-value">{{ home.accounts[0].bandwidth_mb ? (home.accounts[0].bandwidth_mb >= 1024 ? (home.accounts[0].bandwidth_mb / 1024).toFixed(1) + ' GB' : home.accounts[0].bandwidth_mb + ' MB') : 'Unlimited' }}</strong>
+                      <div class="premium-usage" :class="metric.tone">
+                        <div class="premium-usage-track">
+                          <div
+                            class="premium-usage-fill"
+                            :class="{ 'is-empty': metric.percent == null }"
+                            :style="{ width: metric.percent == null ? '0%' : metric.percent + '%' }"
+                          ></div>
+                        </div>
+                        <span class="premium-usage-meta">{{ metric.meta }}</span>
                       </div>
                     </div>
 
-                    <div class="ns-divider"></div>
-                    
-                    <div class="premium-item col-span-2 premium-item-col">
-                      <span class="premium-item-label">Current nameserver 1</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].nameserver_1 || 'ns1.dns-parking.com' }}</strong>
-                    </div>
-                    <div class="premium-item col-span-2 premium-item-col">
-                      <span class="premium-item-label">Current nameserver 2</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].nameserver_2 || 'ns2.dns-parking.com' }}</strong>
-                    </div>
                   </div>
                 </div>
               </div>
@@ -612,8 +566,13 @@
                   <h2>Resource Usage History</h2>
                   <p>Live account usage sampled from Docker containers when available and file storage on disk.</p>
                 </div>
-                <div class="range-tabs">
-                  <button v-for="range in resourceUsage.windows" :key="range" :class="{ active: resourceRange === range }" @click="changeResourceRange(range)">{{ range }}</button>
+                <div class="performance-actions">
+                  <button type="button" class="icon-btn refresh-btn" :class="{ 'is-loading': resourceUsageLoading }" @click="refreshResourceUsage" :disabled="resourceUsageLoading" aria-label="Refresh live performance data" title="Refresh live data">
+                    <app-icon name="refresh"></app-icon>
+                  </button>
+                  <div class="range-tabs">
+                    <button v-for="range in resourceUsage.windows" :key="range" :class="{ active: resourceRange === range }" @click="changeResourceRange(range)">{{ range }}</button>
+                  </div>
                 </div>
               </div>
               <div class="resource-chart-wrap">
@@ -934,7 +893,10 @@
                   <h2>Email &amp; Mailboxes</h2>
                   <p>{{ mailboxes.length }} mailbox{{ mailboxes.length === 1 ? '' : 'es' }} on this account</p>
                 </div>
-                <button class="primary-button" @click="openMailboxWizard"><app-icon name="plus"></app-icon><span>Add Mailbox</span></button>
+                <div class="client-actions">
+                  <button class="ghost-button" @click="loadMailRouting"><app-icon name="refresh"></app-icon><span>Refresh routing</span></button>
+                  <button class="primary-button" @click="openMailboxWizard"><app-icon name="plus"></app-icon><span>Add Mailbox</span></button>
+                </div>
               </div>
               <div class="table-wrap">
                 <table>
@@ -945,7 +907,9 @@
                       <td>{{ mailbox.quota_mb }} MB</td>
                       <td><span class="pill" :class="mailbox.status">{{ mailbox.status }}</span></td>
                       <td class="actions">
-                        <button class="secondary-button" @click="launchMailboxWebmail(mailbox)"><app-icon name="key"></app-icon><span>Login</span></button>
+                        <button class="secondary-button" @click="openMailboxWebmail(mailbox)"><app-icon name="webmail"></app-icon><span>Webmail</span></button>
+                        <button class="secondary-button" @click="openMailboxLogin(mailbox)"><app-icon name="login"></app-icon><span>Login</span></button>
+                        <button class="secondary-button" @click="openMailboxEditor(mailbox)"><app-icon name="settings"></app-icon><span>Edit</span></button>
                         <button @click="toggleMailboxStatus(mailbox)">{{ mailbox.status === 'suspended' ? 'Enable' : 'Suspend' }}</button>
                         <button class="danger-button" @click="deleteMailbox(mailbox)"><app-icon name="trash"></app-icon></button>
                       </td>
@@ -955,13 +919,181 @@
                 </table>
               </div>
             </div>
-            <div class="panel" v-if="home.accounts.length && home.accounts[0].runtime">
-              <h2>Mail Server Connection</h2>
+            <div class="panel" v-if="mailboxes.length">
+              <h2>Mail Client Settings</h2>
               <ul class="clean-list">
-                <li><strong><app-icon name="activity"></app-icon>SMTP</strong><small>{{ home.accounts[0].runtime.sftp_host }}:{{ home.accounts[0].runtime.smtp_port || 587 }} · STARTTLS</small></li>
-                <li><strong><app-icon name="network"></app-icon>IMAP</strong><small>{{ home.accounts[0].runtime.sftp_host }}:993 · SSL/TLS</small></li>
-                <li><strong><app-icon name="activity"></app-icon>Webmail (Mailpit)</strong><a :href="home.accounts[0].runtime.mailpit_url" target="_blank" rel="noreferrer">{{ home.accounts[0].runtime.mailpit_url }}</a></li>
+                <li><strong><app-icon name="email"></app-icon>Shared edge</strong><small><code>{{ mailboxes[0].mail_edge_host }}</code></small></li>
+                <li><strong><app-icon name="login"></app-icon>Username</strong><small><code>{{ mailboxes[0].mail_username || mailboxes[0].email }}</code></small></li>
+                <li><strong><app-icon name="terminal"></app-icon>Submission</strong><small><code>{{ mailboxes[0].smtp_host }}:{{ mailboxes[0].smtp_port }}</code> · {{ mailboxes[0].smtp_encryption || 'STARTTLS' }}</small></li>
+                <li><strong><app-icon name="webmail"></app-icon>IMAP</strong><small><code>{{ mailboxes[0].imap_host }}:{{ mailboxes[0].imap_port }}</code> · {{ mailboxes[0].imap_encryption || 'STARTTLS' }}</small></li>
+                <li><strong><app-icon name="activity"></app-icon>POP</strong><small><code>{{ mailboxes[0].pop_host }}:{{ mailboxes[0].pop_port }}</code> · {{ mailboxes[0].pop_encryption || 'STARTTLS' }}</small></li>
+                <li><strong><app-icon name="lock"></app-icon>Secure ports</strong><small><code>SMTP {{ mailboxes[0].smtp_tls_port }} · IMAP {{ mailboxes[0].imap_tls_port }} · POP {{ mailboxes[0].pop_tls_port }}</code></small></li>
+                <li><strong><app-icon name="email"></app-icon>JMAP</strong><small><code>{{ mailboxes[0].jmap_url || 'Not configured yet' }}</code></small></li>
+                <li><strong><app-icon name="login"></app-icon>Direct login</strong><small><code>{{ mailboxes[0].webmail_login_url }}</code></small></li>
+                <li><strong><app-icon name="warning"></app-icon>Sending limits</strong><small>{{ mailRouting.daily_email_limit || 0 }} messages per day from the plan</small></li>
               </ul>
+            </div>
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Mail Authentication</h2>
+                  <p>SPF, DKIM, and DMARC setup for the domains on this account</p>
+                </div>
+                <div class="client-actions">
+                  <span class="pill">{{ mailRouting.daily_email_limit || 0 }} sends/day</span>
+                </div>
+              </div>
+              <div class="info-box" style="margin-bottom: 1rem;" v-if="home.accounts.length && home.accounts[0].runtime">
+                <app-icon name="activity"></app-icon>
+                <p>MX target: <code>{{ home.accounts[0].runtime.mail_host }}</code>. Point your domain MX here to receive mail.</p>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Domain</th><th>SPF</th><th>DKIM</th><th>DMARC</th><th>Catch-all</th><th>Status</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    <tr v-for="domain in mailRouting.mail_domains" :key="domain.mail_domain_id || domain.domain_id">
+                      <td>
+                        <strong>{{ domain.name }}</strong>
+                        <small>Mail domain #{{ domain.mail_domain_id || 'pending' }}</small>
+                        <small v-if="mailEdgeRouteForDomain(domain)">Edge {{ mailEdgeRouteForDomain(domain).edge_host }} · {{ mailEdgeRouteForDomain(domain).provider }} · {{ mailEdgeRouteForDomain(domain).status }}</small>
+                      </td>
+                      <td>
+                        <span class="pill" :class="mailAuthPillClass(domain.auth?.spf?.configured ? 'ok' : 'warning')">{{ domain.auth?.spf?.configured ? 'Configured' : 'Needs update' }}</span>
+                        <small>{{ domain.spf_policy }}</small>
+                      </td>
+                      <td>
+                        <span class="pill" :class="mailAuthPillClass(domain.auth?.dkim?.configured ? 'ok' : 'warning')">{{ domain.auth?.dkim?.configured ? 'Configured' : 'Needs update' }}</span>
+                        <small><code>{{ domain.dkim_selector || 'mango' }}._domainkey</code></small>
+                      </td>
+                      <td>
+                        <span class="pill" :class="mailAuthPillClass(domain.auth?.dmarc?.configured ? 'ok' : 'warning')">{{ domain.auth?.dmarc?.configured ? 'Configured' : 'Needs update' }}</span>
+                        <small>{{ domain.dmarc_policy }}</small>
+                      </td>
+                      <td>
+                        <span class="pill" :class="domain.catch_all_enabled ? 'active' : 'danger'">{{ domain.catch_all_enabled ? 'Enabled' : 'Disabled' }}</span>
+                        <small v-if="domain.catch_all_enabled">{{ domain.catch_all_destination || 'No destination' }}</small>
+                        <small v-else>Disabled</small>
+                      </td>
+                      <td>
+                        <span class="pill" :class="mailAuthPillClass(domain.auth?.status)">{{ domain.auth?.status || 'missing' }}</span>
+                        <small v-if="domain.auth?.notes?.length">{{ domain.auth.notes[0] }}</small>
+                      </td>
+                      <td class="actions">
+                        <button class="secondary-button" @click="openMailDomainEditor(domain)"><app-icon name="settings"></app-icon><span>Edit</span></button>
+                        <button class="secondary-button" @click="rotateMailDomainDkim(domain)"><app-icon name="refresh"></app-icon><span>Rotate DKIM</span></button>
+                      </td>
+                    </tr>
+                    <tr v-if="!mailRouting.mail_domains.length"><td colspan="7" class="empty-row">No mail domain records yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel-grid">
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Aliases</h2>
+                    <p>{{ mailRouting.mail_aliases.length }} alias{{ mailRouting.mail_aliases.length === 1 ? '' : 'es' }}</p>
+                  </div>
+                  <button class="primary-button" @click="openMailAliasEditor()"><app-icon name="plus"></app-icon><span>Add Alias</span></button>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Source</th><th>Destination</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr v-for="alias in mailRouting.mail_aliases" :key="alias.id">
+                        <td><strong>{{ alias.source_email }}</strong></td>
+                        <td><small>{{ alias.destination_email }}</small></td>
+                        <td><span class="pill" :class="mailRuleStatusClass(alias.status)">{{ alias.status }}</span></td>
+                        <td class="actions">
+                          <button class="secondary-button" @click="openMailAliasEditor(alias)"><app-icon name="settings"></app-icon><span>Edit</span></button>
+                          <button class="danger-button" @click="deleteMailAlias(alias)"><app-icon name="trash"></app-icon></button>
+                        </td>
+                      </tr>
+                      <tr v-if="!mailRouting.mail_aliases.length"><td colspan="4" class="empty-row">No aliases yet.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Forwarders</h2>
+                    <p>{{ mailRouting.mail_forwarders.length }} forwarder{{ mailRouting.mail_forwarders.length === 1 ? '' : 's' }}</p>
+                  </div>
+                  <button class="primary-button" @click="openMailForwarderEditor()"><app-icon name="plus"></app-icon><span>Add Forwarder</span></button>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>Source</th><th>Destination</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      <tr v-for="forwarder in mailRouting.mail_forwarders" :key="forwarder.id">
+                        <td><strong>{{ forwarder.source_email }}</strong></td>
+                        <td><small>{{ forwarder.destination_email }}</small></td>
+                        <td><span class="pill" :class="mailRuleStatusClass(forwarder.status)">{{ forwarder.status }}</span></td>
+                        <td class="actions">
+                          <button class="secondary-button" @click="openMailForwarderEditor(forwarder)"><app-icon name="settings"></app-icon><span>Edit</span></button>
+                          <button class="danger-button" @click="deleteMailForwarder(forwarder)"><app-icon name="trash"></app-icon></button>
+                        </td>
+                      </tr>
+                      <tr v-if="!mailRouting.mail_forwarders.length"><td colspan="4" class="empty-row">No forwarders yet.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Autoresponders</h2>
+                  <p>{{ mailRouting.mail_autoresponders.length }} rule{{ mailRouting.mail_autoresponders.length === 1 ? '' : 's' }} tied to a mailbox</p>
+                </div>
+                <button class="primary-button" @click="openMailAutoresponderEditor()"><app-icon name="plus"></app-icon><span>Add Auto-reply</span></button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Mailbox</th><th>Subject</th><th>Status</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    <tr v-for="autoresponder in mailRouting.mail_autoresponders" :key="autoresponder.id">
+                      <td><strong>{{ autoresponder.mailbox_email }}</strong></td>
+                      <td>
+                        <small>{{ autoresponder.subject }}</small>
+                        <small class="muted">{{ autoresponder.body.slice(0, 90) }}{{ autoresponder.body.length > 90 ? '…' : '' }}</small>
+                      </td>
+                      <td><span class="pill" :class="autoresponder.enabled ? 'active' : 'danger'">{{ autoresponder.enabled ? 'Enabled' : 'Disabled' }}</span></td>
+                      <td class="actions">
+                        <button class="secondary-button" @click="openMailAutoresponderEditor(autoresponder)"><app-icon name="settings"></app-icon><span>Edit</span></button>
+                        <button class="danger-button" @click="deleteMailAutoresponder(autoresponder)"><app-icon name="trash"></app-icon></button>
+                      </td>
+                    </tr>
+                    <tr v-if="!mailRouting.mail_autoresponders.length"><td colspan="4" class="empty-row">No autoresponders yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Delivery Logs</h2>
+                  <p>Recent routing and configuration activity</p>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Action</th><th>Direction</th><th>Source</th><th>Destination</th><th>Status</th><th>Created</th></tr></thead>
+                  <tbody>
+                    <tr v-for="log in mailRouting.mail_delivery_logs" :key="log.id">
+                      <td><strong>{{ log.action }}</strong></td>
+                      <td><span class="pill">{{ log.direction }}</span></td>
+                      <td><small>{{ log.source_email || '—' }}</small></td>
+                      <td><small>{{ log.destination_email || '—' }}</small></td>
+                      <td><span class="pill" :class="mailAuthPillClass(log.status === 'configured' ? 'ok' : 'warning')">{{ log.status }}</span></td>
+                      <td><small>{{ log.created_at }}</small></td>
+                    </tr>
+                    <tr v-if="!mailRouting.mail_delivery_logs.length"><td colspan="6" class="empty-row">No mail delivery logs yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 
@@ -999,7 +1131,7 @@
                 </div>
                 <div class="info-box" style="margin-top: 1rem;">
                   <app-icon name="key"></app-icon>
-                  <p>This password is used for the mailbox login and Mailpit access.</p>
+                  <p>This password is used for future SMTP, POP, and IMAP access.</p>
                 </div>
               </div>
 
@@ -1013,14 +1145,14 @@
                 </div>
                 <div class="info-box" style="margin-top: 1rem;">
                   <app-icon name="activity"></app-icon>
-                  <p>The mailbox will appear in Mailpit with its own login button in the table below.</p>
+                  <p>The mailbox will be stored locally and synced into the mail routing map.</p>
                 </div>
               </div>
 
               <div class="modal-body success-step" v-if="mailboxWizard.step === 4">
                 <app-icon name="check"></app-icon>
                 <h3>Mailbox ready</h3>
-                <p>{{ mailboxWizard.createdMailbox?.email }} has been created and Mailpit is syncing the account.</p>
+                <p>{{ mailboxWizard.createdMailbox?.email }} has been created and the mail routing data is syncing.</p>
               </div>
 
               <div class="modal-footer">
@@ -1028,6 +1160,216 @@
                 <button v-if="mailboxWizard.step < 3" class="primary-button" @click="nextMailboxWizardStep" :disabled="(mailboxWizard.step === 1 && (!mailboxWizard.email || mailboxWizard.quota_mb < 100)) || (mailboxWizard.step === 2 && (!mailboxWizard.password || mailboxWizard.password.length < 10 || mailboxWizard.password !== mailboxWizard.confirm_password))">Next</button>
                 <button v-if="mailboxWizard.step === 3" class="primary-button" @click="createMailbox" :disabled="mailboxWizard.isCreating || !mailboxWizard.email || !mailboxWizard.password || mailboxWizard.password !== mailboxWizard.confirm_password"><span v-if="!mailboxWizard.isCreating">Create Mailbox</span><span v-else>Creating...</span></button>
                 <button v-if="mailboxWizard.step === 4" class="primary-button" @click="closeMailboxWizard">Done</button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="mailboxEditor.isOpen" class="modal-overlay" @click.self="closeMailboxEditor">
+            <div class="modal-panel" style="max-width: 640px;">
+              <div class="modal-header">
+                <h2>Edit Mailbox</h2>
+                <button class="close-button" @click="closeMailboxEditor" :disabled="mailboxEditor.isSaving">×</button>
+              </div>
+
+              <div class="modal-body">
+                <div class="form-grid">
+                  <label>
+                    Email address
+                    <input v-model.trim="mailboxEditor.email" type="email" placeholder="user@yourdomain.com">
+                  </label>
+                  <label>
+                    Quota (MB)
+                    <input v-model.number="mailboxEditor.quota_mb" type="number" min="100" step="1" placeholder="1024">
+                  </label>
+                  <label>
+                    Status
+                    <select v-model="mailboxEditor.status">
+                      <option value="active">active</option>
+                      <option value="suspended">suspended</option>
+                    </select>
+                  </label>
+                  <label>
+                    New password
+                    <input v-model="mailboxEditor.password" type="password" placeholder="Leave blank to keep current password">
+                  </label>
+                  <label>
+                    Confirm password
+                    <input v-model="mailboxEditor.confirm_password" type="password" placeholder="Repeat the new password">
+                  </label>
+                </div>
+                <div class="info-box" style="margin-top: 1rem;">
+                  <app-icon name="info"></app-icon>
+                  <p>Email changes will move the mailbox to the matching mail-domain record and update the storage path.</p>
+                </div>
+              </div>
+
+              <div class="modal-footer">
+                <button class="ghost-button" @click="closeMailboxEditor" :disabled="mailboxEditor.isSaving">Cancel</button>
+                <button class="primary-button" @click="saveMailboxEditor" :disabled="mailboxEditor.isSaving || !mailboxEditor.email || mailboxEditor.quota_mb < 100">
+                  <span v-if="!mailboxEditor.isSaving">Save Changes</span>
+                  <span v-else>Saving...</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="mailDomainEditor.isOpen" class="modal-overlay" @click.self="closeMailDomainEditor">
+            <div class="modal-panel" style="max-width: 720px;">
+              <div class="modal-header">
+                <h2>Edit Mail Domain</h2>
+                <button class="close-button" @click="closeMailDomainEditor" :disabled="mailDomainEditor.isSaving">×</button>
+              </div>
+              <div class="modal-body">
+                <div class="form-grid">
+                  <label>
+                    DKIM selector
+                    <input v-model.trim="mailDomainEditor.dkim_selector" placeholder="mango">
+                  </label>
+                  <label>
+                    Status
+                    <select v-model="mailDomainEditor.status">
+                      <option value="active">active</option>
+                      <option value="paused">paused</option>
+                      <option value="disabled">disabled</option>
+                    </select>
+                  </label>
+                  <label>
+                    SPF policy
+                    <input v-model.trim="mailDomainEditor.spf_policy" placeholder="v=spf1 mx -all">
+                  </label>
+                  <label>
+                    DMARC policy
+                    <input v-model.trim="mailDomainEditor.dmarc_policy" placeholder="v=DMARC1; p=quarantine">
+                  </label>
+                  <label>
+                    Catch-all destination
+                    <input v-model.trim="mailDomainEditor.catch_all_destination" type="email" placeholder="catchall@yourdomain.com" :disabled="!mailDomainEditor.catch_all_enabled">
+                  </label>
+                  <label style="display:flex; align-items:center; gap:10px; margin-top: 1.4rem;">
+                    <input v-model="mailDomainEditor.catch_all_enabled" type="checkbox" style="width:auto;">
+                    Enable catch-all
+                  </label>
+                  <label style="display:flex; align-items:center; gap:10px;">
+                    <input v-model="mailDomainEditor.regenerate_dkim" type="checkbox" style="width:auto;">
+                    Regenerate DKIM keys on save
+                  </label>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="ghost-button" @click="closeMailDomainEditor" :disabled="mailDomainEditor.isSaving">Cancel</button>
+                <button class="primary-button" @click="saveMailDomainEditor" :disabled="mailDomainEditor.isSaving">
+                  <span v-if="!mailDomainEditor.isSaving">Save Mail Domain</span>
+                  <span v-else>Saving...</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="mailAliasEditor.isOpen" class="modal-overlay" @click.self="closeMailAliasEditor">
+            <div class="modal-panel" style="max-width: 640px;">
+              <div class="modal-header">
+                <h2>{{ mailAliasEditor.aliasId ? 'Edit Alias' : 'Add Alias' }}</h2>
+                <button class="close-button" @click="closeMailAliasEditor" :disabled="mailAliasEditor.isSaving">×</button>
+              </div>
+              <div class="modal-body">
+                <div class="form-grid">
+                  <label>
+                    Source email
+                    <input v-model.trim="mailAliasEditor.source_email" type="email" placeholder="info@yourdomain.com">
+                  </label>
+                  <label>
+                    Destination email
+                    <input v-model.trim="mailAliasEditor.destination_email" type="email" placeholder="owner@yourdomain.com">
+                  </label>
+                  <label>
+                    Status
+                    <select v-model="mailAliasEditor.status">
+                      <option value="active">active</option>
+                      <option value="suspended">suspended</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="ghost-button" @click="closeMailAliasEditor" :disabled="mailAliasEditor.isSaving">Cancel</button>
+                <button class="primary-button" @click="saveMailAliasEditor" :disabled="mailAliasEditor.isSaving">
+                  <span v-if="!mailAliasEditor.isSaving">Save Alias</span>
+                  <span v-else>Saving...</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="mailForwarderEditor.isOpen" class="modal-overlay" @click.self="closeMailForwarderEditor">
+            <div class="modal-panel" style="max-width: 640px;">
+              <div class="modal-header">
+                <h2>{{ mailForwarderEditor.forwarderId ? 'Edit Forwarder' : 'Add Forwarder' }}</h2>
+                <button class="close-button" @click="closeMailForwarderEditor" :disabled="mailForwarderEditor.isSaving">×</button>
+              </div>
+              <div class="modal-body">
+                <div class="form-grid">
+                  <label>
+                    Source email
+                    <input v-model.trim="mailForwarderEditor.source_email" type="email" placeholder="sales@yourdomain.com">
+                  </label>
+                  <label>
+                    Destination email
+                    <input v-model.trim="mailForwarderEditor.destination_email" type="email" placeholder="external@example.com">
+                  </label>
+                  <label>
+                    Status
+                    <select v-model="mailForwarderEditor.status">
+                      <option value="active">active</option>
+                      <option value="suspended">suspended</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="ghost-button" @click="closeMailForwarderEditor" :disabled="mailForwarderEditor.isSaving">Cancel</button>
+                <button class="primary-button" @click="saveMailForwarderEditor" :disabled="mailForwarderEditor.isSaving">
+                  <span v-if="!mailForwarderEditor.isSaving">Save Forwarder</span>
+                  <span v-else>Saving...</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="mailAutoresponderEditor.isOpen" class="modal-overlay" @click.self="closeMailAutoresponderEditor">
+            <div class="modal-panel" style="max-width: 760px;">
+              <div class="modal-header">
+                <h2>{{ mailAutoresponderEditor.autoresponderId ? 'Edit Autoresponder' : 'Add Autoresponder' }}</h2>
+                <button class="close-button" @click="closeMailAutoresponderEditor" :disabled="mailAutoresponderEditor.isSaving">×</button>
+              </div>
+              <div class="modal-body">
+                <div class="form-grid">
+                  <label>
+                    Mailbox
+                    <select v-model="mailAutoresponderEditor.mailbox_id">
+                      <option value="" disabled>Select mailbox</option>
+                      <option v-for="mailbox in mailboxes" :key="mailbox.id" :value="mailbox.id">{{ mailbox.email }}</option>
+                    </select>
+                  </label>
+                  <label>
+                    Subject
+                    <input v-model.trim="mailAutoresponderEditor.subject" placeholder="Auto-reply">
+                  </label>
+                  <label style="grid-column: 1 / -1;">
+                    Body
+                    <textarea v-model.trim="mailAutoresponderEditor.body" rows="5" placeholder="Write the auto-reply message here."></textarea>
+                  </label>
+                  <label style="display:flex; align-items:center; gap:10px;">
+                    <input v-model="mailAutoresponderEditor.enabled" type="checkbox" style="width:auto;">
+                    Enabled
+                  </label>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="ghost-button" @click="closeMailAutoresponderEditor" :disabled="mailAutoresponderEditor.isSaving">Cancel</button>
+                <button class="primary-button" @click="saveMailAutoresponderEditor" :disabled="mailAutoresponderEditor.isSaving || !mailAutoresponderEditor.mailbox_id || !mailAutoresponderEditor.body">
+                  <span v-if="!mailAutoresponderEditor.isSaving">Save Autoresponder</span>
+                  <span v-else>Saving...</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1244,6 +1586,10 @@
                   <option v-for="domain in domains" :key="domain.id" :value="domain.id">{{ domain.name }}</option>
                 </select>
               </label>
+            </div>
+            <div v-if="selectedDnsZone" class="info-box" style="margin-bottom: 1rem;">
+              <app-icon name="dns"></app-icon>
+              <p>Provider: <code>{{ selectedDnsZone.provider }}</code> · Status: {{ selectedDnsZone.status }} · Serial {{ selectedDnsZone.serial }} · NS {{ (selectedDnsZone.nameservers || []).join(', ') }}</p>
             </div>
 
             <div v-if="selectedDomainId" class="dns-add-form">
