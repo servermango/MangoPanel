@@ -40,6 +40,16 @@ MangoPanel is a single Python program ([`mangopanel/app.py`](mangopanel/app.py))
 
 Request flow in one line: **browser → panel API (writes SQLite + enqueues job) → agent (provisions files/containers) → status reported back to SQLite → panel shows result.**
 
+![MangoPanel system architecture flow](public/assets/img/MangoPanelArchitectureRedesigned.png)
+
+## Thesis Integration Direction
+
+MangoPanel is also being considered as a practical case study for Tariq Abdullah's [Cloud Definition Language](https://github.com/tariq-abdullah/cloud-definition-language) M.Tech thesis work.
+
+The integration would explore how a real shared-hosting platform can express infrastructure intent at a semantic level: hosting accounts, workloads, network boundaries, DNS, certificates, mail routing, storage, quotas, backups, and deployment constraints. That intent could then be compiled into environment-specific artifacts while preserving explainability and reporting where behavior is exact, partial, degraded, or unsupported.
+
+This direction is exploratory and will be introduced incrementally alongside the existing MangoPanel runtime.
+
 ## Data Layout
 
 All persistent state lives in a single `user_files/` directory in the project root, so a server admin can reach customer files and the database in one place:
