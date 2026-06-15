@@ -8,10 +8,30 @@ services:
       MP_PORT: 8000
       MP_DATA_DIR: /data
       MP_JWT_SECRET: dev-only-change-me
+      MP_POWERDNS_API_URL: http://mangopanel-dns:8081/api/v1
+      MP_POWERDNS_API_KEY: mangopanel-dev-pdns
+      MP_POWERDNS_SERVER_ID: localhost
     ports:
       - "8000:8000"
     volumes:
       - ./var/dev/docker-data:/data
+    networks:
+      - mangopanel-edge
+    depends_on:
+      - mangopanel-dns
+
+  mangopanel-dns:
+    build:
+      context: ./docker/powerdns
+    environment:
+      PDNS_API_KEY: mangopanel-dev-pdns
+      PDNS_DB: /var/lib/powerdns/pdns.sqlite3
+    ports:
+      - "5353:53/udp"
+      - "5353:53/tcp"
+      - "8081:8081"
+    volumes:
+      - ./var/dev/powerdns:/var/lib/powerdns
     networks:
       - mangopanel-edge
 

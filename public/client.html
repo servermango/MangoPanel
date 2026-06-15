@@ -388,6 +388,10 @@
                 <strong><app-icon name="domains"></app-icon>{{ domain.name }}</strong>
                 <span class="pill">{{ domain.kind }}</span>
                 <span class="pill" :class="domain.status">{{ domain.status }}</span>
+                <span class="pill" :class="domain.dns_status">{{ domain.dns_provider_label || domain.dns_provider }} · {{ domain.dns_status }}</span>
+                <small>{{ (domain.nameservers || []).join(', ') || 'Nameservers pending provider sync' }}</small>
+                <small v-if="domain.last_nameserver_check_at">Last checked {{ domain.last_nameserver_check_at }}</small>
+                <small v-if="domain.dns_warnings && domain.dns_warnings.length">{{ domain.dns_warnings[0].message }}</small>
               </li>
               <li v-if="!domains.length"><span>No domains yet.</span></li>
             </ul>
@@ -1589,7 +1593,16 @@
             </div>
             <div v-if="selectedDnsZone" class="info-box" style="margin-bottom: 1rem;">
               <app-icon name="dns"></app-icon>
-              <p>Provider: <code>{{ selectedDnsZone.provider }}</code> · Status: {{ selectedDnsZone.status }} · Serial {{ selectedDnsZone.serial }} · NS {{ (selectedDnsZone.nameservers || []).join(', ') }}</p>
+              <p>Provider: <code>{{ selectedDomain?.dns_provider_label || selectedDnsZone.provider }}</code> · Status: {{ selectedDomain?.dns_status || selectedDnsZone.status }} · Serial {{ selectedDnsZone.serial }} · NS {{ (selectedDomain?.nameservers || selectedDnsZone.nameservers || []).join(', ') || 'pending provider sync' }}</p>
+              <div class="actions">
+                <button @click="rebuildDnsZone"><app-icon name="refresh"></app-icon><span>Rebuild</span></button>
+                <button @click="verifyDnsZone"><app-icon name="check"></app-icon><span>Verify</span></button>
+                <button @click="exportDnsZone"><app-icon name="download"></app-icon><span>Export</span></button>
+              </div>
+            </div>
+            <div v-if="selectedDomain && selectedDomain.dns_warnings && selectedDomain.dns_warnings.length" class="info-box" style="margin-bottom: 1rem;">
+              <app-icon name="warning"></app-icon>
+              <p>{{ selectedDomain.dns_warnings[0].message }}</p>
             </div>
 
             <div v-if="selectedDomainId" class="dns-add-form">
@@ -1615,7 +1628,8 @@
                     <td><code class="dns-value">{{ record.value }}</code></td>
                     <td>{{ record.ttl }}s</td>
                     <td class="actions">
-                      <button class="danger-button" @click="deleteDnsRecord(record)"><app-icon name="trash"></app-icon></button>
+                      <span v-if="dnsRecordLocked(record)" class="pill">Locked</span>
+                      <button v-else class="danger-button" @click="deleteDnsRecord(record)"><app-icon name="trash"></app-icon></button>
                     </td>
                   </tr>
                   <tr v-if="!filteredDnsRecords.length"><td colspan="5" class="empty-row">No DNS records for this domain yet.</td></tr>

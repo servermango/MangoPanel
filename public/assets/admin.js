@@ -1,9 +1,18 @@
 const { createApp } = Vue;
 
+const ADMIN_ROUTE_PREFIX = "/admin";
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "system", "admins", "status"]);
+
+function adminPageFromLocation() {
+  const hash = window.location.hash.replace(/^#/, "");
+  return ADMIN_PAGE_TARGETS.has(hash) ? hash : "overview";
+}
+
 createApp({
   data() {
     return {
       token: localStorage.getItem("mp_admin_token") || "",
+      activePage: adminPageFromLocation(),
       challengeToken: "",
       message: "",
       login: {
@@ -20,6 +29,9 @@ createApp({
       stacks: [],
       clients: [],
       plans: [],
+      dnsDomains: [],
+      dnsSettings: { global_mode: "local_powerdns", local: { nameservers: ["ns1.mango.test", "ns2.mango.test"], public_ipv4: "127.0.0.1", public_ipv6: "", soa_email: "hostmaster.mango.test", default_ttl: 300 }, providers: [], accounts: [], health_checks: [] },
+      cloudflareAccount: { display_name: "", account_name: "", external_account_id: "", api_token: "" },
       jobEvents: [],
       admins: [],
       newAdminSecret: "",
@@ -45,6 +57,17 @@ createApp({
         backend_frameworks: "Express, Fastify, Hono, NestJS, Nuxt, React Router, SvelteKit",
         nodejs_versions: "24.x, 22.x, 20.x and 18.x",
         package_managers: "npm (default), yarn and pnpm",
+        dns_default_provider: "local_powerdns",
+        dns_allowed_providers: ["local_powerdns"],
+        dns_default_provider_account_id: "",
+        dns_customer_editable: true,
+        dns_max_records_per_domain: 100,
+        dns_allowed_record_types: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
+        dns_min_ttl: 60,
+        dns_wildcard_records_allowed: true,
+        dns_cloudflare_proxy_allowed: false,
+        dns_dnssec_allowed: false,
+        dns_dnssec_required: false,
       },
       newAdmin: {
         full_name: "",
@@ -71,8 +94,58 @@ createApp({
   },
   mounted() {
     if (this.token) this.load();
+    window.addEventListener("popstate", () => {
+      this.activePage = adminPageFromLocation();
+    });
+    window.addEventListener("hashchange", () => {
+      this.activePage = adminPageFromLocation();
+    });
+  },
+  computed: {
+    sidebarSections() {
+      return [
+        {
+          label: "Operations",
+          items: [
+            { label: "Overview", target: "overview", description: "Resource counts, node health, and service summary." },
+            { label: "Clients", target: "clients", description: "Customer profiles, account status, and package moves." },
+            { label: "Plans", target: "plans", description: "Hosting packages, resource limits, and DNS policy." },
+            { label: "DNS", target: "dns", description: "Authoritative DNS providers, accounts, and domain operations." },
+          ],
+        },
+        {
+          label: "System",
+          items: [
+            { label: "Stack & Jobs", target: "system", description: "Generated stacks, agent runs, recent jobs, and events." },
+            { label: "Admins", target: "admins", description: "Admin users, TOTP secrets, nodes, and PHP availability." },
+            { label: "Status", target: "status", description: "Publish incidents and review public component status." },
+          ],
+        },
+      ];
+    },
+    menuItems() {
+      return this.sidebarSections.flatMap((section) => section.items);
+    },
+    activeMenuItem() {
+      return this.menuItems.find((item) => item.target === this.activePage) || this.menuItems[0];
+    },
   },
   methods: {
+    goTo(target) {
+      if (!ADMIN_PAGE_TARGETS.has(target)) target = "overview";
+      this.activePage = target;
+      const nextHash = target === "overview" ? "" : `#${target}`;
+      if (window.location.hash !== nextHash) {
+        window.history.pushState(null, "", `${ADMIN_ROUTE_PREFIX}${nextHash}`);
+      }
+    },
+    clearAdminSession(message = "") {
+      localStorage.removeItem("mp_admin_token");
+      this.token = "";
+      this.challengeToken = "";
+      this.activePage = "overview";
+      this.message = message;
+    },
     statusLabel(value) {
       return String(value || "unknown").replaceAll("_", " ");
     },
@@ -82,7 +155,13 @@ createApp({
       if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
       const response = await fetch(path, { ...options, headers });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Request failed");
+      if (!response.ok) {
+        const error = payload.error || "Request failed";
+        if (["invalid_access_token", "expired_access_token", "invalid_token_subject", "wrong_actor_type"].includes(error)) {
+          this.clearAdminSession("Please sign in again.");
+        }
+        throw new Error(error);
+      }
       return payload;
     },
     async startLogin() {
@@ -94,7 +173,11 @@ createApp({
         });
         this.challengeToken = payload.challenge_token;
       } catch (error) {
-        this.message = error.message;
+        if (this.token || ["invalid_access_token", "expired_access_token", "invalid_token_subject", "wrong_actor_type"].includes(error.message)) {
+          this.clearAdminSession("Please sign in again.");
+        } else {
+          this.message = error.message;
+        }
       }
     },
     async finishLogin() {
@@ -128,6 +211,8 @@ createApp({
           }
         }
         this.plans = (await this.api("/api/admin/plans")).plans;
+        this.dnsSettings = (await this.api("/api/admin/dns-settings")).dns_settings;
+        this.dnsDomains = (await this.api("/api/admin/domains")).domains || [];
         this.stacks = (await this.api("/api/admin/account-stacks")).account_stacks;
         this.jobEvents = (await this.api("/api/admin/job-events")).job_events;
       } catch (error) {
@@ -203,6 +288,17 @@ createApp({
             backend_frameworks: this.newPlan.backend_frameworks,
             nodejs_versions: this.newPlan.nodejs_versions,
             package_managers: this.newPlan.package_managers,
+            dns_default_provider: this.newPlan.dns_default_provider,
+            dns_allowed_providers: this.newPlan.dns_allowed_providers,
+            dns_default_provider_account_id: this.newPlan.dns_default_provider_account_id || null,
+            dns_customer_editable: Boolean(this.newPlan.dns_customer_editable),
+            dns_max_records_per_domain: Number(this.newPlan.dns_max_records_per_domain),
+            dns_allowed_record_types: this.newPlan.dns_allowed_record_types,
+            dns_min_ttl: Number(this.newPlan.dns_min_ttl),
+            dns_wildcard_records_allowed: Boolean(this.newPlan.dns_wildcard_records_allowed),
+            dns_cloudflare_proxy_allowed: Boolean(this.newPlan.dns_cloudflare_proxy_allowed),
+            dns_dnssec_allowed: Boolean(this.newPlan.dns_dnssec_allowed),
+            dns_dnssec_required: Boolean(this.newPlan.dns_dnssec_required),
           }),
         });
         this.message = `Plan ${payload.plan.name} created`;
@@ -228,6 +324,17 @@ createApp({
           backend_frameworks: "Express, Fastify, Hono, NestJS, Nuxt, React Router, SvelteKit",
           nodejs_versions: "24.x, 22.x, 20.x and 18.x",
           package_managers: "npm (default), yarn and pnpm",
+          dns_default_provider: "local_powerdns",
+          dns_allowed_providers: ["local_powerdns"],
+          dns_default_provider_account_id: "",
+          dns_customer_editable: true,
+          dns_max_records_per_domain: 100,
+          dns_allowed_record_types: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
+          dns_min_ttl: 60,
+          dns_wildcard_records_allowed: true,
+          dns_cloudflare_proxy_allowed: false,
+          dns_dnssec_allowed: false,
+          dns_dnssec_required: false,
         };
         await this.load();
       } catch (error) {
@@ -255,6 +362,106 @@ createApp({
           body: JSON.stringify({ plan_id: Number(account.selected_plan_id) }),
         });
         this.message = `${client.email} moved to ${payload.hosting_account.plan_name}`;
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    providerLabel(key) {
+      const provider = (this.dnsSettings.providers || []).find((item) => item.key === key);
+      return provider ? provider.display_name : key;
+    },
+    cloudflareAccounts() {
+      return (this.dnsSettings.accounts || []).filter((account) => account.provider_key === "cloudflare");
+    },
+    async saveDnsSettings() {
+      this.message = "";
+      try {
+        const payload = await this.api("/api/admin/dns-settings", {
+          method: "PATCH",
+          body: JSON.stringify({
+            global_mode: this.dnsSettings.global_mode,
+            local: this.dnsSettings.local,
+          }),
+        });
+        this.dnsSettings = payload.dns_settings;
+        this.message = "DNS settings saved";
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async createCloudflareDnsAccount() {
+      this.message = "";
+      try {
+        const payload = await this.api("/api/admin/dns-providers/cloudflare/accounts", {
+          method: "POST",
+          body: JSON.stringify(this.cloudflareAccount),
+        });
+        this.dnsSettings = payload.dns_settings;
+        this.cloudflareAccount = { display_name: "", account_name: "", external_account_id: "", api_token: "" };
+        this.message = "Cloudflare DNS account saved";
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async testDnsProvider(provider, account = null) {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/dns-providers/${provider.id}/test`, {
+          method: "POST",
+          body: JSON.stringify({ provider_account_id: account ? account.id : null }),
+        });
+        this.dnsSettings = payload.dns_settings;
+        this.message = payload.message;
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async rebuildDnsDomain(domain) {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/domains/${domain.id}/dns/rebuild`, { method: "POST", body: "{}" });
+        this.message = `${domain.name} DNS rebuild queued as job #${payload.job_id}`;
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async verifyDnsDomain(domain) {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/domains/${domain.id}/dns/verify-nameservers`, { method: "POST", body: "{}" });
+        this.message = `${domain.name}: ${payload.verification.message}`;
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async exportDnsDomain(domain) {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/domains/${domain.id}/dns/export`);
+        this.message = `${payload.dns_zone_export.domain.name} DNS zone export saved`;
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async migrateDnsDomain(domain, providerKey) {
+      this.message = "";
+      const account = providerKey === "cloudflare" ? this.cloudflareAccounts()[0] : null;
+      if (providerKey === "cloudflare" && !account) {
+        this.message = "Add a Cloudflare account before migrating domains";
+        return;
+      }
+      try {
+        const payload = await this.api(`/api/admin/domains/${domain.id}/dns/migrate-provider`, {
+          method: "POST",
+          body: JSON.stringify({
+            dns_provider: providerKey,
+            dns_provider_account_id: account ? account.id : null,
+          }),
+        });
+        this.message = `${domain.name} migration queued as job #${payload.job_id}`;
         await this.load();
       } catch (error) {
         this.message = error.message;
@@ -350,7 +557,7 @@ createApp({
           }
         }
       });
-      this.token = "";
+      this.clearAdminSession("");
     },
   },
 }).mount("#admin-app");

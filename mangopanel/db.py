@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from .mail import dkim_dns_value, ensure_mailbox_storage, generate_dkim_material, mailbox_storage_path, recommended_dmarc_record, recommended_spf_record, split_mailbox_address
-from .providers import ACME_PROVIDER_LOCAL, DNS_PROVIDER_LOCAL, MAIL_EDGE_PROVIDER_SHARED
+from .providers import ACME_PROVIDER_LOCAL, DNS_PROVIDER_CLOUDFLARE, DNS_PROVIDER_LOCAL, DNS_PROVIDER_LOCAL_POWERDNS, MAIL_EDGE_PROVIDER_SHARED
 from .security import encrypt_secret, hash_password
 
 
@@ -173,6 +173,10 @@ CREATE TABLE IF NOT EXISTS dns_records (
   value TEXT NOT NULL,
   ttl INTEGER NOT NULL DEFAULT 300,
   priority INTEGER,
+  proxied INTEGER NOT NULL DEFAULT 0,
+  system_record INTEGER NOT NULL DEFAULT 0,
+  locked INTEGER NOT NULL DEFAULT 0,
+  provider_metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -189,6 +193,79 @@ CREATE TABLE IF NOT EXISTS dns_zones (
   last_synced_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dns_providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  config_json TEXT NOT NULL DEFAULT '{}',
+  capabilities_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dns_provider_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id INTEGER NOT NULL REFERENCES dns_providers(id),
+  display_name TEXT NOT NULL,
+  account_name TEXT NOT NULL DEFAULT '',
+  external_account_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(provider_id, display_name)
+);
+
+CREATE TABLE IF NOT EXISTS dns_provider_credentials (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_account_id INTEGER NOT NULL UNIQUE REFERENCES dns_provider_accounts(id),
+  credential_kind TEXT NOT NULL DEFAULT 'api_token',
+  secret_label TEXT NOT NULL DEFAULT '',
+  encrypted_secret TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'stored',
+  last_validated_at TEXT,
+  validation_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dns_provider_assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope_type TEXT NOT NULL,
+  scope_id INTEGER NOT NULL DEFAULT 0,
+  provider_id INTEGER NOT NULL REFERENCES dns_providers(id),
+  provider_account_id INTEGER REFERENCES dns_provider_accounts(id),
+  status TEXT NOT NULL DEFAULT 'active',
+  policy_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(scope_type, scope_id)
+);
+
+CREATE TABLE IF NOT EXISTS dns_provider_health_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id INTEGER NOT NULL REFERENCES dns_providers(id),
+  provider_account_id INTEGER REFERENCES dns_provider_accounts(id),
+  status TEXT NOT NULL,
+  message TEXT NOT NULL DEFAULT '',
+  details_json TEXT NOT NULL DEFAULT '{}',
+  checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dns_zone_exports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  domain_id INTEGER NOT NULL REFERENCES domains(id),
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  zone_name TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT '',
+  export_json TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL DEFAULT 'system',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS databases (
@@ -803,6 +880,8 @@ def ensure_schema(conn):
             "claimed_at": "TEXT",
             "completed_at": "TEXT",
             "attempts": "INTEGER NOT NULL DEFAULT 0",
+            "max_attempts": "INTEGER NOT NULL DEFAULT 3",
+            "not_before_at": "TEXT",
         },
     )
     ensure_table_columns(
@@ -826,6 +905,17 @@ def ensure_schema(conn):
             "backend_frameworks": "TEXT NOT NULL DEFAULT 'Express, Fastify, Hono, NestJS, Nuxt, React Router, SvelteKit'",
             "nodejs_versions": "TEXT NOT NULL DEFAULT '24.x, 22.x, 20.x and 18.x'",
             "package_managers": "TEXT NOT NULL DEFAULT 'npm (default), yarn and pnpm'",
+            "dns_default_provider": "TEXT NOT NULL DEFAULT 'local_powerdns'",
+            "dns_allowed_providers_json": "TEXT NOT NULL DEFAULT '[\"local_powerdns\"]'",
+            "dns_default_provider_account_id": "INTEGER",
+            "dns_customer_editable": "INTEGER NOT NULL DEFAULT 1",
+            "dns_max_records_per_domain": "INTEGER NOT NULL DEFAULT 100",
+            "dns_allowed_record_types_json": "TEXT NOT NULL DEFAULT '[\"A\",\"AAAA\",\"CNAME\",\"MX\",\"TXT\",\"NS\",\"SRV\",\"CAA\"]'",
+            "dns_min_ttl": "INTEGER NOT NULL DEFAULT 60",
+            "dns_wildcard_records_allowed": "INTEGER NOT NULL DEFAULT 1",
+            "dns_cloudflare_proxy_allowed": "INTEGER NOT NULL DEFAULT 0",
+            "dns_dnssec_allowed": "INTEGER NOT NULL DEFAULT 0",
+            "dns_dnssec_required": "INTEGER NOT NULL DEFAULT 0",
         },
     )
     ensure_table_columns(
@@ -864,10 +954,47 @@ def ensure_schema(conn):
             "serial": "INTEGER NOT NULL DEFAULT 1",
             "nameservers_json": "TEXT NOT NULL DEFAULT '[]'",
             "provider_state_json": "TEXT NOT NULL DEFAULT '{}'",
+            "provider_account_id": "INTEGER",
+            "provider_zone_id": "TEXT",
+            "dns_status": "TEXT NOT NULL DEFAULT 'active'",
+            "last_nameserver_check_at": "TEXT",
+            "dnssec_status": "TEXT NOT NULL DEFAULT 'unknown'",
             "last_synced_at": "TEXT",
             "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
         },
     )
+    ensure_table_columns(
+        conn,
+        "dns_records",
+        {
+            "proxied": "INTEGER NOT NULL DEFAULT 0",
+            "system_record": "INTEGER NOT NULL DEFAULT 0",
+            "locked": "INTEGER NOT NULL DEFAULT 0",
+            "provider_metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+            "updated_at": "TEXT",
+        },
+    )
+    ensure_table_columns(
+        conn,
+        "domains",
+        {
+            "dns_provider": "TEXT NOT NULL DEFAULT 'local_powerdns'",
+            "dns_provider_account_id": "INTEGER",
+            "provider_zone_id": "TEXT",
+            "nameservers_json": "TEXT NOT NULL DEFAULT '[]'",
+            "dns_status": "TEXT NOT NULL DEFAULT 'active'",
+            "last_dns_sync_at": "TEXT",
+            "last_nameserver_check_at": "TEXT",
+            "provider_state_json": "TEXT NOT NULL DEFAULT '{}'",
+            "dns_locked": "INTEGER NOT NULL DEFAULT 0",
+            "dns_migration_state_json": "TEXT NOT NULL DEFAULT '{}'",
+            "previous_dns_provider": "TEXT",
+            "previous_dns_provider_account_id": "INTEGER",
+            "previous_provider_zone_id": "TEXT",
+        },
+    )
+    ensure_dns_provider_schema(conn)
+    seed_dns_provider_defaults(conn)
     ensure_table_columns(
         conn,
         "cron_jobs",
@@ -1189,8 +1316,21 @@ def ensure_schema(conn):
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS dns_zone_exports (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          domain_id INTEGER NOT NULL REFERENCES domains(id),
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          zone_name TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT '',
+          export_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT NOT NULL DEFAULT 'system',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
     ]:
         conn.execute(stmt)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dns_zone_exports_domain ON dns_zone_exports(domain_id, created_at)")
     seed_legacy_database_users(conn)
 
 
@@ -1199,6 +1339,153 @@ def ensure_table_columns(conn, table, columns):
     for name, definition in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def ensure_dns_provider_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dns_providers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          key TEXT NOT NULL UNIQUE,
+          kind TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          config_json TEXT NOT NULL DEFAULT '{}',
+          capabilities_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dns_provider_accounts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          provider_id INTEGER NOT NULL REFERENCES dns_providers(id),
+          display_name TEXT NOT NULL,
+          account_name TEXT NOT NULL DEFAULT '',
+          external_account_id TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(provider_id, display_name)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dns_provider_credentials (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          provider_account_id INTEGER NOT NULL UNIQUE REFERENCES dns_provider_accounts(id),
+          credential_kind TEXT NOT NULL DEFAULT 'api_token',
+          secret_label TEXT NOT NULL DEFAULT '',
+          encrypted_secret TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'stored',
+          last_validated_at TEXT,
+          validation_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dns_provider_assignments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          scope_type TEXT NOT NULL,
+          scope_id INTEGER NOT NULL DEFAULT 0,
+          provider_id INTEGER NOT NULL REFERENCES dns_providers(id),
+          provider_account_id INTEGER REFERENCES dns_provider_accounts(id),
+          status TEXT NOT NULL DEFAULT 'active',
+          policy_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(scope_type, scope_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dns_provider_health_checks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          provider_id INTEGER NOT NULL REFERENCES dns_providers(id),
+          provider_account_id INTEGER REFERENCES dns_provider_accounts(id),
+          status TEXT NOT NULL,
+          message TEXT NOT NULL DEFAULT '',
+          details_json TEXT NOT NULL DEFAULT '{}',
+          checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+def seed_dns_provider_defaults(conn):
+    local_config = {
+        "nameservers": ["ns1.mango.test", "ns2.mango.test"],
+        "public_ipv4": "127.0.0.1",
+        "public_ipv6": "",
+        "soa_email": "hostmaster.mango.test",
+        "default_ttl": 300,
+        "glue_record_notes": "Register glue records for the configured nameserver hostnames at the registrar before using local authoritative DNS in production.",
+    }
+    local_capabilities = {
+        "record_types": ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
+        "supports_dnssec": False,
+        "supports_health_checks": True,
+        "phase": "foundation",
+    }
+    cloudflare_capabilities = {
+        "record_types": ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
+        "supports_proxy": True,
+        "supports_auto_ttl": True,
+        "supports_dnssec": True,
+        "phase": "foundation",
+    }
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO dns_providers(key, kind, display_name, status, config_json, capabilities_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            DNS_PROVIDER_LOCAL_POWERDNS,
+            "local",
+            "Local PowerDNS",
+            "active",
+            json.dumps(local_config, sort_keys=True),
+            json.dumps(local_capabilities, sort_keys=True),
+        ),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO dns_providers(key, kind, display_name, status, config_json, capabilities_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            DNS_PROVIDER_CLOUDFLARE,
+            "cloudflare",
+            "Cloudflare",
+            "inactive",
+            json.dumps({}, sort_keys=True),
+            json.dumps(cloudflare_capabilities, sort_keys=True),
+        ),
+    )
+    local_provider = conn.execute("SELECT id FROM dns_providers WHERE key = ?", (DNS_PROVIDER_LOCAL_POWERDNS,)).fetchone()
+    if local_provider:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO dns_provider_assignments(scope_type, scope_id, provider_id, status, policy_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "global",
+                0,
+                local_provider["id"],
+                "active",
+                json.dumps({"mode": DNS_PROVIDER_LOCAL_POWERDNS, "source": "default"}, sort_keys=True),
+            ),
+        )
 
 
 def seed_legacy_database_users(conn):
@@ -1318,6 +1605,23 @@ def seed_dev_data(db_path, account_root=None):
         user_id = conn.execute("SELECT id FROM users WHERE email = ?", ("owner@example.mango.test",)).fetchone()["id"]
         plan_id = conn.execute("SELECT id FROM plans WHERE name = ?", ("Dev Shared Starter",)).fetchone()["id"]
         node_id = conn.execute("SELECT id FROM nodes WHERE name = ?", ("local-m1",)).fetchone()["id"]
+        conn.execute(
+            """
+            UPDATE plans
+            SET dns_default_provider = ?, dns_allowed_providers_json = ?, dns_customer_editable = ?,
+                dns_max_records_per_domain = ?, dns_min_ttl = ?, dns_wildcard_records_allowed = ?
+            WHERE id = ?
+            """,
+            (
+                DNS_PROVIDER_LOCAL_POWERDNS,
+                json.dumps([DNS_PROVIDER_LOCAL_POWERDNS], sort_keys=True),
+                1,
+                100,
+                60,
+                1,
+                plan_id,
+            ),
+        )
 
         conn.execute(
             """
@@ -1353,6 +1657,21 @@ def seed_dev_data(db_path, account_root=None):
             (account_id, "example.mango.test", "managed", "active", website_id),
         )
         domain_id = conn.execute("SELECT id FROM domains WHERE name = ?", ("example.mango.test",)).fetchone()["id"]
+        nameservers_json = json.dumps(["ns1.mango.test", "ns2.mango.test"])
+        conn.execute(
+            """
+            UPDATE domains
+            SET dns_provider = ?, nameservers_json = ?, dns_status = ?, provider_state_json = ?
+            WHERE id = ?
+            """,
+            (
+                DNS_PROVIDER_LOCAL_POWERDNS,
+                nameservers_json,
+                "active",
+                json.dumps({"fixture": "dev-seed", "provider": DNS_PROVIDER_LOCAL_POWERDNS}, sort_keys=True),
+                domain_id,
+            ),
+        )
         conn.execute(
             """
             INSERT OR IGNORE INTO dns_zones(account_id, domain_id, zone_name, provider, status, nameservers_json, provider_state_json)
@@ -1364,7 +1683,7 @@ def seed_dev_data(db_path, account_root=None):
                 "example.mango.test",
                 DNS_PROVIDER_LOCAL,
                 "active",
-                json.dumps(["ns1.mango.test", "ns2.mango.test"]),
+                nameservers_json,
                 json.dumps({"fixture": "dev-seed", "adapter": DNS_PROVIDER_LOCAL}),
             ),
         )

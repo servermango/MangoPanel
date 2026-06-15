@@ -4,11 +4,18 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>MangoPanel Admin</title>
+    <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
     <link rel="stylesheet" href="/assets/app.css">
+    <script>
+      (function() {
+        var t = localStorage.getItem("mp_theme") || "Default";
+        document.getElementById("theme-style").setAttribute("href", "/assets/" + t + ".css");
+      })();
+    </script>
   </head>
   <body>
-    <div id="admin-app" class="app-shell" v-cloak>
-      <aside class="sidebar admin-sidebar">
+    <div id="admin-app" class="app-shell admin-shell" v-cloak>
+      <aside class="sidebar admin-sidebar" v-if="token">
         <div class="brand">
           <span class="brand-mark">M</span>
           <div>
@@ -17,97 +24,116 @@
           </div>
         </div>
         <nav class="nav-list">
-          <a class="active" href="/admin">Admin</a>
-          <a href="#clients">Clients</a>
-          <a href="#plans">Plans</a>
-          <a href="/admin/setup">Setup</a>
-          <a href="/status">Status</a>
+          <div v-for="section in sidebarSections" :key="section.label" class="nav-section">
+            <span class="nav-group">{{ section.label }}</span>
+            <button v-for="item in section.items" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
+              <span>{{ item.label }}</span>
+            </button>
+          </div>
+          <div class="nav-section">
+            <span class="nav-group">Links</span>
+            <a href="/admin/setup">Setup</a>
+            <a href="/status">Public Status</a>
+          </div>
         </nav>
       </aside>
 
-      <main class="main">
-        <header class="topbar">
-          <div>
-            <h1>Operations</h1>
-            <p>Provision accounts, watch jobs, and publish status events.</p>
+      <main class="main admin-main" :class="{ 'admin-main-auth': !token }">
+        <header v-if="token" class="topbar">
+          <div class="topbar-context">
+            <div class="topbar-page-icon admin-page-glyph">
+              {{ activeMenuItem.label.slice(0, 1) }}
+            </div>
+            <div class="topbar-page-meta">
+              <span class="topbar-page-title-row">
+                <span class="topbar-page-title">{{ activeMenuItem.label }}</span>
+                <span class="feature-status-badge feature-status-functional">Admin</span>
+              </span>
+              <span class="topbar-page-desc">{{ activeMenuItem.description }}</span>
+            </div>
           </div>
-          <button v-if="token" class="ghost-button" @click="logout">Sign out</button>
+          <div class="topbar-actions">
+            <button class="ghost-button" @click="logout">Sign out</button>
+          </div>
         </header>
 
         <section v-if="!token" class="panel auth-panel">
           <h2>Admin Sign In</h2>
-          <div v-if="!challengeToken" class="form-grid">
+          <form v-if="!challengeToken" class="form-grid" @submit.prevent="startLogin">
             <label>Email <input v-model="login.email" autocomplete="username"></label>
             <label>Password <input v-model="login.password" type="password" autocomplete="current-password"></label>
-            <button class="primary-button" @click="startLogin">Continue</button>
-          </div>
-          <div v-else class="form-grid">
+            <button class="primary-button" type="submit">Continue</button>
+          </form>
+          <form v-else class="form-grid" @submit.prevent="finishLogin">
             <label>TOTP code <input v-model="login.code" inputmode="numeric" autocomplete="one-time-code"></label>
-            <button class="primary-button" @click="finishLogin">Verify</button>
+            <button class="primary-button" type="submit">Verify</button>
             <p class="muted">Development seed accepts code <code>000000</code>.</p>
-          </div>
+          </form>
           <p v-if="message" class="message">{{ message }}</p>
         </section>
 
         <template v-else>
-          <section class="metric-grid">
-            <div class="metric">
-              <span>Users</span>
-              <strong>{{ dashboard.counts.users }}</strong>
-              <small>customer records</small>
-            </div>
-            <div class="metric">
-              <span>Accounts</span>
-              <strong>{{ dashboard.counts.hosting_accounts }}</strong>
-              <small>hosting stacks</small>
-            </div>
-            <div class="metric">
-              <span>Websites</span>
-              <strong>{{ dashboard.counts.websites }}</strong>
-              <small>routed domains</small>
-            </div>
-            <div class="metric">
-              <span>Stacks</span>
-              <strong>{{ dashboard.counts.account_stacks }}</strong>
-              <small>generated account compose files</small>
-            </div>
-            <div class="metric">
-              <span>Incidents</span>
-              <strong>{{ dashboard.counts.open_incidents }}</strong>
-              <small>currently open</small>
-            </div>
-          </section>
-
-          <section class="two-column">
-            <div class="panel">
-              <div class="section-head">
-                <div>
-                  <h2>Nodes</h2>
-                  <p>Agent and quota state</p>
+          <div class="client-main-content admin-main-content">
+            <section v-if="activePage === 'overview'" class="page-stack">
+              <div class="metric-grid">
+                <div class="metric">
+                  <span>Users</span>
+                  <strong>{{ dashboard.counts.users }}</strong>
+                  <small>customer records</small>
+                </div>
+                <div class="metric">
+                  <span>Accounts</span>
+                  <strong>{{ dashboard.counts.hosting_accounts }}</strong>
+                  <small>hosting stacks</small>
+                </div>
+                <div class="metric">
+                  <span>Websites</span>
+                  <strong>{{ dashboard.counts.websites }}</strong>
+                  <small>routed domains</small>
+                </div>
+                <div class="metric">
+                  <span>Stacks</span>
+                  <strong>{{ dashboard.counts.account_stacks }}</strong>
+                  <small>generated account compose files</small>
+                </div>
+                <div class="metric">
+                  <span>Incidents</span>
+                  <strong>{{ dashboard.counts.open_incidents }}</strong>
+                  <small>currently open</small>
                 </div>
               </div>
-              <ul class="clean-list">
-                <li v-for="node in dashboard.nodes" :key="node.id">
-                  <strong>{{ node.name }}</strong>
-                  <span class="pill">{{ node.status }}</span>
-                  <small>{{ node.hostname }} · {{ node.quota_backend }}</small>
-                </li>
-              </ul>
-            </div>
 
-            <div class="panel">
-              <h2>Public Status</h2>
-              <p class="status-line" :class="dashboard.status.overall_status">{{ statusLabel(dashboard.status.overall_status) }}</p>
-              <ul class="clean-list">
-                <li v-for="component in dashboard.status.components.slice(0, 6)" :key="component.id">
-                  <strong>{{ component.name }}</strong>
-                  <span class="pill">{{ component.status }}</span>
-                </li>
-              </ul>
-            </div>
-          </section>
+              <div class="two-column">
+                <div class="panel">
+                  <div class="section-head">
+                    <div>
+                      <h2>Nodes</h2>
+                      <p>Agent and quota state</p>
+                    </div>
+                  </div>
+                  <ul class="clean-list">
+                    <li v-for="node in dashboard.nodes" :key="node.id">
+                      <strong>{{ node.name }}</strong>
+                      <span class="pill">{{ node.status }}</span>
+                      <small>{{ node.hostname }} · {{ node.quota_backend }}</small>
+                    </li>
+                  </ul>
+                </div>
 
-          <section id="clients" class="panel anchor-panel">
+                <div class="panel">
+                  <h2>Public Status</h2>
+                  <p class="status-line" :class="dashboard.status.overall_status">{{ statusLabel(dashboard.status.overall_status) }}</p>
+                  <ul class="clean-list">
+                    <li v-for="component in dashboard.status.components.slice(0, 6)" :key="component.id">
+                      <strong>{{ component.name }}</strong>
+                      <span class="pill">{{ component.status }}</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </section>
+
+          <section v-if="activePage === 'clients'" class="panel">
             <div class="section-head">
               <div>
                 <h2>Clients</h2>
@@ -163,7 +189,7 @@
             </div>
           </section>
 
-          <section id="plans" class="panel anchor-panel">
+          <section v-if="activePage === 'plans'" class="panel">
             <div class="section-head">
               <div>
                 <h2>Hosting Plans</h2>
@@ -182,6 +208,14 @@
               <label>Cron jobs <input v-model.number="newPlan.max_cron_jobs" type="number" min="0"></label>
               <label>Daily emails <input v-model.number="newPlan.daily_email_limit" type="number" min="0"></label>
               <label>Backup retention days <input v-model.number="newPlan.backup_retention_days" type="number" min="1"></label>
+              <label>DNS provider
+                <select v-model="newPlan.dns_default_provider">
+                  <option value="local_powerdns">Local DNS</option>
+                  <option value="cloudflare">Cloudflare</option>
+                </select>
+              </label>
+              <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
+              <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
               <button class="primary-button plan-submit" @click="createPlan">Create Plan</button>
             </div>
             <div class="table-wrap plan-table">
@@ -210,7 +244,134 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section v-if="activePage === 'dns'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>DNS Settings</h2>
+                <p>Choose the default authoritative DNS provider and store provider credentials.</p>
+              </div>
+            </div>
+            <div class="plan-form">
+              <label>Global DNS mode
+                <select v-model="dnsSettings.global_mode">
+                  <option value="local_powerdns">Local DNS</option>
+                  <option value="cloudflare">Cloudflare</option>
+                </select>
+              </label>
+              <label>Nameserver 1 <input v-model="dnsSettings.local.nameservers[0]" placeholder="ns1.mango.test"></label>
+              <label>Nameserver 2 <input v-model="dnsSettings.local.nameservers[1]" placeholder="ns2.mango.test"></label>
+              <label>Public IPv4 <input v-model="dnsSettings.local.public_ipv4" placeholder="203.0.113.10"></label>
+              <label>Public IPv6 <input v-model="dnsSettings.local.public_ipv6" placeholder="2001:db8::10"></label>
+              <label>SOA email <input v-model="dnsSettings.local.soa_email" placeholder="hostmaster.example.com"></label>
+              <label>Default TTL <input v-model.number="dnsSettings.local.default_ttl" type="number" min="60"></label>
+              <button class="primary-button plan-submit" @click="saveDnsSettings">Save DNS Settings</button>
+            </div>
+
+            <div class="section-head" style="margin-top: 1.5rem;">
+              <div>
+                <h3>Cloudflare Accounts</h3>
+                <p>Tokens are encrypted before storage and only used by agent/provider jobs.</p>
+              </div>
+            </div>
+            <div class="plan-form">
+              <label>Display name <input v-model="cloudflareAccount.display_name" placeholder="Main Cloudflare"></label>
+              <label>Account name <input v-model="cloudflareAccount.account_name" placeholder="Acme Hosting"></label>
+              <label>Account ID <input v-model="cloudflareAccount.external_account_id" placeholder="Optional until validation"></label>
+              <label>API token <input v-model="cloudflareAccount.api_token" type="password" placeholder="Cloudflare API token"></label>
+              <button class="primary-button plan-submit" @click="createCloudflareDnsAccount">Add Cloudflare Account</button>
+            </div>
+
+            <div class="table-wrap plan-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Status</th>
+                    <th>Capabilities</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="provider in dnsSettings.providers" :key="provider.id">
+                    <td><strong>{{ provider.display_name }}</strong><small>{{ provider.key }}</small></td>
+                    <td>{{ provider.status }}</td>
+                    <td>
+                      {{ (provider.capabilities.record_types || []).join(', ') }}
+                      <small v-if="provider.capabilities.supports_proxy">Cloudflare proxy available</small>
+                    </td>
+                    <td><button @click="testDnsProvider(provider)">Test</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="table-wrap plan-table" v-if="cloudflareAccounts().length">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Cloudflare Account</th>
+                    <th>Status</th>
+                    <th>Secret</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="account in cloudflareAccounts()" :key="account.id">
+                    <td><strong>{{ account.display_name }}</strong><small>{{ account.account_name || account.external_account_id }}</small></td>
+                    <td>{{ account.status }}</td>
+                    <td>{{ account.has_secret ? account.secret_label : 'missing' }}</td>
+                    <td><button @click="testDnsProvider(dnsSettings.providers.find(p => p.key === 'cloudflare'), account)">Test</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="section-head" style="margin-top: 1.5rem;">
+              <div>
+                <h3>Managed DNS Domains</h3>
+                <p>Rebuild zones, verify delegation, export records, and migrate providers.</p>
+              </div>
+            </div>
+            <div class="table-wrap plan-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Domain</th>
+                    <th>Provider</th>
+                    <th>Status</th>
+                    <th>Nameservers</th>
+                    <th>Sync</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="domain in dnsDomains" :key="domain.id">
+                    <td><strong>{{ domain.name }}</strong><small>{{ domain.owner_email }} · {{ domain.username }}</small></td>
+                    <td>{{ providerLabel(domain.dns_provider) }}</td>
+                    <td>
+                      <span class="pill" :class="domain.dns_status">{{ domain.dns_status }}</span>
+                      <small v-if="domain.dns_warnings && domain.dns_warnings.length">{{ domain.dns_warnings[0].message }}</small>
+                    </td>
+                    <td><small>{{ (domain.nameservers || []).join(', ') || 'pending provider sync' }}</small></td>
+                    <td>
+                      <span v-if="domain.latest_dns_job">#{{ domain.latest_dns_job.id }} {{ domain.latest_dns_job.status }}</span>
+                      <span v-else>none</span>
+                    </td>
+                    <td class="actions">
+                      <button @click="rebuildDnsDomain(domain)">Rebuild</button>
+                      <button @click="verifyDnsDomain(domain)">Verify</button>
+                      <button @click="exportDnsDomain(domain)">Export</button>
+                      <button v-if="domain.dns_provider !== 'cloudflare'" @click="migrateDnsDomain(domain, 'cloudflare')">To Cloudflare</button>
+                      <button v-if="domain.dns_provider !== 'local_powerdns'" @click="migrateDnsDomain(domain, 'local_powerdns')">To Local</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!dnsDomains.length"><td colspan="6" class="empty-row">No managed domains yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'admins'" class="panel">
             <div class="section-head">
               <div>
                 <h2>PHP Versions</h2>
@@ -228,7 +389,7 @@
             <p class="muted" style="margin-top: 1rem; font-size: 13px;">Clients can select their desired version from their dashboard per website. The default for new websites is 8.3.</p>
           </section>
 
-          <section class="panel">
+          <section v-if="activePage === 'admins'" class="panel">
             <div class="section-head">
               <div>
                 <h2>Admins</h2>
@@ -272,7 +433,7 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section v-if="activePage === 'status'" class="panel">
             <div class="section-head">
               <div>
                 <h2>Status Incident</h2>
@@ -291,7 +452,7 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section v-if="activePage === 'system'" class="panel">
             <div class="section-head">
               <div>
                 <h2>Account Stacks</h2>
@@ -332,7 +493,7 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section v-if="activePage === 'system'" class="panel">
             <h2>Recent Jobs</h2>
             <div class="table-wrap">
               <table>
@@ -362,7 +523,7 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section v-if="activePage === 'clients'" class="panel">
             <div class="section-head">
               <div>
                 <h2>Create Hosting Account</h2>
@@ -392,7 +553,7 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section v-if="activePage === 'admins'" class="panel">
             <div class="section-head">
               <div>
                 <h2>Register Node</h2>
@@ -412,7 +573,7 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section v-if="activePage === 'system'" class="panel">
             <h2>Agent Events</h2>
             <ul class="clean-list">
               <li v-for="event in jobEvents.slice(0, 8)" :key="event.id">
@@ -424,11 +585,12 @@
           </section>
 
           <p v-if="message" class="message">{{ message }}</p>
+          </div>
         </template>
       </main>
     </div>
 
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/assets/vue.global.prod.js"></script>
     <script src="/assets/admin.js"></script>
   </body>
 </html>

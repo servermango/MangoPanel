@@ -145,6 +145,54 @@ code {
   background: #263044;
 }
 
+.admin-shell {
+  grid-template-columns: 270px minmax(0, 1fr);
+}
+
+.admin-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 270px;
+  z-index: 30;
+}
+
+.admin-main {
+  grid-column: 2;
+  min-height: 100vh;
+}
+
+.admin-main-auth {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.admin-main-content {
+  max-width: 1480px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.admin-page-glyph {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.admin-main .topbar {
+  justify-content: space-between;
+}
+
+.admin-main .topbar-context {
+  max-width: 520px;
+}
+
+.admin-main .auth-panel {
+  width: min(100%, 480px);
+  margin: 0;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -1848,6 +1896,10 @@ td small {
     grid-column: 1;
   }
 
+  .admin-main {
+    grid-column: 1;
+  }
+
   .sidebar {
     display: flex;
     justify-content: space-between;
@@ -1862,6 +1914,13 @@ td small {
     max-height: none;
   }
 
+  .admin-sidebar {
+    position: sticky;
+    top: 0;
+    width: auto;
+    max-height: none;
+  }
+
   .brand {
     margin-bottom: 0;
   }
@@ -1869,6 +1928,16 @@ td small {
   .nav-list {
     grid-auto-flow: column;
     overflow-x: auto;
+  }
+
+  .nav-section {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .nav-group {
+    display: none;
   }
 
   .metric-grid,

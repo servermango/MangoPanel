@@ -32,13 +32,18 @@ from .config import load_config
 from .db import connect, log_job_event, row_to_dict, rows_to_dicts
 from .providers import (
     ACME_PROVIDER_LOCAL,
+    DNS_PROVIDER_CLOUDFLARE,
     DNS_PROVIDER_LOCAL,
+    DNS_PROVIDER_LOCAL_POWERDNS,
     MAIL_EDGE_PROVIDER_SHARED,
     ACMECertificateIntent,
+    CloudflareDNSProvider,
+    DNSProviderError,
     DNSRecordIntent,
     DNSZoneIntent,
     LocalACMEProvider,
     LocalDNSProvider,
+    PowerDNSProvider,
     MailDomainRouteIntent,
     MailboxRouteIntent,
     SharedMailEdgeProvider,
@@ -427,7 +432,15 @@ class Agent:
             return self.run_claimed_job(conn, job)
 
     def claim_next_job(self, conn):
-        job = conn.execute("SELECT * FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1").fetchone()
+        job = conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status = 'queued'
+              AND (not_before_at IS NULL OR not_before_at <= CURRENT_TIMESTAMP)
+            ORDER BY id
+            LIMIT 1
+            """
+        ).fetchone()
         if not job:
             return None
         conn.execute(
@@ -455,6 +468,27 @@ class Agent:
             log_job_event(conn, job["id"], "Agent completed job", metadata=result)
             return {"job_id": job["id"], "status": "succeeded", "result": result}
         except Exception as exc:
+            is_dns_job = job["type"] in {"sync_dns_record", "sync_dns_zone"}
+            attempts = int(job["attempts"] or 0)
+            max_attempts = int(job["max_attempts"] if "max_attempts" in job.keys() and job["max_attempts"] is not None else 3)
+            error_text = str(exc)
+            retryable_dns_error = is_dns_job and not error_text.endswith("_not_found")
+            if retryable_dns_error and attempts < max_attempts:
+                delay_seconds = min(300, 30 * (2 ** max(0, attempts - 1)))
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'queued', result = ?, not_before_at = datetime('now', ?), updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps({"error": error_text, "retry_scheduled": True, "retry_after_seconds": delay_seconds}),
+                        "+{} seconds".format(delay_seconds),
+                        job["id"],
+                    ),
+                )
+                log_job_event(conn, job["id"], "Agent scheduled DNS retry", level="warning", metadata={"error": error_text, "retry_after_seconds": delay_seconds})
+                return {"job_id": job["id"], "status": "queued", "retry_after_seconds": delay_seconds, "error": error_text}
             conn.execute(
                 """
                 UPDATE jobs
@@ -841,6 +875,69 @@ class Agent:
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return str(path)
 
+    def json_field(self, value, fallback=None):
+        try:
+            return json.loads(value) if value else (fallback if fallback is not None else {})
+        except (TypeError, json.JSONDecodeError):
+            return fallback if fallback is not None else {}
+
+    def row_get(self, row, key, fallback=None):
+        return row[key] if row is not None and key in row.keys() else fallback
+
+    def dns_local_config(self, conn):
+        provider = conn.execute("SELECT * FROM dns_providers WHERE key = ?", (DNS_PROVIDER_LOCAL_POWERDNS,)).fetchone()
+        config = self.json_field(self.row_get(provider, "config_json"), {})
+        config.setdefault("nameservers", ["ns1.mango.test", "ns2.mango.test"])
+        return config
+
+    def resolve_dns_provider(self, conn, domain):
+        provider_key = self.row_get(domain, "dns_provider", None) or DNS_PROVIDER_LOCAL
+        if provider_key == DNS_PROVIDER_LOCAL_POWERDNS:
+            local_config = self.dns_local_config(conn)
+            nameservers = local_config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"]
+            if self.config.powerdns_api_url and self.config.powerdns_api_key:
+                return (
+                    PowerDNSProvider(
+                        self.config.powerdns_api_url,
+                        self.config.powerdns_api_key,
+                        server_id=self.config.powerdns_server_id,
+                        nameservers=nameservers,
+                    ),
+                    provider_key,
+                    self.row_get(domain, "dns_provider_account_id"),
+                    nameservers,
+                )
+            return LocalDNSProvider(), DNS_PROVIDER_LOCAL, self.row_get(domain, "dns_provider_account_id"), nameservers
+        if provider_key == DNS_PROVIDER_CLOUDFLARE:
+            account_id = self.row_get(domain, "dns_provider_account_id")
+            if not account_id:
+                raise AgentError("cloudflare_provider_account_missing")
+            account = conn.execute(
+                """
+                SELECT a.*, c.encrypted_secret
+                FROM dns_provider_accounts a
+                LEFT JOIN dns_provider_credentials c ON c.provider_account_id = a.id
+                WHERE a.id = ?
+                """,
+                (account_id,),
+            ).fetchone()
+            if not account:
+                raise AgentError("cloudflare_provider_account_not_found")
+            api_token = decrypt_secret(account["encrypted_secret"], self.config.jwt_secret)
+            if not api_token:
+                raise AgentError("cloudflare_provider_secret_missing")
+            return (
+                CloudflareDNSProvider(
+                    api_token,
+                    account_id=account["external_account_id"] or None,
+                    api_base=self.config.cloudflare_api_base,
+                ),
+                DNS_PROVIDER_CLOUDFLARE,
+                account_id,
+                [],
+            )
+        return LocalDNSProvider(), DNS_PROVIDER_LOCAL, self.row_get(domain, "dns_provider_account_id"), ["ns1.local.mango.test", "ns2.local.mango.test"]
+
     def publish_dns_zone_state(self, conn, account, domain, records, zone_path):
         zone_intent = DNSZoneIntent(
             account_id=account["id"],
@@ -857,13 +954,87 @@ class Agent:
                 for record in records
             ],
         )
-        existing = conn.execute("SELECT serial FROM dns_zones WHERE domain_id = ?", (domain["id"],)).fetchone()
+        existing = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ?", (domain["id"],)).fetchone()
         serial = int(existing["serial"]) + 1 if existing else 1
-        provider_state = LocalDNSProvider().publish_zone(zone_intent, artifact_path=str(zone_path), serial=serial)
+        previous_state = self.json_field(self.row_get(existing, "provider_state_json"), {})
+        provider, provider_key, provider_account_id, default_nameservers = self.resolve_dns_provider(conn, domain)
+        try:
+            if isinstance(provider, LocalDNSProvider):
+                provider_state = provider.publish_zone(zone_intent, artifact_path=str(zone_path), nameservers=default_nameservers, serial=serial)
+                provider_key = provider.provider_name
+            else:
+                provider_state = provider.publish_zone(zone_intent, previous_state=previous_state)
+        except DNSProviderError as exc:
+            error_state = dict(previous_state or {})
+            error_state.update(
+                {
+                    "provider": provider_key,
+                    "provider_account_id": provider_account_id,
+                    "status": "provider_failed",
+                    "last_error": str(exc),
+                    "failed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            )
+            conn.execute(
+                """
+                INSERT INTO dns_zones(
+                  account_id, domain_id, zone_name, provider, status, serial,
+                  nameservers_json, provider_state_json, provider_account_id,
+                  provider_zone_id, dns_status, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(domain_id) DO UPDATE SET
+                  provider = excluded.provider,
+                  status = excluded.status,
+                  serial = excluded.serial,
+                  provider_state_json = excluded.provider_state_json,
+                  provider_account_id = excluded.provider_account_id,
+                  dns_status = excluded.dns_status,
+                  updated_at = CURRENT_TIMESTAMP
+                """
+                ,
+                (
+                    account["id"],
+                    domain["id"],
+                    domain["name"],
+                    provider_key,
+                    "provider_failed",
+                    serial,
+                    json.dumps(default_nameservers),
+                    json.dumps(error_state, sort_keys=True),
+                    provider_account_id,
+                    self.row_get(domain, "provider_zone_id"),
+                    "provider_failed",
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE domains
+                SET dns_status = ?, provider_state_json = ?, last_dns_sync_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                ("provider_failed", json.dumps(error_state, sort_keys=True), domain["id"]),
+            )
+            raise AgentError(str(exc)) from exc
+        nameservers = provider_state.get("nameservers") or default_nameservers
+        provider_zone_id = provider_state.get("provider_zone_id")
+        zone_status = provider_state.get("status", "published")
+        migration_state = self.json_field(self.row_get(domain, "dns_migration_state_json"), {})
+        dns_status = zone_status
+        if migration_state.get("status") == "pending_provider_sync":
+            migration_state["status"] = "pending_nameserver"
+            migration_state["published_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            migration_state["new_nameservers"] = nameservers
+            provider_state["migration"] = migration_state
+            dns_status = "pending_nameserver"
         conn.execute(
             """
-            INSERT INTO dns_zones(account_id, domain_id, zone_name, provider, status, serial, nameservers_json, provider_state_json, last_synced_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO dns_zones(
+              account_id, domain_id, zone_name, provider, status, serial, nameservers_json,
+              provider_state_json, provider_account_id, provider_zone_id, dns_status,
+              last_synced_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(domain_id) DO UPDATE SET
               account_id = excluded.account_id,
               zone_name = excluded.zone_name,
@@ -872,6 +1043,9 @@ class Agent:
               serial = excluded.serial,
               nameservers_json = excluded.nameservers_json,
               provider_state_json = excluded.provider_state_json,
+              provider_account_id = excluded.provider_account_id,
+              provider_zone_id = excluded.provider_zone_id,
+              dns_status = excluded.dns_status,
               last_synced_at = CURRENT_TIMESTAMP,
               updated_at = CURRENT_TIMESTAMP
             """,
@@ -879,13 +1053,39 @@ class Agent:
                 account["id"],
                 domain["id"],
                 domain["name"],
-                DNS_PROVIDER_LOCAL,
-                provider_state["status"],
-                serial,
-                json.dumps(provider_state["nameservers"]),
+                provider_key,
+                zone_status,
+                int(provider_state.get("serial") or serial),
+                json.dumps(nameservers),
                 json.dumps(provider_state, sort_keys=True),
+                provider_account_id,
+                provider_zone_id,
+                dns_status,
             ),
         )
+        conn.execute(
+            """
+            UPDATE domains
+            SET dns_provider = ?, dns_provider_account_id = ?, provider_zone_id = ?,
+                nameservers_json = ?, dns_status = ?, last_dns_sync_at = CURRENT_TIMESTAMP,
+                provider_state_json = ?
+            WHERE id = ?
+            """,
+            (
+                provider_key if provider_key != DNS_PROVIDER_LOCAL else self.row_get(domain, "dns_provider", DNS_PROVIDER_LOCAL),
+                provider_account_id,
+                provider_zone_id,
+                json.dumps(nameservers),
+                dns_status,
+                json.dumps(provider_state, sort_keys=True),
+                domain["id"],
+            ),
+        )
+        if migration_state:
+            conn.execute(
+                "UPDATE domains SET dns_migration_state_json = ? WHERE id = ?",
+                (json.dumps(migration_state, sort_keys=True), domain["id"]),
+            )
         return provider_state
 
     def publish_acme_order_state(self, conn, account, website, certificate_id, cert_path, key_path):
@@ -1097,7 +1297,7 @@ class Agent:
             Path(".runtime") / "dns" / f"{domain['name']}.json",
             {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "zone_path": str(artifact), "provider_state": provider_state},
         )
-        return {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "artifact_path": report, "zone_path": str(artifact), "provider": DNS_PROVIDER_LOCAL, "provider_state": provider_state}
+        return {"mode": "native", "domain_id": domain["id"], "domain": domain["name"], "synced": True, "artifact_path": report, "zone_path": str(artifact), "provider": provider_state.get("provider", DNS_PROVIDER_LOCAL), "provider_state": provider_state}
 
     def sync_remote_mysql(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()

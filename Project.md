@@ -526,6 +526,163 @@ This is the sequential build plan for replacing the current mail path with a sha
 - Add system DNS templates.
 - Detect domains that do not point to MangoPanel nameservers.
 
+### DNS Provider System Roadmap
+
+MangoPanel must support real authoritative DNS through two production-capable provider modes:
+
+- Local DNS: run an authoritative DNS service from the MangoPanel stack.
+- Cloudflare DNS: create and manage customer zones through Cloudflare accounts configured by admins.
+
+For the local DNS provider, use PowerDNS Authoritative Server as the MVP target. It is open source, fast enough for shared hosting, production-proven, supports an HTTP API, exposes metrics, and maps cleanly to MangoPanel's existing desired-state plus agent-job model. Knot DNS remains a future option for deployments that prioritize raw authoritative-server performance, but PowerDNS is the better first control-panel integration.
+
+Implementation rule: MangoPanel stores DNS intent locally, queues provider sync jobs, and lets the agent publish the final state to either PowerDNS or Cloudflare. Client and admin APIs must not call DNS providers directly.
+
+#### Phase 1: DNS provider foundation — implemented
+
+- Add first-class provider tables:
+  - `dns_providers`
+  - `dns_provider_accounts`
+  - `dns_provider_credentials`
+  - `dns_provider_assignments`
+  - `dns_provider_health_checks`
+- Extend `plans` with DNS policy fields:
+  - default DNS method: local, Cloudflare, or admin-selected.
+  - allowed DNS methods.
+  - default Cloudflare provider account.
+  - whether customers can edit DNS.
+  - max DNS records per domain.
+  - allowed record types.
+  - minimum TTL.
+  - whether wildcard records are allowed.
+  - whether Cloudflare proxy mode is allowed.
+  - whether DNSSEC is allowed or required.
+- Extend `domains` and `dns_zones` with:
+  - selected DNS provider.
+  - selected provider account.
+  - provider zone ID.
+  - effective nameservers.
+  - DNS status.
+  - last provider sync time.
+  - last nameserver verification time.
+  - provider state JSON.
+- Add admin DNS settings page:
+  - Global DNS mode: local, Cloudflare, or per-plan.
+  - Local DNS settings: nameserver hostnames, public IPv4/IPv6 addresses, SOA email, default TTL, glue-record instructions.
+  - Cloudflare settings: multiple account name plus API token pairs, encrypted token storage, resolved Cloudflare account ID, token scope validation, and connection test.
+- Keep provider secrets encrypted and never return them to any frontend.
+- Add DNS audit events for provider settings changes, credential changes, provider assignment changes, record edits, zone rebuilds, and nameserver verification actions.
+
+#### Phase 2: Provider implementation and delegated sync — implemented
+
+- Replace the current local-dev DNS placeholder with a real provider interface:
+  - `ensure_zone(domain)`
+  - `publish_records(domain, records)`
+  - `delete_record(record)`
+  - `delete_zone(domain)`
+  - `inspect_zone(domain)`
+  - `get_nameservers(domain)`
+  - `verify_authoritative_nameservers(domain)`
+  - `normalize_record(record)`
+  - `diff_records(desired, provider_state)`
+- Local PowerDNS provider:
+  - Add `mangopanel-dns` container running PowerDNS Authoritative.
+  - Bind public TCP/UDP 53 only when local DNS is enabled.
+  - Keep the PowerDNS API private to the internal Docker/network side.
+  - Store PowerDNS state in a dedicated PowerDNS database, not MangoPanel's control-plane SQLite.
+  - Publish zones through the PowerDNS HTTP API.
+  - Generate SOA and NS records automatically from admin DNS settings.
+  - Increment serials on every zone publish.
+  - Support A, AAAA, CNAME, TXT, MX, SRV, CAA, and NS records in the MVP.
+  - Add health checks using direct authoritative lookups.
+- Cloudflare provider:
+  - Admin can register multiple Cloudflare account name plus API token pairs.
+  - Resolve and store Cloudflare account IDs after token validation.
+  - Create or find a Cloudflare zone when a domain is assigned to a Cloudflare-backed plan or package.
+  - Publish MangoPanel default DNS templates to the Cloudflare zone.
+  - Save returned Cloudflare nameservers into `domains` and `dns_zones`.
+  - Show the returned nameservers in the user's panel per domain.
+  - Support Cloudflare-specific DNS fields where allowed by plan: proxied flag, automatic TTL, comments/tags, and apex CNAME flattening awareness.
+  - Handle Cloudflare API rate limits, retryable errors, permission errors, and zone ownership conflicts.
+- DNS update flow:
+  - User adds, edits, or deletes DNS records from the hosting control panel.
+  - API validates ownership, plan limits, record type, TTL, record name, record value, and record conflicts.
+  - API writes the desired state to MangoPanel tables.
+  - API queues a DNS sync job.
+  - Agent resolves the domain's provider and account assignment.
+  - Agent publishes to local PowerDNS or Cloudflare.
+  - Agent updates `dns_zones`, provider state, nameservers, status, serial, and timestamps.
+  - Client panel displays job status, last sync time, provider, and effective nameservers.
+- Add default DNS templates for:
+  - website apex A/AAAA records.
+  - `www` CNAME.
+  - MX records for MangoPanel mail.
+  - SPF, DKIM, and DMARC.
+  - CAA records for the configured certificate authority.
+  - reset-to-default website and mail records.
+
+#### Phase 3: Hostinger-style UX, migration, verification, and operations — implemented
+
+Implemented status:
+
+- Added admin DNS domain operations for listing managed zones, rebuilding zones, verifying nameserver delegation, exporting zone snapshots, and migrating domains between local PowerDNS and Cloudflare.
+- Added provider migration state on domains, retaining previous provider/account/zone data while publishing the new provider and marking the domain pending nameserver verification.
+- Added DNS zone export storage for support/backups.
+- Added per-domain DNS mutation locking against queued/running DNS jobs.
+- Added provider error snapshots on domains/zones and retry scheduling for retryable DNS sync failures.
+- Added safer record mutation rules for CNAME conflicts, locked/system records, root NS records, and provider metadata.
+- Added client panel DNS status visibility, effective nameservers, rebuild/verify/export actions, and locked-record display.
+- Added tests for provider migration, zone export, CNAME conflict prevention, locked records, Cloudflare sync, plan policy, and nameserver persistence.
+
+- Admin UX:
+  - DNS settings page.
+  - Cloudflare account manager.
+  - Local nameserver manager.
+  - DNS provider health dashboard.
+  - Per-plan DNS assignment.
+  - Bulk provider reassignment for domains.
+  - Rebuild zone action.
+  - Provider sync logs and failed-job inspection.
+  - Warnings for missing glue records, closed port 53, bad NS delegation, failed Cloudflare token, unreachable provider, or stale zone serials.
+- Client UX:
+  - Domains page shows DNS provider, effective nameservers, delegation status, and last checked time.
+  - DNS Zone Editor shows pending, syncing, failed, and published states.
+  - Cloudflare-backed zones show proxy controls only when plan policy allows them.
+  - System records can be locked from customer edits while still visible.
+  - Website setup wizard shows provider-aware nameserver instructions:
+    - local DNS shows MangoPanel nameservers.
+    - Cloudflare shows Cloudflare-assigned nameservers returned by the API.
+- Domain lifecycle:
+  - Domain is added.
+  - DNS provider assignment is selected from plan/package policy.
+  - Provider zone is created or found.
+  - Default DNS records are generated.
+  - DNS sync job is queued.
+  - Effective nameservers are saved per domain.
+  - Nameserver verification job runs periodically.
+  - SSL issuance starts only when DNS points correctly, unless using DNS-01 with an authorized provider token.
+- Provider migration:
+  - Local to Cloudflare creates the Cloudflare zone, copies records, saves new nameservers, and marks the domain pending nameserver change.
+  - Cloudflare to local publishes the local PowerDNS zone, saves local nameservers, and marks the domain pending nameserver change.
+  - Keep old provider data until the new delegation is verified.
+  - Do not delete the old provider zone automatically without admin confirmation.
+- Reliability and safety:
+  - Per-domain lock for concurrent DNS mutations.
+  - Retry DNS jobs with backoff.
+  - Store provider error snapshots for support.
+  - Export and backup DNS zones.
+  - Prevent dangerous CNAME conflicts.
+  - Prevent customer edits to SOA and root NS records unless plan policy allows it.
+  - Validate DNS records before enqueueing provider jobs.
+- Tests:
+  - Provider selection and plan-policy tests.
+  - DNS record validation tests.
+  - Local PowerDNS sync tests.
+  - Mocked Cloudflare API tests.
+  - Nameserver persistence tests.
+  - User-panel add/edit/delete record tests.
+  - Admin credential and provider assignment tests.
+  - Agent dispatch and retry tests.
+
 ### Server and Node Management
 
 - Register node with agent token.
@@ -1000,6 +1157,11 @@ Core tables:
 - `domains`
 - `dns_zones`
 - `dns_records`
+- `dns_providers`
+- `dns_provider_accounts`
+- `dns_provider_credentials`
+- `dns_provider_assignments`
+- `dns_provider_health_checks`
 - `ssl_certificates`
 - `databases`
 - `database_users`
@@ -1032,6 +1194,11 @@ Client API:
 - `POST /api/client/websites`
 - `GET /api/client/domains`
 - `POST /api/client/dns-records`
+- `PATCH /api/client/dns-records/:id`
+- `DELETE /api/client/dns-records/:id`
+- `POST /api/client/domains/:id/dns/rebuild`
+- `POST /api/client/domains/:id/dns/verify-nameservers`
+- `GET /api/client/domains/:id/dns/export`
 - `POST /api/client/ssl/issue`
 - `GET /api/client/files/launch`
 - `POST /api/client/databases`
@@ -1054,6 +1221,18 @@ Admin API:
 - `POST /api/admin/hosting-accounts`
 - `POST /api/admin/hosting-accounts/{id}/suspend`
 - `POST /api/admin/hosting-accounts/{id}/unsuspend`
+- `GET /api/admin/dns-settings`
+- `PATCH /api/admin/dns-settings`
+- `POST /api/admin/dns-providers/cloudflare/accounts`
+- `PATCH /api/admin/dns-providers/cloudflare/accounts/{id}`
+- `DELETE /api/admin/dns-providers/cloudflare/accounts/{id}`
+- `POST /api/admin/dns-providers/{id}/test`
+- `GET /api/admin/domains`
+- `POST /api/admin/domains/{id}/dns/rebuild`
+- `POST /api/admin/domains/{id}/dns/verify-nameservers`
+- `GET /api/admin/domains/{id}/dns/export`
+- `POST /api/admin/domains/{id}/dns/migrate-provider`
+- `POST /api/admin/domains/dns/bulk-migrate-provider`
 - `GET /api/admin/jobs`
 - `POST /api/admin/jobs/{id}/retry`
 - `GET /api/admin/audit-logs`

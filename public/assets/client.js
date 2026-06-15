@@ -1462,6 +1462,40 @@ const app = createApp({
         this.notify(error.message, "error");
       }
     },
+    dnsRecordLocked(record) {
+      return Boolean(record.locked || record.system_record || (record.type === "NS" && record.name === "@") || record.type === "SOA");
+    },
+    async rebuildDnsZone() {
+      if (!this.selectedDomainId) return;
+      try {
+        const payload = await this.api(`/api/client/domains/${this.selectedDomainId}/dns/rebuild`, { method: "POST", body: "{}" });
+        this.notify(`DNS rebuild queued (job #${payload.job_id})`, "success");
+        this.domains = (await this.api("/api/client/domains")).domains;
+        await this.loadDnsRecords();
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async verifyDnsZone() {
+      if (!this.selectedDomainId) return;
+      try {
+        const payload = await this.api(`/api/client/domains/${this.selectedDomainId}/dns/verify-nameservers`, { method: "POST", body: "{}" });
+        this.notify(payload.verification.message, payload.verification.status === "active" ? "success" : "error");
+        this.domains = (await this.api("/api/client/domains")).domains;
+        await this.loadDnsRecords();
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async exportDnsZone() {
+      if (!this.selectedDomainId) return;
+      try {
+        const payload = await this.api(`/api/client/domains/${this.selectedDomainId}/dns/export`);
+        this.notify(`${payload.dns_zone_export.domain.name} DNS zone export saved`, "success");
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
     // PHP Switcher
     async switchPhpVersion(site, version) {
       if (site.php_version === version) return;

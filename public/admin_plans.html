@@ -80,6 +80,16 @@
               <label>Nameserver 2 <input v-model="newPlan.nameserver_2" type="text" placeholder="ns2.dns-parking.com"></label>
               <label>Backup retention days <input v-model.number="newPlan.backup_retention_days" type="number" min="1"></label>
               <label>Backup location <input v-model="newPlan.backup_location" type="text" placeholder="Singapore"></label>
+
+              <h3 class="section-subhead">DNS Policy</h3>
+              <label>DNS provider
+                <select v-model="newPlan.dns_default_provider">
+                  <option value="local_powerdns">Local DNS</option>
+                  <option value="cloudflare">Cloudflare</option>
+                </select>
+              </label>
+              <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
+              <label>Minimum TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
               
               <h3 class="section-subhead">Node.js Details</h3>
               <label>Frontend Frameworks <input v-model="newPlan.frontend_frameworks" type="text" placeholder="Angular, Astro, Next.js, etc."></label>

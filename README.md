@@ -16,8 +16,9 @@ MangoPanel is an hPanel-style shared hosting control panel. This repository curr
 - Development API coverage for hosting accounts, websites, DNS records, SSL jobs, launch tokens, databases, mailboxes, backups, cron jobs, Git deployments, jobs, audit logs, and status incidents.
 - Node-agent job runner with simulated and Docker Compose execution modes.
 - Account-stack generator for OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, and shared-mail-edge/mailbox-storage scaffolding.
+- DNS provider foundation and delegated sync with admin DNS settings, local PowerDNS/Cloudflare provider records, encrypted Cloudflare token storage, per-plan DNS policy fields, client DNS policy enforcement, provider migration, nameserver verification, zone export snapshots, and agent-backed provider publishing.
 
-This is not the production hosting runtime yet. The agent now generates account filesystem layout and Docker Compose files, but real DNS, the shared mail edge, real ACME, and quota enforcement still need their production providers.
+This is not the production hosting runtime yet. The agent now generates account filesystem layout and Docker Compose files, but real ACME and quota enforcement still need their production providers.
 
 ## Quick Start
 
@@ -157,6 +158,8 @@ The local Docker stack exposes:
 
 Additional accounts get their own port range.
 
+Optional local authoritative DNS for the Docker compose profile is provided by `mangopanel-dns`, a PowerDNS Authoritative container with its API exposed on `http://127.0.0.1:8081/api/v1` and DNS on `127.0.0.1:5353`. The panel container is preconfigured to publish managed zones to this service through `MP_POWERDNS_API_URL` and `MP_POWERDNS_API_KEY`.
+
 Reset local data:
 
 ```bash
@@ -181,7 +184,7 @@ Keep the default `simulate` mode for fast M1 development. Docker mode may pull l
 
 ## Next Implementation Steps
 
-1. Add local DNS and local ACME providers behind the same provider interfaces that production will use.
+1. Add DNSSEC controls, scheduled background nameserver verification, and production deployment docs for public port 53.
 2. Implement the shared mail edge from `Project.md` with mailbox CRUD, MX/inbound routing, SPF/DKIM/DMARC, SMTP/POP/IMAP/JMAP, one-click webmail launch from the client panel, and independent per-mailbox webmail login URLs.
 3. Add browser E2E tests for the client/admin/status pages.
 4. Add the Linux quota test profile for real storage and inode enforcement.

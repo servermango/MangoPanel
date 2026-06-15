@@ -29,6 +29,7 @@ from .db import (
     rows_to_dicts,
     seed_dev_data,
 )
+from .providers import DNS_PROVIDER_CLOUDFLARE, DNS_PROVIDER_LOCAL_POWERDNS
 from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, verify_jwt, verify_password, verify_totp
 from .snappymail import request_login_session
 
@@ -95,6 +96,8 @@ WEBMAIL_LOGIN_MAX_FAILURES = 5
 WEBMAIL_LOGIN_WINDOW_SECONDS = 10 * 60
 WEBMAIL_LOGIN_LOCK_SECONDS = 15 * 60
 DNS_RECORD_TYPES = {"A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"}
+DNS_PROVIDER_KEYS = {DNS_PROVIDER_LOCAL_POWERDNS, DNS_PROVIDER_CLOUDFLARE}
+DEFAULT_DNS_RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"]
 
 
 class ApiError(Exception):
@@ -1471,9 +1474,26 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (account["id"], domain, document_root, body.get("php_version", "8.3"), "missing", "active"),
                 )
                 website_id = cur.lastrowid
+                dns_assignment = default_domain_dns_assignment(conn, account["id"])
                 conn.execute(
-                    "INSERT OR IGNORE INTO domains(account_id, name, kind, status, linked_website_id) VALUES (?, ?, ?, ?, ?)",
-                    (account["id"], domain, "managed", "active", website_id),
+                    """
+                    INSERT OR IGNORE INTO domains(
+                      account_id, name, kind, status, linked_website_id, dns_provider,
+                      dns_provider_account_id, nameservers_json, dns_status, provider_state_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account["id"],
+                        domain,
+                        "managed",
+                        "active",
+                        website_id,
+                        dns_assignment["dns_provider"],
+                        dns_assignment["dns_provider_account_id"],
+                        json.dumps(dns_assignment["nameservers"]),
+                        dns_assignment["dns_status"],
+                        json.dumps(dns_assignment["provider_state"], sort_keys=True),
+                    ),
                 )
                 job_id = enqueue_agent_job(conn, "create_website", "website", website_id, {"domain": domain})
                 log_activity(conn, actor["id"], "website_created", {"domain": domain})
@@ -1561,7 +1581,35 @@ class MangoHandler(BaseHTTPRequestHandler):
                     """,
                     (actor["id"],),
                 ).fetchall()
-                return self.json_response({"domains": rows_to_dicts(rows)})
+                return self.json_response({"domains": [decorate_domain(row) for row in rows]})
+            if path.startswith("/api/client/domains/") and path.endswith("/dns/rebuild") and method == "POST":
+                require_active_account(account)
+                domain_id = int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (domain_id, account["id"])).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                ensure_no_active_dns_sync(conn, domain_id)
+                job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", domain_id, {"reason": "client_rebuild"})
+                log_activity(conn, actor["id"], "dns_zone_rebuild_requested", {"domain_id": domain_id})
+                return self.json_response({"job_id": job_id, "domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone())})
+            if path.startswith("/api/client/domains/") and path.endswith("/dns/verify-nameservers") and method == "POST":
+                require_account(account)
+                domain_id = int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (domain_id, account["id"])).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                verification = verify_domain_nameservers(conn, domain)
+                log_activity(conn, actor["id"], "dns_nameservers_verified", {"domain_id": domain_id, "status": verification["status"]})
+                return self.json_response({"verification": verification, "domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone())})
+            if path.startswith("/api/client/domains/") and path.endswith("/dns/export") and method == "GET":
+                require_account(account)
+                domain_id = int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (domain_id, account["id"])).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                export = create_dns_zone_export(conn, domain, "client:{}".format(actor["id"]))
+                log_activity(conn, actor["id"], "dns_zone_exported", {"domain_id": domain_id})
+                return self.json_response({"dns_zone_export": export})
             if path == "/api/client/dns-records" and method == "GET":
                 require_account(account)
                 domain_id = optional_positive_int(query.get("domain_id", [""])[0])
@@ -1582,12 +1630,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                         (account["id"],),
                     ).fetchall()
                     zone_rows = conn.execute("SELECT * FROM dns_zones WHERE account_id = ? ORDER BY zone_name", (account["id"],)).fetchall()
-                dns_zones = []
-                for row in rows_to_dicts(zone_rows):
-                    row["nameservers"] = parse_json_field(row.get("nameservers_json"), [])
-                    row["provider_state"] = parse_json_field(row.get("provider_state_json"), {})
-                    dns_zones.append(row)
-                return self.json_response({"dns_records": rows_to_dicts(rows), "dns_zones": dns_zones})
+                dns_zones = [decorate_dns_zone(row) for row in zone_rows]
+                return self.json_response({"dns_records": decorated_dns_records(rows), "dns_zones": dns_zones})
             if path == "/api/client/dns-records" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -1596,8 +1640,11 @@ class MangoHandler(BaseHTTPRequestHandler):
                 domain = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (domain_id, account["id"])).fetchone()
                 if not domain:
                     raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                ensure_no_active_dns_sync(conn, domain_id)
+                enforce_dns_record_policy(conn, account["id"], record_payload, domain_id, creating=True)
+                ensure_dns_record_conflicts(conn, domain_id, record_payload)
                 cur = conn.execute(
-                    "INSERT INTO dns_records(domain_id, type, name, value, ttl, priority) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO dns_records(domain_id, type, name, value, ttl, priority, proxied, provider_metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         domain_id,
                         record_payload["type"],
@@ -1605,18 +1652,62 @@ class MangoHandler(BaseHTTPRequestHandler):
                         record_payload["value"],
                         record_payload["ttl"],
                         record_payload["priority"],
+                        1 if record_payload.get("proxied") else 0,
+                        json.dumps(record_payload.get("provider_metadata") or {}, sort_keys=True),
                     ),
                 )
                 job_id = enqueue_agent_job(conn, "sync_dns_record", "dns_record", cur.lastrowid, {})
                 log_activity(conn, actor["id"], "dns_record_created", {"domain_id": domain_id, "type": record_payload["type"]})
                 all_records = conn.execute("SELECT * FROM dns_records WHERE domain_id = ? ORDER BY type, name", (domain_id,)).fetchall()
                 zone_rows = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ? ORDER BY zone_name", (domain_id,)).fetchall()
-                dns_zones = []
-                for row in rows_to_dicts(zone_rows):
-                    row["nameservers"] = parse_json_field(row.get("nameservers_json"), [])
-                    row["provider_state"] = parse_json_field(row.get("provider_state_json"), {})
-                    dns_zones.append(row)
-                return self.json_response({"dns_record_id": cur.lastrowid, "job_id": job_id, "dns_records": rows_to_dicts(all_records), "dns_zones": dns_zones}, HTTPStatus.CREATED)
+                dns_zones = [decorate_dns_zone(row) for row in zone_rows]
+                return self.json_response({"dns_record_id": cur.lastrowid, "job_id": job_id, "dns_records": decorated_dns_records(all_records), "dns_zones": dns_zones}, HTTPStatus.CREATED)
+            if path.startswith("/api/client/dns-records/") and method == "PATCH":
+                require_active_account(account)
+                record_id = path_int_id(path, "/api/client/dns-records/")
+                record = conn.execute(
+                    """
+                    SELECT dr.* FROM dns_records dr
+                    JOIN domains d ON d.id = dr.domain_id
+                    WHERE dr.id = ? AND d.account_id = ?
+                    """,
+                    (record_id, account["id"]),
+                ).fetchone()
+                if not record:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "dns_record_not_found")
+                ensure_no_active_dns_sync(conn, record["domain_id"])
+                ensure_dns_record_mutable(record)
+                body = self.read_json()
+                merged = row_to_dict(record)
+                for key in ("type", "name", "value", "ttl", "priority", "proxied"):
+                    if key in body:
+                        merged[key] = body[key]
+                merged["domain_id"] = record["domain_id"]
+                record_payload = validate_dns_record_payload(merged)
+                enforce_dns_record_policy(conn, account["id"], record_payload, record["domain_id"], creating=False)
+                ensure_dns_record_conflicts(conn, record["domain_id"], record_payload, exclude_record_id=record_id)
+                conn.execute(
+                    """
+                    UPDATE dns_records
+                    SET type = ?, name = ?, value = ?, ttl = ?, priority = ?, proxied = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        record_payload["type"],
+                        record_payload["name"],
+                        record_payload["value"],
+                        record_payload["ttl"],
+                        record_payload["priority"],
+                        1 if record_payload.get("proxied") else 0,
+                        record_id,
+                    ),
+                )
+                job_id = enqueue_agent_job(conn, "sync_dns_record", "dns_record", record_id, {})
+                log_activity(conn, actor["id"], "dns_record_updated", {"record_id": record_id, "type": record_payload["type"]})
+                all_records = conn.execute("SELECT * FROM dns_records WHERE domain_id = ? ORDER BY type, name", (record["domain_id"],)).fetchall()
+                zone_rows = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ? ORDER BY zone_name", (record["domain_id"],)).fetchall()
+                dns_zones = [decorate_dns_zone(row) for row in zone_rows]
+                return self.json_response({"dns_record_id": record_id, "job_id": job_id, "dns_records": decorated_dns_records(all_records), "dns_zones": dns_zones})
             if path.startswith("/api/client/dns-records/") and method == "DELETE":
                 require_active_account(account)
                 record_id = path_int_id(path, "/api/client/dns-records/")
@@ -1630,17 +1721,15 @@ class MangoHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 if not record:
                     raise ApiError(HTTPStatus.NOT_FOUND, "dns_record_not_found")
+                ensure_no_active_dns_sync(conn, record["domain_id"])
+                ensure_dns_record_mutable(record)
                 conn.execute("DELETE FROM dns_records WHERE id = ?", (record_id,))
                 job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", record["domain_id"], {})
                 log_activity(conn, actor["id"], "dns_record_deleted", {"record_id": record_id})
                 all_records = conn.execute("SELECT * FROM dns_records WHERE domain_id = ? ORDER BY type, name", (record["domain_id"],)).fetchall()
                 zone_rows = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ? ORDER BY zone_name", (record["domain_id"],)).fetchall()
-                dns_zones = []
-                for row in rows_to_dicts(zone_rows):
-                    row["nameservers"] = parse_json_field(row.get("nameservers_json"), [])
-                    row["provider_state"] = parse_json_field(row.get("provider_state_json"), {})
-                    dns_zones.append(row)
-                return self.json_response({"deleted": True, "job_id": job_id, "dns_records": rows_to_dicts(all_records), "dns_zones": dns_zones})
+                dns_zones = [decorate_dns_zone(row) for row in zone_rows]
+                return self.json_response({"deleted": True, "job_id": job_id, "dns_records": decorated_dns_records(all_records), "dns_zones": dns_zones})
             if path == "/api/client/ssl/issue" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -3318,6 +3407,253 @@ class MangoHandler(BaseHTTPRequestHandler):
                     log_audit(conn, "admin", actor["id"], "delete_client", "user", user_id, metadata=deleted)
                     return self.json_response({"deleted": deleted})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_client_admin_route")
+            if path == "/api/admin/dns-settings" and method == "GET":
+                return self.json_response({"dns_settings": dns_settings_payload(conn)})
+            if path == "/api/admin/dns-settings" and method == "PATCH":
+                current = dns_settings_payload(conn)
+                body = self.read_json()
+                settings = validate_dns_settings_payload(body, current)
+                local_provider = dns_provider_by_key(conn, DNS_PROVIDER_LOCAL_POWERDNS)
+                if not local_provider:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "local_dns_provider_missing")
+                conn.execute(
+                    """
+                    UPDATE dns_providers
+                    SET config_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (json.dumps(settings["local"], sort_keys=True), local_provider["id"]),
+                )
+                update_global_dns_assignment(conn, settings["global_mode"], settings["policy"])
+                log_audit(conn, "admin", actor["id"], "update_dns_settings", "dns_provider", local_provider["id"], metadata={"global_mode": settings["global_mode"]})
+                return self.json_response({"dns_settings": dns_settings_payload(conn)})
+            if path == "/api/admin/domains" and method == "GET":
+                rows = conn.execute(
+                    """
+                    SELECT d.*, ha.username, u.email AS owner_email
+                    FROM domains d
+                    JOIN hosting_accounts ha ON ha.id = d.account_id
+                    JOIN users u ON u.id = ha.user_id
+                    ORDER BY d.name
+                    """
+                ).fetchall()
+                domains = []
+                for row in rows:
+                    item = decorate_domain(row)
+                    item["username"] = row["username"]
+                    item["owner_email"] = row["owner_email"]
+                    latest_job = conn.execute(
+                        """
+                        SELECT id, type, status, attempts, result, updated_at, completed_at
+                        FROM jobs
+                        WHERE type = 'sync_dns_zone' AND target_type = 'domain' AND target_id = ?
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (row["id"],),
+                    ).fetchone()
+                    item["latest_dns_job"] = row_to_dict(latest_job) if latest_job else None
+                    if item["latest_dns_job"]:
+                        item["latest_dns_job"]["result"] = parse_json_field(item["latest_dns_job"].get("result"), {})
+                    domains.append(item)
+                return self.json_response({"domains": domains})
+            if path == "/api/admin/dns-providers/cloudflare/accounts" and method == "POST":
+                body = self.read_json()
+                provider = dns_provider_by_key(conn, DNS_PROVIDER_CLOUDFLARE)
+                if not provider:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_provider_missing")
+                display_name = clean_text(body.get("display_name") or body.get("account_name"), "")
+                account_name = clean_text(body.get("account_name", display_name), "")
+                external_account_id = clean_text(body.get("external_account_id", ""), "")
+                api_token = str(body.get("api_token") or body.get("api_key") or "").strip()
+                if not display_name or not api_token:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_account_and_token_required")
+                cur = conn.execute(
+                    """
+                    INSERT INTO dns_provider_accounts(provider_id, display_name, account_name, external_account_id, status, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        provider["id"],
+                        display_name,
+                        account_name,
+                        external_account_id,
+                        "active",
+                        json.dumps({"phase": "foundation", "validation": "pending"}, sort_keys=True),
+                    ),
+                )
+                secret_label = "token:..." + api_token[-4:]
+                conn.execute(
+                    """
+                    INSERT INTO dns_provider_credentials(provider_account_id, credential_kind, secret_label, encrypted_secret, status, validation_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        cur.lastrowid,
+                        "api_token",
+                        secret_label,
+                        encrypt_secret(api_token, CONFIG.jwt_secret),
+                        "stored",
+                        json.dumps({"phase": "foundation", "validated": False}, sort_keys=True),
+                    ),
+                )
+                conn.execute("UPDATE dns_providers SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (provider["id"],))
+                log_audit(conn, "admin", actor["id"], "create_dns_provider_account", "dns_provider_account", cur.lastrowid, metadata={"provider": DNS_PROVIDER_CLOUDFLARE, "display_name": display_name})
+                return self.json_response({"dns_settings": dns_settings_payload(conn), "account_id": cur.lastrowid}, HTTPStatus.CREATED)
+            if path.startswith("/api/admin/dns-providers/cloudflare/accounts/"):
+                account_id = path_int_id(path, "/api/admin/dns-providers/cloudflare/accounts/")
+                account = conn.execute(
+                    """
+                    SELECT a.*, p.key AS provider_key
+                    FROM dns_provider_accounts a
+                    JOIN dns_providers p ON p.id = a.provider_id
+                    WHERE a.id = ? AND p.key = ?
+                    """,
+                    (account_id, DNS_PROVIDER_CLOUDFLARE),
+                ).fetchone()
+                if not account:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "cloudflare_account_not_found")
+                if method == "PATCH":
+                    body = self.read_json()
+                    display_name = clean_text(body.get("display_name", account["display_name"]), account["display_name"])
+                    account_name = clean_text(body.get("account_name", account["account_name"]), account["account_name"])
+                    external_account_id = clean_text(body.get("external_account_id", account["external_account_id"]), account["external_account_id"])
+                    status = body.get("status", account["status"])
+                    if status not in {"active", "disabled"}:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_provider_account_status")
+                    conn.execute(
+                        """
+                        UPDATE dns_provider_accounts
+                        SET display_name = ?, account_name = ?, external_account_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (display_name, account_name, external_account_id, status, account_id),
+                    )
+                    api_token = str(body.get("api_token") or body.get("api_key") or "").strip()
+                    if api_token:
+                        conn.execute(
+                            """
+                            INSERT INTO dns_provider_credentials(provider_account_id, credential_kind, secret_label, encrypted_secret, status, validation_json, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            ON CONFLICT(provider_account_id) DO UPDATE SET
+                              secret_label = excluded.secret_label,
+                              encrypted_secret = excluded.encrypted_secret,
+                              status = excluded.status,
+                              validation_json = excluded.validation_json,
+                              updated_at = CURRENT_TIMESTAMP
+                            """,
+                            (
+                                account_id,
+                                "api_token",
+                                "token:..." + api_token[-4:],
+                                encrypt_secret(api_token, CONFIG.jwt_secret),
+                                "stored",
+                                json.dumps({"phase": "foundation", "validated": False}, sort_keys=True),
+                            ),
+                        )
+                    log_audit(conn, "admin", actor["id"], "update_dns_provider_account", "dns_provider_account", account_id, metadata={"provider": DNS_PROVIDER_CLOUDFLARE, "status": status})
+                    return self.json_response({"dns_settings": dns_settings_payload(conn)})
+                if method == "DELETE":
+                    in_use = conn.execute(
+                        """
+                        SELECT COUNT(*) AS count
+                        FROM plans
+                        WHERE dns_default_provider_account_id = ?
+                        """,
+                        (account_id,),
+                    ).fetchone()["count"]
+                    if in_use:
+                        raise ApiError(HTTPStatus.CONFLICT, "dns_provider_account_in_use")
+                    conn.execute("DELETE FROM dns_provider_credentials WHERE provider_account_id = ?", (account_id,))
+                    conn.execute("DELETE FROM dns_provider_accounts WHERE id = ?", (account_id,))
+                    log_audit(conn, "admin", actor["id"], "delete_dns_provider_account", "dns_provider_account", account_id, metadata={"provider": DNS_PROVIDER_CLOUDFLARE})
+                    return self.json_response({"deleted": True, "dns_settings": dns_settings_payload(conn)})
+                raise ApiError(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
+            if path.startswith("/api/admin/dns-providers/") and path.endswith("/test") and method == "POST":
+                provider_id = int(path.split("/")[-2])
+                provider = conn.execute("SELECT * FROM dns_providers WHERE id = ?", (provider_id,)).fetchone()
+                if not provider:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "dns_provider_not_found")
+                body = self.read_json()
+                account_id = optional_positive_int(body.get("provider_account_id") or "")
+                credential = None
+                if account_id:
+                    credential = conn.execute("SELECT * FROM dns_provider_credentials WHERE provider_account_id = ?", (account_id,)).fetchone()
+                status = "configured" if provider["key"] == DNS_PROVIDER_LOCAL_POWERDNS or credential else "missing_credentials"
+                message = "Provider settings are present. Live provider validation is scheduled for Phase 2." if status == "configured" else "Provider account credentials are missing."
+                cur = conn.execute(
+                    """
+                    INSERT INTO dns_provider_health_checks(provider_id, provider_account_id, status, message, details_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        provider_id,
+                        account_id,
+                        status,
+                        message,
+                        json.dumps({"phase": "foundation", "live_validation": False}, sort_keys=True),
+                    ),
+                )
+                log_audit(conn, "admin", actor["id"], "test_dns_provider", "dns_provider", provider_id, metadata={"status": status, "provider_account_id": account_id})
+                return self.json_response({"health_check_id": cur.lastrowid, "status": status, "message": message, "dns_settings": dns_settings_payload(conn)})
+            if path.startswith("/api/admin/domains/") and path.endswith("/dns/rebuild") and method == "POST":
+                domain_id = int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                ensure_no_active_dns_sync(conn, domain_id)
+                job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", domain_id, {"reason": "admin_rebuild"})
+                log_audit(conn, "admin", actor["id"], "rebuild_dns_zone", "domain", domain_id)
+                return self.json_response({"job_id": job_id, "domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone())})
+            if path.startswith("/api/admin/domains/") and path.endswith("/dns/verify-nameservers") and method == "POST":
+                domain_id = int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                verification = verify_domain_nameservers(conn, domain)
+                log_audit(conn, "admin", actor["id"], "verify_dns_nameservers", "domain", domain_id, metadata={"status": verification["status"]})
+                return self.json_response({"verification": verification, "domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone())})
+            if path.startswith("/api/admin/domains/") and path.endswith("/dns/export") and method == "GET":
+                domain_id = int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                export = create_dns_zone_export(conn, domain, "admin:{}".format(actor["id"]))
+                log_audit(conn, "admin", actor["id"], "export_dns_zone", "domain", domain_id)
+                return self.json_response({"dns_zone_export": export})
+            if path.startswith("/api/admin/domains/") and path.endswith("/dns/migrate-provider") and method == "POST":
+                domain_id = int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                body = self.read_json()
+                provider_key = str(body.get("dns_provider") or body.get("provider") or "").strip()
+                provider_account_id = body.get("dns_provider_account_id") or body.get("provider_account_id")
+                if provider_account_id in ("", None):
+                    provider_account_id = None
+                else:
+                    provider_account_id = positive_int(provider_account_id, "invalid_dns_provider_account_id")
+                job_id = migrate_domain_dns_provider(conn, domain, provider_key, provider_account_id, "admin:{}".format(actor["id"]))
+                log_audit(conn, "admin", actor["id"], "migrate_dns_provider", "domain", domain_id, metadata={"to": provider_key, "provider_account_id": provider_account_id})
+                return self.json_response({"job_id": job_id, "domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone())})
+            if path == "/api/admin/domains/dns/bulk-migrate-provider" and method == "POST":
+                body = self.read_json()
+                domain_ids = [positive_int(item, "invalid_domain_id") for item in (body.get("domain_ids") or [])]
+                if not domain_ids:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "domain_ids_required")
+                provider_key = str(body.get("dns_provider") or body.get("provider") or "").strip()
+                provider_account_id = body.get("dns_provider_account_id") or body.get("provider_account_id")
+                if provider_account_id in ("", None):
+                    provider_account_id = None
+                else:
+                    provider_account_id = positive_int(provider_account_id, "invalid_dns_provider_account_id")
+                jobs = []
+                for domain_id in domain_ids:
+                    domain = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+                    if not domain:
+                        continue
+                    jobs.append({"domain_id": domain_id, "job_id": migrate_domain_dns_provider(conn, domain, provider_key, provider_account_id, "admin:{}".format(actor["id"]))})
+                log_audit(conn, "admin", actor["id"], "bulk_migrate_dns_provider", "domain", None, metadata={"count": len(jobs), "to": provider_key})
+                return self.json_response({"jobs": jobs, "domains": [decorate_domain(row) for row in conn.execute("SELECT * FROM domains ORDER BY name").fetchall()]})
             if path == "/api/admin/plans" and method == "GET":
                 return self.json_response({"plans": rows_to_dicts(conn.execute("SELECT * FROM plans ORDER BY id").fetchall())})
             if path == "/api/admin/plans" and method == "POST":
@@ -3331,8 +3667,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                       name, cpu_limit, memory_mb, storage_mb, inode_limit, max_websites,
                       max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days,
                       max_processes, php_workers, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
-                      frontend_frameworks, backend_frameworks, nodejs_versions, package_managers
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      frontend_frameworks, backend_frameworks, nodejs_versions, package_managers,
+                      dns_default_provider, dns_allowed_providers_json, dns_default_provider_account_id,
+                      dns_customer_editable, dns_max_records_per_domain, dns_allowed_record_types_json,
+                      dns_min_ttl, dns_wildcard_records_allowed, dns_cloudflare_proxy_allowed,
+                      dns_dnssec_allowed, dns_dnssec_required
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         plan["name"],
@@ -3356,6 +3696,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["backend_frameworks"],
                         plan["nodejs_versions"],
                         plan["package_managers"],
+                        plan["dns_default_provider"],
+                        plan["dns_allowed_providers_json"],
+                        plan["dns_default_provider_account_id"],
+                        plan["dns_customer_editable"],
+                        plan["dns_max_records_per_domain"],
+                        plan["dns_allowed_record_types_json"],
+                        plan["dns_min_ttl"],
+                        plan["dns_wildcard_records_allowed"],
+                        plan["dns_cloudflare_proxy_allowed"],
+                        plan["dns_dnssec_allowed"],
+                        plan["dns_dnssec_required"],
                     ),
                 )
                 log_audit(conn, "admin", actor["id"], "create_plan", "plan", cur.lastrowid, metadata={"name": plan["name"]})
@@ -3609,9 +3960,26 @@ class MangoHandler(BaseHTTPRequestHandler):
                     """,
                     (account_id, domain, document_root, "8.3", "missing", "active"),
                 ).lastrowid
+                dns_assignment = default_domain_dns_assignment(conn, account_id)
                 domain_id = conn.execute(
-                    "INSERT INTO domains(account_id, name, kind, status, linked_website_id) VALUES (?, ?, ?, ?, ?)",
-                    (account_id, domain, "managed", "active", website_id),
+                    """
+                    INSERT INTO domains(
+                      account_id, name, kind, status, linked_website_id, dns_provider,
+                      dns_provider_account_id, nameservers_json, dns_status, provider_state_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        account_id,
+                        domain,
+                        "managed",
+                        "active",
+                        website_id,
+                        dns_assignment["dns_provider"],
+                        dns_assignment["dns_provider_account_id"],
+                        json.dumps(dns_assignment["nameservers"]),
+                        dns_assignment["dns_status"],
+                        json.dumps(dns_assignment["provider_state"], sort_keys=True),
+                    ),
                 ).lastrowid
                 dkim_material = generate_dkim_material("mango")
                 conn.execute(
@@ -3834,6 +4202,466 @@ def parse_json_field(value, fallback):
         return json.loads(value) if value else fallback
     except (TypeError, json.JSONDecodeError):
         return fallback
+
+
+def dns_provider_public(row):
+    item = row_to_dict(row)
+    item["config"] = parse_json_field(item.pop("config_json", None), {})
+    item["capabilities"] = parse_json_field(item.pop("capabilities_json", None), {})
+    return item
+
+
+def dns_provider_account_public(row):
+    item = row_to_dict(row)
+    item["metadata"] = parse_json_field(item.pop("metadata_json", None), {})
+    item["has_secret"] = bool(item.pop("encrypted_secret", ""))
+    item["credential_status"] = item.pop("credential_status", None) or "missing"
+    item["secret_label"] = item.pop("secret_label", "") or ""
+    item["last_validated_at"] = item.pop("last_validated_at", None)
+    item["validation"] = parse_json_field(item.pop("validation_json", None), {})
+    return item
+
+
+def dns_provider_by_key(conn, key):
+    return conn.execute("SELECT * FROM dns_providers WHERE key = ?", (key,)).fetchone()
+
+
+def dns_settings_payload(conn):
+    providers = [dns_provider_public(row) for row in conn.execute("SELECT * FROM dns_providers ORDER BY id").fetchall()]
+    provider_by_id = {item["id"]: item for item in providers}
+    assignment = conn.execute(
+        """
+        SELECT a.*, p.key AS provider_key
+        FROM dns_provider_assignments a
+        JOIN dns_providers p ON p.id = a.provider_id
+        WHERE a.scope_type = 'global' AND a.scope_id = 0
+        """
+    ).fetchone()
+    global_mode = assignment["provider_key"] if assignment else DNS_PROVIDER_LOCAL_POWERDNS
+    policy = parse_json_field(assignment["policy_json"], {}) if assignment else {"mode": global_mode}
+    account_rows = conn.execute(
+        """
+        SELECT a.*, p.key AS provider_key, p.display_name AS provider_name,
+               c.encrypted_secret, c.status AS credential_status, c.secret_label,
+               c.last_validated_at, c.validation_json
+        FROM dns_provider_accounts a
+        JOIN dns_providers p ON p.id = a.provider_id
+        LEFT JOIN dns_provider_credentials c ON c.provider_account_id = a.id
+        ORDER BY p.id, a.display_name
+        """
+    ).fetchall()
+    accounts = [dns_provider_account_public(row) for row in account_rows]
+    local_provider = next((provider for provider in providers if provider["key"] == DNS_PROVIDER_LOCAL_POWERDNS), None)
+    latest_health_rows = conn.execute(
+        """
+        SELECT h.*
+        FROM dns_provider_health_checks h
+        JOIN (
+          SELECT provider_id, COALESCE(provider_account_id, 0) AS account_key, MAX(id) AS max_id
+          FROM dns_provider_health_checks
+          GROUP BY provider_id, COALESCE(provider_account_id, 0)
+        ) latest ON latest.max_id = h.id
+        ORDER BY h.id DESC
+        """
+    ).fetchall()
+    health_checks = []
+    for row in rows_to_dicts(latest_health_rows):
+        row["details"] = parse_json_field(row.pop("details_json", None), {})
+        row["provider_key"] = provider_by_id.get(row["provider_id"], {}).get("key")
+        health_checks.append(row)
+    return {
+        "global_mode": global_mode,
+        "global_policy": policy,
+        "local": local_provider["config"] if local_provider else {},
+        "providers": providers,
+        "accounts": accounts,
+        "health_checks": health_checks,
+    }
+
+
+def update_global_dns_assignment(conn, provider_key, policy):
+    provider = dns_provider_by_key(conn, provider_key)
+    if not provider:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_provider")
+    conn.execute(
+        """
+        INSERT INTO dns_provider_assignments(scope_type, scope_id, provider_id, status, policy_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(scope_type, scope_id) DO UPDATE SET
+          provider_id = excluded.provider_id,
+          provider_account_id = excluded.provider_account_id,
+          status = excluded.status,
+          policy_json = excluded.policy_json,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        ("global", 0, provider["id"], "active", json.dumps(policy, sort_keys=True)),
+    )
+
+
+def validate_dns_settings_payload(body, current):
+    mode = str(body.get("global_mode") or body.get("mode") or current.get("global_mode") or DNS_PROVIDER_LOCAL_POWERDNS).strip()
+    if mode not in DNS_PROVIDER_KEYS:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_provider")
+    local_body = body.get("local") or {}
+    current_local = current.get("local") or {}
+    raw_nameservers = local_body.get("nameservers")
+    if raw_nameservers is None:
+        raw_nameservers = [
+            local_body.get("nameserver_1", (current_local.get("nameservers") or ["ns1.mango.test"])[0]),
+            local_body.get("nameserver_2", (current_local.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"])[1]),
+        ]
+    nameservers = []
+    for value in raw_nameservers:
+        nameservers.append(sanitize_domain(value))
+    if len(nameservers) < 2:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "at_least_two_nameservers_required")
+    public_ipv4 = clean_text(local_body.get("public_ipv4", current_local.get("public_ipv4", "127.0.0.1")), "")
+    public_ipv6 = clean_text(local_body.get("public_ipv6", current_local.get("public_ipv6", "")), "")
+    for value, error in [(public_ipv4, "invalid_public_ipv4"), (public_ipv6, "invalid_public_ipv6")]:
+        if value:
+            try:
+                ipaddress.ip_address(value)
+            except ValueError as exc:
+                raise ApiError(HTTPStatus.BAD_REQUEST, error) from exc
+    default_ttl = positive_int(local_body.get("default_ttl", current_local.get("default_ttl", 300)), "invalid_dns_ttl", minimum=60, maximum=86400)
+    local_config = {
+        "nameservers": nameservers,
+        "public_ipv4": public_ipv4,
+        "public_ipv6": public_ipv6,
+        "soa_email": clean_text(local_body.get("soa_email", current_local.get("soa_email", "hostmaster.mango.test")), "hostmaster.mango.test"),
+        "default_ttl": default_ttl,
+        "glue_record_notes": clean_text(
+            local_body.get("glue_record_notes", current_local.get("glue_record_notes", "")),
+            "Register glue records for the configured nameserver hostnames at the registrar.",
+        ),
+    }
+    return {
+        "global_mode": mode,
+        "local": local_config,
+        "policy": {
+            "mode": mode,
+            "local_nameservers": nameservers,
+            "phase": "foundation",
+        },
+    }
+
+
+def plan_dns_policy(plan):
+    return {
+        "default_provider": plan["dns_default_provider"] if "dns_default_provider" in plan.keys() else DNS_PROVIDER_LOCAL_POWERDNS,
+        "allowed_providers": parse_json_field(plan["dns_allowed_providers_json"] if "dns_allowed_providers_json" in plan.keys() else "", [DNS_PROVIDER_LOCAL_POWERDNS]),
+        "default_provider_account_id": plan["dns_default_provider_account_id"] if "dns_default_provider_account_id" in plan.keys() else None,
+        "customer_editable": bool(plan["dns_customer_editable"]) if "dns_customer_editable" in plan.keys() else True,
+        "max_records_per_domain": int(plan["dns_max_records_per_domain"]) if "dns_max_records_per_domain" in plan.keys() else 100,
+        "allowed_record_types": parse_json_field(plan["dns_allowed_record_types_json"] if "dns_allowed_record_types_json" in plan.keys() else "", DEFAULT_DNS_RECORD_TYPES),
+        "min_ttl": int(plan["dns_min_ttl"]) if "dns_min_ttl" in plan.keys() else 60,
+        "wildcard_records_allowed": bool(plan["dns_wildcard_records_allowed"]) if "dns_wildcard_records_allowed" in plan.keys() else True,
+        "cloudflare_proxy_allowed": bool(plan["dns_cloudflare_proxy_allowed"]) if "dns_cloudflare_proxy_allowed" in plan.keys() else False,
+        "dnssec_allowed": bool(plan["dns_dnssec_allowed"]) if "dns_dnssec_allowed" in plan.keys() else False,
+        "dnssec_required": bool(plan["dns_dnssec_required"]) if "dns_dnssec_required" in plan.keys() else False,
+    }
+
+
+def default_domain_dns_assignment(conn, account_id):
+    plan = conn.execute(
+        """
+        SELECT p.*
+        FROM hosting_accounts ha
+        JOIN plans p ON p.id = ha.plan_id
+        WHERE ha.id = ?
+        """,
+        (account_id,),
+    ).fetchone()
+    policy = plan_dns_policy(plan) if plan else {
+        "default_provider": DNS_PROVIDER_LOCAL_POWERDNS,
+        "default_provider_account_id": None,
+    }
+    provider = policy["default_provider"] if policy["default_provider"] in DNS_PROVIDER_KEYS else DNS_PROVIDER_LOCAL_POWERDNS
+    local_provider = dns_provider_by_key(conn, DNS_PROVIDER_LOCAL_POWERDNS)
+    local_config = parse_json_field(local_provider["config_json"], {}) if local_provider else {}
+    nameservers = local_config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"]
+    if provider == DNS_PROVIDER_CLOUDFLARE:
+        nameservers = []
+    return {
+        "dns_provider": provider,
+        "dns_provider_account_id": policy.get("default_provider_account_id"),
+        "nameservers": nameservers,
+        "dns_status": "pending_provider_sync" if provider == DNS_PROVIDER_CLOUDFLARE else "active",
+        "provider_state": {"assignment_source": "plan", "phase": "foundation"},
+    }
+
+
+def verify_domain_nameservers(conn, domain):
+    expected = parse_json_field(domain["nameservers_json"] if "nameservers_json" in domain.keys() else "", [])
+    expected_normalized = sorted({str(item).strip().rstrip(".").lower() for item in expected if str(item).strip()})
+    observed = []
+    status = "unknown"
+    message = "nameserver lookup tool unavailable"
+    dig = shutil.which("dig")
+    if dig:
+        try:
+            result = subprocess.run(
+                [dig, "+short", "NS", domain["name"]],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            observed = sorted({line.strip().rstrip(".").lower() for line in result.stdout.splitlines() if line.strip()})
+            if result.returncode == 0:
+                if expected_normalized and set(expected_normalized).issubset(set(observed)):
+                    status = "active"
+                    message = "domain is delegated to the expected nameservers"
+                elif observed:
+                    status = "pending_nameserver"
+                    message = "domain is delegated to different nameservers"
+                else:
+                    status = "pending_nameserver"
+                    message = "no authoritative nameservers observed"
+            else:
+                status = "unknown"
+                message = (result.stderr or "nameserver lookup failed").strip()[:240]
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            status = "unknown"
+            message = str(exc)[:240]
+    conn.execute(
+        """
+        UPDATE domains
+        SET dns_status = ?, last_nameserver_check_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (status, domain["id"]),
+    )
+    if status == "active":
+        migration_state = parse_json_field(domain["dns_migration_state_json"] if "dns_migration_state_json" in domain.keys() else "", {})
+        if migration_state:
+            migration_state["status"] = "verified"
+            migration_state["verified_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            migration_state["delete_old_provider_zone"] = False
+            conn.execute(
+                "UPDATE domains SET dns_migration_state_json = ? WHERE id = ?",
+                (json.dumps(migration_state, sort_keys=True), domain["id"]),
+            )
+    conn.execute(
+        """
+        UPDATE dns_zones
+        SET dns_status = ?, last_nameserver_check_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE domain_id = ?
+        """,
+        (status, domain["id"]),
+    )
+    return {
+        "domain_id": domain["id"],
+        "domain": domain["name"],
+        "status": status,
+        "message": message,
+        "expected_nameservers": expected_normalized,
+        "observed_nameservers": observed,
+    }
+
+
+def decorate_dns_zone(row):
+    item = row_to_dict(row)
+    item["nameservers"] = parse_json_field(item.get("nameservers_json"), [])
+    item["provider_state"] = parse_json_field(item.get("provider_state_json"), {})
+    item["warnings"] = dns_state_warnings(item)
+    return item
+
+
+def decorate_domain(row):
+    item = row_to_dict(row)
+    item["nameservers"] = parse_json_field(item.get("nameservers_json"), [])
+    item["provider_state"] = parse_json_field(item.get("provider_state_json"), {})
+    item["dns_migration_state"] = parse_json_field(item.get("dns_migration_state_json"), {})
+    item["dns_provider_label"] = "Cloudflare" if item.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE else "Local DNS"
+    item["dns_warnings"] = dns_state_warnings(item)
+    return item
+
+
+def dns_state_warnings(item):
+    warnings = []
+    status = str(item.get("dns_status") or item.get("status") or "").lower()
+    nameservers = parse_json_field(item.get("nameservers_json"), []) if isinstance(item.get("nameservers_json"), str) else item.get("nameservers", [])
+    provider_state = parse_json_field(item.get("provider_state_json"), {}) if isinstance(item.get("provider_state_json"), str) else item.get("provider_state", {})
+    if status in {"provider_failed", "failed"}:
+        warnings.append({"code": "provider_failed", "message": provider_state.get("last_error") or "DNS provider sync failed."})
+    if status in {"pending_nameserver", "pending_provider_sync"}:
+        warnings.append({"code": status, "message": "Nameserver delegation is not verified yet."})
+    if not nameservers:
+        warnings.append({"code": "missing_nameservers", "message": "No effective nameservers are saved for this domain."})
+    if provider_state.get("last_error"):
+        warnings.append({"code": "provider_error_snapshot", "message": str(provider_state["last_error"])[:240]})
+    return warnings
+
+
+def decorated_dns_records(rows):
+    records = []
+    for row in rows:
+        item = row_to_dict(row)
+        item["proxied"] = bool(item.get("proxied", 0))
+        item["system_record"] = bool(item.get("system_record", 0))
+        item["locked"] = bool(item.get("locked", 0))
+        item["provider_metadata"] = parse_json_field(item.get("provider_metadata_json"), {})
+        records.append(item)
+    return records
+
+
+def dns_zone_export_payload(conn, domain):
+    zone = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ?", (domain["id"],)).fetchone()
+    records = conn.execute("SELECT * FROM dns_records WHERE domain_id = ? ORDER BY type, name, id", (domain["id"],)).fetchall()
+    return {
+        "domain": decorate_domain(domain),
+        "zone": decorate_dns_zone(zone) if zone else None,
+        "records": decorated_dns_records(records),
+        "exported_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    }
+
+
+def create_dns_zone_export(conn, domain, created_by):
+    payload = dns_zone_export_payload(conn, domain)
+    conn.execute(
+        """
+        INSERT INTO dns_zone_exports(domain_id, account_id, zone_name, provider, export_json, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            domain["id"],
+            domain["account_id"],
+            domain["name"],
+            domain["dns_provider"] if "dns_provider" in domain.keys() else "",
+            json.dumps(payload, sort_keys=True),
+            created_by,
+        ),
+    )
+    return payload
+
+
+def ensure_no_active_dns_sync(conn, domain_id):
+    record_ids = [row["id"] for row in conn.execute("SELECT id FROM dns_records WHERE domain_id = ?", (domain_id,)).fetchall()]
+    params = [domain_id]
+    record_clause = ""
+    if record_ids:
+        record_clause = " OR (type = 'sync_dns_record' AND target_type = 'dns_record' AND target_id IN ({}))".format(sql_placeholders(record_ids))
+        params.extend(record_ids)
+    active = conn.execute(
+        """
+        SELECT id FROM jobs
+        WHERE status IN ('queued', 'running')
+          AND (
+            (type = 'sync_dns_zone' AND target_type = 'domain' AND target_id = ?)
+            {}
+          )
+        LIMIT 1
+        """.format(record_clause),
+        params,
+    ).fetchone()
+    if active:
+        raise ApiError(HTTPStatus.CONFLICT, "dns_sync_already_in_progress")
+
+
+def ensure_dns_record_mutable(record):
+    record_type = str(record["type"] or "").upper()
+    record_name = str(record["name"] or "@").strip()
+    if int(record["locked"] if "locked" in record.keys() and record["locked"] is not None else 0):
+        raise ApiError(HTTPStatus.FORBIDDEN, "dns_record_locked")
+    if int(record["system_record"] if "system_record" in record.keys() and record["system_record"] is not None else 0):
+        raise ApiError(HTTPStatus.FORBIDDEN, "dns_system_record_locked")
+    if record_type == "SOA" or (record_type == "NS" and record_name in {"@", ""}):
+        raise ApiError(HTTPStatus.FORBIDDEN, "dns_root_authority_record_locked")
+
+
+def ensure_dns_record_conflicts(conn, domain_id, record_payload, exclude_record_id=None):
+    record_type = record_payload["type"]
+    name = record_payload["name"]
+    params = [domain_id, name]
+    exclude_clause = ""
+    if exclude_record_id:
+        exclude_clause = " AND id != ?"
+        params.append(exclude_record_id)
+    rows = conn.execute(
+        "SELECT * FROM dns_records WHERE domain_id = ? AND name = ?{} ORDER BY id".format(exclude_clause),
+        params,
+    ).fetchall()
+    if record_type == "CNAME" and rows:
+        raise ApiError(HTTPStatus.CONFLICT, "dns_cname_conflicts_with_existing_records")
+    if record_type != "CNAME" and any(str(row["type"]).upper() == "CNAME" for row in rows):
+        raise ApiError(HTTPStatus.CONFLICT, "dns_record_conflicts_with_existing_cname")
+
+
+def dns_provider_account_active(conn, account_id, provider_key):
+    if not account_id:
+        return None
+    return conn.execute(
+        """
+        SELECT a.*
+        FROM dns_provider_accounts a
+        JOIN dns_providers p ON p.id = a.provider_id
+        WHERE a.id = ? AND p.key = ? AND a.status = 'active'
+        """,
+        (account_id, provider_key),
+    ).fetchone()
+
+
+def migrate_domain_dns_provider(conn, domain, provider_key, provider_account_id, actor_label):
+    if provider_key not in DNS_PROVIDER_KEYS:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_provider")
+    if provider_key == DNS_PROVIDER_CLOUDFLARE:
+        if not dns_provider_account_active(conn, provider_account_id, DNS_PROVIDER_CLOUDFLARE):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_account_required")
+    else:
+        provider_account_id = None
+    ensure_no_active_dns_sync(conn, domain["id"])
+    previous_state = {
+        "provider": domain["dns_provider"] if "dns_provider" in domain.keys() else DNS_PROVIDER_LOCAL_POWERDNS,
+        "provider_account_id": domain["dns_provider_account_id"] if "dns_provider_account_id" in domain.keys() else None,
+        "provider_zone_id": domain["provider_zone_id"] if "provider_zone_id" in domain.keys() else None,
+        "nameservers": parse_json_field(domain["nameservers_json"] if "nameservers_json" in domain.keys() else "", []),
+        "provider_state": parse_json_field(domain["provider_state_json"] if "provider_state_json" in domain.keys() else "", {}),
+    }
+    migration_state = {
+        "from": previous_state,
+        "to": {"provider": provider_key, "provider_account_id": provider_account_id},
+        "status": "pending_provider_sync",
+        "delete_old_provider_zone": False,
+        "started_by": actor_label,
+        "started_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    }
+    local_provider = dns_provider_by_key(conn, DNS_PROVIDER_LOCAL_POWERDNS)
+    local_config = parse_json_field(local_provider["config_json"], {}) if local_provider else {}
+    nameservers = [] if provider_key == DNS_PROVIDER_CLOUDFLARE else (local_config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"])
+    conn.execute(
+        """
+        UPDATE domains
+        SET previous_dns_provider = dns_provider,
+            previous_dns_provider_account_id = dns_provider_account_id,
+            previous_provider_zone_id = provider_zone_id,
+            dns_provider = ?,
+            dns_provider_account_id = ?,
+            nameservers_json = ?,
+            dns_status = 'pending_provider_sync',
+            dns_migration_state_json = ?,
+            provider_state_json = ?
+        WHERE id = ?
+        """,
+        (
+            provider_key,
+            provider_account_id,
+            json.dumps(nameservers),
+            json.dumps(migration_state, sort_keys=True),
+            json.dumps({"migration": migration_state, "previous": previous_state}, sort_keys=True),
+            domain["id"],
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE dns_zones
+        SET provider = ?, provider_account_id = ?, dns_status = 'pending_provider_sync',
+            status = 'pending_provider_sync', nameservers_json = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE domain_id = ?
+        """,
+        (provider_key, provider_account_id, json.dumps(nameservers), domain["id"]),
+    )
+    return enqueue_agent_job(conn, "sync_dns_zone", "domain", domain["id"], {"reason": "provider_migration", "from": previous_state["provider"], "to": provider_key})
 
 
 def account_runtime(conn, account_id):
@@ -5506,6 +6334,45 @@ def validate_plan_payload(body):
     backend_frameworks = clean_text(body.get("backend_frameworks", "Express, Fastify, Hono, NestJS, Nuxt, React Router, SvelteKit"), "")
     nodejs_versions = clean_text(body.get("nodejs_versions", "24.x, 22.x, 20.x and 18.x"), "")
     package_managers = clean_text(body.get("package_managers", "npm (default), yarn and pnpm"), "")
+    dns_default_provider = str(body.get("dns_default_provider", DNS_PROVIDER_LOCAL_POWERDNS) or DNS_PROVIDER_LOCAL_POWERDNS).strip()
+    if dns_default_provider not in DNS_PROVIDER_KEYS:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_provider")
+    raw_allowed_providers = body.get("dns_allowed_providers", body.get("dns_allowed_providers_json", [dns_default_provider]))
+    if isinstance(raw_allowed_providers, str):
+        try:
+            allowed_providers = json.loads(raw_allowed_providers)
+        except json.JSONDecodeError:
+            allowed_providers = [item.strip() for item in raw_allowed_providers.split(",") if item.strip()]
+    else:
+        allowed_providers = list(raw_allowed_providers or [])
+    if dns_default_provider not in allowed_providers:
+        allowed_providers.append(dns_default_provider)
+    if not allowed_providers or any(provider not in DNS_PROVIDER_KEYS for provider in allowed_providers):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_allowed_providers")
+    raw_record_types = body.get("dns_allowed_record_types", body.get("dns_allowed_record_types_json", DEFAULT_DNS_RECORD_TYPES))
+    if isinstance(raw_record_types, str):
+        try:
+            allowed_record_types = json.loads(raw_record_types)
+        except json.JSONDecodeError:
+            allowed_record_types = [item.strip().upper() for item in raw_record_types.split(",") if item.strip()]
+    else:
+        allowed_record_types = [str(item).strip().upper() for item in (raw_record_types or [])]
+    if not allowed_record_types or any(record_type not in DNS_RECORD_TYPES for record_type in allowed_record_types):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_allowed_record_types")
+    dns_default_provider_account_id = body.get("dns_default_provider_account_id")
+    if dns_default_provider_account_id in ("", None):
+        dns_default_provider_account_id = None
+    else:
+        dns_default_provider_account_id = positive_int(dns_default_provider_account_id, "invalid_dns_provider_account_id")
+    dns_customer_editable = 1 if body.get("dns_customer_editable", True) else 0
+    dns_max_records_per_domain = positive_int(body.get("dns_max_records_per_domain", 100), "invalid_dns_max_records", minimum=0, maximum=10000)
+    dns_min_ttl = positive_int(body.get("dns_min_ttl", 60), "invalid_dns_min_ttl", minimum=60, maximum=86400)
+    dns_wildcard_records_allowed = 1 if body.get("dns_wildcard_records_allowed", True) else 0
+    dns_cloudflare_proxy_allowed = 1 if body.get("dns_cloudflare_proxy_allowed", False) else 0
+    dns_dnssec_allowed = 1 if body.get("dns_dnssec_allowed", False) else 0
+    dns_dnssec_required = 1 if body.get("dns_dnssec_required", False) else 0
+    if dns_dnssec_required:
+        dns_dnssec_allowed = 1
     
     return {
         "name": name,
@@ -5529,6 +6396,17 @@ def validate_plan_payload(body):
         "backend_frameworks": backend_frameworks,
         "nodejs_versions": nodejs_versions,
         "package_managers": package_managers,
+        "dns_default_provider": dns_default_provider,
+        "dns_allowed_providers_json": json.dumps(sorted(set(allowed_providers))),
+        "dns_default_provider_account_id": dns_default_provider_account_id,
+        "dns_customer_editable": dns_customer_editable,
+        "dns_max_records_per_domain": dns_max_records_per_domain,
+        "dns_allowed_record_types_json": json.dumps(sorted(set(allowed_record_types))),
+        "dns_min_ttl": dns_min_ttl,
+        "dns_wildcard_records_allowed": dns_wildcard_records_allowed,
+        "dns_cloudflare_proxy_allowed": dns_cloudflare_proxy_allowed,
+        "dns_dnssec_allowed": dns_dnssec_allowed,
+        "dns_dnssec_required": dns_dnssec_required,
     }
 
 
@@ -5559,6 +6437,12 @@ def validate_dns_record_payload(body):
         priority = None
     else:
         priority = positive_int(priority, "invalid_dns_priority", minimum=0, maximum=65535)
+    proxied = 1 if body.get("proxied", False) else 0
+    provider_metadata = body.get("provider_metadata") or body.get("provider_metadata_json") or {}
+    if isinstance(provider_metadata, str):
+        provider_metadata = parse_json_field(provider_metadata, {})
+    if not isinstance(provider_metadata, dict):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_provider_metadata")
     return {
         "domain_id": domain_id,
         "type": record_type,
@@ -5566,7 +6450,36 @@ def validate_dns_record_payload(body):
         "value": value,
         "ttl": ttl,
         "priority": priority,
+        "proxied": proxied,
+        "provider_metadata": provider_metadata,
     }
+
+
+def enforce_dns_record_policy(conn, account_id, record_payload, domain_id, creating=False):
+    plan = conn.execute(
+        """
+        SELECT p.*
+        FROM hosting_accounts ha
+        JOIN plans p ON p.id = ha.plan_id
+        WHERE ha.id = ?
+        """,
+        (account_id,),
+    ).fetchone()
+    if not plan:
+        raise ApiError(HTTPStatus.NOT_FOUND, "hosting_account_not_found")
+    policy = plan_dns_policy(plan)
+    if not policy["customer_editable"]:
+        raise ApiError(HTTPStatus.FORBIDDEN, "dns_editing_not_allowed")
+    if record_payload["type"] not in set(policy["allowed_record_types"]):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "dns_record_type_not_allowed_by_plan")
+    if int(record_payload["ttl"]) < int(policy["min_ttl"]):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "dns_ttl_below_plan_minimum")
+    if not policy["wildcard_records_allowed"] and "*" in record_payload["name"]:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "dns_wildcards_not_allowed_by_plan")
+    if creating:
+        count = conn.execute("SELECT COUNT(*) AS count FROM dns_records WHERE domain_id = ?", (domain_id,)).fetchone()["count"]
+        if int(count) >= int(policy["max_records_per_domain"]):
+            raise ApiError(HTTPStatus.FORBIDDEN, "dns_record_limit_reached")
 
 
 def normalize_cpu_limit(value):
@@ -5614,12 +6527,27 @@ def create_initial_hosting_account(conn, user_id):
         """,
         (account_id, domain, document_root, "8.3", "missing", "active"),
     ).lastrowid
+    dns_assignment = default_domain_dns_assignment(conn, account_id)
     domain_id = conn.execute(
         """
-        INSERT INTO domains(account_id, name, kind, status, linked_website_id)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO domains(
+          account_id, name, kind, status, linked_website_id, dns_provider,
+          dns_provider_account_id, nameservers_json, dns_status, provider_state_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (account_id, domain, "managed", "active", website_id),
+        (
+            account_id,
+            domain,
+            "managed",
+            "active",
+            website_id,
+            dns_assignment["dns_provider"],
+            dns_assignment["dns_provider_account_id"],
+            json.dumps(dns_assignment["nameservers"]),
+            dns_assignment["dns_status"],
+            json.dumps(dns_assignment["provider_state"], sort_keys=True),
+        ),
     ).lastrowid
     conn.execute(
         "INSERT OR IGNORE INTO mail_domains(account_id, domain_id, status) VALUES (?, ?, ?)",

@@ -28,6 +28,10 @@ class Config:
         self.dev_auth_test_mode = os.getenv("MP_DEV_AUTH_TEST_MODE", "false").lower() == "true"
         self.token_ttl_seconds = int(os.getenv("MP_TOKEN_TTL_SECONDS", "3600"))
         self.totp_challenge_ttl_seconds = int(os.getenv("MP_TOTP_CHALLENGE_TTL_SECONDS", "300"))
+        self.powerdns_api_url = os.getenv("MP_POWERDNS_API_URL", "")
+        self.powerdns_api_key = os.getenv("MP_POWERDNS_API_KEY", "")
+        self.powerdns_server_id = os.getenv("MP_POWERDNS_SERVER_ID", "localhost")
+        self.cloudflare_api_base = os.getenv("MP_CLOUDFLARE_API_BASE", "https://api.cloudflare.com/client/v4")
     @property
     def is_development(self):
         return self.env == "development"
