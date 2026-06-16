@@ -23,8 +23,21 @@ This is not the production hosting runtime yet. The agent now generates account 
 ## Quick Start
 
 ```bash
+make install # prepare the Python environment and verify the full-stack prerequisites
 make dev-init   # check Python, Docker, and ports
 make dev-up     # start the client + admin panels (seeds dev data on first run)
+```
+
+Fresh clone with `git`:
+
+```bash
+git clone https://github.com/servermango/MangoPanel.git MangoPanel && cd MangoPanel && bash scripts/install.sh
+```
+
+If `git` is not installed:
+
+```bash
+mkdir MangoPanel && curl -fsSL https://codeload.github.com/servermango/MangoPanel/tar.gz/refs/heads/main | tar -xz -C MangoPanel --strip-components=1 && cd MangoPanel && bash scripts/install.sh
 ```
 
 Then open the client panel at <http://127.0.0.1:8000/> and the admin panel at <http://127.0.0.1:8001/admin>, and log in with the seed credentials below (TOTP code `000000` in dev mode). That's all you need for day-to-day work; the rest of this document explains how the pieces fit together.

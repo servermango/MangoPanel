@@ -4,7 +4,10 @@ CLIENT_PORT ?= 8000
 ADMIN_PORT ?= 8001
 PORT ?= $(CLIENT_PORT)
 
-.PHONY: dev-init dev-up dev-up-docker dev-hosting-up dev-hosting-down dev-seed dev-agent dev-agent-once dev-smoke dev-hosting-smoke dev-e2e dev-reset dev-down test
+.PHONY: install dev-init dev-up dev-up-docker dev-hosting-up dev-hosting-down dev-seed dev-agent dev-agent-once dev-smoke dev-hosting-smoke dev-e2e dev-reset dev-down test
+
+install:
+	bash scripts/install.sh
 
 dev-init:
 	$(PYTHON) scripts/dev_init.py

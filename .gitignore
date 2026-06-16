@@ -6,4 +6,4 @@ var/
 user_files/
 dist/
 node_modules/
-
+.venv/
