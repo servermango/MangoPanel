@@ -215,6 +215,31 @@ wait_for_docker() {
   die "Docker was installed but the daemon is not ready. Start Docker Desktop or the Docker service, then rerun scripts/install.sh."
 }
 
+prefetch_docker_images() {
+  local images=(
+    "python:3.11-slim"
+    "debian:bookworm-slim"
+    "litespeedtech/openlitespeed:latest"
+    "lucaslorentz/caddy-docker-proxy:ci-alpine"
+    "redis:7-alpine"
+    "filebrowser/filebrowser:latest"
+    "phpmyadmin:latest"
+    "ghcr.io/docker-mailserver/docker-mailserver:latest"
+    "djmaze/snappymail:latest@sha256:5e3d990438809a8a49f8ac5758db03e858e6e9fc0e369e1f9e474f7664079905"
+    "mariadb:10.11"
+    "postgres:16"
+    "adminer:latest"
+    "alpine:3.20"
+    "atmoz/sftp:alpine"
+  )
+
+  local image
+  for image in "${images[@]}"; do
+    say "Pulling Docker image: $image"
+    docker pull "$image"
+  done
+}
+
 ensure_python() {
   local python_bin
 
@@ -277,6 +302,9 @@ main() {
   ensure_brew_shellenv
   verify_tooling
   wait_for_docker
+  if [[ "$mode" == "--full" ]]; then
+    prefetch_docker_images
+  fi
   ensure_python
 
   python -m compileall "$repo_root/mangopanel" "$repo_root/scripts" "$repo_root/tests" >/dev/null
@@ -284,7 +312,7 @@ main() {
   say "Python environment is ready in: $venv_dir"
   say "System prerequisites installed: git, make, curl, tar, lsof, python3"
   if [[ "$mode" == "--full" ]]; then
-    say "Docker and Docker Compose are installed and reachable."
+    say "Docker and Docker Compose are installed, reachable, and the project images are pre-pulled."
   fi
   if [[ "$needs_new_login" == true ]]; then
     say "You were added to the docker group. Open a new shell session before using Docker without sudo."

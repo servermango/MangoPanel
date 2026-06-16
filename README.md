@@ -36,7 +36,7 @@ mkdir MangoPanel && curl -fsSL https://codeload.github.com/servermango/MangoPane
 
 ```bash
 cd MangoPanel
-make install # install system prerequisites, Python env, and Docker tooling
+make install # install system prerequisites, Python env, Docker tooling, and pre-pull project images
 make dev-init   # check Python, Docker, and ports
 make dev-up     # start the client + admin panels (seeds dev data on first run)
 ```
