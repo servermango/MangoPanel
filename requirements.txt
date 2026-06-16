@@ -1,0 +1,3 @@
+# MangoPanel Python dependencies.
+# This project currently uses only the Python standard library.
+# Keep this file so the install path stays explicit and can grow without changing bootstrap flow.

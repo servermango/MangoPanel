@@ -79,21 +79,16 @@ source "$venv_dir/bin/activate"
 
 python -m ensurepip --upgrade >/dev/null 2>&1 || true
 
-if [[ -f "$repo_root/requirements.txt" ]]; then
-  python -m pip install -r "$repo_root/requirements.txt"
-fi
+python -m pip install -r "$repo_root/requirements.txt"
 
 if [[ -f "$repo_root/requirements-dev.txt" ]]; then
   python -m pip install -r "$repo_root/requirements-dev.txt"
 fi
 
-if [[ -f "$repo_root/pyproject.toml" || -f "$repo_root/setup.py" ]]; then
-  python -m pip install -e "$repo_root"
-fi
-
 python -m compileall "$repo_root/mangopanel" "$repo_root/scripts" "$repo_root/tests" >/dev/null
 
 echo "Python environment is ready in: $venv_dir"
+echo "Python dependencies installed from requirements.txt"
 if [[ "$mode" == "--full" ]]; then
   echo "Docker and Docker Compose are available."
 fi
