@@ -22,7 +22,6 @@ This is not the production hosting runtime yet. The agent now generates account 
 
 ## Quick Start
 
-
 Fresh clone with `git`:
 
 ```bash
@@ -35,10 +34,9 @@ If `git` is not installed:
 mkdir MangoPanel && curl -fsSL https://codeload.github.com/servermango/MangoPanel/tar.gz/refs/heads/main | tar -xz -C MangoPanel --strip-components=1 && cd MangoPanel && bash scripts/install.sh
 ```
 
-
 ```bash
 cd MangoPanel
-make install # prepare the Python environment and verify the full-stack prerequisites
+make install # install system prerequisites, Python env, and Docker tooling
 make dev-init   # check Python, Docker, and ports
 make dev-up     # start the client + admin panels (seeds dev data on first run)
 ```
