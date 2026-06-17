@@ -1,0 +1,168 @@
+MangoPanel Community License 1.0
+
+Copyright (c) 2026 ServerMango
+
+This License governs use of the MangoPanel project and any associated source
+code, assets, documentation, and derivative materials made available by the
+Licensor under this License.
+
+1. Definitions
+
+"Licensor" means IQL Technologies Private Limited or its subsidiaries and affiliates.
+
+"Work" means the software project known as MangoPanel, including its source
+code, documentation, and associated materials distributed with this License.
+
+"Individual" means a natural person acting in their own personal capacity and
+not on behalf of, for the benefit of, or within the scope of work for any
+company, business, government body, nonprofit, educational institution, or
+other legal entity.
+
+"Legal Entity" means any corporation, company, partnership, sole
+proprietorship, nonprofit, government body, educational institution, or other
+organization that is not an Individual.
+
+"Control" means the power, direct or indirect, to direct the management or
+policies of an entity, whether by ownership, contract, or otherwise.
+
+For purposes of this License, a Legal Entity includes any entity that controls,
+is controlled by, or is under common control with that entity.
+
+"Derivative Work" means any modified version of the Work or any work based on
+the Work.
+
+"Sell as a Service" means to host, operate, provide, resell, sublicense, lease,
+rent, or make the Work or a substantially similar functionality available to
+third parties as a hosted or managed service, platform, SaaS, PaaS, control
+panel service, or comparable offering for a fee or other commercial benefit.
+
+2. License Grant for Individuals
+
+Subject to this License, the Licensor grants each Individual a worldwide,
+non-exclusive, non-transferable, revocable license to use, copy, modify, and
+create Derivative Works of the Work for personal projects and commercial
+projects of that Individual.
+
+This grant does not authorize an Individual to use the Work on behalf of a
+Legal Entity unless that Legal Entity has obtained a separate paid license from
+the Licensor.
+
+The rights granted in this Section include the right to distribute the Work or
+Derivative Works only in compliance with Sections 4, 5, and 6 of this License.
+
+3. Legal Entities Require a Separate Paid License
+
+No rights are granted under this License to any Legal Entity.
+
+Any Legal Entity that wants to use, modify, deploy, distribute, or otherwise
+exploit the Work must first obtain a separate paid license from the Licensor.
+
+4. No Unlicensed Service Resale
+
+Except where the Licensor has given prior written permission in a separate
+license, no person or entity may Sell as a Service the Work or any Derivative
+Work.
+
+Only the Licensor and parties separately licensed by the Licensor for that
+purpose may offer the Work or any Derivative Work as a hosted or managed
+service.
+
+This restriction applies whether the hosted or managed service is offered for a
+direct fee, bundled into another paid offering, white-labeled, supported by
+advertising, or otherwise used for commercial advantage or private monetary
+gain.
+
+5. Attribution for Derivative Works
+
+If you distribute, publish, deploy publicly, or otherwise share a Derivative
+Work, you must give prominent attribution to the original Work.
+
+At minimum, the attribution must:
+
+- identify MangoPanel by name;
+- identify the Licensor by name as ServerMango;
+- state that your work is based on or derived from MangoPanel; and
+- include a visible reference to the original project and this License; and
+- state whether you modified the Work.
+
+For software with a user interface, this attribution must appear in a prominent
+credits, about, legal, documentation, or equivalent location. For source
+distributions, the attribution must also be kept in a top-level notice or
+README file.
+
+6. Restrictions
+
+You may not:
+
+- remove this License from the Work;
+- distribute the Work or a Derivative Work without including a copy of this
+  License;
+- distribute modified copies of the Work without prominent notice that you have
+  modified them;
+- misrepresent the origin of the Work;
+- use any trademark, logo, or brand of the Licensor except as necessary for
+  truthful attribution; or
+- sublicense or transfer the rights granted by this License.
+
+No trademark rights are granted under this License, except the limited right to
+use the name MangoPanel and the Licensor's name for truthful attribution and
+descriptive reference.
+
+7. Patent License
+
+To the extent the Licensor now has or later obtains the right to grant them,
+the Licensor grants Individuals receiving rights under Section 2 a
+non-exclusive, worldwide, non-transferable, revocable patent license under
+patent claims necessarily infringed by the unmodified Work as distributed by
+the Licensor.
+
+This patent license does not apply to any modifications, combinations, or other
+uses of the Work that would infringe patents only because of those
+modifications, combinations, or uses.
+
+If you or any Legal Entity acting on your behalf bring a written patent claim
+alleging that the Work infringes a patent, all patent licenses granted to you
+under this License terminate immediately.
+
+8. Termination
+
+Any use of the Work outside the scope of this License automatically terminates
+your rights under this License.
+
+If the Licensor notifies you in writing of a first violation of this License,
+your rights will be reinstated if you fully cure the violation within 30 days
+after receiving that notice and take practical steps to correct past
+non-compliance.
+
+Any later violation after reinstatement terminates your rights automatically and
+permanently unless the Licensor expressly agrees otherwise in writing.
+
+Upon termination, you must stop using and distributing the Work and any
+Derivative Works unless and until the Licensor grants you a separate written
+license.
+
+9. No Warranty
+
+THE WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+10. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE LIABLE FOR
+ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT,
+OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE WORK OR THE USE
+OR OTHER DEALINGS IN THE WORK.
+
+11. No Other Rights
+
+This License grants only the rights expressly stated in it. No other rights are
+granted by implication, estoppel, or otherwise.
+
+Nothing in this License limits rights you may have under applicable law that
+cannot be waived by contract.
+
+12. Contact
+
+To obtain a commercial, company, or hosted-service license, contact the
+Licensor.
