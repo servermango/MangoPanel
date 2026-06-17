@@ -69,7 +69,7 @@ This direction is exploratory and will be introduced incrementally alongside the
 
 ## Data Layout
 
-All persistent state lives in a single `user_files/` directory in the project root, so a server admin can reach customer files and the database in one place:
+All persistent state lives in a single `user_files/` directory in the project root, so a server admin can reach customer files and the database in one place: 
 
 ```text
 user_files/
