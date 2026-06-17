@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import socket
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -5895,6 +5896,37 @@ def shared_mail_edge_url():
     return f"http://{shared_mail_edge_host()}"
 
 
+def detect_public_access_host():
+    configured = (CONFIG.public_host or "").strip()
+    if configured and configured not in {"127.0.0.1", "localhost", "0.0.0.0", "::"}:
+        return configured
+
+    probes = [
+        ("1.1.1.1", 80),
+        ("8.8.8.8", 80),
+    ]
+    for host, port in probes:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect((host, port))
+                candidate = sock.getsockname()[0]
+            ip = ipaddress.ip_address(candidate)
+            if not ip.is_loopback and not ip.is_unspecified:
+                return candidate
+        except Exception:
+            continue
+
+    try:
+        candidate = socket.gethostbyname(socket.gethostname())
+        ip = ipaddress.ip_address(candidate)
+        if not ip.is_loopback and not ip.is_unspecified:
+            return candidate
+    except Exception:
+        pass
+
+    return ""
+
+
 def shared_mail_edge_manifest(conn):
     edge_host = shared_mail_edge_host()
     edge_url = shared_mail_edge_url()
@@ -6963,9 +6995,15 @@ def run():
     admin_httpd.panel = "admin"
     admin_thread = threading.Thread(target=admin_httpd.serve_forever, name="mangopanel-admin", daemon=True)
     admin_thread.start()
-    print(f"MangoPanel client panel running at http://{CONFIG.host}:{CONFIG.client_port}")
-    print(f"MangoPanel admin panel running at  http://{CONFIG.host}:{CONFIG.admin_port}/admin")
-    print(f"Status: http://{CONFIG.host}:{CONFIG.client_port}/status")
+    local_host = "127.0.0.1" if CONFIG.host in {"0.0.0.0", "::"} else CONFIG.host
+    public_host = detect_public_access_host()
+    print(f"MangoPanel client panel running at http://{local_host}:{CONFIG.client_port}")
+    print(f"MangoPanel admin panel running at  http://{local_host}:{CONFIG.admin_port}/admin")
+    print(f"Status: http://{local_host}:{CONFIG.client_port}/status")
+    if public_host:
+        print(f"Public client access: http://{public_host}:{CONFIG.client_port}")
+        print(f"Public admin access:  http://{public_host}:{CONFIG.admin_port}/admin")
+        print(f"Public status:        http://{public_host}:{CONFIG.client_port}/status")
     try:
         client_httpd.serve_forever()
     finally:

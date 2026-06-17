@@ -41,7 +41,7 @@ make dev-init   # check Python, Docker, and ports
 make dev-up     # start the client + admin panels (seeds dev data on first run)
 ```
 
-Then open the client panel at <http://127.0.0.1:8000/> and the admin panel at <http://127.0.0.1:8001/admin>, and log in with the seed credentials below (TOTP code `000000` in dev mode). That's all you need for day-to-day work; the rest of this document explains how the pieces fit together.
+Then open the client panel at <http://127.0.0.1:8000/> and the admin panel at <http://127.0.0.1:8001/admin>, or use the public IP shown in the startup banner if you are on a server. Log in with the seed credentials below (TOTP code `000000` in dev mode). That's all you need for day-to-day work; the rest of this document explains how the pieces fit together.
 
 ## How It Works
 

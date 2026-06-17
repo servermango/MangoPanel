@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 class Config:
     def __init__(self):
         self.env = os.getenv("MP_ENV", "development")
-        self.host = os.getenv("MP_HOST", "127.0.0.1")
+        self.host = os.getenv("MP_HOST", "0.0.0.0")
         self.port = int(os.getenv("MP_PORT", "8000"))
         self.client_port = int(os.getenv("MP_CLIENT_PORT", "8000"))
         self.admin_port = int(os.getenv("MP_ADMIN_PORT", "8001"))
