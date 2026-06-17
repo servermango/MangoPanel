@@ -34,6 +34,8 @@ If `git` is not installed:
 mkdir MangoPanel && curl -fsSL https://codeload.github.com/servermango/MangoPanel/tar.gz/refs/heads/main | tar -xz -C MangoPanel --strip-components=1 && cd MangoPanel && bash scripts/install.sh
 ```
 
+That tarball path installs `git`, then initializes the repo metadata and sets `origin` to `https://github.com/servermango/MangoPanel.git` so future `git pull` updates work normally.
+
 ```bash
 cd MangoPanel
 make install # install system prerequisites, Python env, Docker tooling, and pre-pull project images

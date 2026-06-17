@@ -34,6 +34,7 @@ if [[ $# -eq 1 ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_remote_url="${REPO_REMOTE_URL:-https://github.com/servermango/MangoPanel.git}"
 venv_dir="${VENV_DIR:-$repo_root/.venv}"
 target_user="${SUDO_USER:-$USER}"
 needs_new_login=false
@@ -283,6 +284,22 @@ verify_tooling() {
   have_cmd lsof || die "lsof is still unavailable after installation."
 }
 
+ensure_git_repo() {
+  if [[ -d "$repo_root/.git" ]]; then
+    return
+  fi
+
+  say "Initializing git metadata for future updates."
+  (
+    cd "$repo_root"
+    git init -b main
+    git remote add origin "$repo_remote_url"
+    git fetch --depth=1 origin main
+    git reset --hard FETCH_HEAD
+    git branch --set-upstream-to=origin/main main >/dev/null 2>&1 || true
+  )
+}
+
 main() {
   local os_id
   os_id="$(detect_os)"
@@ -301,6 +318,7 @@ main() {
 
   ensure_brew_shellenv
   verify_tooling
+  ensure_git_repo
   wait_for_docker
   if [[ "$mode" == "--full" ]]; then
     prefetch_docker_images
