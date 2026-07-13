@@ -12,9 +12,24 @@ from mangopanel.agent import Agent, cron_next_run_at
 from mangopanel.config import Config
 from mangopanel.db import connect, create_job, seed_dev_data
 from mangopanel.mail import mailbox_storage_path
+from mangopanel.stack import build_account_runtime
 
 
 class AgentTests(unittest.TestCase):
+    def test_local_mail_ports_are_unique_per_account(self):
+        first = build_account_runtime({"id": 1, "username": "u000001"})
+        second = build_account_runtime({"id": 2, "username": "u000002"})
+
+        self.assertEqual(first["smtp_port"], 1587)
+        self.assertEqual(first["imap_port"], 1143)
+        self.assertNotEqual(first["smtp_port"], second["smtp_port"])
+        self.assertNotEqual(first["smtp_tls_port"], second["smtp_tls_port"])
+        self.assertNotEqual(first["imap_port"], second["imap_port"])
+        self.assertNotEqual(first["imap_tls_port"], second["imap_tls_port"])
+        self.assertNotEqual(first["pop_port"], second["pop_port"])
+        self.assertNotEqual(first["pop_tls_port"], second["pop_tls_port"])
+        self.assertNotEqual(first["sieve_port"], second["sieve_port"])
+
     def test_agent_generates_account_stack_from_seed_job(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -2,6 +2,7 @@ import crypt
 import json
 import secrets
 import subprocess
+import sys
 from pathlib import Path
 
 from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes
@@ -28,6 +29,12 @@ SHA512_CRYPT_SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0
 def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
     account_id = int(account["id"])
     slot = port_base + (account_id * 10)
+    # The first development account keeps the documented mail ports. Every
+    # additional account receives its own range so its mailserver can be
+    # provisioned alongside the other per-account services.
+    import os
+    use_dev_mail_ports = public_host == "127.0.0.1" or sys.platform == "darwin" or os.getenv("MP_ENV") == "development"
+    mail_port_offset = (account_id - 1) * 10 if use_dev_mail_ports else 0
     username = account["username"]
     base = {
         "public_host": public_host,
@@ -36,13 +43,13 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "phpmyadmin_port": slot + 2,
         "db_port": slot + 3,
         "sftp_port": slot + 4,
-        "smtp_port": 1587 if public_host == "127.0.0.1" else 587,
-        "smtp_tls_port": 1465 if public_host == "127.0.0.1" else 465,
-        "imap_port": 1143 if public_host == "127.0.0.1" else 143,
-        "imap_tls_port": 1993 if public_host == "127.0.0.1" else 993,
-        "pop_port": 1110 if public_host == "127.0.0.1" else 110,
-        "pop_tls_port": 1995 if public_host == "127.0.0.1" else 995,
-        "sieve_port": 1190 if public_host == "127.0.0.1" else 4190,
+        "smtp_port": 1587 + mail_port_offset if use_dev_mail_ports else 587,
+        "smtp_tls_port": 1465 + mail_port_offset if use_dev_mail_ports else 465,
+        "imap_port": 1143 + mail_port_offset if use_dev_mail_ports else 143,
+        "imap_tls_port": 1993 + mail_port_offset if use_dev_mail_ports else 993,
+        "pop_port": 1110 + mail_port_offset if use_dev_mail_ports else 110,
+        "pop_tls_port": 1995 + mail_port_offset if use_dev_mail_ports else 995,
+        "sieve_port": 1190 + mail_port_offset if use_dev_mail_ports else 4190,
         "pg_port": slot + 8,
         "adminer_port": slot + 9,
         "sftp_host": public_host,

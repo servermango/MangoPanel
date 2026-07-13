@@ -1570,6 +1570,23 @@ small {
   margin-bottom: 14px;
 }
 
+.client-selector {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin: 4px 0 18px;
+}
+
+.client-selector label {
+  display: grid;
+  gap: 6px;
+  min-width: min(520px, 100%);
+}
+
+.client-selector small {
+  padding-bottom: 10px;
+}
+
 .plan-form {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));
@@ -1579,6 +1596,18 @@ small {
 
 .plan-submit {
   min-height: 38px;
+}
+
+.plan-account-update {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.plan-account-update input {
+  width: auto;
 }
 
 @media (max-width: 720px) {
@@ -1807,6 +1836,45 @@ td small {
   font-weight: 600;
 }
 
+.admin-alert {
+
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel, #f8fbfa);
+    padding: 10px 40px 10px 12px;
+    margin: 12px 0;
+    position: fixed;
+    width: 100%;
+    top: 50px;
+    right: 20px;
+    max-width: 600px;
+    transition: ease 500ms all;
+
+}
+
+.admin-alert .message {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.alert-dismiss {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.alert-dismiss:hover {
+  color: var(--text);
+}
+
 .secret-box {
   display: grid;
   gap: 6px;
@@ -2024,7 +2092,7 @@ td small {
   background: var(--surface);
   border-radius: 12px;
   box-shadow: var(--shadow);
-  max-width: 500px;
+  max-width: 600px;
   width: 100%;
   display: flex;
   flex-direction: column;

@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 
 const ADMIN_ROUTE_PREFIX = "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "system", "admins", "status"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "dns-domains", "system", "admins", "status"]);
 
 function adminPageFromLocation() {
   const hash = window.location.hash.replace(/^#/, "");
@@ -28,7 +28,12 @@ createApp({
       },
       stacks: [],
       clients: [],
+      selectedClientId: "",
+      showClientModal: false,
       plans: [],
+      showPlanModal: false,
+      editingPlanId: null,
+      applyPlanToExistingAccounts: false,
       dnsDomains: [],
       dnsSettings: { global_mode: "local_powerdns", local: { nameservers: ["ns1.mango.test", "ns2.mango.test"], public_ipv4: "127.0.0.1", public_ipv6: "", soa_email: "hostmaster.mango.test", default_ttl: 300 }, providers: [], accounts: [], health_checks: [] },
       cloudflareAccount: { display_name: "", account_name: "", external_account_id: "", api_token: "" },
@@ -75,6 +80,12 @@ createApp({
         role: "support_admin",
         password: "",
       },
+      newClient: {
+        full_name: "",
+        email: "",
+        password: "",
+      },
+      newClientSecret: "",
       incident: {
         title: "Investigating degraded service",
         severity: "minor",
@@ -102,6 +113,10 @@ createApp({
     });
   },
   computed: {
+    managedClients() {
+      if (!this.selectedClientId) return this.clients;
+      return this.clients.filter((client) => Number(client.id) === Number(this.selectedClientId));
+    },
     sidebarSections() {
       return [
         {
@@ -110,7 +125,13 @@ createApp({
             { label: "Overview", target: "overview", description: "Resource counts, node health, and service summary." },
             { label: "Clients", target: "clients", description: "Customer profiles, account status, and package moves." },
             { label: "Plans", target: "plans", description: "Hosting packages, resource limits, and DNS policy." },
-            { label: "DNS", target: "dns", description: "Authoritative DNS providers, accounts, and domain operations." },
+          ],
+        },
+        {
+          label: "DNS",
+          items: [
+            { label: "DNS Settings", target: "dns", description: "Global DNS mode, local nameservers, and Cloudflare account credentials." },
+            { label: "Managed DNS Domains", target: "dns-domains", description: "Rebuild zones, verify delegation, export records, and migrate providers." },
           ],
         },
         {
@@ -145,6 +166,9 @@ createApp({
       this.challengeToken = "";
       this.activePage = "overview";
       this.message = message;
+    },
+    dismissMessage() {
+      this.message = "";
     },
     statusLabel(value) {
       return String(value || "unknown").replaceAll("_", " ");
@@ -267,41 +291,10 @@ createApp({
       try {
         const payload = await this.api("/api/admin/plans", {
           method: "POST",
-          body: JSON.stringify({
-            ...this.newPlan,
-            memory_mb: Number(this.newPlan.memory_mb),
-            storage_mb: Number(this.newPlan.storage_mb),
-            inode_limit: Number(this.newPlan.inode_limit),
-            max_websites: Number(this.newPlan.max_websites),
-            max_databases: Number(this.newPlan.max_databases),
-            max_mailboxes: Number(this.newPlan.max_mailboxes),
-            max_cron_jobs: Number(this.newPlan.max_cron_jobs),
-            daily_email_limit: Number(this.newPlan.daily_email_limit),
-            backup_retention_days: Number(this.newPlan.backup_retention_days),
-            max_processes: Number(this.newPlan.max_processes),
-            php_workers: Number(this.newPlan.php_workers),
-            bandwidth_mb: Number(this.newPlan.bandwidth_mb),
-            nameserver_1: this.newPlan.nameserver_1,
-            nameserver_2: this.newPlan.nameserver_2,
-            backup_location: this.newPlan.backup_location,
-            frontend_frameworks: this.newPlan.frontend_frameworks,
-            backend_frameworks: this.newPlan.backend_frameworks,
-            nodejs_versions: this.newPlan.nodejs_versions,
-            package_managers: this.newPlan.package_managers,
-            dns_default_provider: this.newPlan.dns_default_provider,
-            dns_allowed_providers: this.newPlan.dns_allowed_providers,
-            dns_default_provider_account_id: this.newPlan.dns_default_provider_account_id || null,
-            dns_customer_editable: Boolean(this.newPlan.dns_customer_editable),
-            dns_max_records_per_domain: Number(this.newPlan.dns_max_records_per_domain),
-            dns_allowed_record_types: this.newPlan.dns_allowed_record_types,
-            dns_min_ttl: Number(this.newPlan.dns_min_ttl),
-            dns_wildcard_records_allowed: Boolean(this.newPlan.dns_wildcard_records_allowed),
-            dns_cloudflare_proxy_allowed: Boolean(this.newPlan.dns_cloudflare_proxy_allowed),
-            dns_dnssec_allowed: Boolean(this.newPlan.dns_dnssec_allowed),
-            dns_dnssec_required: Boolean(this.newPlan.dns_dnssec_required),
-          }),
+          body: JSON.stringify(this.planPayload()),
         });
         this.message = `Plan ${payload.plan.name} created`;
+        this.showPlanModal = false;
         this.newPlan = {
           name: "",
           cpu_limit: "1",
@@ -341,6 +334,57 @@ createApp({
         this.message = error.message;
       }
     },
+    openPlanModal() {
+      this.editingPlanId = null;
+      this.applyPlanToExistingAccounts = false;
+      this.showPlanModal = true;
+    },
+    editPlan(plan) {
+      this.editingPlanId = plan.id;
+      this.applyPlanToExistingAccounts = false;
+      this.newPlan = {
+        ...this.newPlan,
+        ...plan,
+        dns_allowed_providers: typeof plan.dns_allowed_providers_json === "string" ? JSON.parse(plan.dns_allowed_providers_json) : plan.dns_allowed_providers,
+        dns_allowed_record_types: typeof plan.dns_allowed_record_types_json === "string" ? JSON.parse(plan.dns_allowed_record_types_json) : plan.dns_allowed_record_types,
+        dns_default_provider_account_id: plan.dns_default_provider_account_id || "",
+        dns_customer_editable: Boolean(plan.dns_customer_editable),
+        dns_wildcard_records_allowed: Boolean(plan.dns_wildcard_records_allowed),
+        dns_cloudflare_proxy_allowed: Boolean(plan.dns_cloudflare_proxy_allowed),
+        dns_dnssec_allowed: Boolean(plan.dns_dnssec_allowed),
+        dns_dnssec_required: Boolean(plan.dns_dnssec_required),
+      };
+      this.showPlanModal = true;
+    },
+    closePlanModal() {
+      this.showPlanModal = false;
+      this.editingPlanId = null;
+      this.applyPlanToExistingAccounts = false;
+    },
+    planPayload() {
+      return {
+        ...this.newPlan,
+        memory_mb: Number(this.newPlan.memory_mb), storage_mb: Number(this.newPlan.storage_mb), inode_limit: Number(this.newPlan.inode_limit),
+        max_websites: Number(this.newPlan.max_websites), max_databases: Number(this.newPlan.max_databases), max_mailboxes: Number(this.newPlan.max_mailboxes),
+        max_cron_jobs: Number(this.newPlan.max_cron_jobs), daily_email_limit: Number(this.newPlan.daily_email_limit), backup_retention_days: Number(this.newPlan.backup_retention_days),
+        max_processes: Number(this.newPlan.max_processes), php_workers: Number(this.newPlan.php_workers), bandwidth_mb: Number(this.newPlan.bandwidth_mb),
+        dns_default_provider_account_id: this.newPlan.dns_default_provider_account_id || null,
+        dns_customer_editable: Boolean(this.newPlan.dns_customer_editable), dns_max_records_per_domain: Number(this.newPlan.dns_max_records_per_domain),
+        dns_min_ttl: Number(this.newPlan.dns_min_ttl), dns_wildcard_records_allowed: Boolean(this.newPlan.dns_wildcard_records_allowed),
+        dns_cloudflare_proxy_allowed: Boolean(this.newPlan.dns_cloudflare_proxy_allowed), dns_dnssec_allowed: Boolean(this.newPlan.dns_dnssec_allowed), dns_dnssec_required: Boolean(this.newPlan.dns_dnssec_required),
+      };
+    },
+    async updatePlan() {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/plans/${this.editingPlanId}`, { method: "PATCH", body: JSON.stringify({ ...this.planPayload(), apply_to_existing_accounts: this.applyPlanToExistingAccounts }) });
+        this.message = `Plan ${payload.plan.name} updated${payload.updated_account_count ? `; ${payload.updated_account_count} account update${payload.updated_account_count === 1 ? "" : "s"} queued` : ""}`;
+        this.closePlanModal();
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
     async updateClient(client) {
       this.message = "";
       try {
@@ -353,6 +397,41 @@ createApp({
       } catch (error) {
         this.message = error.message;
       }
+    },
+    async loginAsClient(client) {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/clients/${client.id}/login-as`, { method: "POST" });
+        window.location.assign(payload.client_url);
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async createClient() {
+      this.message = "";
+      this.newClientSecret = "";
+      try {
+        const payload = await this.api("/api/admin/clients", {
+          method: "POST",
+          body: JSON.stringify(this.newClient),
+        });
+        this.message = `Client ${payload.client.email} created`;
+        this.newClientSecret = payload.totp_secret;
+        this.newClient = { full_name: "", email: "", password: "" };
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    openClientModal() {
+      this.newClient = { full_name: "", email: "", password: "" };
+      this.newClientSecret = "";
+      this.showClientModal = true;
+    },
+    closeClientModal() {
+      this.showClientModal = false;
+      this.newClient = { full_name: "", email: "", password: "" };
+      this.newClientSecret = "";
     },
     async changeAccountPlan(client, account) {
       this.message = "";
@@ -400,6 +479,18 @@ createApp({
         this.dnsSettings = payload.dns_settings;
         this.cloudflareAccount = { display_name: "", account_name: "", external_account_id: "", api_token: "" };
         this.message = "Cloudflare DNS account saved";
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async deleteCloudflareDnsAccount(account) {
+      this.message = "";
+      const confirmed = window.confirm(`Delete Cloudflare account "${account.display_name}"? This cannot be undone and will affect any plans or domains using this account.`);
+      if (!confirmed) return;
+      try {
+        const payload = await this.api(`/api/admin/dns-providers/cloudflare/accounts/${account.id}`, { method: "DELETE" });
+        this.dnsSettings = payload.dns_settings;
+        this.message = `Cloudflare account "${account.display_name}" deleted`;
       } catch (error) {
         this.message = error.message;
       }

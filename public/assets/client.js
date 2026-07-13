@@ -1,6 +1,11 @@
 const { createApp } = Vue;
 
 const CLIENT_ROUTE_PREFIX = "/client";
+const impersonationToken = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("mp_access_token");
+if (impersonationToken) {
+  localStorage.setItem("mp_client_token", impersonationToken);
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
 const CLIENT_PAGE_TARGETS = new Set([
   "dashboard",
   "installer",
@@ -197,7 +202,7 @@ const app = createApp({
   components: { AppIcon },
   data() {
     return {
-      token: localStorage.getItem("mp_client_token") || "",
+      token: impersonationToken || localStorage.getItem("mp_client_token") || "",
       challengeToken: "",
       message: "",
       notifications: [],
@@ -2466,13 +2471,13 @@ const app = createApp({
         phppgadmin: "/api/client/phppgadmin/launch",
       };
       try {
-        const payload = await this.api(paths[tool]);
+        let endpoint = paths[tool];
+        if (tool === "files" && subpath) {
+          endpoint += `?path=${encodeURIComponent(subpath)}`;
+        }
+        const payload = await this.api(endpoint);
         if (payload.launch_url) {
-          let url = payload.launch_url;
-          if (subpath) {
-            url = url.replace(/\/$/, '') + subpath;
-          }
-          window.open(url, "_blank", "noopener,noreferrer");
+          window.open(payload.launch_url, "_blank", "noopener,noreferrer");
         }
         this.notify(`Launch URL: ${payload.launch_url || "not available until the stack is provisioned"}`, "success");
       } catch (error) {

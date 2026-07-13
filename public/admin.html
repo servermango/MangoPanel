@@ -69,7 +69,10 @@
             <button class="primary-button" type="submit">Verify</button>
             <p class="muted">Development seed accepts code <code>000000</code>.</p>
           </form>
-          <p v-if="message" class="message">{{ message }}</p>
+          <div v-if="message" class="admin-alert" role="alert">
+            <p class="message">{{ message }}</p>
+            <button class="alert-dismiss" type="button" aria-label="Dismiss alert" @click="dismissMessage">×</button>
+          </div>
         </section>
 
         <template v-else>
@@ -139,6 +142,18 @@
                 <h2>Clients</h2>
                 <p>Manage customer access, hosting account status, and assigned plans.</p>
               </div>
+              <button class="primary-button" @click="openClientModal">Create Client</button>
+            </div>
+            <div class="client-selector">
+              <label>Find client
+                <select v-model="selectedClientId" aria-label="Select client to manage">
+                  <option value="">All clients</option>
+                  <option v-for="client in clients" :key="client.id" :value="client.id">
+                    {{ client.full_name || client.email }} — {{ client.email }} (#{{ client.id }})
+                  </option>
+                </select>
+              </label>
+              <small class="muted">Click the dropdown and type to search by name or email.</small>
             </div>
             <div class="table-wrap">
               <table class="client-table">
@@ -151,7 +166,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="client in clients" :key="client.id">
+                  <tr v-for="client in managedClients" :key="client.id">
                     <td>
                       <div class="client-edit">
                         <input v-model="client.edit.full_name" placeholder="Full name">
@@ -181,6 +196,7 @@
                     </td>
                     <td class="client-actions">
                       <button class="primary-button" @click="updateClient(client)">Save</button>
+                      <button @click="loginAsClient(client)" :disabled="client.status !== 'active'">Login as Client</button>
                       <button class="danger-button" @click="deleteClient(client)">Delete</button>
                     </td>
                   </tr>
@@ -195,28 +211,7 @@
                 <h2>Hosting Plans</h2>
                 <p>Create account plans for Docker resource limits, quotas, and backup retention.</p>
               </div>
-            </div>
-            <div class="plan-form">
-              <label>Plan name <input v-model="newPlan.name" placeholder="Starter 10 GB"></label>
-              <label>CPU cores <input v-model="newPlan.cpu_limit" inputmode="decimal" placeholder="1"></label>
-              <label>Memory MB <input v-model.number="newPlan.memory_mb" type="number" min="128"></label>
-              <label>Storage MB <input v-model.number="newPlan.storage_mb" type="number" min="100"></label>
-              <label>Inode limit <input v-model.number="newPlan.inode_limit" type="number" min="1000"></label>
-              <label>Websites <input v-model.number="newPlan.max_websites" type="number" min="1"></label>
-              <label>Databases <input v-model.number="newPlan.max_databases" type="number" min="0"></label>
-              <label>Mailboxes <input v-model.number="newPlan.max_mailboxes" type="number" min="0"></label>
-              <label>Cron jobs <input v-model.number="newPlan.max_cron_jobs" type="number" min="0"></label>
-              <label>Daily emails <input v-model.number="newPlan.daily_email_limit" type="number" min="0"></label>
-              <label>Backup retention days <input v-model.number="newPlan.backup_retention_days" type="number" min="1"></label>
-              <label>DNS provider
-                <select v-model="newPlan.dns_default_provider">
-                  <option value="local_powerdns">Local DNS</option>
-                  <option value="cloudflare">Cloudflare</option>
-                </select>
-              </label>
-              <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
-              <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
-              <button class="primary-button plan-submit" @click="createPlan">Create Plan</button>
+              <button class="primary-button" @click="openPlanModal">Create Plan</button>
             </div>
             <div class="table-wrap plan-table">
               <table>
@@ -228,6 +223,7 @@
                     <th>Objects</th>
                     <th>Email</th>
                     <th>Backups</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -238,11 +234,69 @@
                     <td>{{ plan.max_websites }} sites<small>{{ plan.max_databases }} DB · {{ plan.max_mailboxes }} mail · {{ plan.max_cron_jobs }} cron</small></td>
                     <td>{{ plan.daily_email_limit }}/day</td>
                     <td>{{ plan.backup_retention_days }} days</td>
+                    <td><button type="button" @click="editPlan(plan)">Edit</button></td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </section>
+
+          <div v-if="showPlanModal" class="modal-overlay" @click.self="closePlanModal">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2>{{ editingPlanId ? 'Edit Hosting Plan' : 'Create Hosting Plan' }}</h2>
+                <button class="close-button" type="button" aria-label="Close plan modal" @click="closePlanModal">×</button>
+              </div>
+              <div class="modal-body">
+                <div class="plan-form">
+                  <label>Plan name <input v-model="newPlan.name" placeholder="Starter 10 GB"></label>
+                  <label>CPU cores <input v-model="newPlan.cpu_limit" inputmode="decimal" placeholder="1"></label>
+                  <label>Memory MB <input v-model.number="newPlan.memory_mb" type="number" min="128"></label>
+                  <label>Storage MB <input v-model.number="newPlan.storage_mb" type="number" min="100"></label>
+                  <label>Inode limit <input v-model.number="newPlan.inode_limit" type="number" min="1000"></label>
+                  <label>Websites <input v-model.number="newPlan.max_websites" type="number" min="1"></label>
+                  <label>Databases <input v-model.number="newPlan.max_databases" type="number" min="0"></label>
+                  <label>Mailboxes <input v-model.number="newPlan.max_mailboxes" type="number" min="0"></label>
+                  <label>Cron jobs <input v-model.number="newPlan.max_cron_jobs" type="number" min="0"></label>
+                  <label>Daily emails <input v-model.number="newPlan.daily_email_limit" type="number" min="0"></label>
+                  <label>Backup retention days <input v-model.number="newPlan.backup_retention_days" type="number" min="1"></label>
+                  <label>Max processes <input v-model.number="newPlan.max_processes" type="number" min="0"></label>
+                  <label>PHP workers <input v-model.number="newPlan.php_workers" type="number" min="0"></label>
+                  <label>Bandwidth MB (0 = unlimited) <input v-model.number="newPlan.bandwidth_mb" type="number" min="0"></label>
+                  <label>Nameserver 1 <input v-model="newPlan.nameserver_1"></label>
+                  <label>Nameserver 2 <input v-model="newPlan.nameserver_2"></label>
+                  <label>Backup location <input v-model="newPlan.backup_location"></label>
+                  <label>Frontend frameworks <input v-model="newPlan.frontend_frameworks"></label>
+                  <label>Backend frameworks <input v-model="newPlan.backend_frameworks"></label>
+                  <label>Node.js versions <input v-model="newPlan.nodejs_versions"></label>
+                  <label>Package managers <input v-model="newPlan.package_managers"></label>
+                  <label>DNS provider
+                    <select v-model="newPlan.dns_default_provider">
+                      <option value="local_powerdns">Local DNS</option>
+                      <option value="cloudflare">Cloudflare</option>
+                    </select>
+                  </label>
+                  <label v-if="newPlan.dns_default_provider === 'cloudflare'">
+                    Cloudflare account
+                    <select v-model.number="newPlan.dns_default_provider_account_id">
+                      <option value="">— select account —</option>
+                      <option v-for="acct in cloudflareAccounts()" :key="acct.id" :value="acct.id">
+                        {{ acct.display_name }} ({{ acct.account_name || acct.external_account_id || 'no ID' }})
+                      </option>
+                    </select>
+                    <small v-if="!cloudflareAccounts().length" style="color:var(--color-warning,#f59e0b)">No Cloudflare accounts configured — add one in DNS Settings first.</small>
+                  </label>
+                  <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
+                  <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
+                  <label v-if="editingPlanId" class="plan-account-update"><input v-model="applyPlanToExistingAccounts" type="checkbox"> Apply these changes to all existing accounts on this plan</label>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="ghost-button" type="button" @click="closePlanModal">Cancel</button>
+                <button class="primary-button plan-submit" type="button" @click="editingPlanId ? updatePlan() : createPlan()">{{ editingPlanId ? 'Save Changes' : 'Create Plan' }}</button>
+              </div>
+            </div>
+          </div>
 
           <section v-if="activePage === 'dns'" class="panel">
             <div class="section-head">
@@ -312,7 +366,7 @@
                     <th>Cloudflare Account</th>
                     <th>Status</th>
                     <th>Secret</th>
-                    <th>Action</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -320,7 +374,10 @@
                     <td><strong>{{ account.display_name }}</strong><small>{{ account.account_name || account.external_account_id }}</small></td>
                     <td>{{ account.status }}</td>
                     <td>{{ account.has_secret ? account.secret_label : 'missing' }}</td>
-                    <td><button @click="testDnsProvider(dnsSettings.providers.find(p => p.key === 'cloudflare'), account)">Test</button></td>
+                    <td class="actions">
+                      <button @click="testDnsProvider(dnsSettings.providers.find(p => p.key === 'cloudflare'), account)">Test</button>
+                      <button class="danger-button" @click="deleteCloudflareDnsAccount(account)">Delete</button>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -329,6 +386,15 @@
             <div class="section-head" style="margin-top: 1.5rem;">
               <div>
                 <h3>Managed DNS Domains</h3>
+                <p>Rebuild zones, verify delegation, export records, and migrate providers on the <a href="#dns-domains" @click.prevent="goTo('dns-domains')">Managed DNS Domains</a> tab.</p>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'dns-domains'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Managed DNS Domains</h2>
                 <p>Rebuild zones, verify delegation, export records, and migrate providers.</p>
               </div>
             </div>
@@ -584,7 +650,34 @@
             </ul>
           </section>
 
-          <p v-if="message" class="message">{{ message }}</p>
+          <div v-if="message" class="admin-alert" role="alert">
+            <p class="message">{{ message }}</p>
+            <button class="alert-dismiss" type="button" aria-label="Dismiss alert" @click="dismissMessage">×</button>
+          </div>
+
+          <div v-if="showClientModal" class="modal-overlay" @click.self="closeClientModal">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2>Create Client</h2>
+                <button class="close-button" type="button" aria-label="Close client modal" @click="closeClientModal">×</button>
+              </div>
+              <div class="modal-body">
+                <form class="form-grid" @submit.prevent="createClient">
+                  <label>Full name<input v-model="newClient.full_name" autocomplete="name" required></label>
+                  <label>Email<input v-model="newClient.email" type="email" autocomplete="email" required></label>
+                  <label>Temporary password<input v-model="newClient.password" type="password" autocomplete="new-password" required></label>
+                  <div class="modal-footer">
+                    <button type="button" @click="closeClientModal">Cancel</button>
+                    <button class="primary-button" type="submit">Create Client</button>
+                  </div>
+                </form>
+                <div v-if="newClientSecret" class="secret-box">
+                  <span>Client TOTP secret — share securely</span>
+                  <strong>{{ newClientSecret }}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
           </div>
         </template>
       </main>

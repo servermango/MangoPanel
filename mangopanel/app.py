@@ -283,7 +283,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
                 if admin_count() == 0:
                     return self.serve_file(PUBLIC_DIR / "admin_setup.html")
-                return self.serve_file(PUBLIC_DIR / "admin_plans.html")
+                return self.redirect_response("/admin#plans")
             if path == "/status":
                 return self.serve_file(PUBLIC_DIR / "status.html")
             if path.startswith("/assets/"):
@@ -3378,6 +3378,66 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
             if path == "/api/admin/clients" and method == "GET":
                 return self.json_response({"clients": admin_clients_payload(conn)})
+            if path == "/api/admin/clients" and method == "POST":
+                body = self.read_json()
+                email = normalize_email(body.get("email"))
+                full_name = clean_text(body.get("full_name"), "Customer")
+                password = validate_password(body.get("password", ""))
+                if conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "client_email_already_exists")
+                totp_secret = generate_totp_secret()
+                cur = conn.execute(
+                    """
+                    INSERT INTO users(email, password_hash, full_name, totp_secret)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (email, hash_password(password), full_name, totp_secret),
+                )
+                user_id = cur.lastrowid
+                log_audit(conn, "admin", actor["id"], "create_client", "user", user_id, metadata={"email": email})
+                log_activity(conn, user_id, "client_created_by_admin", {"email": email, "admin_id": actor["id"]})
+                return self.json_response(
+                    {
+                        "client": admin_client_payload(conn, user_id),
+                        "totp_secret": totp_secret,
+                        "totp_uri": otpauth_uri("MangoPanel", email, totp_secret),
+                    },
+                    HTTPStatus.CREATED,
+                )
+            login_as_match = re.match(r"^/api/admin/clients/(\d+)/login-as$", path)
+            if login_as_match and method == "POST":
+                user_id = int(login_as_match.group(1))
+                user = conn.execute("SELECT id, email, status FROM users WHERE id = ?", (user_id,)).fetchone()
+                if not user:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "client_not_found")
+                if user["status"] != "active":
+                    raise ApiError(HTTPStatus.CONFLICT, "client_is_not_active")
+                token_id = secrets.token_urlsafe(16)
+                access_token = create_jwt(
+                    {"sub": user_id, "actor_type": "user", "purpose": "access", "jti": token_id},
+                    CONFIG.jwt_secret,
+                    CONFIG.token_ttl_seconds,
+                )
+                conn.execute(
+                    "INSERT INTO sessions(actor_type, actor_id, token_id, expires_at) VALUES (?, ?, ?, ?)",
+                    ("user", user_id, token_id, int(time.time()) + CONFIG.token_ttl_seconds),
+                )
+                log_audit(
+                    conn,
+                    "admin",
+                    actor["id"],
+                    "login_as_client",
+                    "user",
+                    user_id,
+                    self.client_address[0],
+                    {"email": user["email"]},
+                )
+                forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+                scheme = forwarded_proto if forwarded_proto in {"http", "https"} else "http"
+                request_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip() or self.headers.get("Host", "")
+                hostname = request_host.split(":", 1)[0] or CONFIG.public_host
+                client_url = f"{scheme}://{hostname}:{CONFIG.client_port}/client#mp_access_token={access_token}"
+                return self.json_response({"client_url": client_url})
             if path.startswith("/api/admin/clients/"):
                 user_id = int(path.split("/")[-1])
                 user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -3713,6 +3773,52 @@ class MangoHandler(BaseHTTPRequestHandler):
                 log_audit(conn, "admin", actor["id"], "create_plan", "plan", cur.lastrowid, metadata={"name": plan["name"]})
                 created = conn.execute("SELECT * FROM plans WHERE id = ?", (cur.lastrowid,)).fetchone()
                 return self.json_response({"plan": row_to_dict(created)}, HTTPStatus.CREATED)
+            if path.startswith("/api/admin/plans/") and method == "PATCH":
+                try:
+                    plan_id = int(path.rsplit("/", 1)[-1])
+                except ValueError:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "plan_not_found")
+                existing = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+                if not existing:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "plan_not_found")
+                body = self.read_json()
+                plan = validate_plan_payload(body)
+                duplicate = conn.execute("SELECT id FROM plans WHERE name = ? AND id != ?", (plan["name"], plan_id)).fetchone()
+                if duplicate:
+                    raise ApiError(HTTPStatus.CONFLICT, "plan_name_already_exists")
+                conn.execute(
+                    """
+                    UPDATE plans SET
+                      name = ?, cpu_limit = ?, memory_mb = ?, storage_mb = ?, inode_limit = ?, max_websites = ?,
+                      max_databases = ?, max_mailboxes = ?, max_cron_jobs = ?, daily_email_limit = ?, backup_retention_days = ?,
+                      max_processes = ?, php_workers = ?, bandwidth_mb = ?, nameserver_1 = ?, nameserver_2 = ?, backup_location = ?,
+                      frontend_frameworks = ?, backend_frameworks = ?, nodejs_versions = ?, package_managers = ?,
+                      dns_default_provider = ?, dns_allowed_providers_json = ?, dns_default_provider_account_id = ?,
+                      dns_customer_editable = ?, dns_max_records_per_domain = ?, dns_allowed_record_types_json = ?,
+                      dns_min_ttl = ?, dns_wildcard_records_allowed = ?, dns_cloudflare_proxy_allowed = ?,
+                      dns_dnssec_allowed = ?, dns_dnssec_required = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        plan["name"], plan["cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"], plan["max_websites"],
+                        plan["max_databases"], plan["max_mailboxes"], plan["max_cron_jobs"], plan["daily_email_limit"], plan["backup_retention_days"],
+                        plan["max_processes"], plan["php_workers"], plan["bandwidth_mb"], plan["nameserver_1"], plan["nameserver_2"], plan["backup_location"],
+                        plan["frontend_frameworks"], plan["backend_frameworks"], plan["nodejs_versions"], plan["package_managers"],
+                        plan["dns_default_provider"], plan["dns_allowed_providers_json"], plan["dns_default_provider_account_id"],
+                        plan["dns_customer_editable"], plan["dns_max_records_per_domain"], plan["dns_allowed_record_types_json"],
+                        plan["dns_min_ttl"], plan["dns_wildcard_records_allowed"], plan["dns_cloudflare_proxy_allowed"],
+                        plan["dns_dnssec_allowed"], plan["dns_dnssec_required"], plan_id,
+                    ),
+                )
+                apply_to_accounts = bool(body.get("apply_to_existing_accounts", False))
+                job_ids = []
+                if apply_to_accounts:
+                    accounts = conn.execute("SELECT id FROM hosting_accounts WHERE plan_id = ? ORDER BY id", (plan_id,)).fetchall()
+                    for account in accounts:
+                        job_ids.append(enqueue_agent_job(conn, "provision_hosting_account", "hosting_account", account["id"], {"plan_update": True, "plan_id": plan_id}))
+                log_audit(conn, "admin", actor["id"], "update_plan", "plan", plan_id, metadata={"name": plan["name"], "apply_to_existing_accounts": apply_to_accounts, "account_count": len(job_ids)})
+                updated = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+                return self.json_response({"plan": row_to_dict(updated), "updated_account_count": len(job_ids), "job_ids": job_ids})
             if path == "/api/admin/nodes" and method == "GET":
                 return self.json_response({"nodes": rows_to_dicts(conn.execute("SELECT * FROM nodes ORDER BY id").fetchall())})
             if path == "/api/admin/hosting-accounts" and method == "GET":

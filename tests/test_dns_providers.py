@@ -7,10 +7,10 @@ from mangopanel import app as app_module
 from mangopanel.agent import Agent
 from mangopanel.config import Config
 from mangopanel.db import connect, create_job, seed_dev_data
-from mangopanel.providers import DNS_PROVIDER_CLOUDFLARE, DNS_PROVIDER_LOCAL_POWERDNS
+from mangopanel.providers import DNS_PROVIDER_CLOUDFLARE, DNS_PROVIDER_LOCAL, DNS_PROVIDER_LOCAL_POWERDNS
 from mangopanel.security import encrypt_secret
 from tests.test_phase3_routes import ClientApiServer
-from tests.test_providers import FakeCloudflareHandler, FakeHTTPServer
+from tests.test_providers import FakeCloudflareHandler, FakePowerDNSHandler, FakeHTTPServer
 
 
 class DNSProviderFoundationTests(unittest.TestCase):
@@ -278,3 +278,199 @@ class DNSProviderFoundationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalPowerDNSAgentTests(unittest.TestCase):
+    """Integration tests for the local_powerdns (PowerDNS) DNS provider through the agent layer."""
+
+    def make_config(self, root):
+        config = Config()
+        config.db_path = root / "mangopanel.sqlite3"
+        config.data_dir = root
+        config.account_root = root / "accounts"
+        config.agent_mode = "simulate"
+        config.agent_inline = True
+        config.dev_auth_test_mode = True
+        return config
+
+    def admin_token(self, config):
+        return app_module.create_jwt(
+            {"sub": 1, "actor_type": "admin", "purpose": "access", "jti": uuid.uuid4().hex},
+            config.jwt_secret,
+            config.token_ttl_seconds,
+        )
+
+    def setUp(self):
+        FakePowerDNSHandler.patched_rrsets = []
+        FakePowerDNSHandler.deleted_zones = []
+        FakePowerDNSHandler.zone_exists = False
+
+    # ------------------------------------------------------------------
+    # Agent dispatches sync_dns_zone using the live PowerDNS provider
+    # ------------------------------------------------------------------
+
+    def test_agent_syncs_zone_via_local_powerdns_provider(self):
+        """When powerdns_api_url and powerdns_api_key are configured, the agent
+        uses PowerDNSProvider (not LocalDNSProvider) to publish the zone and
+        records the correct provider key in the dns_zones table."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            config.agent_inline = False
+            seed_dev_data(config.db_path, config.account_root)
+            FakePowerDNSHandler.patched_rrsets = []
+            FakePowerDNSHandler.zone_exists = False
+
+            with FakeHTTPServer(FakePowerDNSHandler) as fake_pdns:
+                config.powerdns_api_url = fake_pdns.base_url + "/api/v1"
+                config.powerdns_api_key = "dev-test-key"
+
+                with connect(config.db_path) as conn:
+                    # Find the domain seeded in dev data; ensure it uses local_powerdns
+                    domain = conn.execute("SELECT * FROM domains WHERE name = ?", ("example.mango.test",)).fetchone()
+                    conn.execute(
+                        "UPDATE domains SET dns_provider = ? WHERE id = ?",
+                        (DNS_PROVIDER_LOCAL_POWERDNS, domain["id"]),
+                    )
+                    job_id = create_job(conn, "sync_dns_zone", "domain", domain["id"], {})
+
+                result = Agent(config).run_job_by_id(job_id)
+
+            self.assertEqual(result["status"], "succeeded")
+            # At least one PATCH was sent to the fake PowerDNS server
+            self.assertTrue(
+                FakePowerDNSHandler.patched_rrsets,
+                "Agent should have sent at least one PATCH to the PowerDNS API",
+            )
+            # The dns_zones table should record the correct provider
+            with connect(config.db_path) as conn:
+                zone = conn.execute("SELECT * FROM dns_zones WHERE zone_name = ?", ("example.mango.test",)).fetchone()
+            self.assertIsNotNone(zone)
+            self.assertEqual(zone["provider"], DNS_PROVIDER_LOCAL_POWERDNS)
+            # The zone state returned by the job should identify the provider
+            self.assertEqual(result["result"]["provider"], DNS_PROVIDER_LOCAL_POWERDNS)
+
+    # ------------------------------------------------------------------
+    # Fallback: no PowerDNS credentials → uses LocalDNSProvider
+    # ------------------------------------------------------------------
+
+    def test_agent_falls_back_to_local_provider_when_powerdns_not_configured(self):
+        """When powerdns_api_url / powerdns_api_key are empty, the agent falls
+        back to LocalDNSProvider and the zone is still published successfully as
+        the local-dev-dns provider."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            config.agent_inline = False
+            # Explicitly leave PowerDNS credentials empty
+            config.powerdns_api_url = ""
+            config.powerdns_api_key = ""
+            seed_dev_data(config.db_path, config.account_root)
+
+            with connect(config.db_path) as conn:
+                domain = conn.execute("SELECT * FROM domains WHERE name = ?", ("example.mango.test",)).fetchone()
+                conn.execute(
+                    "UPDATE domains SET dns_provider = ? WHERE id = ?",
+                    (DNS_PROVIDER_LOCAL_POWERDNS, domain["id"]),
+                )
+                job_id = create_job(conn, "sync_dns_zone", "domain", domain["id"], {})
+
+            result = Agent(config).run_job_by_id(job_id)
+
+        self.assertEqual(result["status"], "succeeded")
+        # Fallback uses the local dev provider
+        self.assertEqual(result["result"]["provider"], DNS_PROVIDER_LOCAL)
+        # No HTTP call to a real PowerDNS server should have happened
+        self.assertFalse(
+            FakePowerDNSHandler.patched_rrsets,
+            "No PowerDNS HTTP calls should have been made in fallback mode",
+        )
+
+    # ------------------------------------------------------------------
+    # Admin health test for local_powerdns always reports "configured"
+    # ------------------------------------------------------------------
+
+    def test_admin_health_test_reports_configured_for_local_powerdns(self):
+        """The admin DNS provider test endpoint should return status='configured'
+        for local_powerdns without needing any external credentials."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            seed_dev_data(config.db_path, config.account_root)
+            token = self.admin_token(config)
+
+            with ClientApiServer(config, panel="admin") as server:
+                # Retrieve the local_powerdns provider row from dns-settings
+                settings = server.request("GET", "/api/admin/dns-settings", token=token)["dns_settings"]
+                local_provider = next(
+                    (p for p in settings["providers"] if p["key"] == DNS_PROVIDER_LOCAL_POWERDNS),
+                    None,
+                )
+                self.assertIsNotNone(local_provider, "local_powerdns provider should be seeded")
+                provider_id = local_provider["id"]
+
+                # Call the health-check test endpoint (no provider_account_id needed for local)
+                health = server.request(
+                    "POST",
+                    "/api/admin/dns-providers/{}/test".format(provider_id),
+                    {},
+                    token,
+                )
+
+            self.assertEqual(health["status"], "configured")
+
+    # ------------------------------------------------------------------
+    # Custom nameservers from admin settings propagate to the zone state
+    # ------------------------------------------------------------------
+
+    def test_custom_nameservers_from_dns_settings_propagate_to_zone(self):
+        """Nameservers stored in the local_powerdns provider config_json should
+        be used when publishing the zone through the agent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            config.agent_inline = False
+            seed_dev_data(config.db_path, config.account_root)
+            token = self.admin_token(config)
+            FakePowerDNSHandler.patched_rrsets = []
+            FakePowerDNSHandler.zone_exists = False
+
+            with FakeHTTPServer(FakePowerDNSHandler) as fake_pdns:
+                config.powerdns_api_url = fake_pdns.base_url + "/api/v1"
+                config.powerdns_api_key = "dev-test-key"
+
+                # Update nameservers via the admin API
+                with ClientApiServer(config, panel="admin") as server:
+                    server.request(
+                        "PATCH",
+                        "/api/admin/dns-settings",
+                        {
+                            "global_mode": DNS_PROVIDER_LOCAL_POWERDNS,
+                            "local": {
+                                "nameservers": ["ns1.custom.example.test", "ns2.custom.example.test"],
+                                "public_ipv4": "127.0.0.1",
+                                "public_ipv6": "",
+                                "soa_email": "admin.custom.example.test",
+                                "default_ttl": 300,
+                            },
+                        },
+                        token,
+                    )
+
+                with connect(config.db_path) as conn:
+                    domain = conn.execute("SELECT * FROM domains WHERE name = ?", ("example.mango.test",)).fetchone()
+                    conn.execute(
+                        "UPDATE domains SET dns_provider = ? WHERE id = ?",
+                        (DNS_PROVIDER_LOCAL_POWERDNS, domain["id"]),
+                    )
+                    job_id = create_job(conn, "sync_dns_zone", "domain", domain["id"], {})
+
+                result = Agent(config).run_job_by_id(job_id)
+
+            self.assertEqual(result["status"], "succeeded")
+            # The NS rrset pushed to PowerDNS should contain the custom nameservers
+            rrsets = FakePowerDNSHandler.patched_rrsets[0]["rrsets"]
+            ns_rrset = next((r for r in rrsets if r["type"] == "NS"), None)
+            self.assertIsNotNone(ns_rrset, "NS rrset should be present")
+            ns_contents = [rec["content"] for rec in ns_rrset["records"]]
+            self.assertTrue(
+                any("ns1.custom.example.test" in c for c in ns_contents),
+                "Custom nameserver ns1.custom.example.test should appear in the NS rrset",
+            )
+

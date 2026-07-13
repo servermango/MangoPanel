@@ -92,11 +92,21 @@ Run the setup checks:
 make dev-init
 ```
 
-Start the local panel:
+Start the local panel only:
 
 ```bash
 make dev-up
 ```
+
+This is the fast API-first path. It brings up the client/admin panels and runs the agent in simulated mode, so it writes stack files and state but does not launch the per-account Docker containers.
+
+Start the full local hosting stack:
+
+```bash
+make dev-up-docker
+```
+
+This is the recommended path when you want the complete dev environment, including File Manager, phpMyAdmin, per-account web stacks, mail services, and the local PowerDNS container. It requires Docker Desktop to be running.
 
 Open:
 
@@ -144,13 +154,7 @@ make dev-agent
 
 The development server uses `MP_AGENT_INLINE=true` by default, so API-created jobs are processed immediately in simulated mode. Generated account stack files are written under `user_files/accounts/u000001/` unless `MP_ACCOUNT_ROOT` is changed. See [Data Layout](#data-layout) for the full directory map.
 
-Run the full system with real local hosting containers — one command:
-
-```bash
-make dev-up-docker
-```
-
-This starts the panels and brings up the per-account Docker stack (OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, and the mailbox storage/routing scaffolding) in the same process. It requires Docker Desktop to be running. Then, in another terminal:
+If you start the full system with `make dev-up-docker`, it brings up the per-account Docker stack in the same process. Then, in another terminal:
 
 ```bash
 make dev-hosting-smoke
@@ -183,6 +187,8 @@ make dev-reset
 ```
 
 ## Docker Development
+
+`make dev-up` is the lightweight dev target and is best for panel/API work. If you want the full per-account stack, use `make dev-up-docker` instead.
 
 The initial compose file runs the panel container:
 

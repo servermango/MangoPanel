@@ -14,8 +14,9 @@
         var t = localStorage.getItem("mp_theme") || "Default";
         document.getElementById("theme-style").setAttribute("href", "/assets/" + t + ".css");
         
-        // Immediate redirect to login if no token
-        if (!localStorage.getItem("mp_client_token")) {
+        // Immediate redirect to login if no token and no incoming impersonation token
+        var hashToken = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("mp_access_token");
+        if (!localStorage.getItem("mp_client_token") && !hashToken) {
           window.location.href = "/login";
         }
       })();
@@ -74,7 +75,6 @@
             <div class="topbar-page-meta">
               <span class="topbar-page-title-row">
                 <span class="topbar-page-title">{{ activeMenuItem.label }}</span>
-                <span class="feature-status-badge" :class="featureStatusClass(activePage)">{{ activeFeatureStatus.label }}</span>
               </span>
               <span class="topbar-page-desc">{{ activeMenuItem.description }}</span>
             </div>
@@ -246,7 +246,6 @@
                       <app-icon :name="tile.icon"></app-icon>
                     </div>
                     <span class="cpanel-tile-label">{{ tile.label }}</span>
-                    <span class="cpanel-tile-status" :class="featureStatusClass(tile.target)">{{ featureStatus(tile.target).label }}</span>
                   </button>
                 </div>
               </div>
@@ -361,19 +360,19 @@
 
             <div class="files-cards-grid">
               <!-- Card 1: Root Filesystem -->
-              <div class="panel file-access-card" @click="launch('files', '/files')">
+              <div class="panel file-access-card" @click="launch('files')">
                 <div class="large-icon"><app-icon name="server"></app-icon></div>
                 <h3>Access Root Filesystem of this hosting</h3>
               </div>
 
               <!-- Card 2: All Domains -->
-              <div class="panel file-access-card" @click="launch('files', '/files/domains/')">
+              <div class="panel file-access-card" @click="launch('files', '/domains')">
                 <div class="large-icon"><app-icon name="folder"></app-icon></div>
                 <h3>Access files of all domains</h3>
               </div>
 
               <!-- Card 3: Selected Domain -->
-              <div class="panel file-access-card" :class="{ disabled: !selectedWebsiteId }" @click="selectedWebsiteId ? launch('files', '/files/domains/' + selectedWebsiteLabel + '/') : null">
+              <div class="panel file-access-card" :class="{ disabled: !selectedWebsiteId }" @click="selectedWebsiteId ? launch('files', '/domains/' + selectedWebsiteLabel) : null">
                 <div class="large-icon"><app-icon name="website"></app-icon></div>
                 <h3>Access files of domain {{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : '[select domain]' }}</h3>
               </div>

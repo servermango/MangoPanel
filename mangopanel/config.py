@@ -22,6 +22,8 @@ class Config:
         self.agent_inline = os.getenv("MP_AGENT_INLINE", "true").lower() == "true"
         self.account_root = Path(os.getenv("MP_ACCOUNT_ROOT", self.user_files_dir / "accounts"))
         self.public_host = os.getenv("MP_PUBLIC_HOST", "127.0.0.1")
+        if self.public_host == "0.0.0.0":
+            self.public_host = "127.0.0.1"
         self.account_port_base = int(os.getenv("MP_ACCOUNT_PORT_BASE", "18000"))
         self.compose_project_prefix = os.getenv("MP_COMPOSE_PROJECT_PREFIX", "mp")
         self.jwt_secret = os.getenv("MP_JWT_SECRET", "dev-only-change-me")
