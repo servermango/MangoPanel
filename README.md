@@ -45,6 +45,34 @@ make dev-up     # start the client + admin panels (seeds dev data on first run)
 
 Then open the client panel at <http://127.0.0.1:8000/> and the admin panel at <http://127.0.0.1:8001/admin>, or use the public IP shown in the startup banner if you are on a server. Log in with the seed credentials below (TOTP code `000000` in dev mode). That's all you need for day-to-day work; the rest of this document explains how the pieces fit together.
 
+## Service Command
+
+MangoPanel includes a portable service wrapper at [`scripts/service`](scripts/service). It manages the panel with a PID file and log file, so it works the same way on Linux and macOS without depending on `systemd` or `launchd`.
+
+```bash
+bash scripts/service mangopanel start
+bash scripts/service mangopanel status
+bash scripts/service mangopanel restart
+bash scripts/service mangopanel stop
+```
+
+If you prefer `make`, the same wrapper is exposed as:
+
+```bash
+make service ACTION=start
+make service ACTION=status
+make service ACTION=restart
+make service ACTION=stop
+```
+
+By default it runs the production-style panel process in the background and writes logs to `var/mangopanel.log`. You can override ports and paths with the same `MP_*` environment variables the app already uses, plus:
+
+- `MANGOPANEL_PID_FILE`
+- `MANGOPANEL_LOG_FILE`
+- `MANGOPANEL_PYTHON`
+
+The wrapper starts the app with `MP_ENV=production` unless you set a different value before calling it.
+
 ## How It Works
 
 MangoPanel is a single Python program ([`mangopanel/app.py`](mangopanel/app.py)) that serves two HTTP panels and an API, backed by one SQLite database. There is no external web framework — it uses only the standard library.
@@ -137,7 +165,7 @@ First admin setup:
 Run tests:
 
 ```bash
-make test
+make test 
 ```
 
 Run the API smoke test while the dev server is running:

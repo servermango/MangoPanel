@@ -4,7 +4,7 @@ CLIENT_PORT ?= 8000
 ADMIN_PORT ?= 8001
 PORT ?= $(CLIENT_PORT)
 
-.PHONY: install dev-init dev-up dev-up-docker dev-hosting-up dev-hosting-down dev-seed dev-agent dev-agent-once dev-smoke dev-hosting-smoke dev-e2e dev-reset dev-down test
+.PHONY: install dev-init dev-up dev-up-docker dev-hosting-up dev-hosting-down dev-seed dev-agent dev-agent-once dev-smoke dev-hosting-smoke dev-e2e dev-reset dev-down service test
 
 install:
 	bash scripts/install.sh
@@ -54,6 +54,9 @@ dev-reset:
 
 dev-down:
 	@echo "Stop the running dev server with Ctrl-C. Docker compose profile can be stopped with: docker compose -f docker-compose.dev.yml down"
+
+service:
+	@bash -c 'bash scripts/service mangopanel "$$1"; rc=$$?; if [ "$$1" = status ] && [ $$rc -eq 3 ]; then exit 0; fi; exit $$rc' _ $(ACTION)
 
 test:
 	$(PYTHON) -m unittest discover -s tests

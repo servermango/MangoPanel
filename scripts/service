@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/service mangopanel {start|stop|restart|status}
+
+Environment overrides:
+  MP_HOST, MP_CLIENT_PORT, MP_ADMIN_PORT, MP_ENV, MP_DEV_AUTH_TEST_MODE
+  MANGOPANEL_PID_FILE, MANGOPANEL_LOG_FILE, MANGOPANEL_PYTHON
+
+This wrapper is cross-platform and does not depend on systemd, launchd, or
+SysV init. It runs MangoPanel in the background, tracks a PID file, and writes
+stdout/stderr to a log file.
+EOF
+}
+
+service_name="${1:-}"
+action="${2:-}"
+
+if [[ "${service_name}" != "mangopanel" || -z "${action}" || $# -ne 2 ]]; then
+  usage >&2
+  exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${MANGOPANEL_PYTHON:-python3}"
+pid_file="${MANGOPANEL_PID_FILE:-$repo_root/var/mangopanel.pid}"
+log_file="${MANGOPANEL_LOG_FILE:-$repo_root/var/mangopanel.log}"
+host="${MP_HOST:-0.0.0.0}"
+client_port="${MP_CLIENT_PORT:-8000}"
+admin_port="${MP_ADMIN_PORT:-8001}"
+mp_env="${MP_ENV:-production}"
+dev_auth="${MP_DEV_AUTH_TEST_MODE:-false}"
+agent_mode="${MP_AGENT_MODE:-simulate}"
+
+mkdir -p "$(dirname "$pid_file")" "$(dirname "$log_file")"
+
+is_running() {
+  local pid
+  [[ -f "$pid_file" ]] || return 1
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+start_service() {
+  if is_running; then
+    echo "mangopanel is already running (pid $(cat "$pid_file"))"
+    return 0
+  fi
+
+  (
+    cd "$repo_root"
+    MP_ENV="$mp_env" \
+    MP_DEV_AUTH_TEST_MODE="$dev_auth" \
+    MP_AGENT_MODE="$agent_mode" \
+    MP_HOST="$host" \
+    MP_CLIENT_PORT="$client_port" \
+    MP_ADMIN_PORT="$admin_port" \
+    nohup "$python_bin" -m mangopanel.app >>"$log_file" 2>&1 &
+    echo $! >"$pid_file"
+  )
+
+  sleep 1
+  if is_running; then
+    echo "mangopanel started (pid $(cat "$pid_file"))"
+  else
+    rm -f "$pid_file"
+    echo "mangopanel failed to start. See $log_file" >&2
+    exit 1
+  fi
+}
+
+stop_service() {
+  if ! [[ -f "$pid_file" ]]; then
+    echo "mangopanel is not running"
+    return 0
+  fi
+
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+    kill "$pid" >/dev/null 2>&1 || true
+    for _ in {1..20}; do
+      if ! kill -0 "$pid" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.5
+    done
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill -9 "$pid" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  rm -f "$pid_file"
+  echo "mangopanel stopped"
+}
+
+status_service() {
+  if is_running; then
+    echo "mangopanel is running (pid $(cat "$pid_file"))"
+    echo "log: $log_file"
+    echo "client: http://127.0.0.1:${client_port}/"
+    echo "admin:  http://127.0.0.1:${admin_port}/admin"
+  else
+    echo "mangopanel is not running"
+    exit 3
+  fi
+}
+
+case "$action" in
+  start)
+    start_service
+    ;;
+  stop)
+    stop_service
+    ;;
+  restart)
+    stop_service
+    start_service
+    ;;
+  status)
+    status_service
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
