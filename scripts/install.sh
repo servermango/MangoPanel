@@ -315,6 +315,7 @@ install_system_service() {
   local unit_path="/etc/systemd/system/${service_name}.service"
   local plist_path="${HOME}/Library/LaunchAgents/com.servermango.mangopanel.plist"
   local wrapper_path="$repo_root/scripts/service"
+  local python_exec="$venv_dir/bin/python"
 
   case "$os_id" in
     ubuntu|debian|linux)
@@ -324,21 +325,29 @@ install_system_service() {
         return
       fi
 
+      if run_sudo systemctl is-enabled --quiet "${service_name}.service" || run_sudo systemctl is-active --quiet "${service_name}.service"; then
+        say "Existing ${service_name}.service detected; stopping and removing it before reinstalling."
+        run_sudo systemctl disable --now "${service_name}.service" >/dev/null 2>&1 || true
+        run_sudo rm -f "$unit_path"
+        run_sudo systemctl daemon-reload
+      fi
+
       cat <<EOF | run_sudo tee "$unit_path" >/dev/null
 [Unit]
 Description=MangoPanel
 After=network.target
 
 [Service]
-Type=forking
+Type=simple
 WorkingDirectory=$repo_root
 Environment=MP_ENV=production
-ExecStart=$wrapper_path mangopanel start
-ExecStop=$wrapper_path mangopanel stop
-ExecReload=$wrapper_path mangopanel restart
-PIDFile=$repo_root/var/mangopanel.pid
+Environment=MP_HOST=0.0.0.0
+Environment=MP_CLIENT_PORT=8000
+Environment=MP_ADMIN_PORT=8001
+ExecStart=$python_exec -m mangopanel.app
 Restart=on-failure
 RestartSec=5
+KillSignal=SIGTERM
 
 [Install]
 WantedBy=multi-user.target
@@ -376,6 +385,11 @@ EOF
 </dict>
 </plist>
 EOF
+      if launchctl list "com.servermango.mangopanel" >/dev/null 2>&1; then
+        say "Existing com.servermango.mangopanel LaunchAgent detected; unloading it before reinstalling."
+        launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || launchctl unload "$plist_path" >/dev/null 2>&1 || true
+        rm -f "$plist_path"
+      fi
       launchctl bootstrap "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || launchctl load "$plist_path"
       ;;
     *)
