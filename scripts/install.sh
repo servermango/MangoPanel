@@ -316,6 +316,7 @@ install_system_service() {
   local plist_path="${HOME}/Library/LaunchAgents/com.servermango.mangopanel.plist"
   local wrapper_path="$repo_root/scripts/service"
   local python_exec="$venv_dir/bin/python"
+  local unit_matches=false
 
   case "$os_id" in
     ubuntu|debian|linux)
@@ -325,7 +326,11 @@ install_system_service() {
         return
       fi
 
-      if run_sudo systemctl is-enabled --quiet "${service_name}.service" || run_sudo systemctl is-active --quiet "${service_name}.service"; then
+      if [[ -f "$unit_path" ]] && grep -q "ExecStart=${python_exec} -m mangopanel.app" "$unit_path"; then
+        unit_matches=true
+      fi
+
+      if [[ "$unit_matches" == true ]] && (run_sudo systemctl is-enabled --quiet "${service_name}.service" || run_sudo systemctl is-active --quiet "${service_name}.service"); then
         say "Existing ${service_name}.service detected; stopping and removing it before reinstalling."
         run_sudo systemctl disable --now "${service_name}.service" >/dev/null 2>&1 || true
         run_sudo rm -f "$unit_path"
@@ -358,6 +363,12 @@ EOF
       ;;
     macos)
       mkdir -p "${HOME}/Library/LaunchAgents"
+      if [[ -f "$plist_path" ]] && grep -q "<string>$wrapper_path</string>" "$plist_path"; then
+        say "Existing com.servermango.mangopanel LaunchAgent detected; unloading it before reinstalling."
+        launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || launchctl unload "$plist_path" >/dev/null 2>&1 || true
+        rm -f "$plist_path"
+      fi
+
       cat >"$plist_path" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -385,11 +396,6 @@ EOF
 </dict>
 </plist>
 EOF
-      if launchctl list "com.servermango.mangopanel" >/dev/null 2>&1; then
-        say "Existing com.servermango.mangopanel LaunchAgent detected; unloading it before reinstalling."
-        launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || launchctl unload "$plist_path" >/dev/null 2>&1 || true
-        rm -f "$plist_path"
-      fi
       launchctl bootstrap "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || launchctl load "$plist_path"
       ;;
     *)
