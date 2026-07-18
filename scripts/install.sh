@@ -52,6 +52,10 @@ have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+have_systemd() {
+  [[ -d /run/systemd/system ]] && have_cmd systemctl
+}
+
 run_sudo() {
   if [[ "$(id -u)" -eq 0 ]]; then
     "$@"
@@ -169,7 +173,12 @@ install_linux_docker() {
 
   run_sudo apt-get update
   run_sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  run_sudo systemctl enable --now docker
+  if have_systemd; then
+    run_sudo systemctl enable --now docker
+  else
+    say "Systemd is not available, so Docker was installed but not started automatically."
+    say "Start the Docker daemon manually, or rerun this installer on a host with systemd."
+  fi
 
   if id -nG "$target_user" | tr ' ' '\n' | grep -qx docker; then
     return
@@ -309,8 +318,10 @@ install_system_service() {
 
   case "$os_id" in
     ubuntu|debian|linux)
-      if ! have_cmd systemctl; then
-        die "systemctl is required to install the boot-time service on Linux."
+      if ! have_systemd; then
+        say "Systemd is not available, so the boot-time service will not be installed."
+        say "You can still start MangoPanel with: bash scripts/service mangopanel start"
+        return
       fi
 
       cat <<EOF | run_sudo tee "$unit_path" >/dev/null
