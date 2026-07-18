@@ -300,6 +300,79 @@ ensure_git_repo() {
   )
 }
 
+install_system_service() {
+  local os_id="${1}"
+  local service_name="mangopanel"
+  local unit_path="/etc/systemd/system/${service_name}.service"
+  local plist_path="${HOME}/Library/LaunchAgents/com.servermango.mangopanel.plist"
+  local wrapper_path="$repo_root/scripts/service"
+
+  case "$os_id" in
+    ubuntu|debian|linux)
+      if ! have_cmd systemctl; then
+        die "systemctl is required to install the boot-time service on Linux."
+      fi
+
+      cat <<EOF | run_sudo tee "$unit_path" >/dev/null
+[Unit]
+Description=MangoPanel
+After=network.target
+
+[Service]
+Type=forking
+WorkingDirectory=$repo_root
+Environment=MP_ENV=production
+ExecStart=$wrapper_path mangopanel start
+ExecStop=$wrapper_path mangopanel stop
+ExecReload=$wrapper_path mangopanel restart
+PIDFile=$repo_root/var/mangopanel.pid
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+      run_sudo systemctl daemon-reload
+      run_sudo systemctl enable --now "${service_name}.service"
+      ;;
+    macos)
+      mkdir -p "${HOME}/Library/LaunchAgents"
+      cat >"$plist_path" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.servermango.mangopanel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$wrapper_path</string>
+    <string>mangopanel</string>
+    <string>start</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$repo_root</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MP_ENV</key>
+    <string>production</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+EOF
+      launchctl bootstrap "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || launchctl load "$plist_path"
+      ;;
+    *)
+      die "Unsupported operating system for boot-time service installation."
+      ;;
+  esac
+}
+
 main() {
   local os_id
   os_id="$(detect_os)"
@@ -324,6 +397,7 @@ main() {
     prefetch_docker_images
   fi
   ensure_python
+  install_system_service "$os_id"
 
   python -m compileall "$repo_root/mangopanel" "$repo_root/scripts" "$repo_root/tests" >/dev/null
 
@@ -335,6 +409,7 @@ main() {
   if [[ "$needs_new_login" == true ]]; then
     say "You were added to the docker group. Open a new shell session before using Docker without sudo."
   fi
+  say "MangoPanel is configured to start automatically on reboot via the OS service manager."
   say "Next: make dev-init"
 }
 
