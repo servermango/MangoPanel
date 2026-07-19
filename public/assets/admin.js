@@ -40,6 +40,10 @@ createApp({
       jobEvents: [],
       admins: [],
       newAdminSecret: "",
+      newAdminUri: "",
+      newAdminTotpCode: "",
+      newAdminTotpMessage: "",
+      adminPasswordModal: { open: false, admin: null, password: "", confirm: "" },
       newPlan: {
         name: "",
         cpu_limit: "1",
@@ -222,7 +226,10 @@ createApp({
     async load() {
       try {
         this.dashboard = await this.api("/api/admin/dashboard");
-        this.admins = (await this.api("/api/admin/admins")).admins;
+        this.admins = (await this.api("/api/admin/admins")).admins.map((admin) => ({
+          ...admin,
+          totp_enabled: Boolean(admin.totp_secret),
+        }));
         this.clients = (await this.api("/api/admin/clients")).clients;
         for (const client of this.clients) {
           client.edit = {
@@ -273,14 +280,84 @@ createApp({
     async createAdmin() {
       this.message = "";
       this.newAdminSecret = "";
+      this.newAdminUri = "";
+      this.newAdminTotpCode = "";
+      this.newAdminTotpMessage = "";
       try {
         const payload = await this.api("/api/admin/admins", {
           method: "POST",
           body: JSON.stringify(this.newAdmin),
         });
         this.newAdminSecret = payload.totp_secret;
+        this.newAdminUri = payload.totp_uri;
         this.message = `Admin ${payload.admin.email} created`;
         this.newAdmin = { full_name: "", email: "", role: "support_admin", password: "" };
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async checkNewAdminTotp() {
+      this.newAdminTotpMessage = "";
+      if (!this.newAdminSecret) return;
+      try {
+        const response = await fetch("/api/public/totp/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ totp_secret: this.newAdminSecret, code: this.newAdminTotpCode }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "TOTP check failed");
+        this.newAdminTotpMessage = payload.valid ? "The code is valid." : "The code is not valid yet.";
+      } catch (error) {
+        this.newAdminTotpMessage = error.message;
+      }
+    },
+    openAdminPasswordModal(admin) {
+      this.adminPasswordModal = {
+        open: true,
+        admin,
+        password: "",
+        confirm: "",
+      };
+    },
+    closeAdminPasswordModal() {
+      this.adminPasswordModal = { open: false, admin: null, password: "", confirm: "" };
+    },
+    async saveAdminPassword() {
+      if (!this.adminPasswordModal.admin) return;
+      if (this.adminPasswordModal.password !== this.adminPasswordModal.confirm) {
+        this.message = "Passwords do not match";
+        return;
+      }
+      try {
+        const payload = await this.api(`/api/admin/admins/${this.adminPasswordModal.admin.id}/reset-password`, {
+          method: "POST",
+          body: JSON.stringify({ password: this.adminPasswordModal.password }),
+        });
+        this.message = `Password updated for ${payload.admin.email}`;
+        this.closeAdminPasswordModal();
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async disableAdminTotp(admin) {
+      try {
+        const payload = await this.api(`/api/admin/admins/${admin.id}/disable-2fa`, { method: "POST", body: "{}" });
+        this.message = `TOTP disabled for ${payload.admin.email}`;
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async enableAdminTotp(admin) {
+      try {
+        const payload = await this.api(`/api/admin/admins/${admin.id}/enable-2fa`, { method: "POST", body: "{}" });
+        this.newAdminSecret = payload.totp_secret;
+        this.newAdminUri = payload.totp_uri;
+        this.newAdminTotpCode = "";
+        this.newAdminTotpMessage = `TOTP enabled for ${payload.admin.email}`;
         await this.load();
       } catch (error) {
         this.message = error.message;

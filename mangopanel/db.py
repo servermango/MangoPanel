@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   full_name TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
-  totp_secret TEXT NOT NULL,
+  totp_secret TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS admins (
   full_name TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'super_admin',
   status TEXT NOT NULL DEFAULT 'active',
-  totp_secret TEXT NOT NULL,
+  totp_secret TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

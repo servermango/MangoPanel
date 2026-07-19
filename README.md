@@ -159,8 +159,25 @@ First admin setup:
 
 - If the database has zero admins, `/admin` on the admin port shows the first-admin setup page
 - The setup page calls `POST /api/public/admin-setup`
+- After creation, the page shows the TOTP `otpauth://` URI, a QR code, the raw secret, and a code check field so you can verify the authenticator entry before logging in
 - Once an admin exists, first-admin setup is locked
 - Existing admins can add more admins from the admin dashboard
+
+Admin recovery and 2FA management:
+
+- The admin dashboard includes controls to change an admin password and enable or disable TOTP for each admin account
+- When you create a new admin in the dashboard, MangoPanel shows the TOTP URI, a QR code, the raw secret, and a quick code validation field
+- If you need root-level recovery on the server, use `scripts/admin_recovery.py`:
+
+```bash
+sudo python3 scripts/admin_recovery.py --email admin@example.com --set-password
+sudo python3 scripts/admin_recovery.py --email admin@example.com --enable-totp
+sudo python3 scripts/admin_recovery.py --email admin@example.com --disable-totp
+```
+
+- `--set-password` changes the admin password
+- `--enable-totp` generates a new TOTP secret and prints the secret plus QR setup URI
+- `--disable-totp` clears the admin TOTP secret
 
 Run tests:
 

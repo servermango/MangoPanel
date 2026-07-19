@@ -363,6 +363,9 @@ class MangoHandler(BaseHTTPRequestHandler):
         if path == "/api/public/admin-setup" and method == "POST":
             body = self.read_json()
             return self.setup_first_admin(body)
+        if path == "/api/public/totp/verify" and method == "POST":
+            body = self.read_json()
+            return self.verify_totp_secret(body)
         if path == "/api/public/webmail/session" and method == "GET":
             return self.public_webmail_session()
         if path == "/api/public/webmail/exchange" and method == "POST":
@@ -1280,6 +1283,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                 },
                 HTTPStatus.CREATED,
             )
+
+    def verify_totp_secret(self, body):
+        secret = str(body.get("totp_secret", "")).strip()
+        code = str(body.get("code", "")).strip()
+        if not secret:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "missing_totp_secret")
+        return self.json_response({"valid": verify_totp(secret, code)})
 
     def login(self, actor_type):
         body = self.read_json()
@@ -3347,7 +3357,14 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/users" and method == "GET":
                 return self.json_response({"users": rows_to_dicts(conn.execute("SELECT id, email, full_name, status, created_at FROM users ORDER BY id").fetchall())})
             if path == "/api/admin/admins" and method == "GET":
-                rows = conn.execute("SELECT id, email, full_name, role, status, created_at FROM admins ORDER BY id").fetchall()
+                rows = conn.execute(
+                    """
+                    SELECT id, email, full_name, role, status, created_at,
+                           CASE WHEN COALESCE(totp_secret, '') <> '' THEN 1 ELSE 0 END AS totp_enabled
+                    FROM admins
+                    ORDER BY id
+                    """
+                ).fetchall()
                 return self.json_response({"admins": rows_to_dicts(rows)})
             if path == "/api/admin/admins" and method == "POST":
                 body = self.read_json()
@@ -3376,6 +3393,33 @@ class MangoHandler(BaseHTTPRequestHandler):
                     },
                     HTTPStatus.CREATED,
                 )
+            recover_match = re.match(r"^/api/admin/admins/(\d+)/(reset-password|disable-2fa|enable-2fa)$", path)
+            if recover_match and method == "POST":
+                admin_id = int(recover_match.group(1))
+                action = recover_match.group(2)
+                target = conn.execute("SELECT id, email, status FROM admins WHERE id = ?", (admin_id,)).fetchone()
+                if not target:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "admin_not_found")
+                if action == "disable-2fa":
+                    conn.execute("UPDATE admins SET totp_secret = '' WHERE id = ?", (admin_id,))
+                    log_audit(conn, "admin", actor["id"], "disable_admin_2fa", "admin", admin_id, metadata={"email": target["email"]})
+                    return self.json_response({"admin": {"id": admin_id, "email": target["email"], "status": target["status"], "totp_enabled": False}})
+                if action == "enable-2fa":
+                    secret = generate_totp_secret()
+                    conn.execute("UPDATE admins SET totp_secret = ? WHERE id = ?", (secret, admin_id))
+                    log_audit(conn, "admin", actor["id"], "enable_admin_2fa", "admin", admin_id, metadata={"email": target["email"]})
+                    return self.json_response(
+                        {
+                            "admin": {"id": admin_id, "email": target["email"], "status": target["status"], "totp_enabled": True},
+                            "totp_secret": secret,
+                            "totp_uri": otpauth_uri("MangoPanel Admin", target["email"], secret),
+                        }
+                    )
+                body = self.read_json()
+                password = validate_password(body.get("password", ""))
+                conn.execute("UPDATE admins SET password_hash = ? WHERE id = ?", (hash_password(password), admin_id))
+                log_audit(conn, "admin", actor["id"], "reset_admin_password", "admin", admin_id, metadata={"email": target["email"]})
+                return self.json_response({"admin": {"id": admin_id, "email": target["email"], "status": target["status"]}})
             if path == "/api/admin/clients" and method == "GET":
                 return self.json_response({"clients": admin_clients_payload(conn)})
             if path == "/api/admin/clients" and method == "POST":

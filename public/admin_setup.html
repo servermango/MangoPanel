@@ -32,9 +32,24 @@
           <h2>Admin Created</h2>
           <p>Add this TOTP secret to your authenticator app before signing in.</p>
           <div class="secret-box">
+            <span>QR setup URL</span>
+            <strong style="word-break: break-all;">{{ result.totp_uri }}</strong>
+          </div>
+          <div class="secret-box" style="display:flex; flex-direction:column; gap:1rem; align-items:flex-start;">
+            <span>Scan this QR code</span>
+            <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(result.totp_uri)" alt="TOTP QR code" style="width: 220px; height: 220px;">
+          </div>
+          <div class="secret-box">
             <span>TOTP secret</span>
             <strong>{{ result.totp_secret }}</strong>
           </div>
+          <div class="form-grid" style="margin-top: 1rem;">
+            <label>Verify code from authenticator
+              <input v-model="totpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+            </label>
+            <button class="primary-button" @click="checkTotp">Check code</button>
+          </div>
+          <p v-if="totpCheckMessage" class="message">{{ totpCheckMessage }}</p>
           <a class="ghost-button" href="/admin">Go to admin login</a>
         </section>
 

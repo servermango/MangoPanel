@@ -459,7 +459,7 @@
             <div class="section-head">
               <div>
                 <h2>Admins</h2>
-                <p>Create additional admin accounts after first setup.</p>
+                <p>Create additional admin accounts and manage password or TOTP recovery actions.</p>
               </div>
             </div>
             <div class="incident-form admin-create-form">
@@ -477,6 +477,21 @@
               <span>New admin TOTP secret</span>
               <strong>{{ newAdminSecret }}</strong>
             </div>
+            <div v-if="newAdminUri" class="secret-box">
+              <span>QR setup URL</span>
+              <strong style="word-break: break-all;">{{ newAdminUri }}</strong>
+            </div>
+            <div v-if="newAdminUri" class="secret-box" style="display:flex; flex-direction:column; gap:1rem; align-items:flex-start;">
+              <span>Scan this QR code</span>
+              <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(newAdminUri)" alt="Admin TOTP QR code" style="width: 220px; height: 220px;">
+            </div>
+            <div v-if="newAdminSecret" class="form-grid" style="margin-top: 1rem;">
+              <label>Verify admin TOTP code
+                <input v-model="newAdminTotpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+              </label>
+              <button class="primary-button" @click="checkNewAdminTotp">Check code</button>
+            </div>
+            <p v-if="newAdminTotpMessage" class="message">{{ newAdminTotpMessage }}</p>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -485,6 +500,7 @@
                     <th>Name</th>
                     <th>Role</th>
                     <th>Status</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -493,9 +509,33 @@
                     <td>{{ admin.full_name }}</td>
                     <td><span class="pill">{{ admin.role }}</span></td>
                     <td><span class="pill">{{ admin.status }}</span></td>
+                    <td class="client-actions">
+                      <button @click="openAdminPasswordModal(admin)">Change Password</button>
+                      <button v-if="admin.totp_enabled" @click="disableAdminTotp(admin)">Disable TOTP</button>
+                      <button v-else @click="enableAdminTotp(admin)">Enable TOTP</button>
+                    </td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </section>
+
+          <section v-if="adminPasswordModal.open" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Change Admin Password</h2>
+                <p>{{ adminPasswordModal.admin.email }}</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label>New password
+                <input v-model="adminPasswordModal.password" type="password" autocomplete="new-password">
+              </label>
+              <label>Confirm password
+                <input v-model="adminPasswordModal.confirm" type="password" autocomplete="new-password">
+              </label>
+              <button class="primary-button" @click="saveAdminPassword">Save Password</button>
+              <button class="ghost-button" @click="closeAdminPasswordModal">Cancel</button>
             </div>
           </section>
 
