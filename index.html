@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MangoPanel | Shared Hosting Control Plane</title>
+    <meta name="description" content="MangoPanel is a self-hosted shared hosting control panel for real account stacks, queued jobs, DNS, SSL, files, mailboxes, backups, and more.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #101416; /* Deeper variant of accent-dark for background */
+            --bg-surface: #1e2528; /* --accent-dark */
+            --bg-surface-elevated: #2c3136; /* --accent */
+            
+            --text-primary: #f7f7f9; /* --bg from default */
+            --text-secondary: #a0aab2;
+            --text-muted: #6b7177; /* --muted */
+            --text-soft: #d5d9dd;
+            
+            --brand: #fdb528;
+            --brand-strong: #e8a417;
+            --brand-glow: rgba(253, 181, 40, 0.25);
+            
+            --success: #72e128;
+            --danger: #b3261e;
+            --info: #5f95ff;
+            
+            --border: rgba(255,255,255,0.06);
+            --border-hover: rgba(253, 181, 40, 0.3);
+            --pattern-line: rgba(255,255,255,0.045);
+            
+            --shadow-premium: 0 20px 40px -10px rgba(0,0,0,0.5);
+            --transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            --font-display: 'Space Grotesk', 'Inter', sans-serif;
+            --font-body: 'Inter', sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+            position: relative;
+        }
+
+        body::before,
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            overflow: hidden;
+            pointer-events: none;
+        }
+
+        body::before {
+            background:
+                linear-gradient(180deg, rgba(16, 20, 22, 0.92), rgba(16, 20, 22, 0.98)),
+                radial-gradient(circle at 12% 10%, rgba(253, 181, 40, 0.11), transparent 28%),
+                radial-gradient(circle at 88% 14%, rgba(114, 225, 40, 0.08), transparent 24%);
+        }
+
+        body::after {
+            background-image:
+                repeating-linear-gradient(0deg, transparent 0 63px, var(--pattern-line) 63px 64px),
+                repeating-linear-gradient(90deg, transparent 0 63px, var(--pattern-line) 63px 64px),
+                linear-gradient(120deg, transparent 0%, rgba(253, 181, 40, 0.07) 16%, transparent 30%, transparent 70%, rgba(114, 225, 40, 0.06) 86%, transparent 100%);
+            opacity: 0.8;
+            mask-image: linear-gradient(180deg, rgba(0,0,0,0.85), rgba(0,0,0,0.4), rgba(0,0,0,0.8));
+            animation: gridShift 28s linear infinite;
+        }
+
+        .page-frame {
+            position: fixed;
+            inset: 18px;
+            border: 1px solid rgba(255,255,255,0.04);
+            border-radius: 28px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .page-sheen {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: -1;
+            background: radial-gradient(circle at 50% 0%, rgba(253, 181, 40, 0.08), transparent 35%);
+            animation: sheenPulse 14s ease-in-out infinite;
+        }
+
+        @keyframes gridShift {
+            from { background-position: 0 0, 0 0, 0 0; }
+            to { background-position: 0 64px, 64px 0, 280px 0; }
+        }
+
+        @keyframes sheenPulse {
+            0%, 100% { opacity: 0.65; }
+            50% { opacity: 1; }
+        }
+
+        /* Header */
+        header {
+            padding: 1.15rem 5%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(12, 15, 17, 0.72);
+            backdrop-filter: blur(18px);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.22);
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            font-family: var(--font-display);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: var(--text-primary);
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, var(--brand), var(--brand-strong));
+            border-radius: 8px;
+            position: relative;
+            transform: rotate(45deg);
+            box-shadow: 0 0 20px var(--brand-glow);
+        }
+
+        .logo-icon::after {
+            content: '';
+            position: absolute;
+            inset: 6px;
+            background: var(--bg-base);
+            border-radius: 4px;
+        }
+
+        .topbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .top-nav {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .top-nav a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.7rem 0.9rem;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.92rem;
+            font-weight: 600;
+            letter-spacing: 0;
+            transition: var(--transition);
+        }
+
+        .top-nav a:hover,
+        .top-nav a.active {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.04);
+            border-color: rgba(255,255,255,0.06);
+            transform: translateY(-1px);
+        }
+
+        .nav-icon {
+            width: 16px;
+            height: 16px;
+            stroke: currentColor;
+            stroke-width: 1.8;
+            fill: none;
+            flex: 0 0 auto;
+        }
+
+        .header-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.55rem;
+            padding: 0.7rem 0.95rem;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.06);
+            color: var(--text-soft);
+            font-size: 0.82rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 0 0 rgba(114, 225, 40, 0.4);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(114, 225, 40, 0.35); }
+            70% { box-shadow: 0 0 0 10px rgba(114, 225, 40, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(114, 225, 40, 0); }
+        }
+
+        .icon-btn {
+            width: 18px;
+            height: 18px;
+            stroke: currentColor;
+            stroke-width: 1.8;
+            fill: none;
+            flex: 0 0 auto;
+        }
+
+        /* Hero Section */
+        .hero {
+            padding: 10rem 5% 8rem;
+            text-align: center;
+            max-width: 1000px;
+            margin: 0 auto;
+            position: relative;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 100px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--brand);
+            margin-bottom: 2rem;
+            animation: slideDown 1s var(--transition);
+        }
+
+        .hero h1 {
+            font-size: 5rem;
+            line-height: 1.05;
+            margin-bottom: 1.5rem;
+            letter-spacing: -2px;
+            font-family: var(--font-display);
+            animation: fadeInUp 1s var(--transition) 0.1s both;
+        }
+
+        .hero h1 span {
+            background: linear-gradient(to right, var(--text-primary), var(--text-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero h1 .highlight {
+            background: linear-gradient(135deg, var(--brand), var(--brand-strong));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--text-secondary);
+            margin-bottom: 3rem;
+            max-width: 700px;
+            margin-inline: auto;
+            animation: fadeInUp 1s var(--transition) 0.2s both;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 1.5rem;
+            justify-content: center;
+            animation: fadeInUp 1s var(--transition) 0.3s both;
+        }
+
+        .hero-meta {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 1rem;
+            margin-top: 3rem;
+            animation: fadeInUp 1s var(--transition) 0.35s both;
+        }
+
+        .hero-meta-card,
+        .status-card,
+        .micro-card,
+        .maintainer-card {
+            border-radius: 12px;
+        }
+
+        .hero-meta-card {
+            background: rgba(255,255,255,0.035);
+            border: 1px solid rgba(255,255,255,0.06);
+            padding: 1rem 1.1rem;
+            text-align: left;
+            backdrop-filter: blur(12px);
+        }
+
+        .hero-meta-card strong {
+            display: block;
+            font-size: 1rem;
+            margin-bottom: 0.35rem;
+        }
+
+        .hero-meta-card span {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        @media (max-width: 900px) {
+            .hero-meta {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 600px) {
+            .hero-meta {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .status-board {
+            margin-top: 3.5rem;
+        }
+
+        .status-board .section-header {
+            margin-bottom: 2rem;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 0.85rem;
+        }
+
+        .status-card {
+            background: rgba(255,255,255,0.035);
+            border: 1px solid rgba(255,255,255,0.06);
+            padding: 1rem;
+            min-height: 124px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: var(--transition);
+            backdrop-filter: blur(12px);
+        }
+
+        .status-card:hover {
+            transform: translateY(-4px);
+            border-color: var(--border-hover);
+            background: var(--bg-surface-elevated);
+        }
+
+        .status-card h3 {
+            font-size: 0.98rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .status-card p {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 0.55rem;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-self: flex-start;
+            padding: 0.28rem 0.55rem;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.06);
+            color: var(--text-primary);
+        }
+
+        .status-pill.functional { background: rgba(114, 225, 40, 0.14); color: #9cf45a; }
+        .status-pill.readonly { background: rgba(59, 130, 246, 0.14); color: #7db2ff; }
+        .status-pill.disabled { background: rgba(255, 255, 255, 0.08); color: var(--text-muted); }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.55rem;
+            padding: 1rem 2.5rem;
+            font-weight: 600;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: var(--transition);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-primary {
+            background: var(--brand);
+            color: #000;
+            box-shadow: 0 0 30px var(--brand-glow);
+        }
+
+        .btn-primary:hover {
+            background: var(--brand-strong);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 40px rgba(253, 181, 40, 0.4);
+        }
+
+        .btn-secondary {
+            background: var(--bg-surface);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-surface-elevated);
+            border-color: var(--border-hover);
+            transform: translateY(-2px);
+        }
+
+        /* Section Layouts */
+        .section-padding {
+            padding: 8rem 5%;
+        }
+
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 5rem;
+        }
+
+        .section-header h2 {
+            font-size: 3rem;
+            letter-spacing: -1px;
+            font-family: var(--font-display);
+            margin-bottom: 1rem;
+        }
+
+        .section-header p {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        /* Tiny Features - High Density Grid */
+        .micro-features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .micro-card {
+            background: rgba(255,255,255,0.035);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 16px;
+            padding: 2rem;
+            position: relative;
+            overflow: hidden;
+            transition: var(--transition);
+            backdrop-filter: blur(12px);
+        }
+
+        .micro-card strong {
+            display: inline-flex;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            color: var(--brand);
+            font-size: 0.78rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        /* Premium Shine Effect */
+        .micro-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: -100%;
+            width: 50%; height: 100%;
+            background: linear-gradient(to right, transparent, rgba(255,255,255,0.05), transparent);
+            transform: skewX(-20deg);
+            transition: 0.7s;
+        }
+
+        .micro-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--border-hover);
+            box-shadow: var(--shadow-premium);
+            background: var(--bg-surface-elevated);
+        }
+
+        .micro-card:hover::before {
+            left: 200%;
+        }
+
+        .micro-icon {
+            width: 48px;
+            height: 48px;
+            background: rgba(253, 181, 40, 0.11);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+            color: var(--brand);
+            font-size: 1.5rem;
+            transition: var(--transition);
+        }
+
+        .micro-card:hover .micro-icon {
+            background: var(--brand);
+            color: #000;
+            transform: scale(1.1);
+        }
+
+        .micro-icon svg,
+        .feature-icon svg,
+        .status-icon svg,
+        .btn-icon svg,
+        .header-chip svg,
+        .section-kicker svg,
+        .avatar svg {
+            width: 20px;
+            height: 20px;
+            stroke: currentColor;
+            stroke-width: 1.8;
+            fill: none;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            flex: 0 0 auto;
+        }
+
+        .feature-icon svg {
+            width: 22px;
+            height: 22px;
+        }
+
+        .avatar svg {
+            width: 42px;
+            height: 42px;
+        }
+
+        .micro-card h3 {
+            font-size: 1.1rem;
+            margin-bottom: 0.75rem;
+            color: var(--text-primary);
+            font-family: var(--font-display);
+        }
+
+        .micro-card p {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        /* Terminal Showcase - Developer Heavy */
+        .architecture-showcase {
+            display: grid;
+            grid-template-columns: 0.92fr 1.08fr;
+            gap: 3rem;
+            align-items: start;
+        }
+
+        @media (max-width: 900px) {
+            .architecture-showcase { grid-template-columns: 1fr; }
+        }
+
+        .arch-text h2 {
+            font-size: 2.5rem;
+            margin-bottom: 1.5rem;
+            line-height: 1.2;
+            font-family: var(--font-display);
+        }
+
+        .arch-list {
+            list-style: none;
+            margin-top: 2rem;
+        }
+
+        .arch-list li {
+            margin-bottom: 1.5rem;
+            padding-left: 2rem;
+            position: relative;
+        }
+
+        .arch-list li::before {
+            content: '•';
+            position: absolute;
+            left: 0;
+            color: var(--brand);
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: bold;
+        }
+
+        .arch-list h4 {
+            font-size: 1.1rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .arch-list p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        .section-kicker {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            color: var(--brand);
+            text-transform: uppercase;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            margin-bottom: 0.95rem;
+        }
+
+        .architecture-diagram {
+            margin: 0;
+            background: rgba(9, 11, 12, 0.8);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 0.85rem;
+            box-shadow: var(--shadow-premium);
+        }
+
+        .architecture-diagram:hover {
+            border-color: var(--border-hover);
+        }
+
+        .architecture-diagram img {
+            display: block;
+            width: 100%;
+            height: auto;
+            border-radius: 10px;
+            background: #0b0f11;
+        }
+
+        .architecture-diagram figcaption {
+            margin-top: 0.75rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
+        /* Maintainer Section */
+        .maintainer-section {
+            background: linear-gradient(180deg, var(--bg-surface), var(--bg-base));
+            border-top: 1px solid var(--border);
+            padding: 8rem 5%;
+        }
+
+        .maintainer-card {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(16, 20, 22, 0.52);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 24px;
+            padding: 4rem;
+            text-align: center;
+            backdrop-filter: blur(10px);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .maintainer-card::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 4px;
+            background: linear-gradient(90deg, transparent, var(--brand), transparent);
+        }
+
+        .avatar {
+            width: 96px;
+            height: 96px;
+            background: var(--bg-surface-elevated);
+            border: 2px solid var(--brand);
+            border-radius: 50%;
+            margin: 0 auto 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            box-shadow: 0 0 30px var(--brand-glow);
+        }
+
+        .avatar svg {
+            width: 42px;
+            height: 42px;
+            stroke: var(--brand);
+            stroke-width: 1.8;
+            fill: none;
+        }
+
+        .maintainer-name {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+            font-family: var(--font-display);
+        }
+
+        .maintainer-title {
+            color: var(--brand);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.85rem;
+            margin-bottom: 1.5rem;
+            display: block;
+        }
+
+        .maintainer-bio {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin: 0 auto;
+            line-height: 1.8;
+        }
+
+        .section-note {
+            color: var(--text-muted);
+            margin-top: 0.75rem;
+            font-size: 0.96rem;
+        }
+
+        .hero h1,
+        .status-card h3,
+        .badge,
+        .status-pill,
+        .section-kicker,
+        .maintainer-title {
+            font-family: var(--font-display);
+        }
+
+        .reveal {
+            opacity: 0;
+            transform: translateY(18px);
+            transition: opacity 700ms ease, transform 700ms ease, border-color 250ms ease, background 250ms ease;
+            transition-delay: var(--reveal-delay, 0ms);
+        }
+
+        .reveal.is-visible {
+            opacity: 1;
+            transform: none;
+        }
+
+        .icon-sprite {
+            position: absolute;
+            width: 0;
+            height: 0;
+            overflow: hidden;
+        }
+
+        .status-head,
+        .feature-head {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.85rem;
+        }
+
+        .status-icon,
+        .feature-icon {
+            width: 42px;
+            height: 42px;
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 12px;
+            background: rgba(253, 181, 40, 0.1);
+            color: var(--brand);
+        }
+
+        .status-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 11px;
+        }
+
+        .status-card h3 {
+            font-size: 0.98rem;
+            margin-bottom: 0.1rem;
+        }
+
+        .feature-icon {
+            margin-bottom: 1rem;
+        }
+
+        .feature-card-meta {
+            color: var(--text-muted);
+            margin-top: 0.8rem;
+            font-size: 0.84rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 3rem 5%;
+            border-top: 1px solid var(--border);
+            color: var(--text-muted);
+            background: var(--bg-base);
+            font-size: 0.9rem;
+        }
+
+        /* Keyframes */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation: none !important;
+                transition: none !important;
+                scroll-behavior: auto !important;
+            }
+            body::after,
+            body::before {
+                animation: none !important;
+            }
+            .reveal {
+                opacity: 1;
+                transform: none;
+            }
+        }
+
+        @media (max-width: 900px) {
+            header {
+                align-items: flex-start;
+                gap: 1rem;
+                flex-direction: column;
+            }
+
+            .topbar-actions {
+                width: 100%;
+                justify-content: space-between;
+                flex-wrap: wrap;
+            }
+
+            .top-nav {
+                flex-wrap: wrap;
+            }
+
+            .hero {
+                padding-top: 7rem;
+            }
+
+            .hero h1 {
+                font-size: clamp(3rem, 8vw, 4.35rem);
+            }
+        }
+
+        @media (max-width: 640px) {
+            .page-frame {
+                inset: 10px;
+                border-radius: 22px;
+            }
+
+            .top-nav a {
+                flex: 1 1 calc(50% - 0.35rem);
+                justify-content: center;
+            }
+
+            .header-chip {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .btn-group {
+                flex-direction: column;
+            }
+
+            .btn {
+                width: 100%;
+            }
+
+            .hero {
+                padding-top: 5.5rem;
+            }
+
+            .hero h1 {
+                font-size: 2.85rem;
+                letter-spacing: -1px;
+            }
+
+            .section-header h2,
+            .arch-text h2 {
+                font-size: 2.05rem;
+            }
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="page-sheen"></div>
+    <div class="page-frame"></div>
+    <svg class="icon-sprite" aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+        <symbol id="icon-layers" viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5Z"/><path d="M2 16l10 5 10-5"/><path d="M2 12l10 5 10-5"/></symbol>
+        <symbol id="icon-layout" viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="5" rx="1.5"/><rect x="14" y="15" width="7" height="5" rx="1.5"/></symbol>
+        <symbol id="icon-architecture" viewBox="0 0 24 24"><path d="M4 20h16"/><path d="M4 4h6v16H4z"/><path d="M14 8h6v12h-6z"/><path d="M7 7v3"/><path d="M17 8v2"/></symbol>
+        <symbol id="icon-user" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/></symbol>
+        <symbol id="icon-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v10c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 10c0 1.7 3.6 3 8 3s8-1.3 8-3"/><path d="M4 15c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+        <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 3 19 6v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6l7-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+        <symbol id="icon-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 3 15 0 18"/><path d="M12 3c-3 3-3 15 0 18"/></symbol>
+        <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></symbol>
+        <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H3z"/><path d="M3 6a2 2 0 0 1 2-2h4l2 2"/></symbol>
+        <symbol id="icon-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></symbol>
+        <symbol id="icon-repeat" viewBox="0 0 24 24"><path d="M17 1 21 5 17 9"/><path d="M21 5H7a4 4 0 0 0-4 4v1"/><path d="M7 23 3 19l4-4"/><path d="M3 19h14a4 4 0 0 0 4-4v-1"/></symbol>
+        <symbol id="icon-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+        <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+        <symbol id="icon-server" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7h.01M8 16h.01M12 7h4M12 16h4"/></symbol>
+        <symbol id="icon-rocket" viewBox="0 0 24 24"><path d="M14 5c3 0 5 2 5 5-3 5-6 7-11 9 2-5 4-8 6-11 0-2 0-3 0-3Z"/><path d="M9 15 5 19c2 0 4-.4 5-1"/><path d="M10 10a2 2 0 1 0 4 0 2 2 0 0 0-4 0Z"/></symbol>
+        <symbol id="icon-chart" viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3-4 3 2 5-7"/><path d="M18 6h-3V3"/></symbol>
+        <symbol id="icon-cog" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/><path d="M3 12h2M19 12h2M12 3v2M12 19v2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M5.6 18.4 7 17"/></symbol>
+        <symbol id="icon-checklist" viewBox="0 0 24 24"><path d="M4 6h2"/><path d="M10 6h10"/><path d="M4 12h2"/><path d="M10 12h10"/><path d="M4 18h2"/><path d="M10 18h10"/><path d="m4 6 1 1 2-2"/><path d="m4 12 1 1 2-2"/><path d="m4 18 1 1 2-2"/></symbol>
+    </svg>
+
+    <header>
+        <a href="#" class="logo">
+            <div class="logo-icon"></div>
+            MangoPanel
+        </a>
+        <div class="topbar-actions">
+            <nav class="top-nav">
+                <a href="#features" class="active"><svg class="nav-icon"><use href="#icon-layout"></use></svg><span>Platform</span></a>
+                <a href="#architecture"><svg class="nav-icon"><use href="#icon-architecture"></use></svg><span>Architecture</span></a>
+                <a href="#maintainer"><svg class="nav-icon"><use href="#icon-user"></use></svg><span>Maintainer</span></a>
+            </nav>
+            <div class="header-chip"><span class="pulse-dot"></span>Live release</div>
+        </div>
+    </header>
+
+    <section class="hero">
+        <div class="badge">● Shared hosting platform · SQLite control plane · Docker account stacks</div>
+        <h1>Run shared hosting with a control plane <br><span class="highlight">built for real operations.</span></h1>
+        <p>MangoPanel powers isolated account stacks, audited jobs, live mail and database tooling, and one place to run hosting operations without opening SSH for every task.</p>
+        <div class="btn-group">
+            <a href="#platform-status" class="btn btn-primary"><svg class="btn-icon" aria-hidden="true"><use href="#icon-chart"></use></svg><span>See platform status</span></a>
+            <a href="#architecture" class="btn btn-secondary"><svg class="btn-icon" aria-hidden="true"><use href="#icon-layers"></use></svg><span>Read the architecture</span></a>
+        </div>
+        <div class="hero-meta">
+            <div class="hero-meta-card reveal"><strong>JWT + TOTP</strong><span>Mandatory auth for users and admins.</span></div>
+            <div class="hero-meta-card reveal"><strong>Queued jobs</strong><span>State changes go through the local agent.</span></div>
+            <div class="hero-meta-card reveal"><strong>SQLite WAL</strong><span>Simple control plane, versioned migrations.</span></div>
+            <div class="hero-meta-card reveal"><strong>Account stacks</strong><span>One isolated Docker stack per hosting account.</span></div>
+        </div>
+    </section>
+
+    <section id="platform-status" class="section-padding container status-board">
+        <div class="section-header reveal">
+            <h2>Platform status at a glance</h2>
+            <p>These are the same kinds of feature states MangoPanel shows inside the client area. The page is honest about what is live, read-only, or intentionally unavailable.</p>
+        </div>
+        <div class="status-grid">
+            <div class="status-card reveal">
+                <div class="status-head">
+                    <div class="status-icon"><svg aria-hidden="true"><use href="#icon-folder"></use></svg></div>
+                    <div>
+                        <h3>Files &amp; SFTP</h3>
+                        <span class="status-pill functional">Functional</span>
+                    </div>
+                </div>
+                <p>File manager, per-account credentials, and launch flow are live.</p>
+            </div>
+            <div class="status-card reveal">
+                <div class="status-head">
+                    <div class="status-icon"><svg aria-hidden="true"><use href="#icon-database"></use></svg></div>
+                    <div>
+                        <h3>Databases</h3>
+                        <span class="status-pill functional">Functional</span>
+                    </div>
+                </div>
+                <p>MySQL, PostgreSQL, and browser tools are wired into account stacks.</p>
+            </div>
+            <div class="status-card reveal">
+                <div class="status-head">
+                    <div class="status-icon"><svg aria-hidden="true"><use href="#icon-mail"></use></svg></div>
+                    <div>
+                        <h3>Email</h3>
+                        <span class="status-pill functional">Functional</span>
+                    </div>
+                </div>
+                <p>Mailbox management, MX routing setup, storage metadata, and plan-based mail limits.</p>
+            </div>
+            <div class="status-card reveal">
+                <div class="status-head">
+                    <div class="status-icon"><svg aria-hidden="true"><use href="#icon-repeat"></use></svg></div>
+                    <div>
+                        <h3>Backups</h3>
+                        <span class="status-pill functional">Functional</span>
+                    </div>
+                </div>
+                <p>Manual backups, restore flow, and downloadable archives.</p>
+            </div>
+            <div class="status-card reveal">
+                <div class="status-head">
+                    <div class="status-icon"><svg aria-hidden="true"><use href="#icon-globe"></use></svg></div>
+                    <div>
+                        <h3>DNS &amp; SSL</h3>
+                        <span class="status-pill functional">Functional</span>
+                    </div>
+                </div>
+                <p>Managed DNS records, certificate issuance, and HTTPS routing.</p>
+            </div>
+            <div class="status-card reveal">
+                <div class="status-head">
+                    <div class="status-icon"><svg aria-hidden="true"><use href="#icon-chart"></use></svg></div>
+                    <div>
+                        <h3>Metrics</h3>
+                        <span class="status-pill readonly">Read only</span>
+                    </div>
+                </div>
+                <p>Traffic, visitors, errors, bandwidth, and resource views are surfaced from live data.</p>
+            </div>
+            <div class="status-card reveal">
+                <div class="status-head">
+                    <div class="status-icon"><svg aria-hidden="true"><use href="#icon-activity"></use></svg></div>
+                    <div>
+                        <h3>Webalizer</h3>
+                        <span class="status-pill disabled">Unavailable</span>
+                    </div>
+                </div>
+                <p>Not part of the current release, so the panel stays focused.</p>
+            </div>
+            <div class="status-card reveal">
+                <div class="status-head">
+                    <div class="status-icon"><svg aria-hidden="true"><use href="#icon-checklist"></use></svg></div>
+                    <div>
+                        <h3>Jobs &amp; Audit Trail</h3>
+                        <span class="status-pill functional">Functional</span>
+                    </div>
+                </div>
+                <p>Every state change is queued, tracked, and visible to clients and admins.</p>
+            </div>
+        </div>
+    </section>
+
+    <section id="features" class="section-padding container">
+        <div class="section-header reveal">
+            <h2>What MangoPanel is built to do</h2>
+            <p>The product spec is centered on real shared hosting operations: account provisioning, website management, mail, files, backups, DNS, and safe admin work.</p>
+        </div>
+
+        <div class="micro-features-grid">
+            <div class="micro-card reveal">
+                <div class="feature-icon"><svg aria-hidden="true"><use href="#icon-database"></use></svg></div>
+                <strong>Control plane</strong>
+                <h3>SQLite, migrations, and audit logs</h3>
+                <p>The hosting brain stays small and observable: WAL-mode SQLite, scheduled backups, integrity checks, and logged operations.</p>
+                <div class="feature-card-meta">Versioned state, auditable actions</div>
+            </div>
+            <div class="micro-card reveal">
+                <div class="feature-icon"><svg aria-hidden="true"><use href="#icon-layers"></use></svg></div>
+                <strong>Hosting model</strong>
+                <h3>One stack per customer account</h3>
+                <p>Each customer gets isolated Docker services for the web stack, file manager, databases, mail relay, cron, SFTP, and tools.</p>
+                <div class="feature-card-meta">Isolation at the account boundary</div>
+            </div>
+            <div class="micro-card reveal">
+                <div class="feature-icon"><svg aria-hidden="true"><use href="#icon-globe"></use></svg></div>
+                <strong>Site management</strong>
+                <h3>Domains, PHP versions, redirects, and SSL</h3>
+                <p>Clients can manage websites without SSH, including version switching, HTTPS, document roots, and redirect rules.</p>
+                <div class="feature-card-meta">Routing, certificates, and vhost control</div>
+            </div>
+            <div class="micro-card reveal">
+                <div class="feature-icon"><svg aria-hidden="true"><use href="#icon-database"></use></svg></div>
+                <strong>Databases</strong>
+                <h3>MySQL and PostgreSQL workflows</h3>
+                <p>Database creation, users, grants, remote allowlists, and browser access are built for ordinary hosting support work.</p>
+                <div class="feature-card-meta">phpMyAdmin and browser tooling</div>
+            </div>
+            <div class="micro-card reveal">
+                <div class="feature-icon"><svg aria-hidden="true"><use href="#icon-chart"></use></svg></div>
+                <strong>Operations</strong>
+                <h3>Backups, cron, Git, and app installs</h3>
+                <p>Routine maintenance is treated as first-class work: scheduled jobs, downloadable backups, deployments, and WordPress installs.</p>
+                <div class="feature-card-meta">Job-backed operations, not one-off clicks</div>
+            </div>
+            <div class="micro-card reveal">
+                <div class="feature-icon"><svg aria-hidden="true"><use href="#icon-shield"></use></svg></div>
+                <strong>Security</strong>
+                <h3>JWT sessions, TOTP, and job-level checks</h3>
+                <p>The panel keeps the public surface tight and refuses to perform sensitive actions without the right account and auth context.</p>
+                <div class="feature-card-meta">Short-lived launch tokens and RBAC</div>
+            </div>
+            <div class="micro-card reveal">
+                <div class="feature-icon"><svg aria-hidden="true"><use href="#icon-folder"></use></svg></div>
+                <strong>Files</strong>
+                <h3>File manager, SFTP, and protected directories</h3>
+                <p>Day-to-day file operations stay inside the account boundary, with the same access model the client sees in the dashboard.</p>
+                <div class="feature-card-meta">Direct web tools and shell access</div>
+            </div>
+            <div class="micro-card reveal">
+                <div class="feature-icon"><svg aria-hidden="true"><use href="#icon-repeat"></use></svg></div>
+                <strong>Delivery</strong>
+                <h3>Queued agent jobs with visible sync history</h3>
+                <p>Nothing important vanishes into the void; state changes become jobs, and the panel shows what happened after the fact.</p>
+                <div class="feature-card-meta">Sync history and completion tracking</div>
+            </div>
+        </div>
+    </section>
+
+    <section id="architecture" class="section-padding container">
+        <div class="architecture-showcase">
+            <div class="arch-text reveal">
+                <div class="section-kicker"><svg aria-hidden="true"><use href="#icon-architecture"></use></svg><span>Product map</span></div>
+                <h2>Built around the product spec,<br>not a generic dashboard.</h2>
+                <ul class="arch-list">
+                    <li>
+                        <h4>Shared hosting first</h4>
+                        <p>The current product is for shared hosting accounts on one server or a small group of servers. VPS/KVM stays a later module.</p>
+                    </li>
+                    <li>
+                        <h4>Desired state plus agent jobs</h4>
+                        <p>The API records desired state in SQLite, then a local node agent executes the privileged work and writes back results.</p>
+                    </li>
+                    <li>
+                        <h4>Auditable by design</h4>
+                        <p>Account provisioning, SSL issuance, mailboxes, backups, and site changes all leave a trace the operator can inspect later.</p>
+                    </li>
+                </ul>
+                <p class="section-note">MangoPanel already acts like a real hosting product: clear limits, safe actions, and UI states that reflect the backend instead of pretending everything is instant.</p>
+            </div>
+            
+            <figure class="architecture-diagram reveal">
+                <img src="public/assets/img/MangoPanelArchitectureDark.png" alt="MangoPanel system architecture diagram showing the client and admin panel, SQLite control plane, local agent, edge layer, per-account Docker stack, and persistent storage." loading="lazy">
+                <figcaption>Shared-hosting-first architecture with isolated account stacks, queued jobs, and live edge services.</figcaption>
+            </figure>
+        </div>
+    </section>
+
+    <section id="maintainer" class="maintainer-section">
+        <div class="container">
+            <div class="maintainer-card reveal">
+                <div class="avatar"><svg aria-hidden="true"><use href="#icon-user"></use></svg></div>
+                <h3 class="maintainer-name">Tariq Abdullah</h3>
+                <span class="maintainer-title">Founder of ServerMango</span>
+                <p class="maintainer-bio">
+                    MangoPanel is shaped around the realities of shared hosting: small control plane, isolated account stacks, auditable jobs, short-lived tool launches, and UI states that tell the truth about what is live, read-only, or intentionally unavailable.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2026 MangoPanel Open Source Project. Shared hosting first, VPS later.</p>
+        </div>
+    </footer>
+
+    <script>
+        // Smooth scrolling
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                document.querySelector(this.getAttribute('href')).scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+        });
+
+        const revealItems = document.querySelectorAll('.reveal');
+        const revealObserver = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                if (entry.isIntersecting) entry.target.classList.add('is-visible');
+            });
+        }, { threshold: 0.14 });
+
+        revealItems.forEach((item, index) => {
+            item.style.setProperty('--reveal-delay', `${Math.min(index * 60, 420)}ms`);
+            revealObserver.observe(item);
+        });
+
+        const navLinks = Array.from(document.querySelectorAll('.top-nav a'));
+        const sectionTargets = navLinks
+            .map((link) => document.querySelector(link.getAttribute('href')))
+            .filter(Boolean);
+
+        const navObserver = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                if (!entry.isIntersecting) return;
+                navLinks.forEach((link) => {
+                    link.classList.toggle('active', link.getAttribute('href') === `#${entry.target.id}`);
+                });
+            });
+        }, { rootMargin: '-20% 0px -60% 0px', threshold: 0.2 });
+
+        sectionTargets.forEach((section) => navObserver.observe(section));
+    </script>
+</body>
+</html>
