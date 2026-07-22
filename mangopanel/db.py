@@ -46,6 +46,27 @@ CREATE TABLE IF NOT EXISTS sessions (
   revoked_at INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS auth_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip_address TEXT NOT NULL,
+  actor_type TEXT NOT NULL,
+  window_started_at INTEGER NOT NULL,
+  failures INTEGER NOT NULL DEFAULT 0,
+  blocked_until INTEGER NOT NULL DEFAULT 0,
+  block_seconds INTEGER NOT NULL DEFAULT 0,
+  last_alert_at INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(ip_address, actor_type)
+);
+
+CREATE TABLE IF NOT EXISTS impersonation_tokens (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  admin_id INTEGER NOT NULL REFERENCES admins(id),
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS plans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,

@@ -107,6 +107,8 @@ MAILPIT_BRAND_SVG = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1
 WEBMAIL_LOGIN_MAX_FAILURES = 5
 WEBMAIL_LOGIN_WINDOW_SECONDS = 10 * 60
 WEBMAIL_LOGIN_LOCK_SECONDS = 15 * 60
+AUTH_ATTEMPT_WINDOW_SECONDS = 5 * 60
+AUTH_ATTEMPT_MAX_FAILURES = 5
 DNS_RECORD_TYPES = {"A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"}
 DNS_PROVIDER_KEYS = {DNS_PROVIDER_LOCAL_POWERDNS, DNS_PROVIDER_CLOUDFLARE}
 DEFAULT_DNS_RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"]
@@ -116,6 +118,44 @@ class ApiError(Exception):
     def __init__(self, status, message):
         self.status = status
         self.message = message
+
+
+def auth_ip(conn, handler):
+    return client_ip(handler) or "unknown"
+
+
+def check_auth_rate_limit(conn, handler, actor_type):
+    ip = auth_ip(conn, handler)
+    row = conn.execute("SELECT * FROM auth_attempts WHERE ip_address = ? AND actor_type = ?", (ip, actor_type)).fetchone()
+    now = int(time.time())
+    if not row:
+        return
+    if int(row["blocked_until"] or 0) > now:
+        raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "authentication_temporarily_blocked")
+    if now - int(row["window_started_at"] or 0) < AUTH_ATTEMPT_WINDOW_SECONDS and int(row["failures"] or 0) >= AUTH_ATTEMPT_MAX_FAILURES:
+        raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "too_many_auth_attempts")
+
+
+def record_auth_failure(conn, handler, actor_type):
+    ip = auth_ip(conn, handler)
+    now = int(time.time())
+    row = conn.execute("SELECT * FROM auth_attempts WHERE ip_address = ? AND actor_type = ?", (ip, actor_type)).fetchone()
+    if not row or now - int(row["window_started_at"] or 0) >= AUTH_ATTEMPT_WINDOW_SECONDS:
+        failures, window_started, block_seconds = 1, now, int(row["block_seconds"] or 0) if row else 0
+    else:
+        failures, window_started, block_seconds = int(row["failures"] or 0) + 1, int(row["window_started_at"]), int(row["block_seconds"] or 0)
+    blocked_until = int(row["blocked_until"] or 0) if row else 0
+    last_alert = int(row["last_alert_at"] or 0) if row else 0
+    if actor_type == "admin" and failures >= 3 and (not row or now >= blocked_until):
+        block_seconds = max(180, block_seconds * 2 or 180)
+        blocked_until = now + block_seconds
+        if now - last_alert >= 60:
+            log_audit(conn, "security", None, "admin_authentication_alert", "ip_address", None, metadata={"ip": ip, "block_seconds": block_seconds, "failures": failures})
+            last_alert = now
+    conn.execute(
+        "INSERT INTO auth_attempts(ip_address, actor_type, window_started_at, failures, blocked_until, block_seconds, last_alert_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ip_address, actor_type) DO UPDATE SET window_started_at=excluded.window_started_at, failures=excluded.failures, blocked_until=excluded.blocked_until, block_seconds=excluded.block_seconds, last_alert_at=excluded.last_alert_at",
+        (ip, actor_type, window_started, failures, blocked_until, block_seconds, last_alert),
+    )
 
 
 def get_cookie_domain(host_header):
@@ -134,15 +174,16 @@ def auth_cookie_header(token, host_header, max_age=None):
     cookie_domain = get_cookie_domain(host_header)
     domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
     ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
-    return f"mp_client_token={token}; Path=/; Max-Age={ttl}; SameSite=Lax{domain_attr}"
+    secure = "; Secure" if CONFIG.env == "production" else ""
+    return f"mp_client_token={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax{secure}{domain_attr}"
 
 
 def auth_cookie_headers(token, host_header):
     cookie_domain = get_cookie_domain(host_header)
     if cookie_domain == ".localhost":
         return [
-            f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; SameSite=Lax; Domain=localhost",
-            f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; SameSite=Lax; Domain=.localhost",
+            f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; HttpOnly; SameSite=Lax; Domain=localhost",
+            f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; HttpOnly; SameSite=Lax; Domain=.localhost",
         ]
     return [auth_cookie_header(token, host_header, CONFIG.token_ttl_seconds)]
 
@@ -151,7 +192,8 @@ def named_cookie_header(name, token, host_header, max_age=None):
     cookie_domain = get_cookie_domain(host_header)
     domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
     ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
-    return f"{name}={token}; Path=/; Max-Age={ttl}; SameSite=Lax{domain_attr}"
+    secure = "; Secure" if CONFIG.env == "production" else ""
+    return f"{name}={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax{secure}{domain_attr}"
 
 
 def named_cookie_headers(name, token, host_header, max_age=None):
@@ -159,8 +201,8 @@ def named_cookie_headers(name, token, host_header, max_age=None):
     ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
     if cookie_domain == ".localhost":
         return [
-            f"{name}={token}; Path=/; Max-Age={ttl}; SameSite=Lax; Domain=localhost",
-            f"{name}={token}; Path=/; Max-Age={ttl}; SameSite=Lax; Domain=.localhost",
+            f"{name}={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax; Domain=localhost",
+            f"{name}={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax; Domain=.localhost",
         ]
     return [named_cookie_header(name, token, host_header, ttl)]
 
@@ -1308,8 +1350,10 @@ class MangoHandler(BaseHTTPRequestHandler):
         password = body.get("password", "")
         table = "admins" if actor_type == "admin" else "users"
         with connect(CONFIG.db_path) as conn:
+            check_auth_rate_limit(conn, self, actor_type)
             actor = conn.execute(f"SELECT * FROM {table} WHERE email = ? AND status = 'active'", (email,)).fetchone()
             if not actor or not verify_password(password, actor["password_hash"]):
+                record_auth_failure(conn, self, actor_type)
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_credentials")
             log_audit(conn, actor_type, actor["id"], "login_password_ok", table, actor["id"], self.client_address[0])
             
@@ -1346,12 +1390,14 @@ class MangoHandler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_totp_challenge")
         table = "admins" if actor_type == "admin" else "users"
         with connect(CONFIG.db_path) as conn:
+            check_auth_rate_limit(conn, self, actor_type)
             actor = conn.execute(f"SELECT * FROM {table} WHERE id = ? AND status = 'active'", (payload["sub"],)).fetchone()
             if not actor:
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "actor_not_found")
             code = body.get("code", "")
             dev_bypass_ok = CONFIG.is_development and CONFIG.dev_auth_test_mode and code == "000000"
             if not dev_bypass_ok and not verify_totp(actor["totp_secret"], code):
+                record_auth_failure(conn, self, actor_type)
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_totp")
             token_id = secrets.token_urlsafe(16)
             access_token = create_jwt(
