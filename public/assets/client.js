@@ -218,9 +218,9 @@ const app = createApp({
       ],
       activePage: pageFromLocation(),
       login: {
-        email: "owner@example.mango.test",
-        password: "ChangeMe-DevOnly-123!",
-        code: "000000",
+        email: "",
+        password: "",
+        code: "",
       },
       home: {
         resources: { disk_used_mb: 0, disk_limit_mb: 0, inodes_used: 0, inodes_limit: 0, cpu: "unknown", memory: "unknown" },

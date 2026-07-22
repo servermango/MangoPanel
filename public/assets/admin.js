@@ -16,9 +16,9 @@ createApp({
       challengeToken: "",
       message: "",
       login: {
-        email: "admin@mango.test",
-        password: "ChangeMe-DevOnly-123!",
-        code: "000000",
+        email: "",
+        password: "",
+        code: "",
       },
       dashboard: {
         counts: { users: 0, hosting_accounts: 0, websites: 0, account_stacks: 0, open_incidents: 0 },
