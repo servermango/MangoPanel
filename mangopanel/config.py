@@ -5,8 +5,39 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _load_dotenv_file(dotenv_path):
+    path = Path(dotenv_path)
+    if not path.is_file():
+        return
+    try:
+        content = path.read_text(encoding="utf-8")
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip("'\"")
+            if k and k not in os.environ:
+                os.environ[k] = v
+    except Exception:
+        pass
+
+
+def load_all_env_files():
+    user_files = Path(os.getenv("MP_USER_FILES_DIR", PROJECT_ROOT / "user_files"))
+    candidates = [
+        user_files / ".env",
+        user_files / "data" / ".env",
+        PROJECT_ROOT / ".env",
+    ]
+    for path in candidates:
+        _load_dotenv_file(path)
+
+
 class Config:
     def __init__(self):
+        load_all_env_files()
         self.env = os.getenv("MP_ENV", "development")
         self.host = os.getenv("MP_HOST", "0.0.0.0")
         self.port = int(os.getenv("MP_PORT", "8000"))
@@ -45,6 +76,7 @@ class Config:
         return self.env == "development" or getattr(self, "dev_auth_test_mode", False) or getattr(self, "agent_mode", "") == "simulate"
 
 
-
 def load_config():
+    load_all_env_files()
     return Config()
+

@@ -218,7 +218,17 @@ class SecurityAuditRemediationTests(unittest.TestCase):
             handler.client_api("GET", "/api/client/home", {}, user1)
         self.assertEqual(ctx.exception.status, HTTPStatus.FORBIDDEN)
 
+    def test_user_files_dotenv_loading(self):
+        import os
+        from mangopanel.config import _load_dotenv_file, Config
+        test_env = self.config.user_files_dir / ".env"
+        test_env.write_text("MP_TEST_DOTENV_KEY=hello_from_user_files\n", encoding="utf-8")
+        _load_dotenv_file(test_env)
+        self.assertEqual(os.environ.get("MP_TEST_DOTENV_KEY"), "hello_from_user_files")
+        os.environ.pop("MP_TEST_DOTENV_KEY", None)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
