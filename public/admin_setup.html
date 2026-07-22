@@ -468,7 +468,7 @@
         <a href="/" class="brand-logo">
           🥭 MangoPanel <span class="brand-badge">Setup</span>
         </a>
-        <div class="step-indicators" v-if="bootstrap.admin_setup_required">
+        <div class="step-indicators" v-if="bootstrap.admin_setup_required || result || currentStep > 1">
           <div class="step-pill" :class="{ active: currentStep === 1, completed: currentStep > 1 }">
             <span class="step-num">1</span> Account
           </div>
@@ -517,7 +517,7 @@
         <section class="setup-form-panel">
 
           <!-- Step 1: Account Creation -->
-          <div v-if="bootstrap.admin_setup_required && currentStep === 1">
+          <div v-if="currentStep === 1 && (bootstrap.admin_setup_required || !result)">
             <h2 class="form-title">Create Super Admin</h2>
             <p class="form-subtitle">Set up the primary administrative credentials for this MangoPanel node.</p>
 
@@ -554,7 +554,7 @@
           </div>
 
           <!-- Step 2: 2FA & Authenticator Setup -->
-          <div v-else-if="bootstrap.admin_setup_required && currentStep === 2">
+          <div v-else-if="currentStep === 2">
             <h2 class="form-title">Authenticator 2FA Setup</h2>
             <p class="form-subtitle">Scan the QR code with your authenticator app (Google Authenticator, Authy, 1Password).</p>
 
