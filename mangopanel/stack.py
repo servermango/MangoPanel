@@ -518,6 +518,7 @@ def render_apache_vhosts(account, websites):
             if analytics_enabled
             else ""
         )
+        base_dir = container_path(account, str(Path(website["document_root"]).parent))
         blocks.append(
             """
 <VirtualHost *:80>
@@ -529,12 +530,19 @@ def render_apache_vhosts(account, websites):
     Options Indexes FollowSymLinks
     AllowOverride All
     Require all granted
+    <IfModule mod_php7.c>
+      php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
+    </IfModule>
+    <IfModule mod_php.c>
+      php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
+    </IfModule>
   </Directory>
 
   ErrorLog "{logs_dir}/error.log"
 {custom_log}</VirtualHost>
-""".strip().format(domain=website["domain"], root=root, logs_dir=logs_dir, custom_log=custom_log)
+""".strip().format(domain=website["domain"], root=root, base_dir=base_dir, logs_dir=logs_dir, custom_log=custom_log)
         )
+
     if not blocks:
         fallback_root = container_path(account, str(Path(account["base_path"]) / "domains" / "default" / "public_html"))
         blocks.append(
