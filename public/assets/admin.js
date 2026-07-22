@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 
 const ADMIN_ROUTE_PREFIX = "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "dns-domains", "system", "admins", "status"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "registrars", "dns-domains", "system", "admins", "status"]);
 
 function adminPageFromLocation() {
   const hash = window.location.hash.replace(/^#/, "");
@@ -35,8 +35,11 @@ createApp({
       editingPlanId: null,
       applyPlanToExistingAccounts: false,
       dnsDomains: [],
+      registrars: [],
+      registrarForm: { key: "resellerclub", reseller_id: "", api_base: "", api_key: "", api_token: "" },
+      domainForm: { user_id: "", account_id: "", domain: "", registrar_provider_id: "", register: false, nameservers: ["", ""] },
       dnsSettings: { global_mode: "local_powerdns", local: { nameservers: ["ns1.mango.test", "ns2.mango.test"], public_ipv4: "127.0.0.1", public_ipv6: "", soa_email: "hostmaster.mango.test", default_ttl: 300 }, providers: [], accounts: [], health_checks: [] },
-      cloudflareAccount: { display_name: "", account_name: "", external_account_id: "", api_token: "" },
+      cloudflareAccount: { id: null, display_name: "", account_name: "", external_account_id: "", api_token: "", status: "active" },
       jobEvents: [],
       admins: [],
       newAdminSecret: "",
@@ -135,6 +138,7 @@ createApp({
           label: "DNS",
           items: [
             { label: "DNS Settings", target: "dns", description: "Global DNS mode, local nameservers, and Cloudflare account credentials." },
+            { label: "Registration Providers", target: "registrars", description: "Configure domain registration accounts and API credentials." },
             { label: "Managed DNS Domains", target: "dns-domains", description: "Rebuild zones, verify delegation, export records, and migrate providers." },
           ],
         },
@@ -199,6 +203,13 @@ createApp({
           method: "POST",
           body: JSON.stringify({ email: this.login.email, password: this.login.password }),
         });
+        if (payload.access_token) {
+          this.token = payload.access_token;
+          localStorage.setItem("mp_admin_token", this.token);
+          this.challengeToken = "";
+          await this.load();
+          return;
+        }
         this.challengeToken = payload.challenge_token;
       } catch (error) {
         if (this.token || ["invalid_access_token", "expired_access_token", "invalid_token_subject", "wrong_actor_type"].includes(error.message)) {
@@ -228,7 +239,7 @@ createApp({
         this.dashboard = await this.api("/api/admin/dashboard");
         this.admins = (await this.api("/api/admin/admins")).admins.map((admin) => ({
           ...admin,
-          totp_enabled: Boolean(admin.totp_secret),
+          totp_enabled: Boolean(admin.totp_enabled),
         }));
         this.clients = (await this.api("/api/admin/clients")).clients;
         for (const client of this.clients) {
@@ -244,6 +255,7 @@ createApp({
         this.plans = (await this.api("/api/admin/plans")).plans;
         this.dnsSettings = (await this.api("/api/admin/dns-settings")).dns_settings;
         this.dnsDomains = (await this.api("/api/admin/domains")).domains || [];
+        this.registrars = (await this.api("/api/admin/registrars")).registrars || [];
         this.stacks = (await this.api("/api/admin/account-stacks")).account_stacks;
         this.jobEvents = (await this.api("/api/admin/job-events")).job_events;
       } catch (error) {
@@ -258,6 +270,29 @@ createApp({
       } catch (error) {
         this.message = error.message;
       }
+    },
+    registrarByKey(key) {
+      return this.registrars.find((item) => item.key === key) || {};
+    },
+    async saveRegistrar() {
+      try {
+        const form = this.registrarForm;
+        const body = { settings: { api_base: form.api_base }, reseller_id: form.reseller_id, api_key: form.api_key, api_token: form.api_token };
+        await this.api(`/api/admin/registrars/${form.key}`, { method: "PATCH", body: JSON.stringify(body) });
+        this.message = "Registration provider saved";
+        this.registrarForm.api_key = "";
+        this.registrarForm.api_token = "";
+        await this.load();
+      } catch (error) { this.message = error.message; }
+    },
+    async addClientDomain() {
+      try {
+        const payload = { ...this.domainForm, user_id: Number(this.domainForm.user_id), account_id: this.domainForm.account_id ? Number(this.domainForm.account_id) : null, registrar_provider_id: this.domainForm.registrar_provider_id ? Number(this.domainForm.registrar_provider_id) : null };
+        await this.api("/api/admin/domains", { method: "POST", body: JSON.stringify(payload) });
+        this.message = payload.register ? "Domain registered and assigned" : "Existing domain assigned";
+        this.domainForm.domain = "";
+        await this.load();
+      } catch (error) { this.message = error.message; }
     },
     async createIncident() {
       try {
@@ -530,6 +565,19 @@ createApp({
     cloudflareAccounts() {
       return (this.dnsSettings.accounts || []).filter((account) => account.provider_key === "cloudflare");
     },
+    startEditCloudflareAccount(account) {
+      this.cloudflareAccount = {
+        id: account.id,
+        display_name: account.display_name || "",
+        account_name: account.account_name || "",
+        external_account_id: account.external_account_id || "",
+        api_token: "",
+        status: account.status || "active",
+      };
+    },
+    clearCloudflareAccountForm() {
+      this.cloudflareAccount = { id: null, display_name: "", account_name: "", external_account_id: "", api_token: "", status: "active" };
+    },
     async saveDnsSettings() {
       this.message = "";
       try {
@@ -549,13 +597,18 @@ createApp({
     async createCloudflareDnsAccount() {
       this.message = "";
       try {
-        const payload = await this.api("/api/admin/dns-providers/cloudflare/accounts", {
-          method: "POST",
+        const isEditing = Boolean(this.cloudflareAccount.id);
+        const path = isEditing
+          ? `/api/admin/dns-providers/cloudflare/accounts/${this.cloudflareAccount.id}`
+          : "/api/admin/dns-providers/cloudflare/accounts";
+        const method = isEditing ? "PATCH" : "POST";
+        const payload = await this.api(path, {
+          method,
           body: JSON.stringify(this.cloudflareAccount),
         });
         this.dnsSettings = payload.dns_settings;
-        this.cloudflareAccount = { display_name: "", account_name: "", external_account_id: "", api_token: "" };
-        this.message = "Cloudflare DNS account saved";
+        this.clearCloudflareAccountForm();
+        this.message = isEditing ? "Cloudflare DNS account updated" : "Cloudflare DNS account saved";
       } catch (error) {
         this.message = error.message;
       }
@@ -568,6 +621,38 @@ createApp({
         const payload = await this.api(`/api/admin/dns-providers/cloudflare/accounts/${account.id}`, { method: "DELETE" });
         this.dnsSettings = payload.dns_settings;
         this.message = `Cloudflare account "${account.display_name}" deleted`;
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async toggleCloudflareDnsAccount(account) {
+      this.message = "";
+      const nextStatus = account.status === "active" ? "disabled" : "active";
+      try {
+        const payload = await this.api(`/api/admin/dns-providers/cloudflare/accounts/${account.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            status: nextStatus,
+          }),
+        });
+        this.dnsSettings = payload.dns_settings;
+        this.message = `Cloudflare account "${account.display_name}" ${nextStatus === "active" ? "activated" : "disabled"}`;
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async migrateCloudflareAccountToLocal(account) {
+      this.message = "";
+      const confirmed = window.confirm(`Migrate all domains using "${account.display_name}" back to local DNS?`);
+      if (!confirmed) return;
+      try {
+        const payload = await this.api(`/api/admin/dns-providers/cloudflare/accounts/${account.id}/migrate-local`, {
+          method: "POST",
+          body: "{}",
+        });
+        this.dnsSettings = payload.dns_settings;
+        this.message = `${payload.migrated} domain${payload.migrated === 1 ? "" : "s"} queued for migration back to local DNS`;
+        await this.load();
       } catch (error) {
         this.message = error.message;
       }

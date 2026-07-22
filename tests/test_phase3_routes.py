@@ -11,6 +11,9 @@ from mangopanel import app as app_module
 from mangopanel.agent import Agent
 from mangopanel.config import Config
 from mangopanel.db import connect, seed_dev_data
+from mangopanel.providers import DNS_PROVIDER_CLOUDFLARE
+from mangopanel.security import encrypt_secret
+from tests.test_providers import FakeCloudflareHandler, FakeHTTPServer
 
 
 PASSWORD = "ChangeMe-DevOnly-123!"
@@ -211,6 +214,78 @@ class Phase3RouteTests(unittest.TestCase):
             with connect(config.db_path) as conn:
                 website = conn.execute("SELECT ssl_status FROM websites WHERE id = ?", (website_id,)).fetchone()
                 self.assertEqual(website["ssl_status"], "custom")
+
+    def test_create_website_surfaces_cloudflare_nameservers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self.make_config(root)
+            seed_dev_data(config.db_path, config.account_root)
+            FakeCloudflareHandler.created_zone = None
+            FakeCloudflareHandler.created_records = []
+
+            with FakeHTTPServer(FakeCloudflareHandler) as fake_cf:
+                config.cloudflare_api_base = fake_cf.base_url + "/client/v4"
+                with connect(config.db_path) as conn:
+                    provider = conn.execute("SELECT * FROM dns_providers WHERE key = ?", (DNS_PROVIDER_CLOUDFLARE,)).fetchone()
+                    account_id = conn.execute(
+                        """
+                        INSERT INTO dns_provider_accounts(provider_id, display_name, account_name, external_account_id, status)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (provider["id"], "Main Cloudflare", "Example Hosting", "account-1", "active"),
+                    ).lastrowid
+                    conn.execute(
+                        """
+                        INSERT INTO dns_provider_credentials(provider_account_id, credential_kind, secret_label, encrypted_secret, status)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (account_id, "api_token", "token:...alue", encrypt_secret("secret-token-value", config.jwt_secret), "stored"),
+                    )
+                    plan = conn.execute("SELECT * FROM plans ORDER BY id LIMIT 1").fetchone()
+                    conn.execute(
+                        "UPDATE plans SET dns_default_provider = ?, dns_default_provider_account_id = ? WHERE id = ?",
+                        (DNS_PROVIDER_CLOUDFLARE, account_id, plan["id"]),
+                    )
+
+                with ClientApiServer(config) as server:
+                    token = server.login()
+                    payload = server.request("POST", "/api/client/websites", {"domain": "cloudflare-example.mango.test"}, token)
+                    website = payload["website"]
+                    self.assertTrue(website["nameservers"])
+                    self.assertIn("abby.ns.cloudflare.com", website["nameservers"])
+                    self.assertEqual(website["dns_provider_label"], "Cloudflare")
+
+                with connect(config.db_path) as conn:
+                    domain = conn.execute("SELECT * FROM domains WHERE name = ?", ("cloudflare-example.mango.test",)).fetchone()
+                    self.assertIsNotNone(domain)
+                    self.assertIn("abby.ns.cloudflare.com", domain["nameservers_json"])
+
+    def test_create_website_seeds_dns_records_for_apex_www_and_mail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self.make_config(root)
+            seed_dev_data(config.db_path, config.account_root)
+
+            with ClientApiServer(config) as server:
+                token = server.login()
+                payload = server.request("POST", "/api/client/websites", {"domain": "dns-records-example.mango.test"}, token)
+                website = payload["website"]
+
+            with connect(config.db_path) as conn:
+                domain = conn.execute("SELECT * FROM domains WHERE name = ?", ("dns-records-example.mango.test",)).fetchone()
+                self.assertIsNotNone(domain)
+                records = conn.execute(
+                    "SELECT type, name, value FROM dns_records WHERE domain_id = ? ORDER BY type, name",
+                    (domain["id"],),
+                ).fetchall()
+                record_set = {(row["type"], row["name"], row["value"]) for row in records}
+                self.assertIn(("A", "@", "127.0.0.1"), record_set)
+                self.assertIn(("CNAME", "www", "@"), record_set)
+                self.assertTrue(any(row["type"] == "MX" and row["name"] == "@" for row in records))
+                self.assertTrue(any(row["type"] == "TXT" and row["name"] == "@" for row in records))
+                self.assertTrue(any(row["type"] == "TXT" and row["name"] == "_dmarc" for row in records))
+                self.assertTrue(any(row["type"] == "TXT" and row["name"] == "mango._domainkey" for row in records))
+                self.assertTrue(website["nameservers"])
 
 
 if __name__ == "__main__":

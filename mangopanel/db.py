@@ -993,6 +993,7 @@ def ensure_schema(conn):
             "previous_provider_zone_id": "TEXT",
         },
     )
+    ensure_registrar_schema(conn)
     ensure_dns_provider_schema(conn)
     seed_dns_provider_defaults(conn)
     ensure_table_columns(
@@ -1339,6 +1340,45 @@ def ensure_table_columns(conn, table, columns):
     for name, definition in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
+def ensure_registrar_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS registrar_providers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          key TEXT NOT NULL UNIQUE,
+          display_name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          settings_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS registrar_credentials (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          provider_id INTEGER NOT NULL UNIQUE REFERENCES registrar_providers(id),
+          encrypted_secret TEXT NOT NULL DEFAULT '',
+          secret_label TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'stored',
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    for key, label in (("resellerclub", "ResellerClub / PDR"), ("domainnameapi", "DomainNameAPI"), ("cloudflare", "Cloudflare")):
+        conn.execute("INSERT OR IGNORE INTO registrar_providers(key, display_name) VALUES (?, ?)", (key, label))
+    ensure_table_columns(conn, "domains", {
+        "registrar_provider_id": "INTEGER",
+        "registrar_domain_id": "TEXT NOT NULL DEFAULT ''",
+        "registrar_status": "TEXT NOT NULL DEFAULT 'external'",
+        "registrar_state_json": "TEXT NOT NULL DEFAULT '{}'",
+        "nameserver_source": "TEXT NOT NULL DEFAULT 'default'",
+        "custom_nameservers_json": "TEXT NOT NULL DEFAULT '[]'",
+        "last_registrar_sync_at": "TEXT",
+    })
 
 
 def ensure_dns_provider_schema(conn):

@@ -473,4 +473,3 @@ class LocalPowerDNSAgentTests(unittest.TestCase):
                 any("ns1.custom.example.test" in c for c in ns_contents),
                 "Custom nameserver ns1.custom.example.test should appear in the NS rrset",
             )
-

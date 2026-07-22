@@ -1,6 +1,7 @@
 import json
 import hashlib
 import ipaddress
+import os
 from email import policy as email_policy
 from email.parser import BytesParser
 import re
@@ -30,13 +31,23 @@ from .db import (
     rows_to_dicts,
     seed_dev_data,
 )
-from .providers import DNS_PROVIDER_CLOUDFLARE, DNS_PROVIDER_LOCAL_POWERDNS
+from .providers import (
+    DNS_PROVIDER_CLOUDFLARE,
+    DNS_PROVIDER_LOCAL,
+    DNS_PROVIDER_LOCAL_POWERDNS,
+    CloudflareDNSProvider,
+    DNSProviderError,
+    LocalDNSProvider,
+    PowerDNSProvider,
+)
+from .registrars import RegistrarError, registrar_for
 from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, verify_jwt, verify_password, verify_totp
 from .snappymail import request_login_session
 
 
 CONFIG = load_config()
 PUBLIC_DIR = Path(__file__).resolve().parent.parent / "public"
+SERVICE_VAR_DIR = Path(__file__).resolve().parent.parent / "var"
 FEATURE_STATUS = {
     "dashboard": {"status": "functional", "label": "Functional"},
     "installer": {"status": "functional", "label": "Functional"},
@@ -1458,8 +1469,10 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/websites" and method == "GET":
                 rows = conn.execute(
                     """
-                    SELECT w.* FROM websites w
+                    SELECT w.*, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                    FROM websites w
                     JOIN hosting_accounts ha ON ha.id = w.account_id
+                    LEFT JOIN domains d ON d.linked_website_id = w.id
                     WHERE ha.user_id = ?
                     ORDER BY w.id
                     """,
@@ -1470,12 +1483,24 @@ class MangoHandler(BaseHTTPRequestHandler):
                     runtime = account_runtime(conn, website["account_id"])
                     website["public_url"] = f"http://{website['domain']}"
                     website["host_header"] = website["domain"]
+                    website["nameservers"] = website_dns_nameservers(website)
+                    website["dns_provider_label"] = "Cloudflare" if website.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE else "Local DNS"
+                    provider_state = parse_json_field(website.get("provider_state_json"), {})
+                    website["provider_state"] = provider_state
+                    website["dns_last_error"] = provider_state.get("last_error") or ""
+                    website["dns_warnings"] = dns_state_warnings(website)
                 return self.json_response({"websites": websites})
             if path == "/api/client/websites" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "websites", "max_websites", "website_limit_reached")
                 body = self.read_json()
                 domain = sanitize_domain(body.get("domain", ""))
+                existing_domain = conn.execute(
+                    "SELECT id, linked_website_id FROM domains WHERE account_id = ? AND name = ?",
+                    (account["id"], domain),
+                ).fetchone()
+                if existing_domain:
+                    raise ApiError(HTTPStatus.CONFLICT, "domain_already_exists")
                 document_root = f"{account['base_path']}/domains/{domain}/public_html"
                 cur = conn.execute(
                     """
@@ -1507,12 +1532,34 @@ class MangoHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 job_id = enqueue_agent_job(conn, "create_website", "website", website_id, {"domain": domain})
+                domain_link = conn.execute(
+                    "SELECT id FROM domains WHERE linked_website_id = ?",
+                    (website_id,),
+                ).fetchone()
+                if not domain_link:
+                    raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "domain_record_missing")
+                dns_job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", domain_link["id"], {"reason": "website_created"})
                 log_activity(conn, actor["id"], "website_created", {"domain": domain})
+                website = row_to_dict(conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone())
+                domain_row = conn.execute(
+                    """
+                    SELECT d.*, z.nameservers_json AS zone_nameservers_json
+                    FROM domains d
+                    LEFT JOIN dns_zones z ON z.domain_id = d.id
+                    WHERE d.linked_website_id = ?
+                    """,
+                    (website_id,),
+                ).fetchone()
+                if domain_row:
+                    domain_info = row_to_dict(domain_row)
+                    website["domain_record"] = decorate_domain(domain_row)
+                    website["nameservers"] = website_dns_nameservers(website["domain_record"]) or parse_json_field(domain_info.get("zone_nameservers_json"), [])
+                    website["dns_provider_label"] = website["domain_record"]["dns_provider_label"]
                 return self.json_response(
-                    {"website": row_to_dict(conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()), "job_id": job_id},
+                    {"website": website, "job_id": job_id, "dns_job_id": dns_job_id},
                     HTTPStatus.CREATED,
                 )
-            if path.startswith("/api/client/websites/") and not path.endswith("/php") and not path.endswith("/modsec"):
+            if path.startswith("/api/client/websites/") and not path.endswith("/php") and not path.endswith("/modsec") and not path.endswith("/connection-check"):
                 require_active_account(account)
                 website_id = path_int_id(path, "/api/client/websites/")
                 website = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone()
@@ -1593,6 +1640,25 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (actor["id"],),
                 ).fetchall()
                 return self.json_response({"domains": [decorate_domain(row) for row in rows]})
+            if path.startswith("/api/client/domains/") and path.endswith("/nameservers") and method == "POST":
+                require_account(account)
+                domain_id = int(path.split("/")[-2])
+                domain = conn.execute("SELECT d.* FROM domains d JOIN hosting_accounts ha ON ha.id = d.account_id WHERE d.id = ? AND ha.user_id = ?", (domain_id, actor["id"])).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                body = self.read_json()
+                source = str(body.get("source") or "custom").lower()
+                if source not in {"default", "custom"}:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_nameserver_source")
+                nameservers = [str(v).strip().rstrip(".").lower() for v in (body.get("nameservers") or []) if str(v).strip()]
+                if source == "default":
+                    nameservers = default_registrar_nameservers(conn)
+                if len(nameservers) < 2 or len(nameservers) > 4:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "two_to_four_nameservers_required")
+                result = update_domain_registrar_nameservers(conn, domain, nameservers)
+                conn.execute("UPDATE domains SET nameserver_source = ? WHERE id = ?", (source, domain_id))
+                log_activity(conn, actor["id"], "registrar_nameservers_updated", {"domain_id": domain_id, "source": source})
+                return self.json_response({"domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()), "result": result})
             if path.startswith("/api/client/domains/") and path.endswith("/dns/rebuild") and method == "POST":
                 require_active_account(account)
                 domain_id = int(path.split("/")[-3])
@@ -1758,6 +1824,38 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if acme_order:
                     acme_order["provider_state"] = parse_json_field(acme_order.get("provider_state_json"), {})
                 return self.json_response({"ssl_status": refreshed["ssl_status"], "job_id": job_id, "acme_order": acme_order})
+            if path.startswith("/api/client/websites/") and path.endswith("/connection-check") and method == "POST":
+                require_active_account(account)
+                website_id = int(path.split("/")[-2])
+                website = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone()
+                if not website:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                domain_name = website["domain"]
+                observed_a = []
+                observed_ns = []
+                dig = shutil.which("dig")
+                if dig:
+                    for record_type, target in (("A", observed_a), ("AAAA", observed_a), ("NS", observed_ns)):
+                        try:
+                            result = subprocess.run([dig, "+short", record_type, domain_name], check=False, capture_output=True, text=True, timeout=8)
+                            target.extend(sorted({line.strip().rstrip(".") for line in result.stdout.splitlines() if line.strip()}))
+                        except (OSError, subprocess.TimeoutExpired):
+                            pass
+                else:
+                    try:
+                        observed_a.extend(socket.gethostbyname_ex(domain_name)[2])
+                    except OSError:
+                        pass
+                domain_row = conn.execute("SELECT * FROM domains WHERE linked_website_id = ?", (website_id,)).fetchone()
+                expected_ns = parse_json_field(domain_row["nameservers_json"], []) if domain_row else []
+                ns_ok = bool(observed_ns and (not expected_ns or set(ns.lower() for ns in expected_ns).issubset({ns.lower() for ns in observed_ns})))
+                ip_ok = bool(observed_a)
+                verified = ns_ok or ip_ok
+                job_id = None
+                if verified:
+                    job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto", "connection_check": True})
+                    conn.execute("UPDATE websites SET ssl_status = 'pending' WHERE id = ?", (website_id,))
+                return self.json_response({"verified": verified, "nameservers_verified": ns_ok, "ip_verified": ip_ok, "observed_nameservers": observed_ns, "observed_ips": observed_a, "expected_nameservers": expected_ns, "auto_ssl_job_id": job_id, "message": "DNS is reachable. AutoSSL has been queued." if verified else "DNS is not pointing to this hosting account yet."})
             if path == "/api/client/ssl/custom" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -3532,6 +3630,32 @@ class MangoHandler(BaseHTTPRequestHandler):
                 update_global_dns_assignment(conn, settings["global_mode"], settings["policy"])
                 log_audit(conn, "admin", actor["id"], "update_dns_settings", "dns_provider", local_provider["id"], metadata={"global_mode": settings["global_mode"]})
                 return self.json_response({"dns_settings": dns_settings_payload(conn)})
+            if path == "/api/admin/domains" and method == "POST":
+                body = self.read_json()
+                user_id = optional_positive_int(body.get("user_id"))
+                account_id = optional_positive_int(body.get("account_id"))
+                domain_name = sanitize_domain(body.get("domain") or body.get("name") or "")
+                if not user_id or not domain_name:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "user_and_domain_required")
+                account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ? AND user_id = ?", (account_id, user_id)).fetchone() if account_id else conn.execute("SELECT * FROM hosting_accounts WHERE user_id = ? ORDER BY id LIMIT 1", (user_id,)).fetchone()
+                if not account:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "hosting_account_required_for_domain")
+                existing = conn.execute("SELECT id FROM domains WHERE name = ?", (domain_name,)).fetchone()
+                if existing:
+                    raise ApiError(HTTPStatus.CONFLICT, "domain_already_exists")
+                registrar_id = optional_positive_int(body.get("registrar_provider_id"))
+                nameservers = [str(v).strip().rstrip(".").lower() for v in (body.get("nameservers") or []) if str(v).strip()]
+                cur = conn.execute("INSERT INTO domains(account_id, name, kind, status, registrar_provider_id, registrar_status, nameservers_json, nameserver_source) VALUES (?, ?, ?, 'active', ?, ?, ?, ?)", (account["id"], domain_name, "registered" if body.get("register") else "external", registrar_id, "pending" if body.get("register") else "external", json.dumps(nameservers), "custom" if nameservers else "default"))
+                domain_id = cur.lastrowid
+                if body.get("register"):
+                    try:
+                        registrar_result = register_domain_with_provider(conn, conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone(), nameservers or default_registrar_nameservers(conn))
+                    except RegistrarError as exc:
+                        conn.execute("UPDATE domains SET registrar_status = 'failed', registrar_state_json = ? WHERE id = ?", (json.dumps({"last_error": str(exc)}), domain_id))
+                        raise ApiError(HTTPStatus.BAD_GATEWAY, "domain_registration_failed")
+                    conn.execute("UPDATE domains SET registrar_status = 'registered', registrar_state_json = ? WHERE id = ?", (json.dumps(registrar_result), domain_id))
+                log_audit(conn, "admin", actor["id"], "add_domain_for_client", "domain", domain_id, metadata={"domain": domain_name, "user_id": user_id})
+                return self.json_response({"domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone())}, HTTPStatus.CREATED)
             if path == "/api/admin/domains" and method == "GET":
                 rows = conn.execute(
                     """
@@ -3561,6 +3685,43 @@ class MangoHandler(BaseHTTPRequestHandler):
                         item["latest_dns_job"]["result"] = parse_json_field(item["latest_dns_job"].get("result"), {})
                     domains.append(item)
                 return self.json_response({"domains": domains})
+            if path == "/api/admin/registrars" and method == "GET":
+                rows = conn.execute("SELECT p.*, c.secret_label, c.status AS credential_status FROM registrar_providers p LEFT JOIN registrar_credentials c ON c.provider_id = p.id ORDER BY p.id").fetchall()
+                payload = []
+                for row in rows:
+                    item = row_to_dict(row)
+                    item["settings"] = parse_json_field(item.pop("settings_json"), {})
+                    item["secret_configured"] = bool(item.pop("secret_label", ""))
+                    payload.append(item)
+                return self.json_response({"registrars": payload})
+            if path.startswith("/api/admin/registrars/") and method in {"POST", "PATCH"}:
+                key = path.rsplit("/", 1)[-1]
+                body = self.read_json()
+                provider = conn.execute("SELECT * FROM registrar_providers WHERE key = ?", (key,)).fetchone()
+                if not provider:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "registrar_not_found")
+                settings = body.get("settings") if isinstance(body.get("settings"), dict) else {}
+                secret = str(body.get("api_key") or body.get("api_token") or "").strip()
+                if key == "resellerclub":
+                    settings["reseller_id"] = str(body.get("reseller_id") or settings.get("reseller_id") or "").strip()
+                    if not settings["reseller_id"]:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "reseller_id_required")
+                conn.execute("UPDATE registrar_providers SET settings_json = ?, status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(settings, sort_keys=True), provider["id"]))
+                if secret:
+                    conn.execute("INSERT INTO registrar_credentials(provider_id, encrypted_secret, secret_label, status) VALUES (?, ?, ?, 'stored') ON CONFLICT(provider_id) DO UPDATE SET encrypted_secret=excluded.encrypted_secret, secret_label=excluded.secret_label, status='stored', updated_at=CURRENT_TIMESTAMP", (provider["id"], encrypt_secret(secret, CONFIG.jwt_secret), "..." + secret[-4:]))
+                log_audit(conn, "admin", actor["id"], "save_registrar_provider", "registrar_provider", provider["id"], metadata={"provider": key})
+                return self.json_response({"registrars": True})
+            if path.startswith("/api/admin/domains/") and path.endswith("/registrar-nameservers") and method == "POST":
+                domain_id = int(path.split("/")[-2])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                nameservers = [str(value).strip().rstrip(".").lower() for value in (self.read_json().get("nameservers") or []) if str(value).strip()]
+                if len(nameservers) < 2 or len(nameservers) > 4:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "two_to_four_nameservers_required")
+                result = update_domain_registrar_nameservers(conn, domain, nameservers)
+                log_audit(conn, "admin", actor["id"], "update_registrar_nameservers", "domain", domain_id, metadata={"nameservers": nameservers})
+                return self.json_response({"domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()), "result": result})
             if path == "/api/admin/dns-providers/cloudflare/accounts" and method == "POST":
                 body = self.read_json()
                 provider = dns_provider_by_key(conn, DNS_PROVIDER_CLOUDFLARE)
@@ -3617,6 +3778,40 @@ class MangoHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 if not account:
                     raise ApiError(HTTPStatus.NOT_FOUND, "cloudflare_account_not_found")
+                if path.endswith("/migrate-local") and method == "POST":
+                    rows = conn.execute(
+                        """
+                        SELECT *
+                        FROM domains
+                        WHERE dns_provider = ? AND dns_provider_account_id = ?
+                        ORDER BY id
+                        """,
+                        (DNS_PROVIDER_CLOUDFLARE, account_id),
+                    ).fetchall()
+                    jobs = []
+                    for domain in rows:
+                        jobs.append(
+                            {
+                                "domain_id": domain["id"],
+                                "job_id": migrate_domain_dns_provider(
+                                    conn,
+                                    domain,
+                                    DNS_PROVIDER_LOCAL_POWERDNS,
+                                    None,
+                                    "admin:{}".format(actor["id"]),
+                                ),
+                            }
+                        )
+                    log_audit(
+                        conn,
+                        "admin",
+                        actor["id"],
+                        "migrate_cloudflare_account_domains_to_local",
+                        "dns_provider_account",
+                        account_id,
+                        metadata={"provider": DNS_PROVIDER_CLOUDFLARE, "migrated_domains": len(jobs)},
+                    )
+                    return self.json_response({"migrated": len(jobs), "jobs": jobs, "dns_settings": dns_settings_payload(conn)})
                 if method == "PATCH":
                     body = self.read_json()
                     display_name = clean_text(body.get("display_name", account["display_name"]), account["display_name"])
@@ -3681,10 +3876,58 @@ class MangoHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 account_id = optional_positive_int(body.get("provider_account_id") or "")
                 credential = None
+                external_account_id = None
                 if account_id:
+                    account_row = conn.execute(
+                        """
+                        SELECT a.*, p.key AS provider_key
+                        FROM dns_provider_accounts a
+                        JOIN dns_providers p ON p.id = a.provider_id
+                        WHERE a.id = ?
+                        """,
+                        (account_id,),
+                    ).fetchone()
+                    if account_row:
+                        external_account_id = account_row["external_account_id"] or None
                     credential = conn.execute("SELECT * FROM dns_provider_credentials WHERE provider_account_id = ?", (account_id,)).fetchone()
-                status = "configured" if provider["key"] == DNS_PROVIDER_LOCAL_POWERDNS or credential else "missing_credentials"
-                message = "Provider settings are present. Live provider validation is scheduled for Phase 2." if status == "configured" else "Provider account credentials are missing."
+                try:
+                    if provider["key"] == DNS_PROVIDER_LOCAL_POWERDNS:
+                        local_provider = conn.execute("SELECT * FROM dns_providers WHERE key = ?", (DNS_PROVIDER_LOCAL_POWERDNS,)).fetchone()
+                        config = parse_json_field(local_provider["config_json"], {}) if local_provider else {}
+                        nameservers = config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"]
+                        dns_provider = PowerDNSProvider(
+                            CONFIG.powerdns_api_url,
+                            CONFIG.powerdns_api_key,
+                            server_id=CONFIG.powerdns_server_id,
+                            nameservers=nameservers,
+                        )
+                        validation = dns_provider.validate()
+                        status = "configured"
+                        message = validation["message"]
+                    elif provider["key"] == DNS_PROVIDER_CLOUDFLARE:
+                        if not credential:
+                            status = "missing_credentials"
+                            message = "Cloudflare account credentials are missing."
+                            validation = {"provider": DNS_PROVIDER_CLOUDFLARE, "error": message}
+                        else:
+                            api_token = decrypt_secret(credential["encrypted_secret"], CONFIG.jwt_secret)
+                            dns_provider = CloudflareDNSProvider(api_token, account_id=external_account_id, api_base=CONFIG.cloudflare_api_base)
+                            validation = dns_provider.validate()
+                            status = "configured"
+                            message = validation["message"]
+                    else:
+                        dns_provider = LocalDNSProvider()
+                        validation = dns_provider.validate()
+                        status = validation["status"]
+                        message = validation["message"]
+                except DNSProviderError as exc:
+                    status = "missing_credentials" if provider["key"] == DNS_PROVIDER_LOCAL_POWERDNS and (not CONFIG.powerdns_api_url or not CONFIG.powerdns_api_key) else "provider_failed"
+                    message = str(exc)
+                    validation = {"provider": provider["key"], "error": message}
+                except Exception as exc:
+                    status = "provider_failed"
+                    message = str(exc)
+                    validation = {"provider": provider["key"], "error": message, "exception": exc.__class__.__name__}
                 cur = conn.execute(
                     """
                     INSERT INTO dns_provider_health_checks(provider_id, provider_account_id, status, message, details_json)
@@ -3695,7 +3938,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         account_id,
                         status,
                         message,
-                        json.dumps({"phase": "foundation", "live_validation": False}, sort_keys=True),
+                        json.dumps({"phase": "foundation", "live_validation": True, "validation": validation}, sort_keys=True),
                     ),
                 )
                 log_audit(conn, "admin", actor["id"], "test_dns_provider", "dns_provider", provider_id, metadata={"status": status, "provider_account_id": account_id})
@@ -4153,17 +4396,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "active",
                     ),
                 )
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (domain_id, "TXT", "mango._domainkey", dkim_dns_value(dkim_material["public_key"]), 300),
-                )
-                conn.execute(
-                    "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
-                    (domain_id, "A", "@", "127.0.0.1", 300),
-                )
+                website_mail_host = "mail-{}.localhost".format(username) if CONFIG.public_host == "127.0.0.1" else "mail.{}.{}".format(username, CONFIG.public_host)
+                seed_website_dns_records(conn, domain_id, domain, website_mail_host, dkim_material)
                 job_id = enqueue_agent_job(conn, "provision_hosting_account", "hosting_account", account_id, {"admin_create": True})
                 log_audit(conn, "admin", actor["id"], "create_hosting_account", "hosting_account", account_id, metadata={"user_id": user_id, "plan_id": plan_id})
                 created = conn.execute(
@@ -4306,6 +4540,42 @@ class MangoHandler(BaseHTTPRequestHandler):
 def require_account(account):
     if not account:
         raise ApiError(HTTPStatus.NOT_FOUND, "hosting_account_required")
+
+
+def registrar_settings(conn, provider):
+    settings = parse_json_field(provider["settings_json"], {})
+    credential = conn.execute("SELECT encrypted_secret FROM registrar_credentials WHERE provider_id = ?", (provider["id"],)).fetchone()
+    if credential and credential["encrypted_secret"]:
+        settings["api_key"] = decrypt_secret(credential["encrypted_secret"], CONFIG.jwt_secret)
+        settings["api_token"] = settings["api_key"]
+    return settings
+
+
+def default_registrar_nameservers(conn):
+    provider = dns_provider_by_key(conn, DNS_PROVIDER_LOCAL_POWERDNS)
+    config = parse_json_field(provider["config_json"], {}) if provider else {}
+    return config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"]
+
+
+def update_domain_registrar_nameservers(conn, domain, nameservers):
+    if not domain["registrar_provider_id"]:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "domain_registrar_not_configured")
+    provider = conn.execute("SELECT * FROM registrar_providers WHERE id = ? AND status = 'active'", (domain["registrar_provider_id"],)).fetchone()
+    if not provider:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "registrar_provider_not_found")
+    try:
+        result = registrar_for(provider["key"], registrar_settings(conn, provider)).update_nameservers(domain["name"], nameservers)
+    except RegistrarError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_nameserver_update_failed: " + str(exc)[:180])
+    conn.execute("UPDATE domains SET nameservers_json = ?, nameserver_source = 'custom', registrar_state_json = ?, last_registrar_sync_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), json.dumps(result), domain["id"]))
+    return result
+
+
+def register_domain_with_provider(conn, domain, nameservers):
+    provider = conn.execute("SELECT * FROM registrar_providers WHERE id = ? AND status = 'active'", (domain["registrar_provider_id"],)).fetchone()
+    if not provider:
+        raise RegistrarError("registrar_provider_not_found")
+    return registrar_for(provider["key"], registrar_settings(conn, provider)).register(domain["name"], nameservers)
 
 
 def require_active_account(account):
@@ -4542,6 +4812,39 @@ def default_domain_dns_assignment(conn, account_id):
     }
 
 
+def seed_website_dns_records(conn, domain_id, domain, mail_host, dkim_material=None):
+    dkim_material = dkim_material or generate_dkim_material("mango")
+    conn.execute(
+        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "A", "@", CONFIG.public_host, 300),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "CNAME", "www", "@", 300),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "MX", "@", mail_host, 300),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "TXT", "@", recommended_spf_record(mail_host), 300),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "TXT", "_dmarc", recommended_dmarc_record(domain), 300),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+        (domain_id, "TXT", "mango._domainkey", dkim_dns_value(dkim_material["public_key"]), 300),
+    )
+    return {
+        "dkim_private_key": dkim_material["private_key"],
+        "dkim_public_key": dkim_material["public_key"],
+        "dkim_selector": dkim_material["selector"],
+    }
+
+
 def verify_domain_nameservers(conn, domain):
     expected = parse_json_field(domain["nameservers_json"] if "nameservers_json" in domain.keys() else "", [])
     expected_normalized = sorted({str(item).strip().rstrip(".").lower() for item in expected if str(item).strip()})
@@ -4634,14 +4937,30 @@ def dns_state_warnings(item):
     status = str(item.get("dns_status") or item.get("status") or "").lower()
     nameservers = parse_json_field(item.get("nameservers_json"), []) if isinstance(item.get("nameservers_json"), str) else item.get("nameservers", [])
     provider_state = parse_json_field(item.get("provider_state_json"), {}) if isinstance(item.get("provider_state_json"), str) else item.get("provider_state", {})
+    last_error = str(provider_state.get("last_error") or "")
     if status in {"provider_failed", "failed"}:
-        warnings.append({"code": "provider_failed", "message": provider_state.get("last_error") or "DNS provider sync failed."})
+        lower_err = last_error.lower()
+        is_zone_permission_error = (
+            ("zone creation permission" in lower_err)
+            or ("zone:zone:edit" in lower_err)
+            or ("zone (dns)" in lower_err)
+            or ("permission" in lower_err and "zone" in lower_err)
+            or ("cloudflare" in lower_err and "zones" in lower_err)
+            or ("com.cloudflare.api.account.zone.create" in lower_err)
+        )
+        if is_zone_permission_error:
+            warnings.append({
+                "code": "provider_failed",
+                "message": "Cloudflare can reach the account, but this token cannot create zones. In Cloudflare → My Profile → API Tokens, edit the token and add 'Zone:Zone:Edit' and 'Zone:DNS:Edit' permissions.",
+            })
+        else:
+            warnings.append({"code": "provider_failed", "message": last_error or "DNS provider sync failed."})
     if status in {"pending_nameserver", "pending_provider_sync"}:
         warnings.append({"code": status, "message": "Nameserver delegation is not verified yet."})
     if not nameservers:
         warnings.append({"code": "missing_nameservers", "message": "No effective nameservers are saved for this domain."})
-    if provider_state.get("last_error"):
-        warnings.append({"code": "provider_error_snapshot", "message": str(provider_state["last_error"])[:240]})
+    if last_error:
+        warnings.append({"code": "provider_error_snapshot", "message": last_error[:240]})
     return warnings
 
 
@@ -6739,8 +7058,8 @@ def create_initial_hosting_account(conn, user_id):
         "SELECT id FROM mail_domains WHERE account_id = ? AND domain_id = ?",
         (account_id, domain_id),
     ).fetchone()["id"]
-    dkim_material = generate_dkim_material("mango")
     mail_host = "mail-{}.localhost".format(username) if CONFIG.public_host == "127.0.0.1" else "mail.{}.{}".format(username, CONFIG.public_host)
+    dkim_material = seed_website_dns_records(conn, domain_id, domain, mail_host)
     conn.execute(
         """
         UPDATE mail_domains
@@ -6749,31 +7068,15 @@ def create_initial_hosting_account(conn, user_id):
         """,
         (
             recommended_spf_record(mail_host),
-            dkim_material["private_key"],
-            dkim_material["public_key"],
-            dkim_material["selector"],
+            dkim_material["dkim_private_key"],
+            dkim_material["dkim_public_key"],
+            dkim_material["dkim_selector"],
             recommended_dmarc_record(domain),
             0,
             "",
             "active",
             mail_domain_id,
         ),
-    )
-    conn.execute(
-        "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
-        (domain_id, "A", "@", "127.0.0.1", 300),
-    )
-    conn.execute(
-        "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
-        (domain_id, "TXT", "@", recommended_spf_record(mail_host), 300),
-    )
-    conn.execute(
-        "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
-        (domain_id, "TXT", "_dmarc", recommended_dmarc_record(domain), 300),
-    )
-    conn.execute(
-        "INSERT INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
-        (domain_id, "TXT", "mango._domainkey", dkim_dns_value(dkim_material["public_key"]), 300),
     )
     job_id = enqueue_agent_job(conn, "provision_hosting_account", "hosting_account", account_id, {"signup": True})
     account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -6820,6 +7123,18 @@ def sanitize_domain(value):
 def delete_client_website(conn, account, website):
     website_id = website["id"]
     domain = website["domain"]
+    domain_row = conn.execute(
+        "SELECT id FROM domains WHERE account_id = ? AND name = ?",
+        (account["id"], domain),
+    ).fetchone()
+    if domain_row:
+        domain_id = domain_row["id"]
+        conn.execute("DELETE FROM dns_records WHERE domain_id = ?", (domain_id,))
+        conn.execute("DELETE FROM dns_zones WHERE domain_id = ?", (domain_id,))
+        conn.execute("DELETE FROM dns_zone_exports WHERE domain_id = ?", (domain_id,))
+        conn.execute("DELETE FROM mail_edge_routes WHERE domain_id = ?", (domain_id,))
+        conn.execute("DELETE FROM mail_domains WHERE domain_id = ?", (domain_id,))
+        conn.execute("UPDATE acme_certificate_orders SET domain_id = NULL WHERE domain_id = ?", (domain_id,))
     conn.execute("DELETE FROM redirects WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM script_installs WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM wordpress_installs WHERE website_id = ?", (website_id,))
@@ -6828,6 +7143,9 @@ def delete_client_website(conn, account, website):
     conn.execute("UPDATE ssl_certificates SET website_id = NULL, status = 'removed' WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE domains SET linked_website_id = NULL WHERE linked_website_id = ?", (website_id,))
     conn.execute("DELETE FROM websites WHERE id = ?", (website_id,))
+    if domain_row:
+        conn.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
+    conn.execute("UPDATE domains SET linked_website_id = NULL WHERE account_id = ? AND name = ?", (account["id"], domain))
     return enqueue_agent_job(conn, "delete_website", "hosting_account", account["id"], {"removed_website_id": website_id, "domain": domain})
 
 
@@ -6986,8 +7304,10 @@ def client_home(conn, user_id):
     websites = rows_to_dicts(
         conn.execute(
             """
-            SELECT w.* FROM websites w
+            SELECT w.*, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+            FROM websites w
             JOIN hosting_accounts ha ON ha.id = w.account_id
+            LEFT JOIN domains d ON d.linked_website_id = w.id
             WHERE ha.user_id = ?
             ORDER BY w.id
             """,
@@ -7001,6 +7321,8 @@ def client_home(conn, user_id):
     for website in websites:
         website["public_url"] = f"http://{website['domain']}"
         website["host_header"] = website["domain"]
+        website["nameservers"] = website_dns_nameservers(website)
+        website["dns_provider_label"] = "Cloudflare" if website.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE else "Local DNS"
     for account in accounts:
         account["runtime"] = account_runtime(conn, account["id"])
     user = conn.execute("SELECT totp_secret FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -7020,6 +7342,25 @@ def client_home(conn, user_id):
             "memory": "healthy",
         },
     }
+
+
+def website_dns_nameservers(website):
+    nameservers = parse_json_field(website.get("nameservers_json"), []) if isinstance(website, dict) else []
+    if nameservers:
+        return nameservers
+    provider_state = parse_json_field(website.get("provider_state_json"), {}) if isinstance(website, dict) else {}
+    state_nameservers = provider_state.get("nameservers") or []
+    if state_nameservers:
+        return state_nameservers
+    domain_record = website.get("domain_record") if isinstance(website, dict) else None
+    if isinstance(domain_record, dict):
+        nameservers = domain_record.get("nameservers") or []
+        if nameservers:
+            return nameservers
+        provider_state = domain_record.get("provider_state") or {}
+        if provider_state.get("nameservers"):
+            return provider_state["nameservers"]
+    return []
 
 
 
@@ -7042,6 +7383,17 @@ def admin_dashboard(conn):
 
 def build_status_payload(conn):
     components = rows_to_dicts(conn.execute("SELECT * FROM status_components ORDER BY sort_order, name").fetchall())
+    queue_worker = service_worker_health()
+    components.append(
+        {
+            "id": "queue-worker",
+            "name": "Queue Worker",
+            "group_name": "Operations",
+            "status": queue_worker["status"],
+            "description": queue_worker["description"],
+            "updated_at": queue_worker["updated_at"],
+        }
+    )
     incidents = rows_to_dicts(
         conn.execute("SELECT * FROM status_incidents WHERE published = 1 ORDER BY id DESC LIMIT 20").fetchall()
     )
@@ -7063,6 +7415,33 @@ def build_status_payload(conn):
         "incidents": incidents,
         "maintenance": maintenances,
         "history_days": 90,
+    }
+
+
+def service_worker_health():
+    pid_file = SERVICE_VAR_DIR / "mangopanel-worker.pid"
+    log_file = SERVICE_VAR_DIR / "mangopanel-worker.log"
+    if pid_file.exists():
+        pid = pid_file.read_text(encoding="utf-8").strip()
+        if pid:
+            try:
+                pid_int = int(pid)
+            except ValueError:
+                pid_int = None
+            if pid_int:
+                try:
+                    os.kill(pid_int, 0)
+                    return {
+                        "status": "operational",
+                        "description": "Queue worker is running.",
+                        "updated_at": None,
+                    }
+                except OSError:
+                    pass
+    return {
+        "status": "degraded",
+        "description": f"Queue worker is not running. Check {log_file}.",
+        "updated_at": None,
     }
 
 

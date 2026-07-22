@@ -3240,3 +3240,18 @@ body.app-loaded #app-preloader {
   background: var(--surface);
   color: var(--primary);
 }
+
+.connect-wizard-overlay { z-index: 1000; padding: 0; }
+.connect-wizard-panel { width: min(100vw, 1100px); min-height: 100vh; max-height: 100vh; border-radius: 0; display: flex; flex-direction: column; }
+.connect-wizard-panel .modal-body { flex: 1; overflow: auto; padding: clamp(1.25rem, 4vw, 4rem); }
+.connect-method-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 2rem 0; }
+.connect-method-grid label { display: flex; flex-direction: column; gap: .55rem; padding: 1.25rem; border: 1px solid var(--border); border-radius: 12px; cursor: pointer; }
+.connect-method-grid label.selected { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent); }
+.connect-method-grid input { align-self: flex-start; }
+.connect-method-grid small { color: var(--text-muted); line-height: 1.5; }
+.connect-instructions { min-height: 130px; }
+.connect-instructions code { display: block; margin: .45rem 0; width: fit-content; }
+.connect-instructions small { display: block; margin-top: .5rem; }
+.success-box { border-color: #16a34a; }
+.warning-box { border-color: #d97706; }
+@media (max-width: 760px) { .connect-method-grid { grid-template-columns: 1fr; } .connect-wizard-panel .modal-footer { flex-wrap: wrap; } }

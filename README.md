@@ -20,6 +20,24 @@ MangoPanel is an hPanel-style shared hosting control panel. This repository curr
 
 This is not the production hosting runtime yet. The agent now generates account filesystem layout and Docker Compose files, but real ACME and quota enforcement still need their production providers.
 
+## Cloudflare as DNS - Setup Instructions
+
+MangoPanel can use Cloudflare as the authoritative DNS provider for managed domains. Configure the Cloudflare account in the Admin panel under **DNS Settings** before assigning Cloudflare DNS to a plan or domain.
+
+### Prerequisites
+
+Before calling the Cloudflare API, you will need two pieces of information:
+
+- **Account ID**: Located in the right sidebar of the Cloudflare Dashboard on any domain's Overview page, or by calling the [`/accounts`](https://api.cloudflare.com/client/v4/accounts) endpoint.
+- **API Token**: Generated under **My Profile > API Tokens** in Cloudflare.
+
+The API token must include this permission:
+
+- **Zone > Zone > Edit**
+- **Zone > DNS > Edit**
+
+For production, store the token only in MangoPanel's encrypted provider settings. Do not commit it to source code or place it in a public environment file. After saving the credentials, use the provider test in the Admin panel to confirm that the token can access and manage zones.
+
 ## Quick Start
 
 Fresh clone with `git`:
@@ -47,7 +65,7 @@ Then open the client panel at <http://127.0.0.1:8000/> and the admin panel at <h
 
 ## Service Command
 
-MangoPanel includes a portable service wrapper at [`scripts/service`](scripts/service). It manages the panel with a PID file and log file, so it works the same way on Linux and macOS without depending on `systemd` or `launchd`.
+MangoPanel includes a portable service wrapper at [`scripts/service`](scripts/service). It manages the panel and a separate queue worker with PID files and log files, so it works the same way on Linux and macOS without depending on `systemd` or `launchd`.
 
 ```bash
 bash scripts/service mangopanel start
@@ -65,13 +83,15 @@ make service ACTION=restart
 make service ACTION=stop
 ```
 
-By default it runs the production-style panel process in the background and writes logs to `var/mangopanel.log`. You can override ports and paths with the same `MP_*` environment variables the app already uses, plus:
+By default it runs the production-style panel process in the background and a worker loop that drains queued jobs. Logs go to `var/mangopanel.log` and `var/mangopanel-worker.log`. You can override ports and paths with the same `MP_*` environment variables the app already uses, plus:
 
 - `MANGOPANEL_PID_FILE`
 - `MANGOPANEL_LOG_FILE`
 - `MANGOPANEL_PYTHON`
+- `MANGOPANEL_WORKER_PID_FILE`
+- `MANGOPANEL_WORKER_LOG_FILE`
 
-The wrapper starts the app with `MP_ENV=production` unless you set a different value before calling it.
+The wrapper starts the app with `MP_ENV=production` unless you set a different value before calling it. It also runs the worker with `MP_AGENT_INLINE=false` so provisioning stays asynchronous.
 
 ## How It Works
 

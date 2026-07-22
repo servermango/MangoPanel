@@ -71,6 +71,35 @@ class Phase6HardeningTests(unittest.TestCase):
         self.assertTrue(artifact["exists"])
         self.assertNotIn(str(config.account_root), artifact["path"])
 
+    def test_public_signup_provisions_account_stack_immediately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self.make_config(root)
+            config.agent_inline = False
+            seed_dev_data(config.db_path, config.account_root)
+
+            with ClientApiServer(config) as server:
+                payload = server.request(
+                    "POST",
+                    "/api/public/signup",
+                    {
+                        "full_name": "Stacked Signup",
+                        "email": "stacked-signup@example.com",
+                        "password": PASSWORD,
+                    },
+                )
+
+            account = payload["hosting_account"]
+            compose_path = config.account_root / account["username"] / ".runtime" / "stack" / "docker-compose.yml"
+
+            self.assertEqual(account["status"], "active")
+            self.assertTrue(compose_path.exists())
+            self.assertEqual(payload["provision_job_id"], account["provision_job_id"])
+            with connect(config.db_path) as conn:
+                job = conn.execute("SELECT status FROM jobs WHERE id = ?", (payload["provision_job_id"],)).fetchone()
+                self.assertIsNotNone(job)
+                self.assertEqual(job["status"], "succeeded")
+
     def test_phase2_provider_state_is_visible_to_client_routes(self):
         with tempfile.TemporaryDirectory() as tmp:
             config, server_ctx = self.prepared_server(Path(tmp))

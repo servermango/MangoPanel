@@ -310,7 +310,8 @@ const app = createApp({
           allow_overwrite: false,
         }
       },
-      siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false },
+      siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], errorMessage: '' },
+      connectWizard: { isOpen: false, website: null, method: 'nameservers', checking: false, result: null },
       mailboxes: [],
       mailRouting: {
         mail_domains: [],
@@ -368,6 +369,7 @@ const app = createApp({
       dnsRecords: [],
       dnsZones: [],
       selectedDomainId: "",
+      nameserverEditor: { domainId: null, source: "default", values: ["", ""] },
       newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300 },
       // Cache Manager
       cacheStatus: { object_cache: "inactive", opcode_cache: "active", last_purged: null, opcode_cache_backend: "opcache", object_cache_backend: "redis" },
@@ -451,6 +453,9 @@ const app = createApp({
     selectedWebsiteLabel() {
       return this.selectedWebsiteId && this.selectedWebsite ? this.selectedWebsite.domain : "All sites";
     },
+    hasHostingAccount() {
+      return Array.isArray(this.home.accounts) && this.home.accounts.length > 0;
+    },
     filteredSites() {
       const query = this.siteSearchQuery.trim().toLowerCase();
       if (!query) return this.websites;
@@ -467,6 +472,17 @@ const app = createApp({
       return Math.min(100, limit > 0 ? (used / limit) * 100 : 0).toFixed(1);
     },
     sidebarSections() {
+      if (!this.hasHostingAccount) {
+        return [
+          {
+            label: "Domains",
+            items: [
+              { label: "Domains", target: "domains", icon: "domains", description: "Domains and DNS status." },
+              { label: "DNS Zone Editor", target: "dns-zone-editor", icon: "dns", description: "DNS records and zones." },
+            ],
+          },
+        ];
+      }
       return [
         {
           label: "Overview",
@@ -664,7 +680,7 @@ const app = createApp({
     },
     // cPanel dashboard icon grid — all features
     cpanelTiles() {
-      return [
+      const tiles = [
         // Files
         { label: "File Manager", target: "files", icon: "files", color: "#f59e0b", group: "Files" },
         { label: "Images", target: "images", icon: "images", color: "#f59e0b", group: "Files" },
@@ -726,6 +742,8 @@ const app = createApp({
         { label: "Services", target: "services", icon: "services", color: "#4b5563", group: "Advanced" },
         { label: "Activity Log", target: "activity", icon: "activity", color: "#4b5563", group: "Advanced" },
       ];
+      if (this.hasHostingAccount) return tiles;
+      return tiles.filter((tile) => tile.group === "Domains");
     },
     cpanelGroups() {
       const groups = {};
@@ -757,6 +775,21 @@ const app = createApp({
     },
   },
   methods: {
+    openNameserverEditor(domain) {
+      const values = domain.nameservers || [];
+      this.nameserverEditor = { domainId: domain.id, source: domain.nameserver_source || "default", values: [values[0] || "", values[1] || ""] };
+    },
+    async saveNameservers() {
+      const editor = this.nameserverEditor;
+      if (!editor.domainId) return;
+      try {
+        const payload = await this.api(`/api/client/domains/${editor.domainId}/nameservers`, { method: "POST", body: JSON.stringify({ source: editor.source, nameservers: editor.values }) });
+        const index = this.domains.findIndex((domain) => domain.id === editor.domainId);
+        if (index >= 0) this.domains[index] = payload.domain;
+        this.notify("Nameserver change submitted to the registrar");
+        editor.domainId = null;
+      } catch (error) { this.notify(error.message, "error"); }
+    },
     notify(text, type = "success") {
       if (type === "error" && String(text || "") === "invalid_access_token") {
         return;
@@ -903,7 +936,7 @@ const app = createApp({
         if (error === "invalid_access_token") {
           this.handleSessionExpired();
         }
-        throw new Error(error);
+        throw new Error(payload.detail ? `${error}: ${payload.detail}` : error);
       }
       return payload;
     },
@@ -972,6 +1005,9 @@ const app = createApp({
         }
         if (this.selectedWebsiteId && !this.websites.some((site) => String(site.id) === String(this.selectedWebsiteId))) {
           this.selectedWebsiteId = "";
+        }
+        if (!this.hasHostingAccount && !["dashboard", "domains", "dns-zone-editor"].includes(this.activePage)) {
+          this.activePage = "domains";
         }
       } catch (error) {
         this.notify(error.message, "error");
@@ -2028,11 +2064,15 @@ const app = createApp({
         admin_username: 'admin',
         admin_email: this.currentUserEmail,
         admin_password: '',
-        allow_overwrite: false
+        allow_overwrite: false,
+        createdWebsite: null,
+        createdDomainNameservers: [],
+        errorMessage: "",
       };
     },
     closeSiteWizard() {
       this.siteWizard.isOpen = false;
+      this.siteWizard.errorMessage = "";
     },
     nextSiteWizardStep() {
       if (this.siteWizard.step === 2) {
@@ -2053,12 +2093,16 @@ const app = createApp({
     },
     async finishSiteWizard() {
       try {
+        this.siteWizard.errorMessage = "";
         this.notify("Creating website...", "success");
         const sitePayload = await this.api("/api/client/websites", {
           method: "POST",
           body: JSON.stringify({ domain: this.siteWizard.domain })
         });
         const website = sitePayload.website;
+        this.siteWizard.createdWebsite = website;
+        this.siteWizard.createdDomainNameservers = website.nameservers || [];
+        const followupIssues = [];
         
         try {
           this.notify("Issuing SSL certificate...", "success");
@@ -2068,30 +2112,45 @@ const app = createApp({
           });
         } catch (sslErr) {
           console.error("SSL Issue failed:", sslErr);
+          followupIssues.push(`SSL issuance could not be queued: ${sslErr.message || sslErr}`);
         }
 
         if (this.siteWizard.type !== 'blank') {
-          this.notify(`Installing ${this.siteWizard.type}...`, "success");
-          await this.api("/api/client/installer/install", {
-            method: "POST",
-            body: JSON.stringify({
-              script_id: this.siteWizard.type,
-              website_id: website.id,
-              site_title: this.siteWizard.site_title,
-              admin_username: this.siteWizard.admin_username,
-              admin_email: this.siteWizard.admin_email,
-              admin_password: this.siteWizard.admin_password,
-              allow_overwrite: this.siteWizard.allow_overwrite
-            })
-          });
-          this.notify(`Website added, SSL issued, and ${this.siteWizard.type} installation started!`, "success");
+          try {
+            this.notify(`Installing ${this.siteWizard.type}...`, "success");
+            await this.api("/api/client/installer/install", {
+              method: "POST",
+              body: JSON.stringify({
+                script_id: this.siteWizard.type,
+                website_id: website.id,
+                site_title: this.siteWizard.site_title,
+                admin_username: this.siteWizard.admin_username,
+                admin_email: this.siteWizard.admin_email,
+                admin_password: this.siteWizard.admin_password,
+                allow_overwrite: this.siteWizard.allow_overwrite
+              })
+            });
+          } catch (installErr) {
+            console.error("Installer setup failed:", installErr);
+            followupIssues.push(`Installer setup could not be queued: ${installErr.message || installErr}`);
+          }
+          if (followupIssues.length) {
+            this.notify(`Website created. ${followupIssues.join(" ")}`, "warning");
+          } else {
+            this.notify(`Website added, SSL issued, and ${this.siteWizard.type} installation started!`, "success");
+          }
         } else {
-          this.notify("Website added and SSL issued successfully!", "success");
+          if (followupIssues.length) {
+            this.notify(`Website created. ${followupIssues.join(" ")}`, "warning");
+          } else {
+            this.notify("Website added and SSL issued successfully!", "success");
+          }
         }
 
-        this.closeSiteWizard();
+        this.siteWizard.step = 5;
         await this.refresh();
       } catch (err) {
+        this.siteWizard.errorMessage = err.message || String(err);
         this.notify(String(err), "error");
       }
     },
@@ -2464,6 +2523,29 @@ const app = createApp({
         this.notify(error.message, "error");
       }
     },
+    openConnectWizard(site) {
+      this.connectWizard = { isOpen: true, website: site, method: "nameservers", checking: false, result: null };
+    },
+    closeConnectWizard() {
+      if (!this.connectWizard.checking) this.connectWizard.isOpen = false;
+    },
+    async verifyWebsiteConnection() {
+      const wizard = this.connectWizard;
+      if (!wizard.website) return;
+      wizard.checking = true;
+      wizard.result = null;
+      try {
+        const payload = await this.api(`/api/client/websites/${wizard.website.id}/connection-check`, { method: "POST", body: "{}" });
+        wizard.result = payload;
+        if (payload.verified) {
+          this.notify("Connection verified. AutoSSL has been queued.", "success");
+          await this.load();
+        } else {
+          this.notify("DNS is not pointing to this hosting account yet.", "warning");
+        }
+      } catch (error) { wizard.result = { verified: false, message: error.message }; this.notify(error.message, "error"); }
+      finally { wizard.checking = false; }
+    },
     async launch(tool, subpath = "") {
       const paths = {
         files: "/api/client/files/launch",
@@ -2754,6 +2836,9 @@ const app = createApp({
         return;
       }
       target = normalizedClientTarget(target);
+      if (!this.hasHostingAccount && !["dashboard", "domains", "dns-zone-editor"].includes(target)) {
+        target = "domains";
+      }
 
       this.activePage = target;
       this.userMenuOpen = false;

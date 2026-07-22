@@ -330,9 +330,14 @@
             <div class="plan-form">
               <label>Display name <input v-model="cloudflareAccount.display_name" placeholder="Main Cloudflare"></label>
               <label>Account name <input v-model="cloudflareAccount.account_name" placeholder="Acme Hosting"></label>
-              <label>Account ID <input v-model="cloudflareAccount.external_account_id" placeholder="Optional until validation"></label>
-              <label>API token <input v-model="cloudflareAccount.api_token" type="password" placeholder="Cloudflare API token"></label>
-              <button class="primary-button plan-submit" @click="createCloudflareDnsAccount">Add Cloudflare Account</button>
+              <label>Account ID <input v-model="cloudflareAccount.external_account_id" placeholder="Cloudflare account ID">
+                <small style="color:var(--color-muted,#888)">Find this in Cloudflare Dashboard → bottom-right of the right sidebar. Required to create and manage zones in the selected account.</small>
+              </label>
+              <label>API token <input v-model="cloudflareAccount.api_token" type="password" placeholder="Cloudflare API token">
+                <small style="color:var(--color-muted,#888)">Token needs Zone:Zone:Edit and Zone:DNS:Edit permissions.</small>
+              </label>
+              <button class="primary-button plan-submit" @click="createCloudflareDnsAccount">{{ cloudflareAccount.id ? 'Save Cloudflare Account' : 'Add Cloudflare Account' }}</button>
+              <button v-if="cloudflareAccount.id" class="ghost-button plan-submit" @click="clearCloudflareAccountForm">Cancel Edit</button>
             </div>
 
             <div class="table-wrap plan-table">
@@ -375,7 +380,10 @@
                     <td>{{ account.status }}</td>
                     <td>{{ account.has_secret ? account.secret_label : 'missing' }}</td>
                     <td class="actions">
+                      <button @click="startEditCloudflareAccount(account)">Edit</button>
+                      <button @click="toggleCloudflareDnsAccount(account)">{{ account.status === 'active' ? 'Deactivate' : 'Activate' }}</button>
                       <button @click="testDnsProvider(dnsSettings.providers.find(p => p.key === 'cloudflare'), account)">Test</button>
+                      <button @click="migrateCloudflareAccountToLocal(account)">Migrate to Local</button>
                       <button class="danger-button" @click="deleteCloudflareDnsAccount(account)">Delete</button>
                     </td>
                   </tr>
@@ -388,6 +396,30 @@
                 <h3>Managed DNS Domains</h3>
                 <p>Rebuild zones, verify delegation, export records, and migrate providers on the <a href="#dns-domains" @click.prevent="goTo('dns-domains')">Managed DNS Domains</a> tab.</p>
               </div>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'registrars'" class="panel">
+            <div class="section-head"><div><h2>Registration Providers</h2><p>Configure the registrar that receives domain registration and nameserver changes.</p></div></div>
+            <div class="form-grid">
+              <label>Provider
+                <select v-model="registrarForm.key"><option value="resellerclub">ResellerClub / PDR</option><option value="domainnameapi">DomainNameAPI</option><option value="cloudflare">Cloudflare</option></select>
+              </label>
+              <label v-if="registrarForm.key === 'resellerclub'">Reseller ID <input v-model.trim="registrarForm.reseller_id" placeholder="ResellerClub user ID"></label>
+              <label>API base URL <input v-model.trim="registrarForm.api_base" placeholder="Leave blank for provider default"></label>
+              <label>API key / token <input v-model="registrarForm.api_key" type="password" placeholder="Leave blank to keep saved credential"></label>
+              <button class="primary-button" @click="saveRegistrar">Save Provider</button>
+            </div>
+            <ul class="clean-list" style="margin-top:1rem"><li v-for="provider in registrars" :key="provider.key"><strong>{{ provider.display_name }}</strong><span class="pill">{{ provider.status }}</span><small>{{ provider.secret_configured ? 'Credential saved' : 'Credential not configured' }}</small></li></ul>
+            <hr style="margin:1.5rem 0"><h3>Add domain for client</h3>
+            <div class="form-grid">
+              <label>Client <select v-model="domainForm.user_id"><option value="" disabled>Select client</option><option v-for="client in clients" :value="client.id" :key="client.id">{{ client.email }}</option></select></label>
+              <label>Domain <input v-model.trim="domainForm.domain" placeholder="example.com"></label>
+              <label>Registrar <select v-model="domainForm.registrar_provider_id"><option value="">No registrar API</option><option v-for="provider in registrars" :key="provider.id" :value="provider.id">{{ provider.display_name }}</option></select></label>
+              <label><input type="checkbox" v-model="domainForm.register"> Register through registrar</label>
+              <label v-if="domainForm.register">Nameserver 1 <input v-model.trim="domainForm.nameservers[0]" placeholder="ns1.example.com"></label>
+              <label v-if="domainForm.register">Nameserver 2 <input v-model.trim="domainForm.nameservers[1]" placeholder="ns2.example.com"></label>
+              <button class="primary-button" @click="addClientDomain">Add domain</button>
             </div>
           </section>
 
@@ -564,6 +596,9 @@
                 <h2>Account Stacks</h2>
                 <p>Generated node-agent stack state.</p>
               </div>
+              <span class="pill" :class="dashboard.status.components.find(c => c.id === 'queue-worker')?.status || 'unknown'">
+                Queue Worker: {{ dashboard.status.components.find(c => c.id === 'queue-worker')?.status || 'unknown' }}
+              </span>
               <button @click="runAgent">Run Agent</button>
             </div>
             <div class="table-wrap">

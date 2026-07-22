@@ -118,6 +118,23 @@ class FakeCloudflareHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path in {
+            "/client/v4/user/tokens/verify",
+            "/client/v4/accounts/cf-account-1/tokens/verify",
+        }:
+            return self.json_response(
+                {
+                    "success": True,
+                    "result": {"id": "cf-token-1", "status": "active"},
+                }
+            )
+        if parsed.path == "/client/v4/accounts/cf-account-1":
+            return self.json_response(
+                {
+                    "success": True,
+                    "result": {"id": "cf-account-1", "name": "Example Hosting"},
+                }
+            )
         if parsed.path == "/client/v4/zones":
             return self.json_response({"success": True, "result": []})
         if parsed.path == "/client/v4/zones/cf-zone-1/dns_records":

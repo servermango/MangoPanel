@@ -156,6 +156,13 @@ class LocalDNSProvider(DNSProvider):
             "deleted_at": int(time.time()),
         }
 
+    def validate(self, *args, **kwargs):
+        return {
+            "provider": self.provider_name,
+            "status": "configured",
+            "message": "Local DNS adapter is available.",
+        }
+
 
 class DNSProviderError(Exception):
     pass
@@ -360,6 +367,23 @@ class PowerDNSProvider(DNSProvider):
         _json_request("DELETE", self._url(self._zone_path(zone_name)), self._headers(), timeout=self.timeout)
         return {"provider": self.provider_name, "zone_name": zone_name, "status": "deleted", "deleted_at": int(time.time())}
 
+    def validate(self):
+        if not self.configured():
+            raise DNSProviderError("powerdns_not_configured")
+        server = _json_request(
+            "GET",
+            self._url(f"/servers/{quote(self.server_id, safe='')}"),
+            self._headers(),
+            timeout=self.timeout,
+        )[1]
+        return {
+            "provider": self.provider_name,
+            "status": "configured",
+            "message": f"PowerDNS server {server.get('id', self.server_id)} is reachable.",
+            "server": server,
+            "nameservers": [ns.rstrip(".") for ns in self.nameservers],
+        }
+
 
 def _cloudflare_headers(api_token):
     return {"Authorization": f"Bearer {api_token}"}
@@ -423,10 +447,30 @@ class CloudflareDNSProvider(DNSProvider):
         url = f"{self.api_base}{path}"
         if query:
             url += "?" + urlencode(query)
-        _, body = _json_request(method, url, _cloudflare_headers(self.api_token), payload, timeout=self.timeout)
+        try:
+            _, body = _json_request(method, url, _cloudflare_headers(self.api_token), payload, timeout=self.timeout)
+        except DNSProviderError as exc:
+            # Provide more actionable error messages for common HTTP errors
+            msg = str(exc)
+            if "HTTP 403" in msg:
+                if method == "POST" and path == "/zones":
+                    raise DNSProviderError(
+                        "Cloudflare API error: token lacks zone creation permission. "
+                        "In your Cloudflare token settings, add Zone:Zone:Edit or enable 'Zone (DNS):Edit' and 'Zone (Zone):Edit' permissions."
+                    ) from exc
+                raise DNSProviderError(f"Cloudflare API access denied (403): {msg}") from exc
+            if "HTTP 401" in msg:
+                raise DNSProviderError(
+                    "Cloudflare API authentication failed (401). Verify the API token is correct and active. "
+                    "Account-scoped tokens (cfat_...) require an Account ID to be configured."
+                ) from exc
+            raise
         if body and not body.get("success", True):
             errors = body.get("errors") or []
-            raise DNSProviderError(f"cloudflare_api_error: {errors}")
+            # Surface a human-readable message when available
+            messages = [e.get("message", "") for e in errors if e.get("message")]
+            detail = "; ".join(messages) if messages else str(errors)
+            raise DNSProviderError(f"Cloudflare API error: {detail}")
         return body.get("result") if isinstance(body, dict) else body
 
     def ensure_zone(self, zone_name):
@@ -501,6 +545,56 @@ class CloudflareDNSProvider(DNSProvider):
         zone = self.ensure_zone(zone_name)
         self._request("DELETE", f"/zones/{zone['id']}")
         return {"provider": self.provider_name, "zone_name": zone_name, "provider_zone_id": zone["id"], "status": "deleted", "deleted_at": int(time.time())}
+
+    def validate(self):
+        if not self.configured():
+            raise DNSProviderError("cloudflare_not_configured")
+        # User tokens and account-owned tokens use different verification endpoints.
+        # The account ID is still needed to target the correct account when managing zones.
+        token_prefix = self.api_token[:5].lower()
+        if token_prefix == "cfut_":
+            token_info = self._request("GET", "/user/tokens/verify")
+        elif self.account_id:
+            token_info = self._request("GET", f"/accounts/{quote(self.account_id, safe='')}/tokens/verify")
+        else:
+            # Try user-scoped verify; if it fails with 401 it may be an account token missing account_id
+            try:
+                token_info = self._request("GET", "/user/tokens/verify")
+            except DNSProviderError as exc:
+                if "401" in str(exc) or "authentication failed" in str(exc).lower():
+                    raise DNSProviderError(
+                        "Cloudflare token verification failed. If you are using an Account Token (starting with 'cfat_'), "
+                        "you must also provide the Cloudflare Account ID in the 'Account ID' field."
+                    ) from exc
+                raise
+        account = None
+        # A user token can target an account in the zone request without being
+        # allowed to read the account resource itself.
+        if self.account_id and token_prefix != "cfut_":
+            account = self._request("GET", f"/accounts/{quote(self.account_id, safe='')}")
+        # Probe zone listing to verify the token actually has zone access permissions.
+        # This catches tokens that are valid but lack Zone:Read/Edit scopes.
+        try:
+            self._request("GET", "/zones", query={"per_page": 1})
+        except DNSProviderError as exc:
+            raise DNSProviderError(
+                "Cloudflare token is active but cannot list zones. "
+                "Ensure the token has 'Zone:Read' (or 'Zone:Edit') permission in Cloudflare's API token settings. "
+                f"Detail: {exc}"
+            ) from exc
+        if self.account_id and token_prefix == "cfut_":
+            access_message = " (user token verified; account ID configured)"
+        elif account:
+            access_message = " (account verified)"
+        else:
+            access_message = " (no account_id set — zone creation may require one)"
+        return {
+            "provider": self.provider_name,
+            "status": "configured",
+            "message": "Cloudflare token is valid and has zone access{}.".format(access_message),
+            "token": token_info,
+            "account": account,
+        }
 
 
 class LocalACMEProvider(ACMEProvider):

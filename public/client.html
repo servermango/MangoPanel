@@ -141,7 +141,7 @@
               <div class="user-menu-divider"></div>
               <nav class="user-menu-nav">
                 <button @click="goTo('security')"><app-icon name="security"></app-icon><span>Security</span></button>
-                <button @click="goTo('hosting-plan')"><app-icon name="plan"></app-icon><span>Plan Details</span></button>
+                <button v-if="hasHostingAccount" @click="goTo('hosting-plan')"><app-icon name="plan"></app-icon><span>Plan Details</span></button>
                 <button @click="goTo('settings')"><app-icon name="settings"></app-icon><span>Account Settings</span></button>
               </nav>
               <div class="user-menu-divider"></div>
@@ -302,6 +302,7 @@
                     <th>Domain</th>
                     <th>Status</th>
                     <th>SSL</th>
+                    <th>Nameservers</th>
                     <th>PHP Version</th>
                     <th>Actions</th>
                   </tr>
@@ -311,9 +312,13 @@
                     <td class="site-info-cell">
                       <strong>{{ site.domain }}</strong>
                       <small class="truncate-path" :title="site.document_root">{{ site.document_root }}</small>
+                      <small v-if="(site.nameservers || []).length">NS: {{ site.nameservers.join(', ') }}</small>
+                      <small v-else-if="site.dns_status === 'provider_failed'" style="color:var(--color-danger,#ef4444)" :title="site.dns_last_error || 'DNS provider sync failed'">⚠ Cloudflare sync failed</small>
+                      <small v-else>{{ site.dns_provider_label || 'DNS' }} syncing</small>
                     </td>
                     <td><span class="pill" :class="site.status">{{ site.status }}</span></td>
                     <td><span class="pill" :class="site.ssl_status">{{ site.ssl_status }}</span></td>
+                    <td><small :title="site.dns_last_error || undefined">{{ (site.nameservers || []).join(', ') || (site.dns_status === 'provider_failed' ? (site.dns_last_error ? '⚠ ' + site.dns_last_error.slice(0, 80) : 'Cloudflare provider failed') : (site.dns_provider_label === 'Cloudflare' ? 'Waiting for Cloudflare nameservers' : 'DNS pending')) }}</small></td>
                     <td>
                       <div class="php-switcher-cell">
                         <select
@@ -330,12 +335,13 @@
                     <td class="actions">
                       <a class="small-button" :href="site.public_url" target="_blank" rel="noreferrer">Open</a>
                       <button @click="issueSsl(site)">SSL</button>
+                      <button class="primary-button" @click="openConnectWizard(site)">Connect to hosting</button>
                       <button @click="launch('files')">Files</button>
                       <button @click="launch('phpmyadmin')">DB</button>
                       <button class="danger-button" @click="deleteWebsite(site)"><app-icon name="trash"></app-icon></button>
                     </td>
                   </tr>
-                  <tr v-if="!websites.length"><td colspan="5" class="empty-row">No websites yet. Add one above.</td></tr>
+                  <tr v-if="!websites.length"><td colspan="6" class="empty-row">No websites yet. Add one above.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -389,6 +395,13 @@
                 <span class="pill" :class="domain.status">{{ domain.status }}</span>
                 <span class="pill" :class="domain.dns_status">{{ domain.dns_provider_label || domain.dns_provider }} · {{ domain.dns_status }}</span>
                 <small>{{ (domain.nameservers || []).join(', ') || 'Nameservers pending provider sync' }}</small>
+                <button class="secondary-button" @click="openNameserverEditor(domain)">Manage nameservers</button>
+                <div v-if="nameserverEditor.domainId === domain.id" class="form-grid" style="width:100%; margin-top:.75rem">
+                  <label>Mode <select v-model="nameserverEditor.source"><option value="default">Use default</option><option value="custom">Use custom</option></select></label>
+                  <label v-if="nameserverEditor.source === 'custom'">Nameserver 1 <input v-model.trim="nameserverEditor.values[0]" placeholder="ns1.example.com"></label>
+                  <label v-if="nameserverEditor.source === 'custom'">Nameserver 2 <input v-model.trim="nameserverEditor.values[1]" placeholder="ns2.example.com"></label>
+                  <button class="primary-button" @click="saveNameservers">Save and update registrar</button>
+                </div>
                 <small v-if="domain.last_nameserver_check_at">Last checked {{ domain.last_nameserver_check_at }}</small>
                 <small v-if="domain.dns_warnings && domain.dns_warnings.length">{{ domain.dns_warnings[0].message }}</small>
               </li>
@@ -2471,8 +2484,17 @@
           <div v-if="siteWizard.isOpen" class="modal-overlay" @click.self="closeSiteWizard">
             <div class="modal-panel">
               <div class="modal-header">
-                <h2>Add Website (Step {{ siteWizard.step === 4 ? (siteWizard.type === 'blank' ? 3 : 4) : (siteWizard.step === 2 ? 2 : (siteWizard.step === 3 ? 3 : 1)) }} of {{ siteWizard.type === 'blank' ? 3 : 4 }})</h2>
+                <h2>Add Website (Step {{ siteWizard.step === 5 ? (siteWizard.type === 'blank' ? 4 : 5) : (siteWizard.step === 4 ? (siteWizard.type === 'blank' ? 3 : 4) : (siteWizard.step === 2 ? 2 : (siteWizard.step === 3 ? 3 : 1))) }} of {{ siteWizard.type === 'blank' ? 4 : 5 }})</h2>
                 <button class="close-button" @click="closeSiteWizard">×</button>
+              </div>
+              <div v-if="siteWizard.errorMessage" class="modal-body" style="padding-top: 0;">
+                <div class="info-box" style="border-color: #c2410c; background: rgba(194, 65, 12, 0.08);">
+                  <app-icon name="warning"></app-icon>
+                  <div>
+                    <strong>Could not create website</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">{{ siteWizard.errorMessage }}</p>
+                  </div>
+                </div>
               </div>
               
               <!-- Step 1: Type Selection -->
@@ -2531,13 +2553,64 @@
                   <app-icon name="info"></app-icon>
                   <div>
                     <strong>Point your domain to MangoPanel</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">For this website to work, you must configure your domain's DNS settings at your registrar (e.g. GoDaddy, Namecheap).</p>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">
+                      For this website to work, configure the DNS bundle below.
+                      If your plan uses Cloudflare, use the nameservers shown here.
+                      Otherwise, point the records at the current MangoPanel host.
+                    </p>
+                  </div>
+                </div>
+                <div class="info-box" v-if="siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length" style="margin-bottom: 1rem;">
+                  <app-icon name="check"></app-icon>
+                  <div>
+                    <strong>Cloudflare nameservers</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">Cloudflare returned these authoritative nameservers for your domain:</p>
+                    <ul style="margin: .75rem 0 0; padding-left: 1.2rem;">
+                      <li v-for="ns in siteWizard.createdDomainNameservers" :key="ns"><code>{{ ns }}</code></li>
+                    </ul>
                   </div>
                 </div>
                 <div class="ssh-info-card">
-                  <label>Required A Record</label>
-                  <code>Name: @</code>
-                  <code>Value: {{ sshInfo.host }}</code>
+                  <template v-if="siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length">
+                    <label>Use these nameservers</label>
+                    <code v-for="ns in siteWizard.createdDomainNameservers" :key="ns">{{ ns }}</code>
+                  </template>
+                  <template v-else>
+                    <label>DNS bundle</label>
+                    <code>Name: @</code>
+                    <code>Type: A</code>
+                    <code>Value: {{ sshInfo.host }}</code>
+                    <code>Name: www</code>
+                    <code>Type: CNAME</code>
+                    <code>Value: @</code>
+                    <code>Name: @</code>
+                    <code>Type: MX</code>
+                    <code>Value: mail.{{ siteWizard.domain || 'your-domain' }}</code>
+                    <code>Name: @</code>
+                    <code>Type: TXT</code>
+                    <code>Value: SPF</code>
+                    <code>Name: _dmarc</code>
+                    <code>Type: TXT</code>
+                    <code>Value: DMARC</code>
+                    <code>Name: mango._domainkey</code>
+                    <code>Type: TXT</code>
+                    <code>Value: DKIM</code>
+                  </template>
+                </div>
+              </div>
+
+              <div class="modal-body" v-if="siteWizard.step === 5">
+                <h3 style="margin-bottom: 1rem;">Website Added</h3>
+                <div class="info-box" style="margin-bottom: 1rem;">
+                  <app-icon name="check"></app-icon>
+                  <div>
+                    <strong>{{ siteWizard.domain }} is ready in the panel</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">The domain has been added to your account and the DNS bundle has been saved.</p>
+                  </div>
+                </div>
+                <div class="ssh-info-card" v-if="siteWizard.createdDomainNameservers.length">
+                  <label>Saved nameservers</label>
+                  <code v-for="ns in siteWizard.createdDomainNameservers" :key="ns">{{ ns }}</code>
                 </div>
               </div>
 
@@ -2553,8 +2626,37 @@
                 >
                   Next
                 </button>
-                <button v-if="siteWizard.step === 4" class="primary-button" @click="finishSiteWizard">I have updated the DNS</button>
+                <button v-if="siteWizard.step === 4" class="primary-button" @click="finishSiteWizard">Create Website</button>
+                <button v-if="siteWizard.step === 5" class="primary-button" @click="closeSiteWizard">Done</button>
               </div>
+            </div>
+          </div>
+
+          <!-- Full-screen domain connection wizard -->
+          <div v-if="connectWizard.isOpen" class="modal-overlay connect-wizard-overlay">
+            <div class="modal-panel connect-wizard-panel">
+              <div class="modal-header">
+                <div><span class="feature-status-badge feature-status-functional">Website connection</span><h2>Connect {{ connectWizard.website?.domain }} to hosting</h2></div>
+                <button class="close-button" @click="closeConnectWizard">×</button>
+              </div>
+              <div class="modal-body">
+                <p class="muted">Choose one method, update it at your registrar or DNS provider, then return here and verify. Nameservers are preferred because MangoPanel manages the complete DNS zone.</p>
+                <div class="connect-method-grid">
+                  <label :class="{ selected: connectWizard.method === 'nameservers' }"><input type="radio" v-model="connectWizard.method" value="nameservers"><strong>Use nameservers (Recommended)</strong><small>Delegate the domain to the nameservers shown in your domain setup.</small></label>
+                  <label :class="{ selected: connectWizard.method === 'dns' }"><input type="radio" v-model="connectWizard.method" value="dns"><strong>Use DNS records</strong><small>Keep your current nameservers and add the required A/AAAA records.</small></label>
+                  <label :class="{ selected: connectWizard.method === 'ip' }"><input type="radio" v-model="connectWizard.method" value="ip"><strong>Point directly by IP</strong><small>Update the domain A record to the hosting IP.</small></label>
+                </div>
+                <div class="info-box connect-instructions" v-if="connectWizard.method === 'nameservers'">
+                  <app-icon name="dns"></app-icon><div><strong>Replace the domain nameservers</strong><p>At your registrar, replace the existing nameservers with:</p><code v-for="ns in (connectWizard.website?.nameservers || [])" :key="ns">{{ ns }}</code><p v-if="!(connectWizard.website?.nameservers || []).length">Nameservers are still being prepared. Refresh the page after the DNS provider finishes provisioning.</p></div>
+                </div>
+                <div class="info-box connect-instructions" v-else>
+                  <app-icon name="info"></app-icon><div><strong>Update DNS for {{ connectWizard.website?.domain }}</strong><p>Create an <code>A</code> record for <code>@</code> and, if needed, <code>www</code>, pointing to the hosting IP shown by your provider. Keep the current nameservers.</p><code>{{ sshInfo.host }}</code></div>
+                </div>
+                <div v-if="connectWizard.result" class="info-box" :class="connectWizard.result.verified ? 'success-box' : 'warning-box'">
+                  <app-icon :name="connectWizard.result.verified ? 'check' : 'warning'"></app-icon><div><strong>{{ connectWizard.result.message }}</strong><small v-if="connectWizard.result.observed_ips?.length">Detected IPs: {{ connectWizard.result.observed_ips.join(', ') }}</small><small v-if="connectWizard.result.observed_nameservers?.length">Detected nameservers: {{ connectWizard.result.observed_nameservers.join(', ') }}</small></div>
+                </div>
+              </div>
+              <div class="modal-footer"><button class="ghost-button" @click="closeConnectWizard">Close</button><button class="primary-button" @click="verifyWebsiteConnection" :disabled="connectWizard.checking">{{ connectWizard.checking ? 'Checking DNS…' : 'I have updated nameservers / IP' }}</button></div>
             </div>
           </div>
 
