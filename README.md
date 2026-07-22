@@ -132,6 +132,52 @@ user_files/
 
 Override the location with `MP_USER_FILES_DIR` (or the more specific `MP_ACCOUNT_ROOT` / `MP_DATA_DIR` / `MP_DB_PATH`). `user_files/` is git-ignored. `make dev-reset` deletes it for a clean slate.
 
+## Server Migration
+
+Because all control-plane database records, hosting account files, mailboxes, database stacks, and environment configuration live inside the `user_files/` directory (with `.env` supported at `user_files/.env`), migrating MangoPanel from one server to another is fast and self-contained.
+
+### Migration Steps
+
+#### 1. Stop MangoPanel on the Source Server
+Stop the panel service and background agent worker on the old server to prevent database writes during transfer:
+```bash
+bash scripts/service mangopanel stop
+```
+
+#### 2. Install MangoPanel on the Destination Server
+Clean clone or install MangoPanel on the target server:
+```bash
+git clone https://github.com/servermango/MangoPanel.git MangoPanel && cd MangoPanel && bash scripts/install.sh
+make install
+```
+
+#### 3. Transfer `user_files/` Directory
+Copy the entire `user_files/` directory from the source server to the destination server using `rsync` or `scp`. This moves:
+- **Environment & Secrets**: `user_files/.env` (includes `MP_JWT_SECRET`)
+- **Control-Plane Database**: `user_files/data/mangopanel.sqlite3`
+- **Customer Hosting Files & Mailboxes**: `user_files/accounts/`
+
+```bash
+rsync -avzP /path/to/old/MangoPanel/user_files/ root@new-server-ip:/path/to/new/MangoPanel/user_files/
+```
+
+> [!IMPORTANT]
+> If your `.env` file is at the project root instead of `user_files/.env`, ensure you also copy `.env` to the new server. Preserving `MP_JWT_SECRET` is required so stored encrypted secrets (Cloudflare tokens, registrar API keys) can be decrypted on the new server.
+
+#### 4. Start Services & Provisions Containers
+On the destination server, restart the MangoPanel service wrapper and launch container stacks for all hosting accounts:
+```bash
+cd MangoPanel
+bash scripts/service mangopanel start
+
+# Provisions and starts Docker containers for all hosting accounts
+python3 -c "from mangopanel.config import Config; from mangopanel.agent import Agent; Agent(Config()).run_all()"
+```
+
+#### 5. Update DNS A-Records
+Point your server domain nameservers or public A-records to the destination server's IP address.
+
+
 ## Local Development
 
 Run the setup checks:
