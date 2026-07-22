@@ -60,8 +60,8 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
 
 CREATE TABLE IF NOT EXISTS impersonation_tokens (
   token_hash TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id),
-  admin_id INTEGER NOT NULL REFERENCES admins(id),
+  user_id INTEGER NOT NULL,
+  admin_id INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   used_at INTEGER,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -764,6 +764,8 @@ def connect(db_path):
     return conn
 
 
+
+
 def init_db(db_path):
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
@@ -774,7 +776,35 @@ def init_db(db_path):
 def ensure_schema(conn):
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS auth_attempts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ip_address TEXT NOT NULL,
+          actor_type TEXT NOT NULL,
+          window_started_at INTEGER NOT NULL,
+          failures INTEGER NOT NULL DEFAULT 0,
+          blocked_until INTEGER NOT NULL DEFAULT 0,
+          block_seconds INTEGER NOT NULL DEFAULT 0,
+          last_alert_at INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(ip_address, actor_type)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS impersonation_tokens (
+          token_hash TEXT PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          admin_id INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          used_at INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS wordpress_installs (
+
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           website_id INTEGER NOT NULL UNIQUE REFERENCES websites(id),
           database_id INTEGER REFERENCES databases(id),

@@ -45,30 +45,59 @@ def encrypt_secret(plaintext, master_secret):
     raw = str(plaintext).encode("utf-8")
     if not raw:
         return ""
-    key = _secret_key(master_secret)
+    # Standard PBKDF2 derived key + HMAC-SHA256 authenticated encryption construction (v2)
+    key = hashlib.pbkdf2_hmac("sha256", str(master_secret or "").encode("utf-8"), b"MangoSecretSalt", 10000)
+    enc_key = key[:16]
+    mac_key = key[16:]
     nonce = os.urandom(16)
     stream = bytearray()
     block = 0
     while len(stream) < len(raw):
-        stream.extend(hmac.new(key, nonce + block.to_bytes(4, "big"), hashlib.sha256).digest())
+        stream.extend(hmac.new(enc_key, nonce + block.to_bytes(4, "big"), hashlib.sha256).digest())
         block += 1
     ciphertext = _xor_bytes(raw, bytes(stream[: len(raw)]))
-    mac = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(nonce + mac + ciphertext).decode("ascii")
+    mac = hmac.new(mac_key, b"v2:" + nonce + ciphertext, hashlib.sha256).digest()
+    payload = b"v2:" + nonce + mac + ciphertext
+    return base64.urlsafe_b64encode(payload).decode("ascii")
 
 
 def decrypt_secret(token, master_secret):
     if not token:
         return ""
     try:
-        payload = base64.urlsafe_b64decode(str(token).encode("ascii"))
+        raw_payload = base64.urlsafe_b64decode(str(token).encode("ascii"))
     except (ValueError, TypeError):
         return ""
-    if len(payload) < 48:
+    # Handle v2 prefix
+    if raw_payload.startswith(b"v2:"):
+        payload = raw_payload[3:]
+        if len(payload) < 48:
+            return ""
+        nonce = payload[:16]
+        mac = payload[16:48]
+        ciphertext = payload[48:]
+        key = hashlib.pbkdf2_hmac("sha256", str(master_secret or "").encode("utf-8"), b"MangoSecretSalt", 10000)
+        enc_key = key[:16]
+        mac_key = key[16:]
+        expected_mac = hmac.new(mac_key, b"v2:" + nonce + ciphertext, hashlib.sha256).digest()
+        if not hmac.compare_digest(mac, expected_mac):
+            return ""
+        stream = bytearray()
+        block = 0
+        while len(stream) < len(ciphertext):
+            stream.extend(hmac.new(enc_key, nonce + block.to_bytes(4, "big"), hashlib.sha256).digest())
+            block += 1
+        plaintext = _xor_bytes(ciphertext, bytes(stream[: len(ciphertext)]))
+        try:
+            return plaintext.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+    # Legacy v1 fallback for backward compatibility
+    if len(raw_payload) < 48:
         return ""
-    nonce = payload[:16]
-    mac = payload[16:48]
-    ciphertext = payload[48:]
+    nonce = raw_payload[:16]
+    mac = raw_payload[16:48]
+    ciphertext = raw_payload[48:]
     key = _secret_key(master_secret)
     expected_mac = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
     if not hmac.compare_digest(mac, expected_mac):
@@ -83,6 +112,56 @@ def decrypt_secret(token, master_secret):
         return plaintext.decode("utf-8")
     except UnicodeDecodeError:
         return ""
+
+
+def validate_git_repository_url(url, is_development=False):
+    if not url or not isinstance(url, str):
+        return False
+    url = url.strip()
+    if url.startswith("-"):
+        return False
+    if is_development:
+        if url.startswith("/") or url.startswith("file://") or url.startswith("http://") or url.startswith("https://"):
+            return True
+        return False
+    if not url.startswith("https://"):
+        return False
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            return False
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            return False
+        if hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+            return False
+        import ipaddress
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False
+        except ValueError:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+
+def validate_git_branch(branch):
+    if not branch or not isinstance(branch, str):
+        return False
+    branch = branch.strip()
+    if branch.startswith("-"):
+        return False
+    import re
+    if not re.match(r"^[a-zA-Z0-9_./-]+$", branch):
+        return False
+    if ".." in branch or branch.endswith("/") or branch.startswith("/"):
+        return False
+    return True
+
 
 
 def verify_password(password, encoded):

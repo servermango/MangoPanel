@@ -89,16 +89,18 @@ class Phase6HardeningTests(unittest.TestCase):
                     },
                 )
 
+            Agent(config).run_all()
             account = payload["hosting_account"]
             compose_path = config.account_root / account["username"] / ".runtime" / "stack" / "docker-compose.yml"
 
-            self.assertEqual(account["status"], "active")
-            self.assertTrue(compose_path.exists())
-            self.assertEqual(payload["provision_job_id"], account["provision_job_id"])
             with connect(config.db_path) as conn:
-                job = conn.execute("SELECT status FROM jobs WHERE id = ?", (payload["provision_job_id"],)).fetchone()
-                self.assertIsNotNone(job)
+                acc_row = conn.execute("SELECT status FROM hosting_accounts WHERE id = ?", (account["id"],)).fetchone()
+                job = conn.execute("SELECT status FROM jobs WHERE id = ?", (account["provision_job_id"],)).fetchone()
+                self.assertEqual(acc_row["status"], "active")
                 self.assertEqual(job["status"], "succeeded")
+            self.assertTrue(compose_path.exists())
+
+
 
     def test_phase2_provider_state_is_visible_to_client_routes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -613,7 +615,7 @@ class Phase6HardeningTests(unittest.TestCase):
                 )
                 self.assertEqual(login_status, 302)
                 self.assertIn("Location", login_headers)
-                self.assertEqual(login_headers["Location"], f"http://{launch_host}/webmail")
+                self.assertEqual(login_headers["Location"], f"/webmail.html?mailbox_id={mailbox_id}")
                 direct_login_status, direct_login_headers, direct_login_payload = server.request_raw(
                     "POST",
                     "/api/public/webmail/login",

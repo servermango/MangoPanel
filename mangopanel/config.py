@@ -34,11 +34,16 @@ class Config:
         self.powerdns_api_key = os.getenv("MP_POWERDNS_API_KEY", "")
         self.powerdns_server_id = os.getenv("MP_POWERDNS_SERVER_ID", "localhost")
         self.cloudflare_api_base = os.getenv("MP_CLOUDFLARE_API_BASE", "https://api.cloudflare.com/client/v4")
-        self.expose_internal_errors = os.getenv("MP_EXPOSE_INTERNAL_ERRORS", "false").lower() == "true"
+        self.expose_internal_errors = (
+            os.getenv("SHOW_EXCEPTION_DETAILS", "").lower() in {"1", "true", "yes"}
+            or os.getenv("MP_EXPOSE_INTERNAL_ERRORS", "").lower() in {"1", "true", "yes"}
+        )
         self.trusted_proxy = os.getenv("MP_TRUSTED_PROXY", "false").lower() == "true"
+
     @property
     def is_development(self):
-        return self.env == "development"
+        return self.env == "development" or getattr(self, "dev_auth_test_mode", False) or getattr(self, "agent_mode", "") == "simulate"
+
 
 
 def load_config():

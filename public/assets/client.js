@@ -1,11 +1,29 @@
 const { createApp } = Vue;
 
 const CLIENT_ROUTE_PREFIX = "/client";
-const impersonationToken = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("mp_access_token");
+const urlHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+const impersonationToken = urlHashParams.get("mp_impersonation_token") || urlHashParams.get("mp_access_token");
 if (impersonationToken) {
-  localStorage.setItem("mp_client_token", impersonationToken);
-  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  fetch("/api/client/auth/exchange-impersonation", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ impersonation_token: impersonationToken }),
+  })
+    .then((res) => res.json())
+    .then((data) => {
+      if (data.access_token) {
+        localStorage.setItem("mp_client_token", data.access_token);
+      } else {
+        localStorage.setItem("mp_client_token", impersonationToken);
+      }
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    })
+    .catch(() => {
+      localStorage.setItem("mp_client_token", impersonationToken);
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    });
 }
+
 const CLIENT_PAGE_TARGETS = new Set([
   "dashboard",
   "installer",

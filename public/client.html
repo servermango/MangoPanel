@@ -14,8 +14,8 @@
         var t = localStorage.getItem("mp_theme") || "Default";
         document.getElementById("theme-style").setAttribute("href", "/assets/" + t + ".css");
         
-        // Immediate redirect to login if no token and no incoming impersonation token
-        var hashToken = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("mp_access_token");
+        var urlHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        var hashToken = urlHashParams.get("mp_impersonation_token") || urlHashParams.get("mp_access_token");
         if (!localStorage.getItem("mp_client_token") && !hashToken) {
           window.location.href = "/login";
         }

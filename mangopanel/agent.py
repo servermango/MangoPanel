@@ -1640,7 +1640,9 @@ class Agent:
         return str(path)
 
     def git_run(self, args, cwd=None):
-        result = subprocess.run(args, cwd=cwd, check=False, capture_output=True, text=True)
+        env = dict(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        result = subprocess.run(args, cwd=cwd, check=False, capture_output=True, text=True, env=env)
         if result.returncode != 0:
             raise AgentError(result.stderr.strip() or result.stdout.strip() or "git_operation_failed")
         return result
@@ -1652,7 +1654,13 @@ class Agent:
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (deployment["account_id"],)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
+        from .security import validate_git_branch, validate_git_repository_url
+        if not validate_git_repository_url(deployment["repository_url"], is_development=self.config.is_development):
+            raise AgentError("disallowed_repository_scheme")
+        if not validate_git_branch(deployment["branch"]):
+            raise AgentError("invalid_branch")
         deploy_path = Path(account["base_path"]) / deployment["deploy_path"]
+
         deploy_path.parent.mkdir(parents=True, exist_ok=True)
         metadata = self.git_deploy_metadata(row_to_dict(account), deployment_id)
         previous_commit = metadata.get("current_commit")

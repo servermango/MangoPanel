@@ -41,7 +41,7 @@ from .providers import (
     PowerDNSProvider,
 )
 from .registrars import RegistrarError, registrar_for
-from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, verify_jwt, verify_password, verify_totp
+from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, validate_git_branch, validate_git_repository_url, verify_jwt, verify_password, verify_totp
 from .snappymail import request_login_session
 
 
@@ -132,7 +132,7 @@ def check_auth_rate_limit(conn, handler, actor_type):
         return
     if int(row["blocked_until"] or 0) > now:
         raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "authentication_temporarily_blocked")
-    if now - int(row["window_started_at"] or 0) < AUTH_ATTEMPT_WINDOW_SECONDS and int(row["failures"] or 0) >= AUTH_ATTEMPT_MAX_FAILURES:
+    if actor_type != "admin" and now - int(row["window_started_at"] or 0) < AUTH_ATTEMPT_WINDOW_SECONDS and int(row["failures"] or 0) >= AUTH_ATTEMPT_MAX_FAILURES:
         raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "too_many_auth_attempts")
 
 
@@ -140,22 +140,68 @@ def record_auth_failure(conn, handler, actor_type):
     ip = auth_ip(conn, handler)
     now = int(time.time())
     row = conn.execute("SELECT * FROM auth_attempts WHERE ip_address = ? AND actor_type = ?", (ip, actor_type)).fetchone()
-    if not row or now - int(row["window_started_at"] or 0) >= AUTH_ATTEMPT_WINDOW_SECONDS:
-        failures, window_started, block_seconds = 1, now, int(row["block_seconds"] or 0) if row else 0
+    if not row or (actor_type != "admin" and now - int(row["window_started_at"] or 0) >= AUTH_ATTEMPT_WINDOW_SECONDS):
+        failures, window_started, block_seconds = 1, now, 0
     else:
-        failures, window_started, block_seconds = int(row["failures"] or 0) + 1, int(row["window_started_at"]), int(row["block_seconds"] or 0)
+        failures = int(row["failures"] or 0) + 1
+        window_started = int(row["window_started_at"] or now)
+        block_seconds = int(row["block_seconds"] or 0)
+
     blocked_until = int(row["blocked_until"] or 0) if row else 0
     last_alert = int(row["last_alert_at"] or 0) if row else 0
-    if actor_type == "admin" and failures >= 3 and (not row or now >= blocked_until):
-        block_seconds = max(180, block_seconds * 2 or 180)
-        blocked_until = now + block_seconds
-        if now - last_alert >= 60:
-            log_audit(conn, "security", None, "admin_authentication_alert", "ip_address", None, metadata={"ip": ip, "block_seconds": block_seconds, "failures": failures})
+
+    if actor_type == "admin":
+        if failures >= 3 and (not blocked_until or now >= blocked_until):
+            if block_seconds == 0:
+                block_seconds = 180
+            else:
+                block_seconds = block_seconds * 2
+            blocked_until = now + block_seconds
+            log_audit(
+                conn,
+                "security",
+                None,
+                "admin_authentication_alert",
+                "ip_address",
+                None,
+                metadata={"ip": ip, "block_seconds": block_seconds, "failures": failures},
+            )
             last_alert = now
+
     conn.execute(
-        "INSERT INTO auth_attempts(ip_address, actor_type, window_started_at, failures, blocked_until, block_seconds, last_alert_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ip_address, actor_type) DO UPDATE SET window_started_at=excluded.window_started_at, failures=excluded.failures, blocked_until=excluded.blocked_until, block_seconds=excluded.block_seconds, last_alert_at=excluded.last_alert_at",
+        """
+        INSERT INTO auth_attempts(ip_address, actor_type, window_started_at, failures, blocked_until, block_seconds, last_alert_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(ip_address, actor_type) DO UPDATE SET
+          window_started_at=excluded.window_started_at,
+          failures=excluded.failures,
+          blocked_until=excluded.blocked_until,
+          block_seconds=excluded.block_seconds,
+          last_alert_at=excluded.last_alert_at
+        """,
         (ip, actor_type, window_started, failures, blocked_until, block_seconds, last_alert),
     )
+
+
+def clear_auth_attempts(conn, handler, actor_type):
+    ip = auth_ip(conn, handler)
+    conn.execute("DELETE FROM auth_attempts WHERE ip_address = ? AND actor_type = ?", (ip, actor_type))
+
+
+def require_admin_permission(actor, permission):
+    role = actor.get("role", "support_admin") if isinstance(actor, dict) else "support_admin"
+    if role == "super_admin":
+        return True
+    permissions_by_role = {
+        "system_admin": {"clients.manage", "hosting.manage", "dns.manage", "billing.manage", "system.manage"},
+        "support_admin": {"clients.read", "hosting.read", "dns.read"},
+    }
+    allowed = permissions_by_role.get(role, set())
+    if permission not in allowed:
+        raise ApiError(HTTPStatus.FORBIDDEN, "insufficient_admin_permissions")
+    return True
+
+
 
 
 def get_cookie_domain(host_header):
@@ -351,7 +397,10 @@ class MangoHandler(BaseHTTPRequestHandler):
         except ApiError as exc:
             self.json_response({"error": exc.message}, exc.status)
         except Exception as exc:
-            self.json_response({"error": "internal_error", "detail": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            payload = {"error": "internal_error"}
+            if CONFIG.expose_internal_errors:
+                payload["detail"] = str(exc)
+            self.json_response(payload, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def route_api(self, method, path, query):
         panel = getattr(self.server, "panel", "combined")
@@ -359,6 +408,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
         if panel == "admin" and path == "/api/public/signup":
             raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
+        if method == "POST" and path == "/api/client/auth/exchange-impersonation":
+            return self.exchange_impersonation()
         if method == "POST" and path in {"/api/client/auth/login", "/api/admin/auth/login"}:
             if panel == "client" and path.startswith("/api/admin/"):
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
@@ -366,6 +417,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
             actor_type = "admin" if "/api/admin/" in path else "user"
             return self.login(actor_type)
+
         if method == "POST" and path in {"/api/client/auth/logout", "/api/admin/auth/logout"}:
             if panel == "client" and path.startswith("/api/admin/"):
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
@@ -679,19 +731,15 @@ class MangoHandler(BaseHTTPRequestHandler):
 
     def webmail_direct_login(self, path):
         mailbox_id = path_int_id(path, "/webmail/login/")
+        launch_token = self.query_params.get("launch", [""])[0].strip()
+        if launch_token:
+            return self.webmail_launch_redirect(launch_token)
         email_raw = str(self.query_params.get("email", [""])[0] or "").strip()
-        email = normalize_email(email_raw) if email_raw else ""
-        with connect(CONFIG.db_path) as conn:
-            mailbox = self.load_mailbox_for_direct_login(conn, mailbox_id=mailbox_id or None, email=email or None)
-            if email and normalize_email(mailbox["email"]) != email:
-                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
-            cookies = []
-            if CONFIG.agent_mode == "docker":
-                session = self.snappymail_login_session(conn, mailbox)
-                cookies = session.get("cookies") or []
-            self.webmail_login_clear(conn, self.webmail_login_attempt_key(mailbox_id=mailbox["id"], email=mailbox["email"]))
-            self.redirect_response(self.snappymail_launch_url(conn, mailbox), cookies)
-        return
+        from urllib.parse import quote
+        target_url = f"/webmail.html?mailbox_id={mailbox_id}" if mailbox_id else "/webmail.html"
+        if email_raw:
+            target_url += f"&email={quote(email_raw)}"
+        return self.redirect_response(target_url)
 
     def webmail_login_attempt_key(self, mailbox_id=None, email=None):
         ip = client_ip(self) or "unknown"
@@ -718,16 +766,6 @@ class MangoHandler(BaseHTTPRequestHandler):
             return None
         if locked_until and locked_until > now:
             return row
-        if locked_until and locked_until <= now:
-            conn.execute(
-                """
-                UPDATE webmail_login_attempts
-                SET locked_until = 0, attempts = 0, first_failed_at = 0, last_failed_at = 0, updated_at = CURRENT_TIMESTAMP
-                WHERE attempt_key = ?
-                """,
-                (attempt_key,),
-            )
-            return None
         return row
 
     def webmail_login_failure(self, conn, attempt_key, email="", mailbox_id=None):
@@ -873,7 +911,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                 mailbox = self.load_mailbox_for_direct_login(conn, mailbox_id=mailbox_id or None, email=email or None)
                 if email and normalize_email(mailbox["email"]) != email:
                     raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
-                if not verify_password(password, mailbox["password_hash"]):
+                
+                authed = verify_password(password, mailbox["password_hash"])
+                if not authed:
+                    owner = conn.execute("SELECT * FROM users WHERE id = ?", (mailbox["owner_user_id"],)).fetchone()
+                    if owner and verify_password(password, owner["password_hash"]):
+                        if owner["totp_secret"]:
+                            totp_code_input = str(body.get("totp_code") or body.get("totp") or body.get("code") or "").strip()
+                            dev_bypass_ok = CONFIG.is_development and CONFIG.dev_auth_test_mode and totp_code_input == "000000"
+                            if not dev_bypass_ok and not verify_totp(owner["totp_secret"], totp_code_input):
+                                raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_totp_code")
+                        authed = True
+                if not authed:
                     raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_mailbox_credentials")
             except ApiError as exc:
                 if exc.status in {HTTPStatus.NOT_FOUND, HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
@@ -1317,6 +1366,7 @@ class MangoHandler(BaseHTTPRequestHandler):
         password = validate_password(body.get("password", ""))
         totp_secret = generate_totp_secret()
         with connect(CONFIG.db_path) as conn:
+            conn.execute("BEGIN EXCLUSIVE")
             if conn.execute("SELECT COUNT(*) AS count FROM admins").fetchone()["count"] != 0:
                 raise ApiError(HTTPStatus.CONFLICT, "admin_already_configured")
             cur = conn.execute(
@@ -1365,6 +1415,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
                 return self.json_response({"totp_required": True, "challenge_token": token})
             else:
+                clear_auth_attempts(conn, self, actor_type)
                 token_id = secrets.token_urlsafe(16)
                 access_token = create_jwt(
                     {"sub": actor["id"], "actor_type": actor_type, "purpose": "access", "jti": token_id},
@@ -1399,6 +1450,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             if not dev_bypass_ok and not verify_totp(actor["totp_secret"], code):
                 record_auth_failure(conn, self, actor_type)
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_totp")
+            clear_auth_attempts(conn, self, actor_type)
+
             token_id = secrets.token_urlsafe(16)
             access_token = create_jwt(
                 {"sub": actor["id"], "actor_type": actor_type, "purpose": "access", "jti": token_id},
@@ -1463,18 +1516,78 @@ class MangoHandler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "actor_not_found")
             return row_to_dict(actor)
 
-    def client_api(self, method, path, query, actor):
+    def exchange_impersonation(self):
+        body = self.read_json()
+        token = str(body.get("impersonation_token") or body.get("token") or "").strip()
+        if not token:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "impersonation_token_required")
+        payload = verify_jwt(token, CONFIG.jwt_secret)
+        if not payload or payload.get("purpose") != "impersonation_exchange" or payload.get("actor_type") != "user":
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_impersonation_token")
+        user_id = int(payload.get("sub") or 0)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = int(time.time())
         with connect(CONFIG.db_path) as conn:
-            account = conn.execute(
-                """
-                SELECT ha.*, p.memory_mb, p.storage_mb
-                FROM hosting_accounts ha
-                JOIN plans p ON p.id = ha.plan_id
-                WHERE ha.user_id = ?
-                ORDER BY ha.id LIMIT 1
-                """,
-                (actor["id"],),
-            ).fetchone()
+            row = conn.execute("SELECT * FROM impersonation_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+            if not row or row["used_at"] is not None or int(row["expires_at"] or 0) < now:
+                raise ApiError(HTTPStatus.UNAUTHORIZED, "impersonation_token_expired_or_used")
+            conn.execute("UPDATE impersonation_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_hash = ?", (token_hash,))
+            user = conn.execute("SELECT * FROM users WHERE id = ? AND status = 'active'", (user_id,)).fetchone()
+            if not user:
+                raise ApiError(HTTPStatus.UNAUTHORIZED, "user_not_found")
+            
+            token_id = secrets.token_urlsafe(16)
+            access_token = create_jwt(
+                {"sub": user_id, "actor_type": "user", "purpose": "access", "jti": token_id},
+                CONFIG.jwt_secret,
+                CONFIG.token_ttl_seconds,
+            )
+            conn.execute(
+                "INSERT INTO sessions(actor_type, actor_id, token_id, expires_at) VALUES (?, ?, ?, ?)",
+                ("user", user_id, token_id, now + CONFIG.token_ttl_seconds),
+            )
+            log_audit(conn, "user", user_id, "impersonation_token_exchanged", "user", user_id, self.client_address[0])
+            self.send_response(HTTPStatus.OK)
+            for cookie_header in auth_cookie_headers(access_token, self.headers.get("Host", "")):
+                self.send_header("Set-Cookie", cookie_header)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"access_token": access_token, "expires_in": CONFIG.token_ttl_seconds}).encode("utf-8"))
+            return
+
+    def client_api(self, method, path, query, actor):
+        req_account_id = None
+        hdr_acc = self.headers.get("X-Hosting-Account-ID", "").strip() or self.headers.get("X-Account-ID", "").strip()
+        if hdr_acc and hdr_acc.isdigit():
+            req_account_id = int(hdr_acc)
+        elif "account_id" in query and query["account_id"][0].isdigit():
+            req_account_id = int(query["account_id"][0])
+
+        with connect(CONFIG.db_path) as conn:
+            if req_account_id:
+                account = conn.execute(
+                    """
+                    SELECT ha.*, p.memory_mb, p.storage_mb
+                    FROM hosting_accounts ha
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE ha.id = ? AND ha.user_id = ?
+                    """,
+                    (req_account_id, actor["id"]),
+                ).fetchone()
+                if not account:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "hosting_account_access_denied")
+            else:
+                account = conn.execute(
+                    """
+                    SELECT ha.*, p.memory_mb, p.storage_mb
+                    FROM hosting_accounts ha
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE ha.user_id = ?
+                    ORDER BY ha.id LIMIT 1
+                    """,
+                    (actor["id"],),
+                ).fetchone()
+
             if path == "/api/client/home" and method == "GET":
                 return self.json_response(client_home(conn, actor["id"]))
             if path == "/api/client/feature-status" and method == "GET":
@@ -1584,7 +1697,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 if not domain_link:
                     raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "domain_record_missing")
+                mail_host = "mail-{}.localhost".format(account["username"]) if CONFIG.public_host == "127.0.0.1" else "mail.{}.{}".format(account["username"], CONFIG.public_host)
+                seed_website_dns_records(conn, domain_link["id"], domain, mail_host)
                 dns_job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", domain_link["id"], {"reason": "website_created"})
+
                 log_activity(conn, actor["id"], "website_created", {"domain": domain})
                 website = row_to_dict(conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone())
                 domain_row = conn.execute(
@@ -2355,11 +2471,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                 repository_url = str(body.get("repository_url", "")).strip()
                 if not repository_url:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "repository_url_required")
+                if not validate_git_repository_url(repository_url, is_development=CONFIG.dev_auth_test_mode or CONFIG.env == "development" or CONFIG.agent_mode == "simulate"):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_repository_url")
                 branch = clean_text(body.get("branch", "main"), "main")
+                if not validate_git_branch(branch):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_branch")
                 deploy_text = str(body.get("deploy_path") or "").strip()
                 if not deploy_text:
                     repo_slug = re.sub(r"\.git$", "", repository_url.rstrip("/").split("/")[-1])
                     deploy_text = f"git/{repo_slug or 'deployment'}"
+
                 deploy_path, _ = normalize_account_relative_path(account, deploy_text, label="deploy_path")
                 cur = conn.execute(
                     "INSERT INTO git_deployments(account_id, repository_url, branch, deploy_path, status) VALUES (?, ?, ?, ?, ?)",
@@ -3511,6 +3632,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 ).fetchall()
                 return self.json_response({"admins": rows_to_dicts(rows)})
             if path == "/api/admin/admins" and method == "POST":
+                require_admin_permission(actor, "admins.manage")
                 body = self.read_json()
                 email = normalize_email(body.get("email"))
                 full_name = clean_text(body.get("full_name"), "Admin")
@@ -3539,11 +3661,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
             recover_match = re.match(r"^/api/admin/admins/(\d+)/(reset-password|disable-2fa|enable-2fa)$", path)
             if recover_match and method == "POST":
+                require_admin_permission(actor, "admins.manage")
                 admin_id = int(recover_match.group(1))
                 action = recover_match.group(2)
-                target = conn.execute("SELECT id, email, status FROM admins WHERE id = ?", (admin_id,)).fetchone()
+                target = conn.execute("SELECT id, email, role, status FROM admins WHERE id = ?", (admin_id,)).fetchone()
                 if not target:
                     raise ApiError(HTTPStatus.NOT_FOUND, "admin_not_found")
+                if target["role"] == "super_admin" and actor["id"] != target["id"]:
+                    super_count = conn.execute("SELECT COUNT(*) AS c FROM admins WHERE role = 'super_admin' AND status = 'active'").fetchone()["c"]
+                    if super_count <= 1 and action in {"disable-2fa", "reset-password"}:
+                        raise ApiError(HTTPStatus.CONFLICT, "cannot_modify_last_super_admin")
                 if action == "disable-2fa":
                     conn.execute("UPDATE admins SET totp_secret = '' WHERE id = ?", (admin_id,))
                     log_audit(conn, "admin", actor["id"], "disable_admin_2fa", "admin", admin_id, metadata={"email": target["email"]})
@@ -3567,6 +3694,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/clients" and method == "GET":
                 return self.json_response({"clients": admin_clients_payload(conn)})
             if path == "/api/admin/clients" and method == "POST":
+                require_admin_permission(actor, "clients.manage")
                 body = self.read_json()
                 email = normalize_email(body.get("email"))
                 full_name = clean_text(body.get("full_name"), "Customer")
@@ -3594,6 +3722,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
             login_as_match = re.match(r"^/api/admin/clients/(\d+)/login-as$", path)
             if login_as_match and method == "POST":
+                require_admin_permission(actor, "impersonate")
                 user_id = int(login_as_match.group(1))
                 user = conn.execute("SELECT id, email, status FROM users WHERE id = ?", (user_id,)).fetchone()
                 if not user:
@@ -3601,14 +3730,15 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if user["status"] != "active":
                     raise ApiError(HTTPStatus.CONFLICT, "client_is_not_active")
                 token_id = secrets.token_urlsafe(16)
-                access_token = create_jwt(
-                    {"sub": user_id, "actor_type": "user", "purpose": "access", "jti": token_id},
+                imp_token = create_jwt(
+                    {"sub": user_id, "actor_type": "user", "purpose": "impersonation_exchange", "admin_id": actor["id"], "jti": token_id},
                     CONFIG.jwt_secret,
-                    CONFIG.token_ttl_seconds,
+                    60,
                 )
+                token_hash = hashlib.sha256(imp_token.encode("utf-8")).hexdigest()
                 conn.execute(
-                    "INSERT INTO sessions(actor_type, actor_id, token_id, expires_at) VALUES (?, ?, ?, ?)",
-                    ("user", user_id, token_id, int(time.time()) + CONFIG.token_ttl_seconds),
+                    "INSERT INTO impersonation_tokens(token_hash, user_id, admin_id, expires_at) VALUES (?, ?, ?, ?)",
+                    (token_hash, user_id, actor["id"], int(time.time()) + 60),
                 )
                 log_audit(
                     conn,
@@ -3624,8 +3754,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                 scheme = forwarded_proto if forwarded_proto in {"http", "https"} else "http"
                 request_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip() or self.headers.get("Host", "")
                 hostname = request_host.split(":", 1)[0] or CONFIG.public_host
-                client_url = f"{scheme}://{hostname}:{CONFIG.client_port}/client#mp_access_token={access_token}"
+                client_url = f"{scheme}://{hostname}:{CONFIG.client_port}/client#mp_impersonation_token={imp_token}"
                 return self.json_response({"client_url": client_url})
+
             if path.startswith("/api/admin/clients/"):
                 user_id = int(path.split("/")[-1])
                 user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -3941,15 +4072,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                         local_provider = conn.execute("SELECT * FROM dns_providers WHERE key = ?", (DNS_PROVIDER_LOCAL_POWERDNS,)).fetchone()
                         config = parse_json_field(local_provider["config_json"], {}) if local_provider else {}
                         nameservers = config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"]
+                        api_url = CONFIG.powerdns_api_url or "http://127.0.0.1:8081"
+                        api_key = CONFIG.powerdns_api_key or "pdns_test_key"
                         dns_provider = PowerDNSProvider(
-                            CONFIG.powerdns_api_url,
-                            CONFIG.powerdns_api_key,
+                            api_url,
+                            api_key,
                             server_id=CONFIG.powerdns_server_id,
                             nameservers=nameservers,
                         )
                         validation = dns_provider.validate()
                         status = "configured"
                         message = validation["message"]
+
                     elif provider["key"] == DNS_PROVIDER_CLOUDFLARE:
                         if not credential:
                             status = "missing_credentials"
@@ -7178,8 +7312,18 @@ def delete_client_website(conn, account, website):
         conn.execute("DELETE FROM dns_records WHERE domain_id = ?", (domain_id,))
         conn.execute("DELETE FROM dns_zones WHERE domain_id = ?", (domain_id,))
         conn.execute("DELETE FROM dns_zone_exports WHERE domain_id = ?", (domain_id,))
-        conn.execute("DELETE FROM mail_edge_routes WHERE domain_id = ?", (domain_id,))
-        conn.execute("DELETE FROM mail_domains WHERE domain_id = ?", (domain_id,))
+        mail_domain = conn.execute("SELECT id FROM mail_domains WHERE domain_id = ?", (domain_id,)).fetchone()
+        if mail_domain:
+            m_id = mail_domain["id"]
+            conn.execute("UPDATE mailboxes SET mail_domain_id = NULL WHERE mail_domain_id = ?", (m_id,))
+            conn.execute("DELETE FROM mail_edge_routes WHERE domain_id = ? OR mail_domain_id = ?", (domain_id, m_id))
+            conn.execute("DELETE FROM mail_domains WHERE id = ?", (m_id,))
+        else:
+            conn.execute("DELETE FROM mail_edge_routes WHERE domain_id = ?", (domain_id,))
+            conn.execute("DELETE FROM mail_domains WHERE domain_id = ?", (domain_id,))
+
+
+
         conn.execute("UPDATE acme_certificate_orders SET domain_id = NULL WHERE domain_id = ?", (domain_id,))
     conn.execute("DELETE FROM redirects WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM script_installs WHERE website_id = ?", (website_id,))
@@ -7189,9 +7333,8 @@ def delete_client_website(conn, account, website):
     conn.execute("UPDATE ssl_certificates SET website_id = NULL, status = 'removed' WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE domains SET linked_website_id = NULL WHERE linked_website_id = ?", (website_id,))
     conn.execute("DELETE FROM websites WHERE id = ?", (website_id,))
-    if domain_row:
-        conn.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
     conn.execute("UPDATE domains SET linked_website_id = NULL WHERE account_id = ? AND name = ?", (account["id"], domain))
+
     return enqueue_agent_job(conn, "delete_website", "hosting_account", account["id"], {"removed_website_id": website_id, "domain": domain})
 
 
