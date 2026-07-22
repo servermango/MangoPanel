@@ -3,60 +3,626 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>MangoPanel Admin Setup</title>
+    <title>First Admin Setup | MangoPanel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/assets/app.css">
+    <style>
+      :root {
+        --setup-bg: #0b0e10;
+        --setup-card: #151a1d;
+        --setup-card-border: rgba(255, 255, 255, 0.08);
+        --brand-accent: #fdb528;
+        --brand-glow: rgba(253, 181, 40, 0.25);
+        --text-main: #f0f3f5;
+        --text-muted: #8c979e;
+        --input-bg: #1c2226;
+        --success-glow: rgba(114, 225, 40, 0.2);
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background: radial-gradient(circle at 50% -20%, #1d252b 0%, var(--setup-bg) 70%);
+        color: var(--text-main);
+        font-family: 'Inter', sans-serif;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .setup-wrapper {
+        width: 100%;
+        max-width: 1100px;
+        margin: 2rem auto;
+        padding: 0 1.5rem;
+      }
+
+      .setup-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 2rem;
+      }
+
+      .brand-logo {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        text-decoration: none;
+        color: var(--text-main);
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1.5rem;
+        font-weight: 700;
+      }
+
+      .brand-badge {
+        background: var(--brand-accent);
+        color: #000;
+        font-size: 0.7rem;
+        font-weight: 800;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .step-indicators {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+      }
+
+      .step-pill {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--setup-card-border);
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        transition: all 0.3s ease;
+      }
+
+      .step-pill.active {
+        background: rgba(253, 181, 40, 0.15);
+        border-color: var(--brand-accent);
+        color: var(--brand-accent);
+        font-weight: 600;
+      }
+
+      .step-pill.completed {
+        background: rgba(114, 225, 40, 0.1);
+        border-color: #72e128;
+        color: #72e128;
+      }
+
+      .step-num {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.1);
+        font-size: 0.75rem;
+        font-weight: 700;
+      }
+
+      .step-pill.active .step-num {
+        background: var(--brand-accent);
+        color: #000;
+      }
+
+      .step-pill.completed .step-num {
+        background: #72e128;
+        color: #000;
+      }
+
+      .setup-container {
+        display: grid;
+        grid-template-columns: 380px 1fr;
+        gap: 2rem;
+        background: var(--setup-card);
+        border: 1px solid var(--setup-card-border);
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+      }
+
+      @media (max-width: 900px) {
+        .setup-container {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* Left Side: Feature Slider & Branding Banner */
+      .feature-banner {
+        background: linear-gradient(145deg, #182025 0%, #0e1214 100%);
+        border-right: 1px solid var(--setup-card-border);
+        padding: 2.5rem 2rem;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .banner-glow {
+        position: absolute;
+        top: -30%;
+        left: -30%;
+        width: 300px;
+        height: 300px;
+        background: radial-gradient(circle, var(--brand-glow) 0%, transparent 70%);
+        pointer-events: none;
+      }
+
+      .banner-header h3 {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1.25rem;
+        margin-top: 0;
+        margin-bottom: 0.5rem;
+      }
+
+      .banner-header p {
+        color: var(--text-muted);
+        font-size: 0.88rem;
+        line-height: 1.5;
+        margin: 0;
+      }
+
+      /* Tiny Slider */
+      .slider-card {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 2rem 0;
+        position: relative;
+        min-height: 150px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .slider-badge {
+        display: inline-block;
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: var(--brand-accent);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 0.5rem;
+      }
+
+      .slider-title {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1.05rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+      }
+
+      .slider-desc {
+        font-size: 0.82rem;
+        color: var(--text-muted);
+        line-height: 1.4;
+      }
+
+      .slider-dots {
+        display: flex;
+        gap: 0.4rem;
+        margin-top: 1rem;
+
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.2);
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .dot.active {
+        width: 20px;
+        background: var(--brand-accent);
+      }
+
+      .banner-footer {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .pulse-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #72e128;
+        box-shadow: 0 0 10px #72e128;
+      }
+
+      /* Right Side: Setup Forms */
+      .setup-form-panel {
+        padding: 2.5rem;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+
+      .form-title {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1.6rem;
+        font-weight: 700;
+        margin-top: 0;
+        margin-bottom: 0.5rem;
+      }
+
+      .form-subtitle {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        margin-bottom: 2rem;
+      }
+
+      .form-field {
+        margin-bottom: 1.25rem;
+      }
+
+      .form-field label {
+        display: block;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--text-main);
+        margin-bottom: 0.4rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .form-field input {
+        width: 100%;
+        background: var(--input-bg);
+        border: 1px solid var(--setup-card-border);
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        color: #fff;
+        font-size: 0.95rem;
+        transition: border 0.3s ease;
+        box-sizing: border-box;
+      }
+
+      .form-field input:focus {
+        outline: none;
+        border-color: var(--brand-accent);
+        box-shadow: 0 0 0 3px var(--brand-glow);
+      }
+
+      .btn-primary {
+        background: var(--brand-accent);
+        color: #000;
+        font-weight: 700;
+        font-size: 0.95rem;
+        border: none;
+        border-radius: 8px;
+        padding: 0.85rem 1.5rem;
+        cursor: pointer;
+        width: 100%;
+        transition: all 0.25 ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+      }
+
+      .btn-primary:hover {
+        background: #e6a21e;
+        box-shadow: 0 0 20px var(--brand-glow);
+        transform: translateY(-1px);
+      }
+
+      .btn-primary:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .btn-success {
+        background: #72e128;
+        color: #000;
+      }
+
+      .btn-success:hover {
+        background: #60c420;
+        box-shadow: 0 0 20px var(--success-glow);
+      }
+
+      .alert-msg {
+        background: rgba(179, 38, 30, 0.15);
+        border: 1px solid rgba(179, 38, 30, 0.4);
+        color: #ff6b6b;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        margin-top: 1rem;
+      }
+
+      .info-msg {
+        background: rgba(114, 225, 40, 0.15);
+        border: 1px solid rgba(114, 225, 40, 0.4);
+        color: #72e128;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        margin-top: 1rem;
+      }
+
+      /* 2FA Step Box */
+      .qr-flex-container {
+        display: flex;
+        gap: 1.5rem;
+        align-items: center;
+        background: rgba(255,255,255,0.02);
+        border: 1px solid var(--setup-card-border);
+        border-radius: 12px;
+        padding: 1.25rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .qr-image {
+        width: 140px;
+        height: 140px;
+        border-radius: 8px;
+        background: #fff;
+        padding: 6px;
+      }
+
+      .secret-copy-box {
+        flex: 1;
+      }
+
+      .secret-copy-box label {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        margin-bottom: 0.4rem;
+        display: block;
+      }
+
+      .secret-code-display {
+        font-family: 'JetBrains Mono', monospace;
+        background: var(--input-bg);
+        border: 1px solid var(--setup-card-border);
+        padding: 0.6rem 0.8rem;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        color: var(--brand-accent);
+        word-break: break-all;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .copy-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 0.8rem;
+        padding: 0.2rem 0.5rem;
+      }
+
+      .copy-btn:hover {
+        color: #fff;
+      }
+
+      .totp-input-row {
+        display: flex;
+        gap: 0.75rem;
+        margin-top: 1rem;
+      }
+
+      .totp-input-row input {
+        flex: 1;
+        font-family: 'JetBrains Mono', monospace;
+        letter-spacing: 0.2em;
+        text-align: center;
+        font-size: 1.1rem;
+      }
+
+      .totp-input-row button {
+        width: auto;
+        padding: 0 1.25rem;
+      }
+
+      /* Completion Badge */
+      .completion-card {
+        text-align: center;
+        padding: 1rem 0;
+      }
+
+      .success-icon-badge {
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        background: rgba(114, 225, 40, 0.15);
+        border: 2px solid #72e128;
+        color: #72e128;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 2rem;
+        margin: 0 auto 1.5rem;
+        box-shadow: 0 0 30px var(--success-glow);
+      }
+    </style>
   </head>
   <body>
-    <div id="admin-setup-app" class="status-shell" v-cloak>
-      <header class="status-header">
-        <div>
-          <a href="/" class="back-link">MangoPanel</a>
-          <h1>First Admin Setup</h1>
-          <p>Create the initial super admin. This setup can only run while no admin exists.</p>
+    <div id="admin-setup-app" class="setup-wrapper" v-cloak>
+      <header class="setup-header">
+        <a href="/" class="brand-logo">
+          🥭 MangoPanel <span class="brand-badge">Setup</span>
+        </a>
+        <div class="step-indicators" v-if="bootstrap.admin_setup_required">
+          <div class="step-pill" :class="{ active: currentStep === 1, completed: currentStep > 1 }">
+            <span class="step-num">1</span> Account
+          </div>
+          <div class="step-pill" :class="{ active: currentStep === 2, completed: currentStep > 2 }">
+            <span class="step-num">2</span> 2FA Setup
+          </div>
+          <div class="step-pill" :class="{ active: currentStep === 3 }">
+            <span class="step-num">3</span> Complete
+          </div>
         </div>
       </header>
 
-      <main>
-        <section class="panel auth-panel" v-if="bootstrap.admin_setup_required && !result">
-          <h2>Create Super Admin</h2>
-          <div class="form-grid">
-            <label>Full name <input v-model="form.full_name" autocomplete="name"></label>
-            <label>Email <input v-model="form.email" autocomplete="email"></label>
-            <label>Password <input v-model="form.password" type="password" autocomplete="new-password"></label>
-            <button class="primary-button" @click="setup">Create Admin</button>
+      <main class="setup-container">
+        <!-- Left Side: Feature Carousel Banner -->
+        <aside class="feature-banner">
+          <div class="banner-glow"></div>
+          <div class="banner-header">
+            <h3>Shared Hosting Control Panel</h3>
+            <p>Enterprise-grade server orchestration with containerized isolation.</p>
           </div>
-          <p v-if="message" class="message">{{ message }}</p>
-        </section>
 
-        <section class="panel" v-else-if="result">
-          <h2>Admin Created</h2>
-          <p>Add this TOTP secret to your authenticator app before signing in.</p>
-          <div class="secret-box">
-            <span>QR setup URL</span>
-            <strong style="word-break: break-all;">{{ result.totp_uri }}</strong>
+          <!-- Feature Slider -->
+          <div class="slider-card" v-if="features.length > 0">
+            <div>
+              <span class="slider-badge">{{ features[activeSlide].badge }}</span>
+              <div class="slider-title">{{ features[activeSlide].title }}</div>
+              <div class="slider-desc">{{ features[activeSlide].desc }}</div>
+            </div>
+            <div class="slider-dots">
+              <span 
+                v-for="(f, i) in features" 
+                :key="i" 
+                class="dot" 
+                :class="{ active: activeSlide === i }"
+                @click="setSlide(i)"
+              ></span>
+            </div>
           </div>
-          <div class="secret-box" style="display:flex; flex-direction:column; gap:1rem; align-items:flex-start;">
-            <span>Scan this QR code</span>
-            <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(result.totp_uri)" alt="TOTP QR code" style="width: 220px; height: 220px;">
-          </div>
-          <div class="secret-box">
-            <span>TOTP secret</span>
-            <strong>{{ result.totp_secret }}</strong>
-          </div>
-          <div class="form-grid" style="margin-top: 1rem;">
-            <label>Verify code from authenticator
-              <input v-model="totpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
-            </label>
-            <button class="primary-button" @click="checkTotp">Check code</button>
-          </div>
-          <p v-if="totpCheckMessage" class="message">{{ totpCheckMessage }}</p>
-          <a class="ghost-button" href="/admin">Go to admin login</a>
-        </section>
 
-        <section class="panel" v-else>
-          <h2>Admin Already Configured</h2>
-          <p class="muted">First-admin setup is locked because an admin account already exists.</p>
-          <a class="ghost-button" href="/admin">Go to admin login</a>
+          <div class="banner-footer">
+            <span class="pulse-indicator"></span> Ready for initial deployment
+          </div>
+        </aside>
+
+        <!-- Right Side: Multi-Step Setup Form -->
+        <section class="setup-form-panel">
+
+          <!-- Step 1: Account Creation -->
+          <div v-if="bootstrap.admin_setup_required && currentStep === 1">
+            <h2 class="form-title">Create Super Admin</h2>
+            <p class="form-subtitle">Set up the primary administrative credentials for this MangoPanel node.</p>
+
+            <div class="form-field">
+              <label>Full Name</label>
+              <input v-model="form.full_name" placeholder="System Administrator" autocomplete="name" autofocus>
+            </div>
+
+            <div class="form-field">
+              <label>Admin Email</label>
+              <input v-model="form.email" type="email" placeholder="admin@domain.com" autocomplete="email">
+            </div>
+
+            <div class="form-field">
+              <label>Master Password</label>
+              <input v-model="form.password" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+            </div>
+
+            <div class="form-field">
+              <label>Confirm Password</label>
+              <input v-model="form.confirm_password" type="password" placeholder="Re-enter password" autocomplete="new-password">
+            </div>
+
+            <button 
+              class="btn-primary" 
+              :disabled="!isStep1Valid || submitting" 
+              @click="setup"
+            >
+              <span v-if="submitting">Generating Account...</span>
+              <span v-else>Next: Configure 2FA →</span>
+            </button>
+
+            <div v-if="message" class="alert-msg">{{ message }}</div>
+          </div>
+
+          <!-- Step 2: 2FA & Authenticator Setup -->
+          <div v-else-if="bootstrap.admin_setup_required && currentStep === 2">
+            <h2 class="form-title">Authenticator 2FA Setup</h2>
+            <p class="form-subtitle">Scan the QR code with your authenticator app (Google Authenticator, Authy, 1Password).</p>
+
+            <div class="qr-flex-container" v-if="result">
+              <img 
+                class="qr-image"
+                :src="'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(result.totp_uri)" 
+                alt="TOTP QR Code"
+              >
+              <div class="secret-copy-box">
+                <label>TOTP Secret Key</label>
+                <div class="secret-code-display">
+                  <span>{{ result.totp_secret }}</span>
+                  <button class="copy-btn" @click="copySecret">{{ copied ? 'Copied!' : 'Copy' }}</button>
+                </div>
+                <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
+                  Scan QR or enter secret manually into your 2FA app.
+                </p>
+              </div>
+            </div>
+
+            <div class="form-field">
+              <label>Verify Authenticator Code</label>
+              <div class="totp-input-row">
+                <input 
+                  v-model="totpCode" 
+                  inputmode="numeric" 
+                  autocomplete="one-time-code" 
+                  placeholder="123456"
+                  maxlength="6"
+                >
+                <button class="btn-primary" style="width: auto;" @click="checkTotp">Verify</button>
+              </div>
+            </div>
+
+            <div v-if="totpCheckMessage" :class="totpVerified ? 'info-msg' : 'alert-msg'">
+              {{ totpCheckMessage }}
+            </div>
+
+            <button 
+              class="btn-primary btn-success" 
+              style="margin-top: 1.5rem;" 
+              :disabled="!totpVerified" 
+              @click="finishSetup"
+            >
+              Complete Setup & Continue →
+            </button>
+          </div>
+
+          <!-- Step 3: Setup Complete -->
+          <div v-else-if="currentStep === 3" class="completion-card">
+            <div class="success-icon-badge">✓</div>
+            <h2 class="form-title">Setup Complete!</h2>
+            <p class="form-subtitle">Your Super Admin account and two-factor authentication are successfully configured.</p>
+            <a class="btn-primary" href="/admin" style="text-decoration: none; margin-top: 1.5rem;">
+              Launch Admin Dashboard →
+            </a>
+          </div>
+
+          <!-- Already Configured State -->
+          <div v-else class="completion-card">
+            <h2 class="form-title">Admin Already Configured</h2>
+            <p class="form-subtitle">First-admin setup is locked because an administrative account already exists on this node.</p>
+            <a class="btn-primary" href="/admin" style="text-decoration: none; margin-top: 1.5rem;">
+              Go to Admin Login →
+            </a>
+          </div>
+
         </section>
       </main>
     </div>
