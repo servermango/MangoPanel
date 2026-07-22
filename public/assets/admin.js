@@ -234,6 +234,11 @@ createApp({
         this.message = error.message;
       }
     },
+    resetChallenge() {
+      this.challengeToken = "";
+      this.login.code = "";
+      this.message = "";
+    },
     async load() {
       try {
         this.dashboard = await this.api("/api/admin/dashboard");

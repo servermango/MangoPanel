@@ -4,8 +4,195 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>MangoPanel Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
     <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
     <link rel="stylesheet" href="/assets/app.css">
+    <style>
+      .admin-main-auth {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        background: radial-gradient(circle at 50% 30%, #1a2228 0%, #0a0d0f 75%);
+        padding: 1.5rem;
+      }
+      .admin-login-wrapper {
+        width: 100%;
+        max-width: 440px;
+        margin: auto;
+      }
+      .admin-login-card {
+        background: rgba(20, 25, 28, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 2.5rem 2rem;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 35px rgba(253, 181, 40, 0.06);
+        backdrop-filter: blur(16px);
+        position: relative;
+        overflow: hidden;
+      }
+      .admin-login-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #fdb528, #e8a417, #72e128);
+      }
+      .admin-brand-header {
+        text-align: center;
+        margin-bottom: 2rem;
+      }
+      .admin-brand-icon {
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+        background: rgba(253, 181, 40, 0.12);
+        border: 1px solid rgba(253, 181, 40, 0.3);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.8rem;
+        margin: 0 auto 1rem;
+        box-shadow: 0 0 20px rgba(253, 181, 40, 0.15);
+      }
+      .admin-brand-title {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #f7f7f9;
+        margin: 0 0 0.3rem 0;
+        letter-spacing: -0.02em;
+      }
+      .admin-brand-subtitle {
+        font-size: 0.85rem;
+        color: #8c979e;
+        margin: 0;
+      }
+      .admin-form-group {
+        margin-bottom: 1.25rem;
+      }
+      .admin-form-group label {
+        display: block;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #c5cbd0;
+        margin-bottom: 0.4rem;
+      }
+      .admin-form-input {
+        width: 100%;
+        background: #1c2328;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        color: #fff;
+        font-size: 0.95rem;
+        box-sizing: border-box;
+        transition: all 0.25s ease;
+        font-family: 'Inter', sans-serif;
+      }
+      .admin-form-input:focus {
+        outline: none;
+        border-color: #fdb528;
+        box-shadow: 0 0 0 3px rgba(253, 181, 40, 0.2);
+        background: #21292f;
+      }
+      .admin-form-input.totp-input {
+        font-family: 'JetBrains Mono', monospace;
+        letter-spacing: 0.3em;
+        text-align: center;
+        font-size: 1.25rem;
+        font-weight: 700;
+      }
+      .admin-submit-btn {
+        width: 100%;
+        background: #fdb528;
+        color: #000;
+        font-weight: 700;
+        font-size: 0.95rem;
+        border: none;
+        border-radius: 8px;
+        padding: 0.85rem 1.5rem;
+        cursor: pointer;
+        transition: all 0.25s ease;
+        margin-top: 0.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        font-family: 'Inter', sans-serif;
+      }
+      .admin-submit-btn:hover {
+        background: #e8a417;
+        box-shadow: 0 0 20px rgba(253, 181, 40, 0.3);
+        transform: translateY(-1px);
+      }
+      .admin-submit-btn.verify-btn {
+        background: #72e128;
+      }
+      .admin-submit-btn.verify-btn:hover {
+        background: #60c420;
+        box-shadow: 0 0 20px rgba(114, 225, 40, 0.3);
+      }
+      .admin-auth-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 1.5rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        font-size: 0.82rem;
+      }
+      .admin-auth-link {
+        color: #8c979e;
+        text-decoration: none;
+        transition: color 0.2s ease;
+      }
+      .admin-auth-link:hover {
+        color: #fdb528;
+      }
+      .admin-alert-toast {
+        background: rgba(179, 38, 30, 0.15);
+        border: 1px solid rgba(179, 38, 30, 0.4);
+        color: #ff6b6b;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        margin-top: 1.25rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .admin-alert-toast p {
+        margin: 0;
+      }
+      .admin-alert-dismiss {
+        background: transparent;
+        border: none;
+        color: #ff6b6b;
+        font-size: 1.2rem;
+        cursor: pointer;
+        padding: 0 0.2rem;
+        line-height: 1;
+      }
+      .totp-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        background: rgba(114, 225, 40, 0.12);
+        color: #72e128;
+        border: 1px solid rgba(114, 225, 40, 0.25);
+        border-radius: 20px;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-bottom: 1rem;
+      }
+    </style>
     <script>
       (function() {
         var t = localStorage.getItem("mp_theme") || "Default";
@@ -57,21 +244,55 @@
           </div>
         </header>
 
-        <section v-if="!token" class="panel auth-panel">
-          <h2>Admin Sign In</h2>
-          <form v-if="!challengeToken" class="form-grid" @submit.prevent="startLogin">
-            <label>Email <input v-model="login.email" autocomplete="username"></label>
-            <label>Password <input v-model="login.password" type="password" autocomplete="current-password"></label>
-            <button class="primary-button" type="submit">Continue</button>
-          </form>
-          <form v-else class="form-grid" @submit.prevent="finishLogin">
-            <label>TOTP code <input v-model="login.code" inputmode="numeric" autocomplete="one-time-code"></label>
-            <button class="primary-button" type="submit">Verify</button>
-            <p class="muted">Development seed accepts code <code>000000</code>.</p>
-          </form>
-          <div v-if="message" class="admin-alert" role="alert">
-            <p class="message">{{ message }}</p>
-            <button class="alert-dismiss" type="button" aria-label="Dismiss alert" @click="dismissMessage">×</button>
+        <section v-if="!token" class="admin-login-wrapper">
+          <div class="admin-login-card">
+            <div class="admin-brand-header">
+              <div class="admin-brand-icon">🥭</div>
+              <h1 class="admin-brand-title">MangoPanel Admin</h1>
+              <p class="admin-brand-subtitle">Super Admin Console & Control Plane</p>
+            </div>
+
+            <!-- Step 1: Email & Password -->
+            <form v-if="!challengeToken" @submit.prevent="startLogin">
+              <div class="admin-form-group">
+                <label>Admin Email</label>
+                <input class="admin-form-input" v-model="login.email" type="email" placeholder="admin@domain.com" autocomplete="username" required autofocus>
+              </div>
+              <div class="admin-form-group">
+                <label>Password</label>
+                <input class="admin-form-input" v-model="login.password" type="password" placeholder="••••••••••••" autocomplete="current-password" required>
+              </div>
+              <button class="admin-submit-btn" type="submit">
+                Sign In to Console →
+              </button>
+            </form>
+
+            <!-- Step 2: 2FA Code Verification -->
+            <form v-else @submit.prevent="finishLogin">
+              <div style="text-align: center;">
+                <span class="totp-badge">🔒 2FA Verification Required</span>
+              </div>
+              <div class="admin-form-group">
+                <label style="text-align: center;">6-Digit Authenticator Code</label>
+                <input class="admin-form-input totp-input" v-model="login.code" inputmode="numeric" placeholder="123456" autocomplete="one-time-code" maxlength="6" autofocus required>
+              </div>
+              <button class="admin-submit-btn verify-btn" type="submit">
+                Verify & Launch Dashboard →
+              </button>
+              <div style="text-align: center; margin-top: 1rem;">
+                <a href="#" class="admin-auth-link" @click.prevent="resetChallenge">← Back to Sign In</a>
+              </div>
+            </form>
+
+            <div v-if="message" class="admin-alert-toast" role="alert">
+              <p>{{ message }}</p>
+              <button class="admin-alert-dismiss" type="button" aria-label="Dismiss alert" @click="dismissMessage">×</button>
+            </div>
+
+            <div class="admin-auth-footer">
+              <a href="/admin/setup" class="admin-auth-link">First Admin Setup</a>
+              <a href="/status" class="admin-auth-link">Public System Status</a>
+            </div>
           </div>
         </section>
 
