@@ -871,8 +871,7 @@ def render_compose(account, plan, websites, runtime):
     composed = """name: {project}
 services:
   web:
-    build: ./web
-    image: mangopanel-web:latest
+    image: litespeedtech/openlitespeed:latest
     container_name: mp-{username}-web
     restart: unless-stopped
     mem_limit: {memory}
