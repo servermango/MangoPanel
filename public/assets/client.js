@@ -1,28 +1,7 @@
 const { createApp } = Vue;
 
 const CLIENT_ROUTE_PREFIX = "/client";
-const urlHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-const impersonationToken = urlHashParams.get("mp_impersonation_token") || urlHashParams.get("mp_access_token");
-if (impersonationToken) {
-  fetch("/api/client/auth/exchange-impersonation", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ impersonation_token: impersonationToken }),
-  })
-    .then((res) => res.json())
-    .then((data) => {
-      if (data.access_token) {
-        localStorage.setItem("mp_client_token", data.access_token);
-      } else {
-        localStorage.setItem("mp_client_token", impersonationToken);
-      }
-      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-    })
-    .catch(() => {
-      localStorage.setItem("mp_client_token", impersonationToken);
-      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-    });
-}
+
 
 const CLIENT_PAGE_TARGETS = new Set([
   "dashboard",
@@ -220,7 +199,8 @@ const app = createApp({
   components: { AppIcon },
   data() {
     return {
-      token: impersonationToken || localStorage.getItem("mp_client_token") || "",
+      token: localStorage.getItem("mp_client_token") || "",
+
       challengeToken: "",
       message: "",
       notifications: [],
@@ -3027,5 +3007,34 @@ const app = createApp({
     }
   }
 });
-const vm = app.mount("#client-app");
-window.appToast = function(msg, type) { vm.notify(msg, type); };
+
+async function initClientPortal() {
+  const urlHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const impersonationToken = urlHashParams.get("mp_impersonation_token") || urlHashParams.get("mp_access_token");
+  if (impersonationToken) {
+    try {
+      const response = await fetch("/api/client/auth/exchange-impersonation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ impersonation_token: impersonationToken }),
+      });
+      const data = await response.json();
+      if (response.ok && data.access_token) {
+        localStorage.setItem("mp_client_token", data.access_token);
+      } else {
+        localStorage.setItem("mp_client_token", impersonationToken);
+      }
+    } catch (err) {
+      console.error("Exchange impersonation token failed:", err);
+      localStorage.setItem("mp_client_token", impersonationToken);
+    } finally {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    }
+  }
+
+  const vm = app.mount("#client-app");
+  window.appToast = function(msg, type) { vm.notify(msg, type); };
+}
+
+initClientPortal();
+

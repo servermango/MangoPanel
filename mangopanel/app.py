@@ -1506,8 +1506,24 @@ class MangoHandler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "missing_bearer_token")
-        payload = verify_jwt(auth.removeprefix("Bearer ").strip(), CONFIG.jwt_secret)
-        if not payload or payload.get("purpose") != "access" or payload.get("actor_type") != actor_type:
+        raw_token = auth.removeprefix("Bearer ").strip()
+        payload = verify_jwt(raw_token, CONFIG.jwt_secret)
+        if not payload:
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_access_token")
+
+        if payload.get("purpose") == "impersonation_exchange" and actor_type == "user":
+            token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+            now = int(time.time())
+            with connect(CONFIG.db_path) as conn:
+                row = conn.execute("SELECT * FROM impersonation_tokens WHERE token_hash = ?", (token_hash,)).fetchone()
+                if row and int(row["expires_at"] or 0) >= now:
+                    if row["used_at"] is None:
+                        conn.execute("UPDATE impersonation_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_hash = ?", (token_hash,))
+                    user = conn.execute("SELECT * FROM users WHERE id = ? AND status = 'active'", (payload["sub"],)).fetchone()
+                    if user:
+                        return row_to_dict(user)
+
+        if payload.get("purpose") != "access" or payload.get("actor_type") != actor_type:
             raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_access_token")
         table = "admins" if actor_type == "admin" else "users"
         with connect(CONFIG.db_path) as conn:
@@ -1533,6 +1549,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "impersonation_token_expired_or_used")
             conn.execute("UPDATE impersonation_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_hash = ?", (token_hash,))
             user = conn.execute("SELECT * FROM users WHERE id = ? AND status = 'active'", (user_id,)).fetchone()
+
+
             if not user:
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "user_not_found")
             
