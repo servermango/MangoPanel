@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import socket
+import ssl
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,7 +20,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from .agent import Agent, AgentError, cron_next_run_at, decorate_cron_jobs, validate_cron_schedule
-from .config import load_config
+from .config import FILEBROWSER_CUSTOM_JS, load_config
 from .mail import build_mail_message_bytes, dkim_dns_value, ensure_mailbox_storage, generate_dkim_material, mailbox_storage_inode_count, mailbox_storage_path, mailbox_storage_size_bytes, mail_auth_health, move_mailbox_storage, recommended_dmarc_record, recommended_spf_record, remove_mailbox_storage, sanitize_mailbox_component, split_mailbox_address
 from .db import (
     connect,
@@ -307,6 +308,23 @@ def normalize_account_relative_path(account, raw_path, label="path", allow_empty
     return candidate, relative
 
 
+def resolve_container_ip(container_name):
+    try:
+        res = subprocess.run(
+            ["docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", container_name],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if res.returncode == 0:
+            ips = res.stdout.strip().split()
+            if ips:
+                return ips[0]
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
 def extract_magic_launch_token(forwarded_uri):
     if not forwarded_uri:
         return None
@@ -332,7 +350,7 @@ def build_tool_redirect_url(host, path):
     return f"http://{host}{path}"
 
 
-def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host):
+def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host, is_https=False):
     forwarded_host = (forwarded_host or "").strip()
     if not forwarded_host:
         return runtime_url or ""
@@ -347,7 +365,8 @@ def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host):
 
     # 1. Accessed directly via public IP address:
     if is_ip:
-        return f"http://{forwarded_host}"
+        scheme = "https" if is_https else "http"
+        return f"{scheme}://{forwarded_host}"
 
     # 2. Accessed via a Domain (Subdomain launch as intended):
     username = account["username"] if account else "user"
@@ -365,7 +384,71 @@ def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host):
     else:
         subdomain = f"{prefix}-{username}.{domain_base}"
 
-    return f"http://{subdomain}"
+    scheme = "http" if subdomain.endswith(".localhost") or subdomain == "localhost" else "https"
+    return f"{scheme}://{subdomain}"
+
+
+def ensure_server_ssl_cert(cert_path=None, key_path=None):
+    cert_p = Path(cert_path or CONFIG.ssl_cert_path)
+    key_p = Path(key_path or CONFIG.ssl_key_path)
+    if cert_p.exists() and key_p.exists():
+        return cert_p, key_p
+
+    cert_p.parent.mkdir(parents=True, exist_ok=True)
+    key_p.parent.mkdir(parents=True, exist_ok=True)
+
+    openssl = shutil.which("openssl")
+    if openssl:
+        subprocess.run(
+            [
+                openssl,
+                "req",
+                "-x509",
+                "-nodes",
+                "-newkey",
+                "rsa:2048",
+                "-sha256",
+                "-days",
+                "3650",
+                "-subj",
+                "/CN=mangopanel-admin",
+                "-keyout",
+                str(key_p),
+                "-out",
+                str(cert_p),
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    return cert_p, key_p
+
+
+class MangoDualServer(ThreadingHTTPServer):
+    def __init__(self, server_address, RequestHandlerClass, ssl_cert_path=None, ssl_key_path=None, enable_ssl=None, bind_and_activate=True):
+        super().__init__(server_address, RequestHandlerClass, bind_and_activate=bind_and_activate)
+        self.ssl_context = None
+        should_enable = CONFIG.enable_ssl if enable_ssl is None else enable_ssl
+        if should_enable:
+            try:
+                cert_p, key_p = ensure_server_ssl_cert(ssl_cert_path, ssl_key_path)
+                if cert_p.exists() and key_p.exists():
+                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                    ctx.load_cert_chain(certfile=str(cert_p), keyfile=str(key_p))
+                    self.ssl_context = ctx
+            except Exception as e:
+                print(f"Warning: Failed to initialize SSL context: {e}")
+
+    def get_request(self):
+        newsock, client_addr = self.socket.accept()
+        if self.ssl_context:
+            try:
+                first_byte = newsock.recv(1, socket.MSG_PEEK)
+                if first_byte == b"\x16":
+                    newsock = self.ssl_context.wrap_socket(newsock, server_side=True)
+            except Exception:
+                pass
+        return newsock, client_addr
 
 
 class MangoHandler(BaseHTTPRequestHandler):
@@ -373,6 +456,8 @@ class MangoHandler(BaseHTTPRequestHandler):
 
     @property
     def is_https(self):
+        if isinstance(getattr(self, "connection", None), ssl.SSLSocket):
+            return True
         return is_request_https(self.headers)
 
     def log_message(self, fmt, *args):
@@ -441,7 +526,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/health":
                 return self.json_response({"status": "ok", "service": "mangopanel-api"})
 
-            if path.startswith("/api/") or path.startswith("/auth/"):
+            if path.startswith("/api/") or path.startswith("/auth/") or path.startswith("/files/"):
                 return self.route_api(method, path, self.query_params)
 
             self.json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
@@ -484,7 +569,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             actor_type = "admin" if "/api/admin/" in path else "user"
             return self.verify_totp_challenge(actor_type)
 
-        if path.startswith("/auth/") or path.startswith("/api/public/"):
+        if path.startswith("/auth/") or path.startswith("/api/public/") or path.startswith("/files/"):
             return self.public_api(method, path)
 
         if path.startswith("/api/public/status"):
@@ -539,6 +624,12 @@ class MangoHandler(BaseHTTPRequestHandler):
             return self.public_webmail_logout()
         if path == "/api/public/mail-jmap" and method == "GET":
             return self.public_mail_jmap()
+        if path in {"/files/custom.js", "/api/public/filebrowser/custom.js"} and method == "GET":
+            return self.serve_filebrowser_custom_js()
+        if path in {"/files/api/extract", "/api/public/filebrowser/extract"} and method == "POST":
+            return self.extract_file_archive()
+        if path.startswith("/api/public/filebrowser/proxy") and method == "GET":
+            return self.public_filebrowser_proxy(path)
         if path.startswith("/auth/") and method == "GET":
             return self.public_tool_launch(path)
         if path.startswith("/api/public/tool-launch/") and method == "GET":
@@ -671,6 +762,195 @@ class MangoHandler(BaseHTTPRequestHandler):
             self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path))
             self.end_headers()
             return
+
+    def serve_filebrowser_custom_js(self):
+        body = FILEBROWSER_CUSTOM_JS.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.record_access_log(HTTPStatus.OK, len(body))
+
+
+
+    def public_filebrowser_proxy(self, path):
+        forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+        username = None
+        if forwarded_host:
+            match = re.match(r"^(?:files|pma|mail)[-.](\w+)\.", forwarded_host)
+            if match:
+                username = match.group(1)
+
+        with connect(CONFIG.db_path) as conn:
+            account = None
+            if username:
+                account = conn.execute("SELECT * FROM hosting_accounts WHERE username = ? AND status = 'active'", (username,)).fetchone()
+            if not account:
+                account = conn.execute("SELECT * FROM hosting_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").fetchone()
+            if not account:
+                raise ApiError(HTTPStatus.NOT_FOUND, "account_not_found")
+
+            container_name = f"mp-{account['username']}-filebrowser"
+            clean_path = path.replace("/api/public/filebrowser/proxy", "") or "/files/"
+            if not clean_path.startswith("/"):
+                clean_path = "/" + clean_path
+
+            container_ip = resolve_container_ip(container_name)
+            upstream_url = f"http://{container_ip}:80{clean_path}"
+
+            req_headers = {}
+            for k, v in self.headers.items():
+                if k.lower() not in {"host", "content-length"}:
+                    req_headers[k] = v
+
+            import urllib.request
+            req = urllib.request.Request(upstream_url, headers=req_headers)
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = resp.read()
+                    content_type = resp.headers.get("Content-Type", "")
+                    
+                    self.send_response(resp.status)
+                    for hk, hv in resp.headers.items():
+                        if hk.lower() not in {"content-length", "transfer-encoding"}:
+                            self.send_header(hk, hv)
+
+                    if "text/html" in content_type:
+                        html = data.decode("utf-8", errors="ignore")
+                        if "</head>" in html and "/files/custom.js" not in html:
+                            html = html.replace("</head>", '<script src="/files/custom.js"></script></head>', 1)
+                        data = html.encode("utf-8")
+
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    self.record_access_log(resp.status, len(data))
+            except urllib.error.HTTPError as e:
+                data = e.read()
+                self.send_response(e.code)
+                for hk, hv in e.headers.items():
+                    if hk.lower() not in {"content-length", "transfer-encoding"}:
+                        self.send_header(hk, hv)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                raise ApiError(HTTPStatus.BAD_GATEWAY, f"filebrowser_proxy_error: {e}")
+
+    def extract_file_archive(self, account=None, actor=None):
+        body = self.read_json()
+        raw_path = body.get("path", "").strip()
+        if not raw_path:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "path_required")
+
+        with connect(CONFIG.db_path) as conn:
+            if not account:
+                forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+                username = None
+                if forwarded_host:
+                    match = re.match(r"^(?:files|pma|mail)[-.](\w+)\.", forwarded_host)
+                    if match:
+                        username = match.group(1)
+
+                if username:
+                    account = conn.execute(
+                        "SELECT * FROM hosting_accounts WHERE username = ? AND status = 'active'", (username,)
+                    ).fetchone()
+
+                if not account and actor:
+                    account = conn.execute(
+                        "SELECT * FROM hosting_accounts WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+                        (actor["id"],),
+                    ).fetchone()
+
+                if not account:
+                    cookie_header = self.headers.get("Cookie", "")
+                    from http.cookies import SimpleCookie
+                    cookies = SimpleCookie(cookie_header)
+                    token_cookie = cookies.get("mp_client_token")
+                    if token_cookie:
+                        payload = verify_jwt(token_cookie.value, CONFIG.jwt_secret)
+                        if payload and payload.get("sub"):
+                            account = conn.execute(
+                                "SELECT * FROM hosting_accounts WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+                                (payload["sub"],),
+                            ).fetchone()
+
+            if not account:
+                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+
+            clean_path = raw_path
+            if clean_path.startswith("/files/files/"):
+                clean_path = clean_path[len("/files/files/"):]
+            elif clean_path.startswith("/files/"):
+                clean_path = clean_path[len("/files/"):]
+
+            abs_path, rel_path = normalize_account_relative_path(account, clean_path)
+            abs_file = str(abs_path)
+
+            if not os.path.exists(abs_file):
+                raise ApiError(HTTPStatus.NOT_FOUND, "file_not_found")
+            if os.path.isdir(abs_file):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "path_is_a_directory")
+
+            dest_dir = os.path.dirname(abs_file)
+            account_base = os.path.abspath(account["base_path"])
+
+            extracted_count = 0
+            archive_name = os.path.basename(abs_file)
+
+            if abs_file.lower().endswith(".zip"):
+                import zipfile
+                with zipfile.ZipFile(abs_file, "r") as zf:
+                    for member in zf.infolist():
+                        target_path = os.path.abspath(os.path.join(dest_dir, member.filename))
+                        if not target_path.startswith(account_base + os.sep) and target_path != account_base:
+                            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_path_traversal")
+                        zf.extract(member, dest_dir)
+                        extracted_count += 1
+            elif abs_file.lower().endswith((".tar.gz", ".tgz", ".tar", ".gz")):
+                import tarfile
+                with tarfile.open(abs_file, "r:*") as tf:
+                    for member in tf.getmembers():
+                        target_path = os.path.abspath(os.path.join(dest_dir, member.name))
+                        if not target_path.startswith(account_base + os.sep) and target_path != account_base:
+                            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_path_traversal")
+                        tf.extract(member, dest_dir)
+                        extracted_count += 1
+            else:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "unsupported_archive_format")
+
+            uid = 5000 + int(account["id"])
+            gid = 5000 + int(account["id"])
+            if uid and gid:
+                try:
+                    subprocess.run(["chown", "-R", f"{uid}:{gid}", dest_dir], check=False)
+                    subprocess.run(["chmod", "-R", "u+rwX", dest_dir], check=False)
+                except Exception:
+                    pass
+                for root, dirs, files in os.walk(dest_dir):
+                    for d in dirs:
+                        try:
+                            os.chown(os.path.join(root, d), uid, gid)
+                            os.chmod(os.path.join(root, d), 0o755)
+                        except Exception:
+                            pass
+                    for f in files:
+                        try:
+                            os.chown(os.path.join(root, f), uid, gid)
+                            os.chmod(os.path.join(root, f), 0o644)
+                        except Exception:
+                            pass
+
+            actor_id = actor["id"] if actor else account["user_id"]
+            log_activity(conn, actor_id, "archive_extracted", {"account_id": account["id"], "path": rel_path, "items_extracted": extracted_count})
+            return self.json_response({
+                "success": True,
+                "message": f"Successfully extracted {archive_name} ({extracted_count} items)",
+                "extracted_count": extracted_count
+            })
 
     def webmail_session_context(self):
         from http.cookies import SimpleCookie
@@ -1909,8 +2189,10 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/domains" and method == "GET":
                 rows = conn.execute(
                     """
-                    SELECT d.* FROM domains d
+                    SELECT d.*, z.nameservers_json AS zone_nameservers_json
+                    FROM domains d
                     JOIN hosting_accounts ha ON ha.id = d.account_id
+                    LEFT JOIN dns_zones z ON z.domain_id = d.id
                     WHERE ha.user_id = ?
                     ORDER BY d.name
                     """,
@@ -1932,8 +2214,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     nameservers = default_registrar_nameservers(conn)
                 if len(nameservers) < 2 or len(nameservers) > 4:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "two_to_four_nameservers_required")
-                result = update_domain_registrar_nameservers(conn, domain, nameservers)
-                conn.execute("UPDATE domains SET nameserver_source = ? WHERE id = ?", (source, domain_id))
+                result = update_domain_registrar_nameservers(conn, domain, nameservers, source=source)
                 log_activity(conn, actor["id"], "registrar_nameservers_updated", {"domain_id": domain_id, "source": source})
                 return self.json_response({"domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()), "result": result})
             if path.startswith("/api/client/domains/") and path.endswith("/dns/rebuild") and method == "POST":
@@ -2125,6 +2406,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                         pass
                 domain_row = conn.execute("SELECT * FROM domains WHERE linked_website_id = ?", (website_id,)).fetchone()
                 expected_ns = parse_json_field(domain_row["nameservers_json"], []) if domain_row else []
+                if domain_row and not expected_ns and observed_ns:
+                    conn.execute("UPDATE domains SET nameservers_json = ? WHERE id = ?", (json.dumps(observed_ns), domain_row["id"]))
+                    expected_ns = observed_ns
                 ns_ok = bool(observed_ns and (not expected_ns or set(ns.lower() for ns in expected_ns).issubset({ns.lower() for ns in observed_ns})))
                 ip_ok = bool(observed_a)
                 verified = ns_ok or ip_ok
@@ -2218,8 +2502,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                 os.makedirs(branding_dir, exist_ok=True)
                 with open(os.path.join(branding_dir, "custom.css"), "w") as f:
                     f.write(css_text)
+                with open(os.path.join(branding_dir, "custom.js"), "w") as f:
+                    f.write(FILEBROWSER_CUSTOM_JS)
 
                 return self.json_response({"launch_url": launch_url, "expires_in": 600})
+            if path == "/api/client/files/extract" and method == "POST":
+                require_account(account)
+                return self.extract_file_archive(account, actor)
             if path == "/api/client/phppgadmin/launch" and method == "GET":
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
@@ -4829,17 +5118,17 @@ def default_registrar_nameservers(conn):
     return config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"]
 
 
-def update_domain_registrar_nameservers(conn, domain, nameservers):
-    if not domain["registrar_provider_id"]:
-        raise ApiError(HTTPStatus.BAD_REQUEST, "domain_registrar_not_configured")
-    provider = conn.execute("SELECT * FROM registrar_providers WHERE id = ? AND status = 'active'", (domain["registrar_provider_id"],)).fetchone()
-    if not provider:
-        raise ApiError(HTTPStatus.BAD_REQUEST, "registrar_provider_not_found")
-    try:
-        result = registrar_for(provider["key"], registrar_settings(conn, provider)).update_nameservers(domain["name"], nameservers)
-    except RegistrarError as exc:
-        raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_nameserver_update_failed: " + str(exc)[:180])
-    conn.execute("UPDATE domains SET nameservers_json = ?, nameserver_source = 'custom', registrar_state_json = ?, last_registrar_sync_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), json.dumps(result), domain["id"]))
+def update_domain_registrar_nameservers(conn, domain, nameservers, source="custom"):
+    result = {"status": "updated_locally", "nameservers": nameservers}
+    reg_id = domain["registrar_provider_id"] if "registrar_provider_id" in domain.keys() else None
+    if reg_id:
+        provider = conn.execute("SELECT * FROM registrar_providers WHERE id = ? AND status = 'active'", (reg_id,)).fetchone()
+        if provider:
+            try:
+                result = registrar_for(provider["key"], registrar_settings(conn, provider)).update_nameservers(domain["name"], nameservers)
+            except RegistrarError as exc:
+                raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_nameserver_update_failed: " + str(exc)[:180])
+    conn.execute("UPDATE domains SET nameservers_json = ?, nameserver_source = ?, registrar_state_json = ?, last_registrar_sync_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), source, json.dumps(result), domain["id"]))
     return result
 
 
@@ -5196,7 +5485,10 @@ def decorate_dns_zone(row):
 
 def decorate_domain(row):
     item = row_to_dict(row)
-    item["nameservers"] = parse_json_field(item.get("nameservers_json"), [])
+    nameservers = parse_json_field(item.get("nameservers_json"), [])
+    if not nameservers and item.get("zone_nameservers_json"):
+        nameservers = parse_json_field(item.get("zone_nameservers_json"), [])
+    item["nameservers"] = nameservers
     item["provider_state"] = parse_json_field(item.get("provider_state_json"), {})
     item["dns_migration_state"] = parse_json_field(item.get("dns_migration_state_json"), {})
     item["dns_provider_label"] = "Cloudflare" if item.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE else "Local DNS"
@@ -5208,6 +5500,8 @@ def dns_state_warnings(item):
     warnings = []
     status = str(item.get("dns_status") or item.get("status") or "").lower()
     nameservers = parse_json_field(item.get("nameservers_json"), []) if isinstance(item.get("nameservers_json"), str) else item.get("nameservers", [])
+    if not nameservers and item.get("zone_nameservers_json"):
+        nameservers = parse_json_field(item.get("zone_nameservers_json"), [])
     provider_state = parse_json_field(item.get("provider_state_json"), {}) if isinstance(item.get("provider_state_json"), str) else item.get("provider_state", {})
     last_error = str(provider_state.get("last_error") or "")
     if status in {"provider_failed", "failed"}:
@@ -7799,9 +8093,9 @@ def run():
     if CONFIG.client_port == CONFIG.admin_port:
         raise RuntimeError("MP_CLIENT_PORT and MP_ADMIN_PORT must be different so client and admin panels stay separate.")
 
-    client_httpd = ThreadingHTTPServer((CONFIG.host, CONFIG.client_port), MangoHandler)
+    client_httpd = MangoDualServer((CONFIG.host, CONFIG.client_port), MangoHandler)
     client_httpd.panel = "client"
-    admin_httpd = ThreadingHTTPServer((CONFIG.host, CONFIG.admin_port), MangoHandler)
+    admin_httpd = MangoDualServer((CONFIG.host, CONFIG.admin_port), MangoHandler)
     admin_httpd.panel = "admin"
     admin_thread = threading.Thread(target=admin_httpd.serve_forever, name="mangopanel-admin", daemon=True)
     admin_thread.start()

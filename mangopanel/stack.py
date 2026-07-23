@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mangopanel.config import CONFIG, FILEBROWSER_CUSTOM_JS
+
 from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes
 from .snappymail import SNAPPYMAIL_APP_VERSION, SNAPPYMAIL_IMAGE, ensure_snappymail_layout, load_snappymail_state
 
@@ -444,11 +446,11 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         snappymail_domains,
         sso_key=mail_policy.get("snappymail_sso_key") or snappymail_state.get("sso_key"),
     )
-    (paths["stack"] / "filebrowser").mkdir(parents=True, exist_ok=True)
     fb_config_dir = paths["stack"] / "filebrowser-config"
     fb_config_dir.mkdir(parents=True, exist_ok=True)
     fb_branding_dir = paths["stack"] / "filebrowser-branding"
     fb_branding_dir.mkdir(parents=True, exist_ok=True)
+    (fb_branding_dir / "custom.js").write_text(FILEBROWSER_CUSTOM_JS, encoding="utf-8")
     fb_settings = fb_config_dir / "settings.json"
     fb_settings.write_text(
         '{\n  "port": 80,\n  "baseURL": "/files",\n  "address": "",\n  "log": "stdout",\n  "database": "/database/filebrowser.db",\n  "root": "/srv",\n  "auth": {\n    "method": "noauth"\n  },\n  "branding": {\n    "name": "File Manager",\n    "disableUsedPercentage": true,\n    "files": "/branding"\n  }\n}\n',
@@ -956,7 +958,7 @@ services:
     user: "{uid}:{uid}"
     restart: unless-stopped
     mem_limit: 128m
-    command: ["--noauth", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
+    command: ["--config", "/config/settings.json", "--noauth", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
     environment:
       FB_BRANDING_DISABLE_USED_PERCENTAGE: "true"
       FB_BRANDING_FILES: "/branding"
@@ -968,7 +970,17 @@ services:
       caddy.route: "/files*"
       caddy.route.0_forward_auth: "host.docker.internal:8000"
       caddy.route.0_forward_auth.uri: "/api/public/auth-verify"
-      caddy.route.2_reverse_proxy: "{{upstreams 80}}"
+      caddy.route.1_handle_path: "/files/custom.js"
+      caddy.route.1_handle_path.0_rewrite: "* /api/public/filebrowser/custom.js"
+      caddy.route.1_handle_path.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.2_handle_path: "/files/api/extract"
+      caddy.route.2_handle_path.0_rewrite: "* /api/public/filebrowser/extract"
+      caddy.route.2_handle_path.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.3_@html: "header Accept *text/html*"
+      caddy.route.4_handle: "@html"
+      caddy.route.4_handle.0_rewrite: "* /api/public/filebrowser/proxy{{uri}}"
+      caddy.route.4_handle.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.5_reverse_proxy: "{{upstreams 80}}"
     volumes:
       - {base_path}/domains:/srv/domains
       - {base_path}/databases:/srv/databases
@@ -1057,7 +1069,7 @@ services:
     restart: unless-stopped
     mem_limit: 384m
     labels:
-      caddy: "http://{mail_host}, http://{mail_edge_host}, http://mail-{username}.seeds.servermango.com"
+      caddy: "mail-{username}.seeds.servermango.com, http://{mail_host}, http://{mail_edge_host}"
       caddy.route.0_handle_path: "/assets*"
       caddy.route.0_handle_path.0_rewrite: "* /assets{{uri}}"
       caddy.route.0_handle_path.1_reverse_proxy: "host.docker.internal:8000"
@@ -1218,9 +1230,9 @@ volumes:
         object_cache_backend=runtime.get("object_cache_backend", "redis"),
         opcode_cache_backend=runtime.get("opcode_cache_backend", "opcache"),
         phpmyadmin_raw_domain=runtime["phpmyadmin_url"].split("://")[1],
-        filebrowser_domain=f"http://{runtime['filebrowser_url'].split('://')[1]}, http://files-{username}.seeds.servermango.com" + (f", http://files-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
-        phpmyadmin_domain=f"http://{runtime['phpmyadmin_url'].split('://')[1]}, http://pma-{username}.seeds.servermango.com" + (f", http://pma-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
-        adminer_domain=f"http://{runtime['adminer_url'].split('://')[1]}, http://adminer-{username}.seeds.servermango.com" + (f", http://adminer-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
+        filebrowser_domain=f"files-{username}.seeds.servermango.com, http://{runtime['filebrowser_url'].split('://')[1]}" + (f", files-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
+        phpmyadmin_domain=f"pma-{username}.seeds.servermango.com, http://{runtime['phpmyadmin_url'].split('://')[1]}" + (f", pma-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
+        adminer_domain=f"adminer-{username}.seeds.servermango.com, http://{runtime['adminer_url'].split('://')[1]}" + (f", adminer-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
         SNAPPYMAIL_APP_VERSION=SNAPPYMAIL_APP_VERSION,
         SNAPPYMAIL_IMAGE=SNAPPYMAIL_IMAGE,
     )
