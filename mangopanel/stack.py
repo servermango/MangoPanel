@@ -450,11 +450,10 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     fb_branding_dir = paths["stack"] / "filebrowser-branding"
     fb_branding_dir.mkdir(parents=True, exist_ok=True)
     fb_settings = fb_config_dir / "settings.json"
-    if not fb_settings.exists():
-        fb_settings.write_text(
-            '{\n  "port": 80,\n  "baseURL": "",\n  "address": "",\n  "log": "stdout",\n  "database": "/database/filebrowser.db",\n  "root": "/srv",\n  "branding": {\n    "name": "File Manager",\n    "disableUsedPercentage": true,\n    "files": "/branding"\n  }\n}\n',
-            encoding="utf-8"
-        )
+    fb_settings.write_text(
+        '{\n  "port": 80,\n  "baseURL": "/files",\n  "address": "",\n  "log": "stdout",\n  "database": "/database/filebrowser.db",\n  "root": "/srv",\n  "auth": {\n    "method": "noauth"\n  },\n  "branding": {\n    "name": "File Manager",\n    "disableUsedPercentage": true,\n    "files": "/branding"\n  }\n}\n',
+        encoding="utf-8"
+    )
     
     # Generate OLS config
     vhosts_dir = paths["stack"] / "vhosts"
@@ -716,7 +715,7 @@ module cache {
             f"""
 extprocessor lsphp_{safe_domain} {{
   type                    lsapi
-  address                 uds://tmp/lshttpd/lsphp_{safe_domain}.sock
+  address                 uds:///tmp/lshttpd/lsphp_{safe_domain}.sock
   maxConns                10
   env                     PHP_LSAPI_CHILDREN=10
   env                     LSAPI_AVOID_FORK=200M
@@ -725,7 +724,7 @@ extprocessor lsphp_{safe_domain} {{
   persistConn             1
   respBuffer              0
   autoStart               1
-  path                    /usr/local/lsws/lsphp{php_ver}/bin/lsphp
+  path                    /usr/local/lsws/lsphp82/bin/lsphp
   backlog                 100
   instances               1
   priority                0
@@ -800,6 +799,7 @@ accesslog {logs_dir}/access.log {{
     )
     return f"""
 docRoot                   {doc_root}
+indexFiles                index.html, index.php
 enableGzip                1
 enableBr                  1
 
@@ -824,6 +824,27 @@ context / {{
     enable                1
     autoLoadHtaccess      1
   }}
+}}
+
+extprocessor lsphp_{safe_domain} {{
+  type                    lsapi
+  address                 uds:///tmp/lshttpd/lsphp_{safe_domain}.sock
+  maxConns                10
+  env                     PHP_LSAPI_CHILDREN=10
+  env                     LSAPI_AVOID_FORK=200M
+  initTimeout             60
+  retryTimeout            0
+  persistConn             1
+  respBuffer              0
+  autoStart               1
+  path                    /usr/local/lsws/lsphp82/bin/lsphp
+  backlog                 100
+  instances               1
+  priority                0
+  memSoftLimit            0
+  memHardLimit            0
+  procSoftLimit           1400
+  procHardLimit           1500
 }}
 
 scripthandler  {{
@@ -859,7 +880,15 @@ def render_crontab(account, cron_jobs=None):
 
 def render_compose(account, plan, websites, runtime):
     uid = 5000 + int(account["id"])
-    domains_str = ", ".join([w["domain"] for w in websites]) if websites else f"{account['username']}.mango.test"
+    domains_http = ", ".join([f"http://{w['domain']}" for w in websites]) if websites else f"http://{account['username']}.mango.test"
+    public_doms = [w['domain'] for w in websites if not w['domain'].endswith(('.localhost', '.test', '.local', '.nip.io'))]
+    local_doms = [w['domain'] for w in websites if w['domain'].endswith(('.localhost', '.test', '.local', '.nip.io'))]
+    if not websites:
+        local_doms.append(f"{account['username']}.mango.test")
+
+    domains_public_https = ", ".join([f"https://{d}" for d in public_doms]) if public_doms else ""
+    domains_local_https = ", ".join([f"https://{d}" for d in local_doms]) if local_doms else ""
+    
     username = account["username"]
     base_path = account["base_path"]
     memory = "{}m".format(plan["memory_mb"])
@@ -869,6 +898,28 @@ def render_compose(account, plan, websites, runtime):
     backup_retention_days = int(plan["backup_retention_days"])
     default_domain = websites[0]["domain"] if websites else "{}.mango.test".format(username)
     project = "mp-{}".format(username)
+
+    labels_list = [
+        f'mangopanel.plan: "{plan["name"]}"',
+        f'mangopanel.storage_mb: "{storage_mb}"',
+        f'mangopanel.inode_limit: "{inode_limit}"',
+        f'mangopanel.backup_retention_days: "{backup_retention_days}"',
+        f'caddy_0: "{domains_http}"',
+        'caddy_0.reverse_proxy: "{upstreams 80}"',
+    ]
+    if domains_public_https:
+        labels_list.extend([
+            f'caddy_1: "{domains_public_https}"',
+            'caddy_1.reverse_proxy: "{upstreams 80}"',
+        ])
+    if domains_local_https:
+        labels_list.extend([
+            f'caddy_2: "{domains_local_https}"',
+            'caddy_2.tls: "internal"',
+            'caddy_2.reverse_proxy: "{upstreams 80}"',
+        ])
+    labels_str = "\n      ".join(labels_list)
+
     composed = """name: {project}
 services:
   web:
@@ -879,12 +930,7 @@ services:
     cpus: "{cpu_count}"
     pids_limit: 256
     labels:
-      mangopanel.plan: "{plan_name}"
-      mangopanel.storage_mb: "{storage_mb}"
-      mangopanel.inode_limit: "{inode_limit}"
-      mangopanel.backup_retention_days: "{backup_retention_days}"
-      caddy: "http://{domains_str}"
-      caddy.reverse_proxy: "{{upstreams 80}}"
+      {labels_str}
     volumes:
       - {base_path}:/home/{username}
       - {base_path}/.runtime/stack/openlitespeed-httpd.conf:/usr/local/lsws/conf/httpd_config.conf:ro
@@ -907,6 +953,7 @@ services:
   filebrowser:
     image: filebrowser/filebrowser:latest
     container_name: mp-{username}-filebrowser
+    user: "{uid}:{uid}"
     restart: unless-stopped
     mem_limit: 128m
     command: ["--noauth", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
@@ -914,7 +961,7 @@ services:
       FB_BRANDING_DISABLE_USED_PERCENTAGE: "true"
       FB_BRANDING_FILES: "/branding"
     labels:
-      caddy: "http://{filebrowser_domain}"
+      caddy: "{filebrowser_domain}"
       caddy.handle_path: "/auth/*"
       caddy.handle_path.0_rewrite: "* /api/public/tool-launch/filebrowser/auth{{uri}}"
       caddy.handle_path.1_reverse_proxy: "host.docker.internal:8000"
@@ -942,7 +989,7 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     labels:
-      caddy: "http://{phpmyadmin_domain}"
+      caddy: "{phpmyadmin_domain}"
       caddy.handle_path: "/auth/*"
       caddy.handle_path.0_rewrite: "* /api/public/tool-launch/phpmyadmin/auth{{uri}}"
       caddy.handle_path.1_reverse_proxy: "host.docker.internal:8000"
@@ -955,7 +1002,7 @@ services:
       PMA_HOST: db
       PMA_USER: {db_user}
       PMA_PASSWORD: {db_password}
-      PMA_ABSOLUTE_URI: "http://{phpmyadmin_domain}/db/"
+      PMA_ABSOLUTE_URI: "http://{phpmyadmin_raw_domain}/db/"
       UPLOAD_LIMIT: 256M
     networks:
       - account
@@ -1010,7 +1057,7 @@ services:
     restart: unless-stopped
     mem_limit: 384m
     labels:
-      caddy: "http://{mail_host}, http://{mail_edge_host}"
+      caddy: "http://{mail_host}, http://{mail_edge_host}, http://mail-{username}.seeds.servermango.com"
       caddy.route.0_handle_path: "/assets*"
       caddy.route.0_handle_path.0_rewrite: "* /assets{{uri}}"
       caddy.route.0_handle_path.1_reverse_proxy: "host.docker.internal:8000"
@@ -1077,7 +1124,7 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     labels:
-      caddy: "http://{adminer_domain}"
+      caddy: "{adminer_domain}"
       caddy.reverse_proxy: "{{upstreams 8080}}"
     environment:
       ADMINER_DEFAULT_SERVER: pg
@@ -1124,10 +1171,11 @@ volumes:
     name: mp-{username}-mailserver-state
 """
     import re
+    pub_host = runtime.get("public_host") or "127.0.0.1"
     composed = composed.format(
         project=project,
         uid=uid,
-        domains_str=domains_str,
+        labels_str=labels_str,
         plan_name=plan["name"],
         username=username,
         memory=memory,
@@ -1169,9 +1217,10 @@ volumes:
         redis_port=runtime.get("redis_port", 6379),
         object_cache_backend=runtime.get("object_cache_backend", "redis"),
         opcode_cache_backend=runtime.get("opcode_cache_backend", "opcache"),
-        filebrowser_domain=runtime["filebrowser_url"].split("://")[1],
-        phpmyadmin_domain=runtime["phpmyadmin_url"].split("://")[1],
-        adminer_domain=runtime["adminer_url"].split("://")[1],
+        phpmyadmin_raw_domain=runtime["phpmyadmin_url"].split("://")[1],
+        filebrowser_domain=f"http://{runtime['filebrowser_url'].split('://')[1]}, http://files-{username}.seeds.servermango.com" + (f", http://files-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
+        phpmyadmin_domain=f"http://{runtime['phpmyadmin_url'].split('://')[1]}, http://pma-{username}.seeds.servermango.com" + (f", http://pma-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
+        adminer_domain=f"http://{runtime['adminer_url'].split('://')[1]}, http://adminer-{username}.seeds.servermango.com" + (f", http://adminer-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
         SNAPPYMAIL_APP_VERSION=SNAPPYMAIL_APP_VERSION,
         SNAPPYMAIL_IMAGE=SNAPPYMAIL_IMAGE,
     )

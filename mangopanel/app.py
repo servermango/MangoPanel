@@ -214,36 +214,46 @@ def get_cookie_domain(host_header):
     parts = host.split(".")
     if len(parts) >= 2:
         return "." + ".".join(parts[-2:])
-    return ""
+def is_request_https(headers):
+    if not headers:
+        return False
+    proto = headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+    ssl = headers.get("X-Forwarded-Ssl", "").strip().lower()
+    return proto == "https" or ssl == "on"
 
 
-def auth_cookie_header(token, host_header, max_age=None):
+def auth_cookie_header(token, host_header, max_age=None, is_https=False):
     cookie_domain = get_cookie_domain(host_header)
     domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
     ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
-    secure = "; Secure" if CONFIG.env == "production" else ""
+    secure = "; Secure" if (CONFIG.env == "production" and is_https) else ""
     return f"mp_client_token={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax{secure}{domain_attr}"
 
 
-def auth_cookie_headers(token, host_header):
+def auth_cookie_headers(token, host_header, is_https=False):
     cookie_domain = get_cookie_domain(host_header)
+    host = host_header.split(":")[0] if host_header else ""
     if cookie_domain == ".localhost":
         return [
             f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; HttpOnly; SameSite=Lax; Domain=localhost",
             f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; HttpOnly; SameSite=Lax; Domain=.localhost",
         ]
-    return [auth_cookie_header(token, host_header, CONFIG.token_ttl_seconds)]
+    headers = [auth_cookie_header(token, host_header, CONFIG.token_ttl_seconds, is_https=is_https)]
+    if host and host not in {"127.0.0.1", "localhost"}:
+        secure = "; Secure" if (CONFIG.env == "production" and is_https) else ""
+        headers.append(f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; HttpOnly; SameSite=Lax{secure}")
+    return headers
 
 
-def named_cookie_header(name, token, host_header, max_age=None):
+def named_cookie_header(name, token, host_header, max_age=None, is_https=False):
     cookie_domain = get_cookie_domain(host_header)
     domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
     ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
-    secure = "; Secure" if CONFIG.env == "production" else ""
+    secure = "; Secure" if (CONFIG.env == "production" and is_https) else ""
     return f"{name}={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax{secure}{domain_attr}"
 
 
-def named_cookie_headers(name, token, host_header, max_age=None):
+def named_cookie_headers(name, token, host_header, max_age=None, is_https=False):
     cookie_domain = get_cookie_domain(host_header)
     ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
     if cookie_domain == ".localhost":
@@ -251,7 +261,7 @@ def named_cookie_headers(name, token, host_header, max_age=None):
             f"{name}={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax; Domain=localhost",
             f"{name}={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax; Domain=.localhost",
         ]
-    return [named_cookie_header(name, token, host_header, ttl)]
+    return [named_cookie_header(name, token, host_header, ttl, is_https=is_https)]
 
 
 def expired_auth_cookie_header(host_header):
@@ -328,7 +338,6 @@ def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host):
         return runtime_url or ""
 
     host_part = forwarded_host.split(":")[0].lower()
-    port_suffix = f":{forwarded_host.split(':')[1]}" if ":" in forwarded_host else ""
 
     # Preserve configured runtime_url when running unit tests locally (127.0.0.1 or localhost)
     if host_part in {"127.0.0.1", "localhost"} and runtime_url:
@@ -336,7 +345,7 @@ def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host):
 
     is_ip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_part)) or host_part in {"localhost", "::1"}
 
-    # 1. Accessed directly via public IP address (Option 1 path-based launch on panel host/port):
+    # 1. Accessed directly via public IP address:
     if is_ip:
         return f"http://{forwarded_host}"
 
@@ -344,19 +353,27 @@ def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host):
     username = account["username"] if account else "user"
     prefix = "files" if tool_name == "filebrowser" else ("pma" if tool_name == "phpmyadmin" else "mail")
 
-    if runtime_url and not ".localhost" in runtime_url and not ".nip.io" in runtime_url:
+    if runtime_url and not "localhost" in runtime_url and not ".nip.io" in runtime_url:
         return runtime_url
 
     domain_base = host_part
     if host_part.startswith("panel.") or host_part.startswith("admin."):
         domain_base = host_part.split(".", 1)[1]
 
-    subdomain = f"{prefix}.{username}.{domain_base}" if not host_part.startswith(f"{prefix}.") else host_part
-    return f"http://{subdomain}{port_suffix}"
+    if host_part.startswith(f"{prefix}-") or host_part.startswith(f"{prefix}."):
+        subdomain = host_part
+    else:
+        subdomain = f"{prefix}-{username}.{domain_base}"
+
+    return f"http://{subdomain}"
 
 
 class MangoHandler(BaseHTTPRequestHandler):
     server_version = "MangoPanel/0.1"
+
+    @property
+    def is_https(self):
+        return is_request_https(self.headers)
 
     def log_message(self, fmt, *args):
         print("{} - {}".format(self.address_string(), fmt % args))
@@ -634,7 +651,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 default_path = "/webmail"
             clean_path = suffix or default_path
             self.send_response(HTTPStatus.FOUND)
-            cookie_headers = auth_cookie_headers(access_token, forwarded_host)
+            cookie_headers = auth_cookie_headers(access_token, forwarded_host, is_https=self.is_https)
             if tool == "webmail":
                 mail_access_token = create_jwt(
                     {
@@ -648,7 +665,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     CONFIG.jwt_secret,
                     3600,
                 )
-                cookie_headers = named_cookie_headers("mp_mail_token", mail_access_token, forwarded_host, 3600)
+                cookie_headers = named_cookie_headers("mp_mail_token", mail_access_token, forwarded_host, 3600, is_https=self.is_https)
             for cookie_header in cookie_headers:
                 self.send_header("Set-Cookie", cookie_header)
             self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path))
@@ -1282,6 +1299,17 @@ class MangoHandler(BaseHTTPRequestHandler):
 
         forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
         forwarded_uri = self.headers.get("X-Forwarded-Uri", "")
+
+        if forwarded_uri and (
+            forwarded_uri.startswith("/files/static/")
+            or "/static/" in forwarded_uri
+            or forwarded_uri.startswith("/db/themes/")
+            or forwarded_uri.startswith("/webmail/assets/")
+        ):
+            self.send_response(HTTPStatus.OK)
+            self.end_headers()
+            return
+
         magic_token = extract_magic_launch_token(forwarded_uri)
         magic_mode = False
         if not token and magic_token:
@@ -7743,7 +7771,7 @@ def run():
     CONFIG.data_dir.mkdir(parents=True, exist_ok=True)
     CONFIG.account_root.mkdir(parents=True, exist_ok=True)
     init_db(CONFIG.db_path)
-    if CONFIG.is_development:
+    if CONFIG.env == "development":
         seed_dev_data(CONFIG.db_path, CONFIG.account_root)
         agent = Agent(CONFIG)
         agent.run_all()

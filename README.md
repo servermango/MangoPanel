@@ -38,6 +38,19 @@ The API token must include this permission:
 
 For production, store the token only in MangoPanel's encrypted provider settings. Do not commit it to source code or place it in a public environment file. After saving the credentials, use the provider test in the Admin panel to confirm that the token can access and manage zones.
 
+## Domain & Subdomain DNS Setup
+
+To instruct users to set up a server domain or subdomain for MangoPanel and tool access, create the following DNS records pointing to your server's IP address:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| A | `@` | `<SERVER_IP>` |
+| A | `*.files` | `<SERVER_IP>` |
+
+Once configured, access MangoPanel at:
+- **Admin Panel**: `http://<domain>:8001/admin`
+- **Client Panel**: `http://<domain>:8000/client`
+
 ## Quick Start
 
 Fresh clone with `git`:
