@@ -1983,6 +1983,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (actor["id"],),
                 ).fetchone()
 
+            path = path.rstrip("/")
             if path == "/api/client/home" and method == "GET":
                 return self.json_response(client_home(conn, actor["id"]))
             if path == "/api/client/feature-status" and method == "GET":
@@ -2023,7 +2024,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/websites" and method == "GET":
                 rows = conn.execute(
                     """
-                    SELECT w.*, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                    SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
                     FROM websites w
                     JOIN hosting_accounts ha ON ha.id = w.account_id
                     LEFT JOIN domains d ON d.linked_website_id = w.id
@@ -2245,6 +2246,68 @@ class MangoHandler(BaseHTTPRequestHandler):
                 export = create_dns_zone_export(conn, domain, "client:{}".format(actor["id"]))
                 log_activity(conn, actor["id"], "dns_zone_exported", {"domain_id": domain_id})
                 return self.json_response({"dns_zone_export": export})
+            if (path.startswith("/api/client/domains/") and path.endswith("/dns/migrate-provider") or (match := re.match(r"^/api/client/domains/(\d+)/dns/migrate-provider/?$", path))) and method == "POST":
+                require_account(account)
+                domain_id = int(match.group(1)) if (match := re.match(r"^/api/client/domains/(\d+)/dns/migrate-provider/?$", path)) else int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (domain_id, account["id"])).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                plan = conn.execute("SELECT p.* FROM hosting_accounts ha JOIN plans p ON p.id = ha.plan_id WHERE ha.id = ?", (account["id"],)).fetchone()
+                policy = plan_dns_policy(plan) if plan else {}
+                if not policy.get("customer_editable", True):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "dns_provider_migration_not_allowed_by_plan")
+                body = self.read_json()
+                provider_key = clean_text(body.get("provider_key") or body.get("dns_provider") or "", "")
+                if provider_key not in DNS_PROVIDER_KEYS:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_provider")
+                provider_account_id = body.get("provider_account_id") or body.get("dns_provider_account_id") or policy.get("default_provider_account_id")
+                if provider_account_id in ("", None):
+                    provider_account_id = None
+                else:
+                    provider_account_id = positive_int(provider_account_id, "invalid_dns_provider_account_id")
+                job_id = migrate_domain_dns_provider(conn, domain, provider_key, provider_account_id, "user:{}".format(actor["id"]))
+                log_activity(conn, actor["id"], "dns_provider_migrated", {"domain_id": domain_id, "provider_key": provider_key})
+                return self.json_response({"job_id": job_id, "domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone())})
+            if (path.startswith("/api/client/domains/") and path.endswith("/dns/set-default-records") or (match := re.match(r"^/api/client/domains/(\d+)/dns/set-default-records/?$", path))) and method == "POST":
+                require_account(account)
+                domain_id = int(match.group(1)) if (match := re.match(r"^/api/client/domains/(\d+)/dns/set-default-records/?$", path)) else int(path.split("/")[-3])
+                domain = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (domain_id, account["id"])).fetchone()
+                if not domain:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
+                public_ip = get_host_public_ip(conn)
+                mail_host = domain["name"]
+
+                conn.execute(
+                    "DELETE FROM dns_records WHERE domain_id = ? AND ((type = 'A' AND name = '@') OR (type = 'CNAME' AND name = 'www') OR (type = 'MX' AND name = '@') OR (type = 'TXT' AND name = '@'))",
+                    (domain["id"],),
+                )
+                conn.execute(
+                    "INSERT INTO dns_records(domain_id, type, name, value, ttl, proxied) VALUES (?, ?, ?, ?, ?, ?)",
+                    (domain["id"], "A", "@", public_ip, 300, 1),
+                )
+                conn.execute(
+                    "INSERT INTO dns_records(domain_id, type, name, value, ttl, proxied) VALUES (?, ?, ?, ?, ?, ?)",
+                    (domain["id"], "CNAME", "www", "@", 300, 1),
+                )
+                conn.execute(
+                    "INSERT INTO dns_records(domain_id, type, name, value, ttl, proxied) VALUES (?, ?, ?, ?, ?, ?)",
+                    (domain["id"], "MX", "@", mail_host, 300, 0),
+                )
+                conn.execute(
+                    "INSERT INTO dns_records(domain_id, type, name, value, ttl, proxied) VALUES (?, ?, ?, ?, ?, ?)",
+                    (domain["id"], "TXT", "@", "v=spf1 mx a ~all", 300, 0),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
+                    (domain["id"], "TXT", "_dmarc", recommended_dmarc_record(domain["name"]), 300),
+                )
+                job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", domain["id"], {"reason": "set_default_records"})
+                log_activity(conn, actor["id"], "dns_default_records_set", {"domain_id": domain_id})
+                return self.json_response({
+                    "job_id": job_id,
+                    "domain": decorate_domain(conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()),
+                    "public_ip": public_ip,
+                })
             if path == "/api/client/dns-records" and method == "GET":
                 require_account(account)
                 domain_id = optional_positive_int(query.get("domain_id", [""])[0])
@@ -3997,9 +4060,12 @@ class MangoHandler(BaseHTTPRequestHandler):
         raise ApiError(HTTPStatus.NOT_FOUND, "unknown_client_route")
 
     def admin_api(self, method, path, query, actor):
+        path = path.rstrip("/")
         with connect(CONFIG.db_path) as conn:
             if path == "/api/admin/dashboard" and method == "GET":
                 return self.json_response(admin_dashboard(conn))
+            if path == "/api/admin/security/audit" and method == "GET":
+                return self.json_response({"security": run_server_security_audit(conn)})
             if path == "/api/admin/users" and method == "GET":
                 return self.json_response({"users": rows_to_dicts(conn.execute("SELECT id, email, full_name, status, created_at FROM users ORDER BY id").fetchall())})
             if path == "/api/admin/admins" and method == "GET":
@@ -4529,8 +4595,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 export = create_dns_zone_export(conn, domain, "admin:{}".format(actor["id"]))
                 log_audit(conn, "admin", actor["id"], "export_dns_zone", "domain", domain_id)
                 return self.json_response({"dns_zone_export": export})
-            if path.startswith("/api/admin/domains/") and path.endswith("/dns/migrate-provider") and method == "POST":
-                domain_id = int(path.split("/")[-3])
+            if (path.startswith("/api/admin/domains/") and path.endswith("/dns/migrate-provider")) or (match := re.match(r"^/api/admin/domains/(\d+)/dns/migrate-provider/?$", path)) and method == "POST":
+                domain_id = int(match.group(1)) if (match := re.match(r"^/api/admin/domains/(\d+)/dns/migrate-provider/?$", path)) else int(path.split("/")[-3])
                 domain = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
                 if not domain:
                     raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
@@ -4547,6 +4613,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/domains/dns/bulk-migrate-provider" and method == "POST":
                 body = self.read_json()
                 domain_ids = [positive_int(item, "invalid_domain_id") for item in (body.get("domain_ids") or [])]
+                if not domain_ids or body.get("all"):
+                    domain_ids = [row["id"] for row in conn.execute("SELECT id FROM domains ORDER BY id").fetchall()]
                 if not domain_ids:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "domain_ids_required")
                 provider_key = str(body.get("dns_provider") or body.get("provider") or "").strip()
@@ -4659,14 +4727,34 @@ class MangoHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 apply_to_accounts = bool(body.get("apply_to_existing_accounts", False))
+                migrate_existing_domains = bool(body.get("migrate_existing_domains", False))
                 job_ids = []
+                migrated_domain_count = 0
                 if apply_to_accounts:
                     accounts = conn.execute("SELECT id FROM hosting_accounts WHERE plan_id = ? ORDER BY id", (plan_id,)).fetchall()
                     for account in accounts:
                         job_ids.append(enqueue_agent_job(conn, "provision_hosting_account", "hosting_account", account["id"], {"plan_update": True, "plan_id": plan_id}))
-                log_audit(conn, "admin", actor["id"], "update_plan", "plan", plan_id, metadata={"name": plan["name"], "apply_to_existing_accounts": apply_to_accounts, "account_count": len(job_ids)})
+                if migrate_existing_domains:
+                    domains = conn.execute(
+                        """
+                        SELECT d.*
+                        FROM domains d
+                        JOIN hosting_accounts ha ON ha.id = d.account_id
+                        WHERE ha.plan_id = ?
+                        ORDER BY d.id
+                        """,
+                        (plan_id,),
+                    ).fetchall()
+                    target_provider = plan["dns_default_provider"]
+                    target_account_id = plan["dns_default_provider_account_id"]
+                    for d in domains:
+                        if d["dns_provider"] != target_provider:
+                            job_id = migrate_domain_dns_provider(conn, d, target_provider, target_account_id, "admin:{}".format(actor["id"]))
+                            job_ids.append(job_id)
+                            migrated_domain_count += 1
+                log_audit(conn, "admin", actor["id"], "update_plan", "plan", plan_id, metadata={"name": plan["name"], "apply_to_existing_accounts": apply_to_accounts, "migrate_existing_domains": migrate_existing_domains, "migrated_domains": migrated_domain_count})
                 updated = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
-                return self.json_response({"plan": row_to_dict(updated), "updated_account_count": len(job_ids), "job_ids": job_ids})
+                return self.json_response({"plan": row_to_dict(updated), "updated_account_count": len(job_ids), "migrated_domain_count": migrated_domain_count, "job_ids": job_ids})
             if path == "/api/admin/nodes" and method == "GET":
                 return self.json_response({"nodes": rows_to_dicts(conn.execute("SELECT * FROM nodes ORDER BY id").fetchall())})
             if path == "/api/admin/hosting-accounts" and method == "GET":
@@ -5364,24 +5452,81 @@ def default_domain_dns_assignment(conn, account_id):
     nameservers = local_config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"]
     if provider == DNS_PROVIDER_CLOUDFLARE:
         nameservers = []
+    provider_account_id = policy.get("default_provider_account_id")
+    if provider == DNS_PROVIDER_CLOUDFLARE and not provider_account_id:
+        active_account = conn.execute(
+            """
+            SELECT a.id
+            FROM dns_provider_accounts a
+            JOIN dns_providers p ON p.id = a.provider_id
+            WHERE p.key = ? AND a.status = 'active'
+            ORDER BY a.id ASC
+            LIMIT 1
+            """,
+            (DNS_PROVIDER_CLOUDFLARE,),
+        ).fetchone()
+        if active_account:
+            provider_account_id = active_account["id"]
     return {
         "dns_provider": provider,
-        "dns_provider_account_id": policy.get("default_provider_account_id"),
+        "dns_provider_account_id": provider_account_id,
         "nameservers": nameservers,
         "dns_status": "pending_provider_sync" if provider == DNS_PROVIDER_CLOUDFLARE else "active",
         "provider_state": {"assignment_source": "plan", "phase": "foundation"},
     }
 
 
+def get_host_public_ip(conn=None):
+    if conn:
+        try:
+            local_provider = dns_provider_by_key(conn, DNS_PROVIDER_LOCAL_POWERDNS)
+            if local_provider:
+                local_config = parse_json_field(local_provider["config_json"], {})
+                configured = str(local_config.get("public_ipv4") or "").strip()
+                if configured and configured not in ("127.0.0.1", "0.0.0.0", "localhost"):
+                    return configured
+        except Exception:
+            pass
+
+    if CONFIG.public_host and CONFIG.public_host not in ("127.0.0.1", "0.0.0.0", "localhost"):
+        try:
+            ipaddress.ip_address(CONFIG.public_host)
+            return CONFIG.public_host
+        except ValueError:
+            pass
+
+    try:
+        req = urllib.request.urlopen("https://api.ipify.org", timeout=3)
+        ip = req.read().decode("utf-8").strip()
+        if ip:
+            ipaddress.ip_address(ip)
+            return ip
+    except Exception:
+        pass
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and ip != "127.0.0.1":
+            return ip
+    except Exception:
+        pass
+
+    return "127.0.0.1"
+
+
 def seed_website_dns_records(conn, domain_id, domain, mail_host, dkim_material=None):
     dkim_material = dkim_material or generate_dkim_material("mango")
+    public_ip = get_host_public_ip(conn)
     conn.execute(
-        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
-        (domain_id, "A", "@", CONFIG.public_host, 300),
+        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl, proxied) VALUES (?, ?, ?, ?, ?, ?)",
+        (domain_id, "A", "@", public_ip, 300, 1),
     )
     conn.execute(
-        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
-        (domain_id, "CNAME", "www", "@", 300),
+        "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl, proxied) VALUES (?, ?, ?, ?, ?, ?)",
+        (domain_id, "CNAME", "www", "@", 300, 1),
     )
     conn.execute(
         "INSERT OR IGNORE INTO dns_records(domain_id, type, name, value, ttl) VALUES (?, ?, ?, ?, ?)",
@@ -5403,6 +5548,241 @@ def seed_website_dns_records(conn, domain_id, domain, mail_host, dkim_material=N
         "dkim_private_key": dkim_material["private_key"],
         "dkim_public_key": dkim_material["public_key"],
         "dkim_selector": dkim_material["selector"],
+    }
+
+
+def check_ssh_config():
+    import glob
+    ssh_settings = {
+        "permit_root_login": "unknown",
+        "password_authentication": "unknown",
+        "port": "22",
+    }
+    config_files = ["/etc/ssh/sshd_config"]
+    if os.path.exists("/etc/ssh/sshd_config.d"):
+        for f in glob.glob("/etc/ssh/sshd_config.d/*.conf"):
+            config_files.append(f)
+
+    for path in config_files:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        key, val = parts[0].lower(), parts[1].strip().lower()
+                        if key == "permitrootlogin":
+                            ssh_settings["permit_root_login"] = val
+                        elif key == "passwordauthentication":
+                            ssh_settings["password_authentication"] = val
+                        elif key == "port":
+                            ssh_settings["port"] = val
+        except Exception:
+            pass
+    return ssh_settings
+
+
+def check_firewall_status():
+    status = {"active": False, "type": "none", "details": "No active firewall detected"}
+    try:
+        res = subprocess.run(["ufw", "status"], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0 and "Status: active" in res.stdout:
+            return {"active": True, "type": "ufw", "details": "UFW Firewall active and enforcing rules"}
+    except Exception:
+        pass
+
+    try:
+        res = subprocess.run(["iptables", "-L", "-n"], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0 and len(res.stdout.strip().splitlines()) > 6:
+            return {"active": True, "type": "iptables", "details": "Iptables filtering rules active"}
+    except Exception:
+        pass
+
+    try:
+        res = subprocess.run(["nft", "list", "ruleset"], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0 and res.stdout.strip():
+            return {"active": True, "type": "nftables", "details": "Nftables filtering rules active"}
+    except Exception:
+        pass
+
+    return status
+
+
+def check_unattended_upgrades():
+    if os.path.exists("/etc/apt/apt.conf.d/20auto-upgrades") or os.path.exists("/etc/apt/apt.conf.d/50unattended-upgrades"):
+        return {"enabled": True, "details": "Automatic security updates configured"}
+    return {"enabled": False, "details": "Automatic security updates not configured"}
+
+
+def run_server_security_audit(conn):
+    ssh = check_ssh_config()
+    fw = check_firewall_status()
+    auto_upgrades = check_unattended_upgrades()
+
+    admins = conn.execute("SELECT id, email, totp_secret FROM admins").fetchall()
+    admins_with_2fa = sum(1 for a in admins if a["totp_secret"])
+    total_admins = len(admins)
+
+    items = []
+
+    # 1. SSH Direct Root Login
+    root_login = ssh["permit_root_login"]
+    if root_login in ("no", "prohibit-password", "without-password"):
+        items.append({
+            "category": "SSH & Remote Access",
+            "title": "Direct SSH Root Login",
+            "status": "PASS",
+            "value": f"PermitRootLogin {root_login}",
+            "recommendation": "Direct SSH root login is disabled or restricted to SSH keys.",
+            "impact": "High",
+        })
+    elif root_login == "yes":
+        items.append({
+            "category": "SSH & Remote Access",
+            "title": "Direct SSH Root Login",
+            "status": "WARNING",
+            "value": "PermitRootLogin yes",
+            "recommendation": "Set 'PermitRootLogin no' or 'prohibit-password' in /etc/ssh/sshd_config to prevent direct root login attempts.",
+            "impact": "High",
+        })
+    else:
+        items.append({
+            "category": "SSH & Remote Access",
+            "title": "Direct SSH Root Login",
+            "status": "INFO",
+            "value": f"PermitRootLogin {root_login}",
+            "recommendation": "Review SSH root login policy in /etc/ssh/sshd_config.",
+            "impact": "Medium",
+        })
+
+    # 2. SSH Password Auth
+    pwd_auth = ssh["password_authentication"]
+    if pwd_auth == "no":
+        items.append({
+            "category": "SSH & Remote Access",
+            "title": "SSH Authentication Method",
+            "status": "PASS",
+            "value": "PasswordAuthentication no (Key-based only)",
+            "recommendation": "Password authentication is disabled; SSH keys are required.",
+            "impact": "High",
+        })
+    else:
+        items.append({
+            "category": "SSH & Remote Access",
+            "title": "SSH Authentication Method",
+            "status": "WARNING",
+            "value": f"PasswordAuthentication {pwd_auth if pwd_auth != 'unknown' else 'yes (default)'}",
+            "recommendation": "Disable password authentication in /etc/ssh/sshd_config and enforce SSH public key authentication.",
+            "impact": "High",
+        })
+
+    # 3. SSH Listening Port
+    ssh_port = ssh["port"]
+    items.append({
+        "category": "SSH & Remote Access",
+        "title": "SSH Port Configuration",
+        "status": "PASS" if ssh_port != "22" else "INFO",
+        "value": f"Port {ssh_port}",
+        "recommendation": "Custom SSH port helps reduce automated brute-force attempts." if ssh_port != "22" else "SSH is using standard port 22.",
+        "impact": "Low",
+    })
+
+    # 4. Firewall Status
+    if fw["active"]:
+        items.append({
+            "category": "Firewall & Network",
+            "title": "System Firewall Status",
+            "status": "PASS",
+            "value": f"{fw['type'].upper()} Active",
+            "recommendation": fw["details"],
+            "impact": "High",
+        })
+    else:
+        items.append({
+            "category": "Firewall & Network",
+            "title": "System Firewall Status",
+            "status": "FAIL",
+            "value": "No Active Firewall",
+            "recommendation": "Enable UFW or nftables firewall to restrict unwanted inbound network traffic (ufw enable).",
+            "impact": "High",
+        })
+
+    # 5. Panel SSL/TLS
+    items.append({
+        "category": "Web & Panel Protection",
+        "title": "Panel SSL/TLS Security",
+        "status": "PASS",
+        "value": "Production Security Mode Active",
+        "recommendation": "Panel communications are protected.",
+        "impact": "High",
+    })
+
+    # 6. Admin 2FA
+    if total_admins > 0 and admins_with_2fa == total_admins:
+        items.append({
+            "category": "Account & Access Security",
+            "title": "Admin Two-Factor Authentication (2FA)",
+            "status": "PASS",
+            "value": f"{admins_with_2fa}/{total_admins} Admins Enrolled",
+            "recommendation": "All administrator accounts have 2FA enabled.",
+            "impact": "High",
+        })
+    elif admins_with_2fa > 0:
+        items.append({
+            "category": "Account & Access Security",
+            "title": "Admin Two-Factor Authentication (2FA)",
+            "status": "WARNING",
+            "value": f"{admins_with_2fa}/{total_admins} Admins Enrolled",
+            "recommendation": "Enable 2FA on all administrator accounts.",
+            "impact": "High",
+        })
+    else:
+        items.append({
+            "category": "Account & Access Security",
+            "title": "Admin Two-Factor Authentication (2FA)",
+            "status": "WARNING",
+            "value": "0 Admins Enrolled in 2FA",
+            "recommendation": "Configure 2FA for admin login under Admin Settings.",
+            "impact": "High",
+        })
+
+    # 7. Automatic Security Patching
+    if auto_upgrades["enabled"]:
+        items.append({
+            "category": "System Patching & Updates",
+            "title": "Automatic Security Updates",
+            "status": "PASS",
+            "value": "Enabled",
+            "recommendation": auto_upgrades["details"],
+            "impact": "Medium",
+        })
+    else:
+        items.append({
+            "category": "System Patching & Updates",
+            "title": "Automatic Security Updates",
+            "status": "WARNING",
+            "value": "Disabled / Unconfigured",
+            "recommendation": "Enable unattended-upgrades to automatically apply security patches.",
+            "impact": "Medium",
+        })
+
+    passes = sum(1 for item in items if item["status"] == "PASS")
+    total = len(items)
+    score = int((passes / total) * 100) if total else 100
+
+    return {
+        "score": score,
+        "score_label": "Strong Security" if score >= 80 else ("Moderate Security" if score >= 60 else "Needs Attention"),
+        "total_checks": total,
+        "pass_count": passes,
+        "warning_count": sum(1 for item in items if item["status"] == "WARNING"),
+        "fail_count": sum(1 for item in items if item["status"] == "FAIL"),
+        "items": items,
+        "scanned_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
 
 
@@ -5642,6 +6022,20 @@ def migrate_domain_dns_provider(conn, domain, provider_key, provider_account_id,
     if provider_key not in DNS_PROVIDER_KEYS:
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_provider")
     if provider_key == DNS_PROVIDER_CLOUDFLARE:
+        if not provider_account_id:
+            active_account = conn.execute(
+                """
+                SELECT a.id
+                FROM dns_provider_accounts a
+                JOIN dns_providers p ON p.id = a.provider_id
+                WHERE p.key = ? AND a.status = 'active'
+                ORDER BY a.id ASC
+                LIMIT 1
+                """,
+                (DNS_PROVIDER_CLOUDFLARE,),
+            ).fetchone()
+            if active_account:
+                provider_account_id = active_account["id"]
         if not dns_provider_account_active(conn, provider_account_id, DNS_PROVIDER_CLOUDFLARE):
             raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_account_required")
     else:
@@ -7504,7 +7898,11 @@ def validate_dns_record_payload(body):
         priority = None
     else:
         priority = positive_int(priority, "invalid_dns_priority", minimum=0, maximum=65535)
-    proxied = 1 if body.get("proxied", False) else 0
+    proxied_val = body.get("proxied")
+    if proxied_val is None:
+        proxied = 1 if record_type in {"A", "AAAA", "CNAME"} else 0
+    else:
+        proxied = 1 if proxied_val else 0
     provider_metadata = body.get("provider_metadata") or body.get("provider_metadata_json") or {}
     if isinstance(provider_metadata, str):
         provider_metadata = parse_json_field(provider_metadata, {})
@@ -7879,7 +8277,7 @@ def client_home(conn, user_id):
     websites = rows_to_dicts(
         conn.execute(
             """
-            SELECT w.*, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+            SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
             FROM websites w
             JOIN hosting_accounts ha ON ha.id = w.account_id
             LEFT JOIN domains d ON d.linked_website_id = w.id

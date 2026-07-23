@@ -335,6 +335,7 @@
                     <td class="actions">
                       <a class="small-button" :href="site.public_url" target="_blank" rel="noreferrer">Open</a>
                       <button @click="issueSsl(site)">SSL</button>
+                      <button class="secondary-button" @click="migrateWebsiteDnsProvider(site)">{{ site.dns_provider_label === 'Cloudflare' ? 'To Local DNS' : 'To Cloudflare' }}</button>
                       <button class="primary-button" @click="openConnectWizard(site)">Connect to hosting</button>
                       <button @click="launch('files')">Files</button>
                       <button @click="launch('phpmyadmin')">DB</button>
@@ -402,6 +403,7 @@
                 <span class="pill" :class="domain.dns_status">{{ domain.dns_provider_label || domain.dns_provider }} · {{ domain.dns_status }}</span>
                 <small>{{ (domain.nameservers || []).join(', ') || 'Nameservers pending provider sync' }}</small>
                 <button class="secondary-button" @click="openNameserverEditor(domain)">Manage nameservers</button>
+                <button class="secondary-button" @click="migrateDomainProvider(domain, domain.dns_provider === 'cloudflare' ? 'local_powerdns' : 'cloudflare')">Switch to {{ domain.dns_provider === 'cloudflare' ? 'Local DNS' : 'Cloudflare' }}</button>
                 <div v-if="nameserverEditor.domainId === domain.id" class="form-grid" style="width:100%; margin-top:.75rem">
                   <label>Mode <select v-model="nameserverEditor.source"><option value="default">Use default</option><option value="custom">Use custom</option></select></label>
                   <label v-if="nameserverEditor.source === 'custom'">Nameserver 1 <input v-model.trim="nameserverEditor.values[0]" placeholder="ns1.example.com"></label>
@@ -1614,8 +1616,14 @@
               <p>Provider: <code>{{ selectedDomain?.dns_provider_label || selectedDnsZone.provider }}</code> · Status: {{ selectedDomain?.dns_status || selectedDnsZone.status }} · Serial {{ selectedDnsZone.serial }} · NS {{ (selectedDomain?.nameservers || selectedDnsZone.nameservers || []).join(', ') || 'pending provider sync' }}</p>
               <div class="actions">
                 <button @click="rebuildDnsZone"><app-icon name="refresh"></app-icon><span>Rebuild</span></button>
+                <button :disabled="settingDefaultDns" @click="setDefaultDnsRecords">
+                  <span v-if="settingDefaultDns" class="btn-spinner"></span>
+                  <app-icon v-else name="plus"></app-icon>
+                  <span>{{ settingDefaultDns ? 'Setting Defaults...' : 'Set Default Values' }}</span>
+                </button>
                 <button @click="verifyDnsZone"><app-icon name="check"></app-icon><span>Verify</span></button>
                 <button @click="exportDnsZone"><app-icon name="download"></app-icon><span>Export</span></button>
+                <button v-if="selectedDomain" @click="migrateDomainProvider(selectedDomain, selectedDomain.dns_provider === 'cloudflare' ? 'local_powerdns' : 'cloudflare')"><app-icon name="refresh"></app-icon><span>Switch Provider</span></button>
               </div>
             </div>
             <div v-if="selectedDomain && selectedDomain.dns_warnings && selectedDomain.dns_warnings.length" class="info-box" style="margin-bottom: 1rem;">

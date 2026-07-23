@@ -510,6 +510,7 @@
                   <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
                   <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
                   <label v-if="editingPlanId" class="plan-account-update"><input v-model="applyPlanToExistingAccounts" type="checkbox"> Apply these changes to all existing accounts on this plan</label>
+                  <label v-if="editingPlanId" class="plan-account-update" style="margin-top:0.5rem;"><input v-model="migratePlanDomains" type="checkbox"> Migrate all existing domains on this plan to {{ providerLabel(newPlan.dns_default_provider) }}</label>
                 </div>
               </div>
               <div class="modal-footer">
@@ -539,7 +540,10 @@
               <label>Public IPv6 <input v-model="dnsSettings.local.public_ipv6" placeholder="2001:db8::10"></label>
               <label>SOA email <input v-model="dnsSettings.local.soa_email" placeholder="hostmaster.example.com"></label>
               <label>Default TTL <input v-model.number="dnsSettings.local.default_ttl" type="number" min="60"></label>
-              <button class="primary-button plan-submit" @click="saveDnsSettings">Save DNS Settings</button>
+              <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:1rem;">
+                <button class="primary-button plan-submit" @click="saveDnsSettings">Save DNS Settings</button>
+                <button type="button" class="secondary-button" @click="bulkMigrateAllToGlobalMode">Migrate All Domains to {{ providerLabel(dnsSettings.global_mode) }}</button>
+              </div>
             </div>
 
             <div class="section-head" style="margin-top: 1.5rem;">
@@ -649,6 +653,10 @@
               <div>
                 <h2>Managed DNS Domains</h2>
                 <p>Rebuild zones, verify delegation, export records, and migrate providers.</p>
+              </div>
+              <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                <button class="secondary-button" @click="bulkMigrateDomains('cloudflare')">Bulk Migrate All to Cloudflare</button>
+                <button class="secondary-button" @click="bulkMigrateDomains('local_powerdns')">Bulk Migrate All to Local</button>
               </div>
             </div>
             <div class="table-wrap plan-table">
@@ -790,6 +798,94 @@
               <button class="primary-button" @click="saveAdminPassword">Save Password</button>
               <button class="ghost-button" @click="closeAdminPasswordModal">Cancel</button>
             </div>
+          </section>
+
+          <section v-if="activePage === 'security'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Server Security Checklist</h2>
+                <p>Security audit scores, SSH configuration hardening, firewall, SSL, and administrative access checks.</p>
+              </div>
+              <div class="actions">
+                <button class="primary-button" :disabled="securityAudit.loading" @click="loadSecurityAudit">
+                  <span v-if="securityAudit.loading" class="btn-spinner"></span>
+                  <app-icon v-else name="refresh"></app-icon>
+                  <span>{{ securityAudit.loading ? 'Scanning...' : 'Re-scan Security Audit' }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Score Summary Cards -->
+            <div class="dashboard-grid" style="margin-bottom: 1.5rem;">
+              <div class="metric-card">
+                <div class="card-icon" style="background: rgba(34, 197, 94, 0.1); color: #22c55e;">
+                  <strong style="font-size: 1.5rem;">{{ securityAudit.score }}%</strong>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 1.1rem;">Security Health Score</h3>
+                  <p style="margin: 0.25rem 0 0; color: var(--muted, #64748b);">{{ securityAudit.score_label }} ({{ securityAudit.pass_count }}/{{ securityAudit.total_checks }} passed)</p>
+                </div>
+              </div>
+              <div class="metric-card">
+                <div class="card-icon" style="background: rgba(234, 179, 8, 0.1); color: #eab308;">
+                  <strong style="font-size: 1.5rem;">{{ securityAudit.warning_count }}</strong>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 1.1rem;">Warnings</h3>
+                  <p style="margin: 0.25rem 0 0; color: var(--muted, #64748b);">Hardening recommendations</p>
+                </div>
+              </div>
+              <div class="metric-card">
+                <div class="card-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+                  <strong style="font-size: 1.5rem;">{{ securityAudit.fail_count }}</strong>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 1.1rem;">Critical Failures</h3>
+                  <p style="margin: 0.25rem 0 0; color: var(--muted, #64748b);">Requires immediate action</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Security Checklist Table -->
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Check Item</th>
+                    <th>Category</th>
+                    <th>Current Value</th>
+                    <th>Impact</th>
+                    <th>Status</th>
+                    <th>Recommendation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(item, idx) in securityAudit.items" :key="idx">
+                    <td><strong>{{ item.title }}</strong></td>
+                    <td><small>{{ item.category }}</small></td>
+                    <td><code>{{ item.value }}</code></td>
+                    <td><span class="pill" :class="item.impact.toLowerCase()">{{ item.impact }}</span></td>
+                    <td>
+                      <span class="pill" :class="{
+                        active: item.status === 'PASS',
+                        warning: item.status === 'WARNING',
+                        danger: item.status === 'FAIL',
+                        info: item.status === 'INFO'
+                      }">
+                        {{ item.status }}
+                      </span>
+                    </td>
+                    <td><small>{{ item.recommendation }}</small></td>
+                  </tr>
+                  <tr v-if="!securityAudit.items || !securityAudit.items.length">
+                    <td colspan="6" class="empty-row">No security checks performed yet. Click 'Re-scan Security Audit' above.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <small v-if="securityAudit.scanned_at" style="display:block; margin-top: 1rem; color: var(--muted,#64748b);">
+              Last scanned at: {{ securityAudit.scanned_at }}
+            </small>
           </section>
 
           <section v-if="activePage === 'status'" class="panel">

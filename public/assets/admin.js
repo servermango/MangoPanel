@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 
 const ADMIN_ROUTE_PREFIX = "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "registrars", "dns-domains", "system", "admins", "status"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "registrars", "dns-domains", "system", "admins", "status", "security"]);
 
 function adminPageFromLocation() {
   const hash = window.location.hash.replace(/^#/, "");
@@ -34,12 +34,14 @@ createApp({
       showPlanModal: false,
       editingPlanId: null,
       applyPlanToExistingAccounts: false,
+      migratePlanDomains: false,
       dnsDomains: [],
       registrars: [],
       registrarForm: { key: "resellerclub", reseller_id: "", api_base: "", api_key: "", api_token: "" },
       domainForm: { user_id: "", account_id: "", domain: "", registrar_provider_id: "", register: false, nameservers: ["", ""] },
       dnsSettings: { global_mode: "local_powerdns", local: { nameservers: ["ns1.mango.test", "ns2.mango.test"], public_ipv4: "127.0.0.1", public_ipv6: "", soa_email: "hostmaster.mango.test", default_ttl: 300 }, providers: [], accounts: [], health_checks: [] },
       cloudflareAccount: { id: null, display_name: "", account_name: "", external_account_id: "", api_token: "", status: "active" },
+      securityAudit: { score: 0, score_label: "Scanning...", total_checks: 0, pass_count: 0, warning_count: 0, fail_count: 0, items: [], scanned_at: null, loading: false },
       jobEvents: [],
       admins: [],
       newAdminSecret: "",
@@ -145,6 +147,7 @@ createApp({
         {
           label: "System",
           items: [
+            { label: "Security Checklist", target: "security", description: "Server security audit, SSH hardening, firewall, SSL, and WAF status." },
             { label: "Stack & Jobs", target: "system", description: "Generated stacks, agent runs, recent jobs, and events." },
             { label: "Admins", target: "admins", description: "Admin users, TOTP secrets, nodes, and PHP availability." },
             { label: "Status", target: "status", description: "Publish incidents and review public component status." },
@@ -239,6 +242,19 @@ createApp({
       this.login.code = "";
       this.message = "";
     },
+    async loadSecurityAudit() {
+      this.securityAudit.loading = true;
+      try {
+        const payload = await this.api("/api/admin/security/audit");
+        if (payload && payload.security) {
+          this.securityAudit = { ...payload.security, loading: false };
+        }
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.securityAudit.loading = false;
+      }
+    },
     async load() {
       try {
         this.dashboard = await this.api("/api/admin/dashboard");
@@ -262,6 +278,7 @@ createApp({
         this.dnsDomains = (await this.api("/api/admin/domains")).domains || [];
         this.registrars = (await this.api("/api/admin/registrars")).registrars || [];
         this.stacks = (await this.api("/api/admin/account-stacks")).account_stacks;
+        await this.loadSecurityAudit();
         this.jobEvents = (await this.api("/api/admin/job-events")).job_events;
       } catch (error) {
         this.message = error.message;
@@ -454,11 +471,13 @@ createApp({
     openPlanModal() {
       this.editingPlanId = null;
       this.applyPlanToExistingAccounts = false;
+      this.migratePlanDomains = false;
       this.showPlanModal = true;
     },
     editPlan(plan) {
       this.editingPlanId = plan.id;
       this.applyPlanToExistingAccounts = false;
+      this.migratePlanDomains = false;
       this.newPlan = {
         ...this.newPlan,
         ...plan,
@@ -494,8 +513,22 @@ createApp({
     async updatePlan() {
       this.message = "";
       try {
-        const payload = await this.api(`/api/admin/plans/${this.editingPlanId}`, { method: "PATCH", body: JSON.stringify({ ...this.planPayload(), apply_to_existing_accounts: this.applyPlanToExistingAccounts }) });
-        this.message = `Plan ${payload.plan.name} updated${payload.updated_account_count ? `; ${payload.updated_account_count} account update${payload.updated_account_count === 1 ? "" : "s"} queued` : ""}`;
+        const payload = await this.api(`/api/admin/plans/${this.editingPlanId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            ...this.planPayload(),
+            apply_to_existing_accounts: this.applyPlanToExistingAccounts,
+            migrate_existing_domains: this.migratePlanDomains,
+          }),
+        });
+        let msg = `Plan ${payload.plan.name} updated`;
+        if (payload.updated_account_count) {
+          msg += `; ${payload.updated_account_count} account update(s) queued`;
+        }
+        if (payload.migrated_domain_count) {
+          msg += `; ${payload.migrated_domain_count} domain migration(s) queued`;
+        }
+        this.message = msg;
         this.closePlanModal();
         await this.load();
       } catch (error) {
@@ -706,11 +739,7 @@ createApp({
     },
     async migrateDnsDomain(domain, providerKey) {
       this.message = "";
-      const account = providerKey === "cloudflare" ? this.cloudflareAccounts()[0] : null;
-      if (providerKey === "cloudflare" && !account) {
-        this.message = "Add a Cloudflare account before migrating domains";
-        return;
-      }
+      const account = providerKey === "cloudflare" ? (this.cloudflareAccounts() || [])[0] : null;
       try {
         const payload = await this.api(`/api/admin/domains/${domain.id}/dns/migrate-provider`, {
           method: "POST",
@@ -724,6 +753,35 @@ createApp({
       } catch (error) {
         this.message = error.message;
       }
+    },
+    async bulkMigrateDomains(providerKey) {
+      this.message = "";
+      const label = providerKey === "cloudflare" ? "Cloudflare" : "Local DNS";
+      const account = providerKey === "cloudflare" ? this.cloudflareAccounts()[0] : null;
+      if (providerKey === "cloudflare" && !account) {
+        this.message = "Add a Cloudflare account before migrating domains";
+        return;
+      }
+      const confirmed = window.confirm(`Migrate all managed domains to ${label}?`);
+      if (!confirmed) return;
+      try {
+        const payload = await this.api("/api/admin/domains/dns/bulk-migrate-provider", {
+          method: "POST",
+          body: JSON.stringify({
+            all: true,
+            dns_provider: providerKey,
+            dns_provider_account_id: account ? account.id : null,
+          }),
+        });
+        this.message = `Bulk migration started for ${payload.jobs ? payload.jobs.length : 0} domain(s) to ${label}`;
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async bulkMigrateAllToGlobalMode() {
+      if (!this.dnsSettings || !this.dnsSettings.global_mode) return;
+      await this.bulkMigrateDomains(this.dnsSettings.global_mode);
     },
     async toggleAccountStatus(client, account) {
       this.message = "";

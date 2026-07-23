@@ -430,7 +430,7 @@ def _cloudflare_payload(record, zone_name, proxied=False):
     else:
         payload["content"] = str(record["value"]).rstrip(".") if record_type in {"CNAME", "NS"} else str(record["value"])
     if record_type in {"A", "AAAA", "CNAME"}:
-        payload["proxied"] = bool(record.get("proxied", proxied))
+        payload["proxied"] = True
     return payload
 
 

@@ -367,6 +367,7 @@ const app = createApp({
       dnsRecords: [],
       dnsZones: [],
       selectedDomainId: "",
+      settingDefaultDns: false,
       nameserverEditor: { domainId: null, source: "default", values: ["", ""] },
       newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300 },
       // Cache Manager
@@ -1532,6 +1533,68 @@ const app = createApp({
       try {
         const payload = await this.api(`/api/client/domains/${this.selectedDomainId}/dns/export`);
         this.notify(`${payload.dns_zone_export.domain.name} DNS zone export saved`, "success");
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async setDefaultDnsRecords() {
+      if (!this.selectedDomainId || this.settingDefaultDns) return;
+      const domainId = this.selectedDomainId;
+      this.settingDefaultDns = true;
+      try {
+        const payload = await this.api(`/api/client/domains/${domainId}/dns/set-default-records`, {
+          method: "POST",
+          body: "{}",
+        });
+        this.selectedDomainId = domainId;
+        await this.loadDnsRecords();
+        this.notify(`Default DNS records (A, CNAME, MX, SPF) generated for ${payload.domain.name}`, "success");
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.settingDefaultDns = false;
+      }
+    },
+    async migrateDomainProvider(domain, providerKey) {
+      if (!domain) return;
+      const targetName = providerKey === "cloudflare" ? "Cloudflare" : "Local DNS";
+      try {
+        const payload = await this.api(`/api/client/domains/${domain.id}/dns/migrate-provider`, {
+          method: "POST",
+          body: JSON.stringify({ dns_provider: providerKey }),
+        });
+        this.notify(`${domain.name} DNS provider migration to ${targetName} queued (job #${payload.job_id})`, "success");
+        if (typeof this.loadWebsites === "function") await this.loadWebsites();
+        const domainsRes = await this.api("/api/client/domains");
+        if (domainsRes && domainsRes.domains) this.domains = domainsRes.domains;
+        if (this.selectedDomainId) await this.loadDnsRecords();
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async migrateWebsiteDnsProvider(site) {
+      if (!site) return;
+      try {
+        if (!this.domains || !this.domains.length) {
+          const domainsRes = await this.api("/api/client/domains");
+          if (domainsRes && domainsRes.domains) this.domains = domainsRes.domains;
+        }
+        const domain = (this.domains || []).find((d) => d.name === site.domain || d.linked_website_id === site.id || d.id === site.domain_id) || { id: site.domain_id, name: site.domain, dns_provider: site.dns_provider };
+        const domainId = domain ? domain.id : site.domain_id;
+        if (!domainId) {
+          this.notify("Domain record for website not found", "error");
+          return;
+        }
+        const targetProvider = (site.dns_provider === "cloudflare" || site.dns_provider_label === "Cloudflare") ? "local_powerdns" : "cloudflare";
+        const targetName = targetProvider === "cloudflare" ? "Cloudflare" : "Local DNS";
+        const payload = await this.api(`/api/client/domains/${domainId}/dns/migrate-provider`, {
+          method: "POST",
+          body: JSON.stringify({ dns_provider: targetProvider }),
+        });
+        this.notify(`${site.domain} DNS provider migration to ${targetName} queued (job #${payload.job_id})`, "success");
+        if (typeof this.loadWebsites === "function") await this.loadWebsites();
+        const domainsRes = await this.api("/api/client/domains");
+        if (domainsRes && domainsRes.domains) this.domains = domainsRes.domains;
       } catch (error) {
         this.notify(error.message, "error");
       }
