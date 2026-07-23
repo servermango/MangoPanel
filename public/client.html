@@ -382,6 +382,12 @@
                 <div class="large-icon"><app-icon name="website"></app-icon></div>
                 <h3>Access files of domain {{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : '[select domain]' }}</h3>
               </div>
+
+              <!-- Card 4: Fix Permissions -->
+              <div class="panel file-access-card" @click="activePage = 'fix-file-ownership'">
+                <div class="large-icon"><app-icon name="fix"></app-icon></div>
+                <h3>Fix Permissions & Ownership</h3>
+              </div>
             </div>
           </section>
 
@@ -1924,13 +1930,13 @@
             </div>
           </section>
 
-          <!-- ═══════════════════════════════════════════════════════════ FIX FILE OWNERSHIP -->
-          <section v-if="activePage === 'fix-file-ownership'" class="panel">
+          <!-- ═══════════════════════════════════════════════════════════ FIX PERMISSIONS -->
+          <section v-if="activePage === 'fix-file-ownership' || activePage === 'fix-permissions'" class="panel">
             <div class="advanced-tool-header">
               <app-icon name="fix"></app-icon>
               <div>
-                <h2>Fix File Ownership</h2>
-                <p>Repair file ownership and permissions on all account files. Use this if you see permission errors.</p>
+                <h2>Fix Permissions</h2>
+                <p>Repair file ownership and permissions on all account files. Use this if you see permission errors or 403 Forbidden pages.</p>
               </div>
             </div>
 
@@ -1947,6 +1953,7 @@
                   <ul style="margin: .5rem 0 0; padding-left: 1.2rem;">
                     <li>Resets all file ownership to your account user</li>
                     <li>Sets directories to 755 and files to 644</li>
+                    <li>Ensures container services have read access to serve website files</li>
                     <li>Preserves .htaccess and config file permissions</li>
                   </ul>
                 </div>
@@ -1958,7 +1965,7 @@
                 @click="fixFileOwnership"
               >
                 <app-icon name="fix"></app-icon>
-                <span>{{ fixOwnershipRunning ? 'Running…' : 'Fix File Ownership' }}</span>
+                <span>{{ fixOwnershipRunning ? 'Running…' : 'Fix Permissions & Ownership' }}</span>
               </button>
             </div>
           </section>

@@ -536,7 +536,7 @@ const app = createApp({
           items: [
             { label: "Cache Manager", target: "cache-manager", icon: "cache", description: "Cache controls for websites." },
             { label: "Folder Index Manager", target: "folder-index-manager", icon: "folder-index", description: "Directory listing controls." },
-            { label: "Fix File Ownership", target: "fix-file-ownership", icon: "fix", description: "Repair file ownership and permissions." },
+            { label: "Fix Permissions", target: "fix-file-ownership", icon: "fix", description: "Repair file ownership and permissions." },
             { label: "Services", target: "services", icon: "services", description: "Manage and restart background services." },
             { label: "Activity Log", target: "activity", icon: "activity", description: "Recent account events." },
           ],
@@ -687,6 +687,7 @@ const app = createApp({
         { label: "FTP Accounts", target: "ftp-accounts", icon: "ftp", color: "#f59e0b", group: "Files" },
         { label: "Git Version Control", target: "git", icon: "git", color: "#f59e0b", group: "Files" },
         { label: "Backups", target: "backups", icon: "backup", color: "#f59e0b", group: "Files" },
+        { label: "Fix Permissions", target: "fix-file-ownership", icon: "fix", color: "#f59e0b", group: "Files" },
 
         // Databases
         { label: "phpMyAdmin", target: "files", icon: "phpmyadmin", color: "#3b82f6", group: "Databases", action: () => this.launch("phpmyadmin") },
@@ -736,7 +737,7 @@ const app = createApp({
         { label: "Cron Jobs", target: "cron-jobs", icon: "cron", color: "#4b5563", group: "Advanced" },
         { label: "Cache Manager", target: "cache-manager", icon: "cache", color: "#4b5563", group: "Advanced" },
         { label: "Folder Index Manager", target: "folder-index-manager", icon: "folder-index", color: "#4b5563", group: "Advanced" },
-        { label: "Fix File Ownership", target: "fix-file-ownership", icon: "fix", color: "#4b5563", group: "Advanced" },
+        { label: "Fix Permissions", target: "fix-file-ownership", icon: "fix", color: "#4b5563", group: "Advanced" },
         { label: "Services", target: "services", icon: "services", color: "#4b5563", group: "Advanced" },
         { label: "Activity Log", target: "activity", icon: "activity", color: "#4b5563", group: "Advanced" },
       ];
@@ -1642,15 +1643,15 @@ const app = createApp({
         this.hotlink.saving = false;
       }
     },
-    // Fix File Ownership
+    // Fix Permissions
     async fixFileOwnership() {
-      if (!window.confirm("Run fix file ownership? This will reset ownership on all account files.")) return;
+      if (!window.confirm("Run Fix Permissions? This will reset ownership and fix permissions (755 for directories, 644 for files) on all account files.")) return;
       this.fixOwnershipRunning = true;
       this.fixOwnershipResult = null;
       try {
         const payload = await this.api("/api/client/fix-ownership", { method: "POST", body: "{}" });
-        this.fixOwnershipResult = { success: true, message: `Job queued (#${payload.job_id}). File ownership repair is running in the background.` };
-        this.notify("Fix file ownership job queued", "success");
+        this.fixOwnershipResult = { success: true, message: `Job queued (#${payload.job_id}). File permissions and ownership repair is running in the background.` };
+        this.notify("Fix permissions job queued", "success");
       } catch (error) {
         this.fixOwnershipResult = { success: false, message: error.message };
         this.notify(error.message, "error");

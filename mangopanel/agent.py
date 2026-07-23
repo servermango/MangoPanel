@@ -2359,6 +2359,11 @@ class Agent:
         if not base_path.exists():
             raise AgentError("account_path_not_found")
 
+        try:
+            os.chmod(base_path, 0o755)
+        except Exception:
+            pass
+
         directories_fixed = 0
         files_fixed = 0
         preserved_files = 0
@@ -2389,6 +2394,20 @@ class Agent:
                     preserved_files += 1
                 else:
                     files_fixed += 1
+
+        stack_path = base_path / ".runtime" / "stack"
+        if stack_path.exists():
+            try:
+                for root, dirs, files in os.walk(stack_path):
+                    for d in dirs:
+                        try: os.chmod(os.path.join(root, d), 0o777)
+                        except Exception: pass
+                    for f in files:
+                        try: os.chmod(os.path.join(root, f), 0o777)
+                        except Exception: pass
+                os.chmod(stack_path, 0o777)
+            except Exception:
+                pass
 
         report_path = self.account_runtime_dir(account, "ownership", "last_fix.json")
         report = {

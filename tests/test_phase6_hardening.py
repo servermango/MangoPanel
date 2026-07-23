@@ -816,6 +816,24 @@ class Phase6HardeningTests(unittest.TestCase):
         self.assertIn("Set-Cookie", headers)
         self.assertEqual(headers["Location"], "http://files-u000001.localhost/files")
 
+    def test_tool_launch_supports_ip_host_without_access_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, server_ctx = self.prepared_server(Path(tmp))
+            with server_ctx as server:
+                token = server.login()
+                launch = server.request("GET", "/api/client/files/launch", token=token)
+                auth_path = launch["launch_url"].split("/auth/", 1)[1]
+                status, headers, _ = server.request_raw(
+                    "GET",
+                    "/auth/" + auth_path,
+                    host="157.15.203.66:8000",
+                    extra_headers={"X-Forwarded-Host": "157.15.203.66:8000"},
+                )
+
+        self.assertEqual(status, 302)
+        self.assertIn("Set-Cookie", headers)
+        self.assertEqual(headers["Location"], "http://157.15.203.66:8000/files")
+
     def test_files_ftp_and_directory_privacy_validate_auth_ownership_and_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             config, server_ctx = self.prepared_server(Path(tmp))

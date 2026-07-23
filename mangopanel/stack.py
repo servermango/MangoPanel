@@ -500,7 +500,8 @@ RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
         uid = 5000 + int(account["id"])
         try:
             subprocess.run(["chown", "-R", f"{uid}:{uid}", str(paths["base"])], check=True)
-            subprocess.run(["chmod", "750", str(paths["base"])], check=True)
+            subprocess.run(["chmod", "755", str(paths["base"])], check=True)
+            subprocess.run(["chmod", "-R", "777", str(paths["stack"])], check=True)
         except Exception as e:
             print(f"Warning: failed to chown/chmod account base path: {e}")
         

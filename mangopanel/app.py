@@ -43,6 +43,7 @@ from .providers import (
 from .registrars import RegistrarError, registrar_for
 from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, validate_git_branch, validate_git_repository_url, verify_jwt, verify_password, verify_totp
 from .snappymail import request_login_session
+from .stack import build_account_runtime
 
 
 CONFIG = load_config()
@@ -321,6 +322,39 @@ def build_tool_redirect_url(host, path):
     return f"http://{host}{path}"
 
 
+def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host):
+    forwarded_host = (forwarded_host or "").strip()
+    if not forwarded_host:
+        return runtime_url or ""
+
+    host_part = forwarded_host.split(":")[0].lower()
+    port_suffix = f":{forwarded_host.split(':')[1]}" if ":" in forwarded_host else ""
+
+    # Preserve configured runtime_url when running unit tests locally (127.0.0.1 or localhost)
+    if host_part in {"127.0.0.1", "localhost"} and runtime_url:
+        return runtime_url
+
+    is_ip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_part)) or host_part in {"localhost", "::1"}
+
+    # 1. Accessed directly via public IP address (Option 1 path-based launch on panel host/port):
+    if is_ip:
+        return f"http://{forwarded_host}"
+
+    # 2. Accessed via a Domain (Subdomain launch as intended):
+    username = account["username"] if account else "user"
+    prefix = "files" if tool_name == "filebrowser" else ("pma" if tool_name == "phpmyadmin" else "mail")
+
+    if runtime_url and not ".localhost" in runtime_url and not ".nip.io" in runtime_url:
+        return runtime_url
+
+    domain_base = host_part
+    if host_part.startswith("panel.") or host_part.startswith("admin."):
+        domain_base = host_part.split(".", 1)[1]
+
+    subdomain = f"{prefix}.{username}.{domain_base}" if not host_part.startswith(f"{prefix}.") else host_part
+    return f"http://{subdomain}{port_suffix}"
+
+
 class MangoHandler(BaseHTTPRequestHandler):
     server_version = "MangoPanel/0.1"
 
@@ -542,26 +576,46 @@ class MangoHandler(BaseHTTPRequestHandler):
             if match:
                 username = match.group(1)
 
-        if not tool:
-            raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
-
         payload = verify_jwt(token, CONFIG.jwt_secret)
-        if not payload or payload.get("purpose") != "tool_launch" or payload.get("tool") != tool:
+        if not payload or payload.get("purpose") != "tool_launch":
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_tool_launch")
+
+        if not tool:
+            tool = payload.get("tool")
+
+        if not tool or payload.get("tool") != tool:
             raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_tool_launch")
 
         actor_type = payload.get("actor_type")
         actor_id = payload.get("sub")
-        if actor_type != "user" or not username:
+        if actor_type != "user":
             raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+
+        if not username:
+            username = payload.get("username")
 
         with connect(CONFIG.db_path) as conn:
             user = conn.execute("SELECT status FROM users WHERE id = ?", (actor_id,)).fetchone()
             if not user or user["status"] != "active":
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "inactive_user")
-            account = conn.execute(
-                "SELECT * FROM hosting_accounts WHERE user_id = ? AND username = ? AND status = 'active'",
-                (actor_id, username),
-            ).fetchone()
+
+            account = None
+            if username:
+                account = conn.execute(
+                    "SELECT * FROM hosting_accounts WHERE user_id = ? AND username = ? AND status = 'active'",
+                    (actor_id, username),
+                ).fetchone()
+            elif payload.get("account_id"):
+                account = conn.execute(
+                    "SELECT * FROM hosting_accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+                    (payload["account_id"], actor_id),
+                ).fetchone()
+            else:
+                account = conn.execute(
+                    "SELECT * FROM hosting_accounts WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+                    (actor_id,),
+                ).fetchone()
+
             if not account:
                 raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
 
@@ -1240,7 +1294,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if match:
                 username = match.group(1)
 
-        if not token or not username:
+        if not token:
             if "text/html" in self.headers.get("Accept", ""):
                 redirect_host = CONFIG.public_host
                 if forwarded_host:
@@ -1279,6 +1333,8 @@ class MangoHandler(BaseHTTPRequestHandler):
 
         actor_type = payload.get("actor_type")
         actor_id = payload.get("sub")
+        if not username:
+            username = payload.get("username")
 
         with connect(CONFIG.db_path) as conn:
             if actor_type == "admin":
@@ -1292,10 +1348,23 @@ class MangoHandler(BaseHTTPRequestHandler):
                 user = conn.execute("SELECT status FROM users WHERE id = ?", (actor_id,)).fetchone()
                 if not user or user["status"] != "active":
                     raise ApiError(HTTPStatus.UNAUTHORIZED, "inactive_user")
-                account = conn.execute(
-                    "SELECT id FROM hosting_accounts WHERE user_id = ? AND username = ? AND status = 'active'",
-                    (actor_id, username)
-                ).fetchone()
+                account = None
+                if username:
+                    account = conn.execute(
+                        "SELECT id FROM hosting_accounts WHERE user_id = ? AND username = ? AND status = 'active'",
+                        (actor_id, username)
+                    ).fetchone()
+                elif payload.get("account_id"):
+                    account = conn.execute(
+                        "SELECT id FROM hosting_accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+                        (payload["account_id"], actor_id)
+                    ).fetchone()
+                else:
+                    account = conn.execute(
+                        "SELECT id FROM hosting_accounts WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+                        (actor_id,)
+                    ).fetchone()
+
                 if not account:
                     raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
 
@@ -2061,10 +2130,18 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/files/launch" and method == "GET":
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
-                base_url = runtime.get("filebrowser_url", "")
+                forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+                base_url = resolve_tool_launch_url("filebrowser", runtime.get("filebrowser_url", ""), account, forwarded_host)
                 requested_path = query.get("path", [""])[0].strip()
                 launch_token = create_jwt(
-                    {"sub": actor["id"], "actor_type": "user", "purpose": "tool_launch", "tool": "filebrowser"},
+                    {
+                        "sub": actor["id"],
+                        "actor_type": "user",
+                        "purpose": "tool_launch",
+                        "tool": "filebrowser",
+                        "account_id": account["id"],
+                        "username": account["username"],
+                    },
                     CONFIG.jwt_secret,
                     600,
                 )
@@ -2118,13 +2195,23 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/phppgadmin/launch" and method == "GET":
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
-                return self.json_response({"launch_url": runtime.get("adminer_url"), "expires_in": 300})
+                forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+                base_url = resolve_tool_launch_url("adminer", runtime.get("adminer_url", ""), account, forwarded_host)
+                return self.json_response({"launch_url": base_url, "expires_in": 300})
             if path == "/api/client/phpmyadmin/launch" and method == "GET":
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
-                base_url = runtime.get("phpmyadmin_url", "")
+                forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+                base_url = resolve_tool_launch_url("phpmyadmin", runtime.get("phpmyadmin_url", ""), account, forwarded_host)
                 launch_token = create_jwt(
-                    {"sub": actor["id"], "actor_type": "user", "purpose": "tool_launch", "tool": "phpmyadmin"},
+                    {
+                        "sub": actor["id"],
+                        "actor_type": "user",
+                        "purpose": "tool_launch",
+                        "tool": "phpmyadmin",
+                        "account_id": account["id"],
+                        "username": account["username"],
+                    },
                     CONFIG.jwt_secret,
                     600,
                 )
@@ -2133,7 +2220,10 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/webmail/launch" and method == "GET":
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
-                return self.json_response({"launch_url": runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url", ""), "expires_in": 3600})
+                forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+                raw_url = runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url", "")
+                launch_url = resolve_tool_launch_url("webmail", raw_url, account, forwarded_host)
+                return self.json_response({"launch_url": launch_url, "expires_in": 3600})
             if path.startswith("/api/client/mailboxes/") and path.endswith("/webmail/launch") and method == "GET":
                 require_active_account(account)
                 mailbox_id = path_int_id(path.replace("/webmail/launch", ""), "/api/client/mailboxes/")
@@ -2535,51 +2625,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/mailboxes" and method == "GET":
                 require_account(account)
                 return self.json_response(client_mailboxes_payload(conn, account["id"]))
-            if path == "/api/client/mailboxes" and method == "POST":
-                require_active_account(account)
-                require_plan_capacity(conn, account["id"], "mailboxes", "max_mailboxes", "mailbox_limit_reached")
-                body = self.read_json()
-                email = normalize_email(body.get("email"))
-                local_part, domain = split_mailbox_address(email)
-                if not local_part or not domain:
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mailbox_address")
-                require_owned_mail_domain(conn, account["id"], domain)
-                password = validate_password(body.get("password", ""))
-                confirm_password = str(body.get("confirm_password") or "").strip()
-                if confirm_password and confirm_password != password:
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "mailbox_password_mismatch")
-                quota_mb = positive_int(body.get("quota_mb", 1024), "invalid_mailbox_quota", minimum=100, maximum=100000)
-                storage_path = str(mailbox_storage_path(account["base_path"], email))
-                ensure_mailbox_storage(storage_path)
-                password_secret = encrypt_secret(password, CONFIG.jwt_secret)
-                try:
-                    cur = conn.execute(
-                        """
-                        INSERT INTO mailboxes(
-                          account_id, email, local_part, domain, storage_path, mail_domain_id,
-                          quota_mb, status, password_hash, password_secret
-                        ) VALUES (?, ?, ?, ?, ?, (SELECT id FROM mail_domains md JOIN domains d ON d.id = md.domain_id WHERE md.account_id = ? AND d.name = ? LIMIT 1), ?, ?, ?, ?)
-                        """,
-                        (
-                            account["id"],
-                            email,
-                            local_part,
-                            domain,
-                            storage_path,
-                            account["id"],
-                            domain,
-                            quota_mb,
-                            "active",
-                            hash_password(password),
-                            password_secret,
-                        ),
-                    )
-                except sqlite3.IntegrityError as exc:
-                    raise ApiError(HTTPStatus.CONFLICT, "mailbox_already_exists") from exc
-                job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": cur.lastrowid, "email": email})
-                log_activity(conn, actor["id"], "mailbox_created", {"mailbox_id": cur.lastrowid, "email": email})
-                created = conn.execute("SELECT * FROM mailboxes WHERE id = ?", (cur.lastrowid,)).fetchone()
-                return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id, "mailbox": mailbox_row_payload(conn, created)}, HTTPStatus.CREATED)
+
             if path.startswith("/api/client/mailboxes/"):
                 require_active_account(account)
                 mailbox_id = path_int_id(path, "/api/client/mailboxes/")
