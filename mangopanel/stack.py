@@ -446,6 +446,8 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         snappymail_domains,
         sso_key=mail_policy.get("snappymail_sso_key") or snappymail_state.get("sso_key"),
     )
+    fb_db_dir = paths["stack"] / "filebrowser"
+    fb_db_dir.mkdir(parents=True, exist_ok=True)
     fb_config_dir = paths["stack"] / "filebrowser-config"
     fb_config_dir.mkdir(parents=True, exist_ok=True)
     fb_branding_dir = paths["stack"] / "filebrowser-branding"
@@ -1130,7 +1132,6 @@ services:
       - {base_path}/.runtime/stack/mysql.cnf:/etc/mysql/conf.d/mysql.cnf:ro
     networks:
       - account
-      - mangopanel-edge
 
   pg:
     image: postgres:16
@@ -1147,7 +1148,6 @@ services:
       - {base_path}/pg_databases:/var/lib/postgresql/data
     networks:
       - account
-      - mangopanel-edge
 
   adminer:
     image: adminer:latest

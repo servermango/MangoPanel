@@ -160,11 +160,11 @@
             <!-- Welcome banner -->
             <div class="dashboard-welcome">
               <div class="welcome-text">
-                <h2>Welcome back, {{ currentUserEmail.split('@')[0] }}</h2>
+                <h2>Welcome back, {{ (currentUserEmail || '').split('@')[0] }}</h2>
                 <p>{{ websites.length }} website{{ websites.length !== 1 ? 's' : '' }} · {{ databases.length }} database{{ databases.length !== 1 ? 's' : '' }} · {{ mailboxes.length }} mailbox{{ mailboxes.length !== 1 ? 'es' : '' }}</p>
               </div>
               <div class="welcome-actions">
-                <button class="primary-button" @click="openSiteWizard"><app-icon name="plus"></app-icon>Add Website</button>
+                <button class="primary-button" @click="openSiteWizard()"><app-icon name="plus"></app-icon>Add Website</button>
               </div>
             </div>
 
@@ -293,7 +293,7 @@
                 <h2>Websites</h2>
                 <p>{{ websites.length }} website{{ websites.length === 1 ? '' : 's' }} on this account</p>
               </div>
-              <button class="primary-button" @click="openSiteWizard"><app-icon name="plus"></app-icon><span>Add Website</span></button>
+              <button class="primary-button" @click="openSiteWizard()"><app-icon name="plus"></app-icon><span>Add Website</span></button>
             </div>
             <div class="table-wrap">
               <table>
@@ -2688,6 +2688,8 @@
                   <span v-if="installer.isSubmitting" class="btn-spinner"></span>
                   <span>{{ installer.isSubmitting ? 'Installing...' : 'Install Now' }}</span>
                 </button>
+              </div>
+            </div>
           </div>
 
           <!-- Custom SSL Modal -->
@@ -2764,7 +2766,7 @@
                       <span class="muted">Start from scratch with HTML/PHP files.</span>
                     </div>
                   </label>
-                  <label v-for="script in installer.scripts" :key="script.id" style="border: 1px solid var(--line); padding: 14px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px;">
+                  <label v-for="script in (installer.scripts || [])" :key="script.id" style="border: 1px solid var(--line); padding: 14px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px;">
                     <input type="radio" v-model="siteWizard.type" :value="script.id">
                     <div>
                       <strong style="display: block; color: var(--text);">{{ script.name }}</strong>
@@ -2787,7 +2789,7 @@
               
               <!-- Step 3: CMS Details (Only for CMS types) -->
               <div class="modal-body" v-if="siteWizard.step === 3 && siteWizard.type !== 'blank'">
-                <h3 style="margin-bottom: 1rem;">Configure {{ (installer.scripts.find(s => s.id === siteWizard.type) || {name: siteWizard.type}).name }} Installation</h3>
+                <h3 style="margin-bottom: 1rem;">Configure {{ ((installer.scripts || []).find(s => s.id === siteWizard.type) || {name: siteWizard.type}).name }} Installation</h3>
                 <div class="form-grid">
                   <label>Site Title <input v-model="siteWizard.site_title" placeholder="My Site"></label>
                   <label>Admin Username <input v-model="siteWizard.admin_username" placeholder="admin"></label>
@@ -2810,48 +2812,52 @@
                   <div>
                     <strong>Point your domain to MangoPanel</strong>
                     <p style="margin: .5rem 0 0; font-size: 13px;">
-                      For this website to work, configure the DNS bundle below.
-                      If your plan uses Cloudflare, use the nameservers shown here.
-                      Otherwise, point the records at the current MangoPanel host.
+                      Configure your domain at your registrar using the nameservers and DNS bundle records below.
                     </p>
                   </div>
                 </div>
-                <div class="info-box" v-if="siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length" style="margin-bottom: 1rem;">
-                  <app-icon name="check"></app-icon>
+
+                <div class="info-box" v-if="siteWizard.loadingDnsPreview" style="margin-bottom: 1rem;">
+                  <span class="btn-spinner" style="border-color: var(--primary); border-top-color: transparent;"></span>
                   <div>
-                    <strong>Cloudflare nameservers</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">Cloudflare returned these authoritative nameservers for your domain:</p>
-                    <ul style="margin: .75rem 0 0; padding-left: 1.2rem;">
-                      <li v-for="ns in siteWizard.createdDomainNameservers" :key="ns"><code>{{ ns }}</code></li>
+                    <strong>Retrieving DNS configuration...</strong>
+                    <p style="margin: .25rem 0 0; font-size: 13px;">Checking DNS provider assignment and nameservers for {{ siteWizard.domain }}</p>
+                  </div>
+                </div>
+
+                <div class="info-box" v-else-if="siteWizard.dnsPreview && siteWizard.dnsPreview.nameservers && siteWizard.dnsPreview.nameservers.length" style="margin-bottom: 1rem; background: rgba(59, 130, 246, 0.08); border-color: rgba(59, 130, 246, 0.3);">
+                  <app-icon name="globe"></app-icon>
+                  <div>
+                    <strong>{{ siteWizard.dnsPreview.dns_provider === 'cloudflare' ? 'Cloudflare Nameservers' : 'Nameservers' }}</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">
+                      {{ siteWizard.dnsPreview.dns_provider === 'cloudflare' ? 'Your website domain is linked to Cloudflare. Update your domain nameservers at your registrar to:' : 'Point your domain nameservers at your registrar to:' }}
+                    </p>
+                    <ul style="margin: .75rem 0 0; padding-left: 1.2rem; list-style: disc;">
+                      <li v-for="ns in siteWizard.dnsPreview.nameservers" :key="ns"><code style="font-size: 13px; font-weight: 600; color: var(--primary);">{{ ns }}</code></li>
                     </ul>
                   </div>
                 </div>
+
                 <div class="ssh-info-card">
-                  <template v-if="siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length">
-                    <label>Use these nameservers</label>
-                    <code v-for="ns in siteWizard.createdDomainNameservers" :key="ns">{{ ns }}</code>
-                  </template>
-                  <template v-else>
-                    <label>DNS bundle</label>
-                    <code>Name: @</code>
-                    <code>Type: A</code>
-                    <code>Value: {{ sshInfo.host }}</code>
-                    <code>Name: www</code>
-                    <code>Type: CNAME</code>
-                    <code>Value: @</code>
-                    <code>Name: @</code>
-                    <code>Type: MX</code>
-                    <code>Value: mail.{{ siteWizard.domain || 'your-domain' }}</code>
-                    <code>Name: @</code>
-                    <code>Type: TXT</code>
-                    <code>Value: SPF</code>
-                    <code>Name: _dmarc</code>
-                    <code>Type: TXT</code>
-                    <code>Value: DMARC</code>
-                    <code>Name: mango._domainkey</code>
-                    <code>Type: TXT</code>
-                    <code>Value: DKIM</code>
-                  </template>
+                  <label>DNS Bundle</label>
+                  <code>Name: @</code>
+                  <code>Type: A</code>
+                  <code>Value: {{ (siteWizard.dnsPreview && siteWizard.dnsPreview.server_ip) || serverIp }}</code>
+                  <code>Name: www</code>
+                  <code>Type: CNAME</code>
+                  <code>Value: @</code>
+                  <code>Name: @</code>
+                  <code>Type: MX</code>
+                  <code>Value: mail.{{ siteWizard.domain || 'your-domain' }}</code>
+                  <code>Name: @</code>
+                  <code>Type: TXT</code>
+                  <code>Value: v=spf1 mx a ~all</code>
+                  <code>Name: _dmarc</code>
+                  <code>Type: TXT</code>
+                  <code>Value: v=DMARC1; p=quarantine; rua=mailto:postmaster@{{ siteWizard.domain || 'your-domain' }}</code>
+                  <code>Name: mango._domainkey</code>
+                  <code>Type: TXT</code>
+                  <code>Value: v=DKIM1; k=rsa; p=...</code>
                 </div>
               </div>
 
@@ -2864,15 +2870,15 @@
                     <p style="margin: .5rem 0 0; font-size: 13px;">The domain has been added to your account and the DNS bundle has been saved.</p>
                   </div>
                 </div>
-                <div class="ssh-info-card" v-if="siteWizard.createdDomainNameservers.length">
+                <div class="ssh-info-card" v-if="siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length">
                   <label>Saved nameservers</label>
                   <code v-for="ns in siteWizard.createdDomainNameservers" :key="ns">{{ ns }}</code>
                 </div>
               </div>
 
               <div class="modal-footer">
-                <button v-if="siteWizard.step > 1" class="ghost-button" @click="prevSiteWizardStep">Back</button>
-                <button v-else class="ghost-button" @click="closeSiteWizard">Cancel</button>
+                <button v-if="siteWizard.step > 1" class="ghost-button" @click="prevSiteWizardStep" :disabled="siteWizard.isSubmitting">Back</button>
+                <button v-else class="ghost-button" @click="closeSiteWizard" :disabled="siteWizard.isSubmitting">Cancel</button>
                 
                 <button 
                   v-if="siteWizard.step < 4" 
@@ -2882,7 +2888,10 @@
                 >
                   Next
                 </button>
-                <button v-if="siteWizard.step === 4" class="primary-button" @click="finishSiteWizard">Create Website</button>
+                <button v-if="siteWizard.step === 4" class="primary-button" @click="finishSiteWizard" :disabled="siteWizard.isSubmitting">
+                  <span v-if="siteWizard.isSubmitting" class="btn-spinner"></span>
+                  <span>{{ siteWizard.isSubmitting ? 'Adding Website...' : 'Create Website' }}</span>
+                </button>
                 <button v-if="siteWizard.step === 5" class="primary-button" @click="closeSiteWizard">Done</button>
               </div>
             </div>
@@ -3154,7 +3163,7 @@
       </main>
     </div>
 
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="/assets/client.js"></script>
+    <script src="/assets/vue.global.prod.js"></script>
+    <script src="/assets/client.js?v=1.0.6"></script>
   </body>
 </html>

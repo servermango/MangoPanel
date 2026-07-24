@@ -2084,17 +2084,37 @@ class MangoHandler(BaseHTTPRequestHandler):
                             except Exception:
                                 pass
                 return self.json_response({"websites": websites})
+            if path == "/api/client/dns/preview-website" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                domain_name = body.get("domain", "")
+                if not domain_name:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_domain")
+                return self.json_response(preview_domain_dns(conn, account, domain_name))
             if path == "/api/client/websites" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "websites", "max_websites", "website_limit_reached")
                 body = self.read_json()
                 domain = sanitize_domain(body.get("domain", ""))
+                existing_website = conn.execute(
+                    "SELECT id FROM websites WHERE account_id = ? AND domain = ?",
+                    (account["id"], domain),
+                ).fetchone()
+                if existing_website:
+                    raise ApiError(HTTPStatus.CONFLICT, "domain_already_exists")
+
                 existing_domain = conn.execute(
                     "SELECT id, linked_website_id FROM domains WHERE account_id = ? AND name = ?",
                     (account["id"], domain),
                 ).fetchone()
-                if existing_domain:
-                    raise ApiError(HTTPStatus.CONFLICT, "domain_already_exists")
+                if existing_domain and existing_domain["linked_website_id"]:
+                    linked_site = conn.execute(
+                        "SELECT id FROM websites WHERE id = ?",
+                        (existing_domain["linked_website_id"],),
+                    ).fetchone()
+                    if linked_site:
+                        raise ApiError(HTTPStatus.CONFLICT, "domain_already_exists")
+
                 document_root = f"{account['base_path']}/domains/{domain}/public_html"
                 cur = conn.execute(
                     """
@@ -2105,26 +2125,46 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
                 website_id = cur.lastrowid
                 dns_assignment = default_domain_dns_assignment(conn, account["id"])
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO domains(
-                      account_id, name, kind, status, linked_website_id, dns_provider,
-                      dns_provider_account_id, nameservers_json, dns_status, provider_state_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        account["id"],
-                        domain,
-                        "managed",
-                        "active",
-                        website_id,
-                        dns_assignment["dns_provider"],
-                        dns_assignment["dns_provider_account_id"],
-                        json.dumps(dns_assignment["nameservers"]),
-                        dns_assignment["dns_status"],
-                        json.dumps(dns_assignment["provider_state"], sort_keys=True),
-                    ),
-                )
+                if existing_domain:
+                    conn.execute(
+                        """
+                        UPDATE domains SET
+                          linked_website_id = ?, status = 'active', dns_provider = ?,
+                          dns_provider_account_id = ?, nameservers_json = ?, dns_status = ?,
+                          provider_state_json = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            website_id,
+                            dns_assignment["dns_provider"],
+                            dns_assignment["dns_provider_account_id"],
+                            json.dumps(dns_assignment["nameservers"]),
+                            dns_assignment["dns_status"],
+                            json.dumps(dns_assignment["provider_state"], sort_keys=True),
+                            existing_domain["id"],
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO domains(
+                          account_id, name, kind, status, linked_website_id, dns_provider,
+                          dns_provider_account_id, nameservers_json, dns_status, provider_state_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            account["id"],
+                            domain,
+                            "managed",
+                            "active",
+                            website_id,
+                            dns_assignment["dns_provider"],
+                            dns_assignment["dns_provider_account_id"],
+                            json.dumps(dns_assignment["nameservers"]),
+                            dns_assignment["dns_status"],
+                            json.dumps(dns_assignment["provider_state"], sort_keys=True),
+                        ),
+                    )
                 job_id = enqueue_agent_job(conn, "create_website", "website", website_id, {"domain": domain})
                 domain_link = conn.execute(
                     "SELECT id FROM domains WHERE linked_website_id = ?",
@@ -2205,8 +2245,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "UPDATE websites SET php_version = ?, status = ?, php_ini = ?, index_enabled = ?, modsec_enabled = ?, analytics_enabled = ? WHERE id = ?",
                         (php_version, status, php_ini_str, index_enabled, modsec_enabled, analytics_enabled, website_id),
                     )
-                    
-                    job_id = enqueue_agent_job(conn, "update_website_php", "website", website_id, {"php_version": php_version})
+                    job_id = None
+                    if "php_version" in body:
+                        job_id = enqueue_agent_job(conn, "update_website_php", "website", website_id, {"php_version": php_version})
                     if "index_enabled" in body:
                         job_id = enqueue_agent_job(conn, "sync_website_index", "website", website_id, {})
                     if "modsec_enabled" in body:
@@ -5345,6 +5386,7 @@ class MangoHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
         self.end_headers()
         self.wfile.write(data)
         self.record_access_log(HTTPStatus.OK, len(data))
@@ -5670,6 +5712,62 @@ def default_domain_dns_assignment(conn, account_id):
         "nameservers": nameservers,
         "dns_status": "pending_provider_sync" if provider == DNS_PROVIDER_CLOUDFLARE else "active",
         "provider_state": {"assignment_source": "plan", "phase": "foundation"},
+    }
+
+
+def preview_domain_dns(conn, account, domain_name):
+    domain_name = sanitize_domain(domain_name)
+    dns_assignment = default_domain_dns_assignment(conn, account["id"])
+    provider_key = dns_assignment["dns_provider"]
+    nameservers = list(dns_assignment.get("nameservers") or [])
+
+    if provider_key == DNS_PROVIDER_CLOUDFLARE:
+        provider_account_id = dns_assignment.get("dns_provider_account_id")
+        provider_row = conn.execute("SELECT * FROM dns_providers WHERE key = ?", (DNS_PROVIDER_CLOUDFLARE,)).fetchone()
+        if provider_row:
+            acc_row = None
+            if provider_account_id:
+                acc_row = conn.execute("SELECT * FROM dns_provider_accounts WHERE id = ?", (provider_account_id,)).fetchone()
+            if not acc_row:
+                acc_row = conn.execute(
+                    "SELECT * FROM dns_provider_accounts WHERE provider_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+                    (provider_row["id"],),
+                ).fetchone()
+            if acc_row:
+                try:
+                    token = decrypt_secret(acc_row["encrypted_secret"], CONFIG.jwt_secret) if "encrypted_secret" in acc_row.keys() and acc_row["encrypted_secret"] else ""
+                    cf_account_id = acc_row["external_account_id"] if "external_account_id" in acc_row.keys() else None
+                    if token:
+                        cf = CloudflareDNSProvider(token, account_id=cf_account_id, api_base=CONFIG.cloudflare_api_base)
+                        if cf.configured():
+                            zone = cf.ensure_zone(domain_name)
+                            if zone and isinstance(zone, dict):
+                                cf_ns = zone.get("name_servers") or zone.get("nameservers")
+                                if cf_ns and isinstance(cf_ns, list):
+                                    nameservers = [str(ns).strip() for ns in cf_ns if str(ns).strip()]
+                except Exception as exc:
+                    logging.warning("Cloudflare zone creation/preview failed: %s", exc)
+
+    if not nameservers:
+        plan = conn.execute(
+            "SELECT p.* FROM hosting_accounts ha JOIN plans p ON p.id = ha.plan_id WHERE ha.id = ?",
+            (account["id"],),
+        ).fetchone()
+        if plan:
+            ns1 = str(plan["nameserver1"] if "nameserver1" in plan.keys() and plan["nameserver1"] else "").strip()
+            ns2 = str(plan["nameserver2"] if "nameserver2" in plan.keys() and plan["nameserver2"] else "").strip()
+            nameservers = [ns for ns in [ns1, ns2] if ns]
+        if not nameservers:
+            local_provider = dns_provider_by_key(conn, DNS_PROVIDER_LOCAL_POWERDNS)
+            local_config = parse_json_field(local_provider["config_json"], {}) if local_provider else {}
+            nameservers = local_config.get("nameservers") or ["ns1.mango.test", "ns2.mango.test"]
+
+    server_ip = get_host_public_ip(conn)
+    return {
+        "domain": domain_name,
+        "dns_provider": provider_key,
+        "nameservers": nameservers,
+        "server_ip": server_ip,
     }
 
 
@@ -8318,7 +8416,7 @@ def delete_client_website(conn, account, website):
     conn.execute("UPDATE ssl_certificates SET website_id = NULL, status = 'removed' WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE domains SET linked_website_id = NULL WHERE linked_website_id = ?", (website_id,))
     conn.execute("DELETE FROM websites WHERE id = ?", (website_id,))
-    conn.execute("UPDATE domains SET linked_website_id = NULL WHERE account_id = ? AND name = ?", (account["id"], domain))
+    conn.execute("DELETE FROM domains WHERE account_id = ? AND name = ?", (account["id"], domain))
 
     return enqueue_agent_job(conn, "delete_website", "hosting_account", account["id"], {"removed_website_id": website_id, "domain": domain})
 
@@ -8507,6 +8605,7 @@ def client_home(conn, user_id):
         "websites": websites,
         "warnings": warnings,
         "has_2fa": has_2fa,
+        "server_ip": get_host_public_ip(conn),
         "resources": {
             "disk_used_mb": 384,
             "disk_limit_mb": accounts[0]["storage_mb"] if accounts and "storage_mb" in accounts[0] else 10240,

@@ -441,6 +441,9 @@ const app = createApp({
     if (this.resourcePoll) window.clearInterval(this.resourcePoll);
   },
   computed: {
+    serverIp() {
+      return (this.home && this.home.server_ip) || "157.15.203.66";
+    },
     unreadNotificationsCount() {
       return this.notifications.filter(n => !n.read).length;
     },
@@ -454,7 +457,7 @@ const app = createApp({
       return this.login.email || "client@mangopanel.local";
     },
     userInitial() {
-      return (this.currentUserEmail.trim()[0] || "U").toUpperCase();
+      return ((this.currentUserEmail || "U").trim()[0] || "U").toUpperCase();
     },
     selectedWebsite() {
       return this.websites.find((site) => String(site.id) === String(this.selectedWebsiteId)) || this.websites[0] || null;
@@ -1447,7 +1450,7 @@ const app = createApp({
       }
     },
     async toggleAnalyticsTracking(site) {
-      if (!site) return;
+      if (!site || site.savingAnalytics) return;
       site.savingAnalytics = true;
       const nextValue = Number(site.analytics_enabled) ? 0 : 1;
       const previousValue = Number(site.analytics_enabled) ? 1 : 0;
@@ -1462,8 +1465,9 @@ const app = createApp({
         });
         const idx = this.websites.findIndex((item) => String(item.id) === String(site.id));
         if (idx !== -1) {
-          this.websites[idx] = { ...this.websites[idx], ...payload.website };
+          Object.assign(this.websites[idx], payload.website, { savingAnalytics: false });
         }
+        site.savingAnalytics = false;
         this.analytics.analytics_enabled = !!payload.website.analytics_enabled;
         if (this.activePage === "analytics") {
           await this.loadAnalytics();
@@ -1471,12 +1475,19 @@ const app = createApp({
         this.notify(`Analytics tracking ${payload.website.analytics_enabled ? "enabled" : "paused"} for ${site.domain}`, "success");
       } catch (error) {
         site.analytics_enabled = previousValue;
+        const idx = this.websites.findIndex((item) => String(item.id) === String(site.id));
+        if (idx !== -1) {
+          this.websites[idx].analytics_enabled = previousValue;
+          this.websites[idx].savingAnalytics = false;
+        }
         if (this.selectedWebsite && String(this.selectedWebsite.id) === String(site.id)) {
           this.analytics.analytics_enabled = !!previousValue;
         }
-        this.notify(error.message, "error");
+        this.notify(error.message || String(error), "error");
       } finally {
         site.savingAnalytics = false;
+        const target = this.websites.find((item) => String(item.id) === String(site.id));
+        if (target) target.savingAnalytics = false;
       }
     },
     async changeAnalyticsFilter(filter) {
@@ -2137,7 +2148,7 @@ const app = createApp({
     },
     // Website Creation Wizard
     openSiteWizard() {
-      this.siteWizard = {
+      Object.assign(this.siteWizard, {
         isOpen: true,
         step: 1,
         type: 'blank',
@@ -2149,22 +2160,45 @@ const app = createApp({
         allow_overwrite: false,
         createdWebsite: null,
         createdDomainNameservers: [],
+        dnsPreview: null,
+        loadingDnsPreview: false,
+        isSubmitting: false,
         errorMessage: "",
-      };
+      });
+      this.siteWizard.isOpen = true;
     },
     closeSiteWizard() {
       this.siteWizard.isOpen = false;
       this.siteWizard.errorMessage = "";
+    },
+    async fetchDnsPreview() {
+      if (!this.siteWizard.domain) return;
+      this.siteWizard.loadingDnsPreview = true;
+      try {
+        const payload = await this.api("/api/client/dns/preview-website", {
+          method: "POST",
+          body: JSON.stringify({ domain: this.siteWizard.domain }),
+        });
+        this.siteWizard.dnsPreview = payload;
+      } catch (err) {
+        console.error("DNS Preview error:", err);
+      } finally {
+        this.siteWizard.loadingDnsPreview = false;
+      }
     },
     nextSiteWizardStep() {
       if (this.siteWizard.step === 2) {
         if (!this.siteWizard.domain) return;
         if (this.siteWizard.type === 'blank') {
           this.siteWizard.step = 4; // Skip installer step
+          this.fetchDnsPreview();
           return;
         }
       }
       this.siteWizard.step++;
+      if (this.siteWizard.step === 4) {
+        this.fetchDnsPreview();
+      }
     },
     prevSiteWizardStep() {
       if (this.siteWizard.step === 4 && this.siteWizard.type === 'blank') {
@@ -2174,6 +2208,8 @@ const app = createApp({
       this.siteWizard.step--;
     },
     async finishSiteWizard() {
+      if (this.siteWizard.isSubmitting) return;
+      this.siteWizard.isSubmitting = true;
       try {
         this.siteWizard.errorMessage = "";
         this.notify("Creating website...", "success");
@@ -2194,7 +2230,7 @@ const app = createApp({
           });
         } catch (sslErr) {
           console.error("SSL Issue failed:", sslErr);
-          followupIssues.push(`SSL issuance could not be queued: ${sslErr.message || sslErr}`);
+          followupIssues.push(`SSL issuance issue: ${sslErr.message || sslErr}`);
         }
 
         if (this.siteWizard.type !== 'blank') {
@@ -2214,7 +2250,7 @@ const app = createApp({
             });
           } catch (installErr) {
             console.error("Installer setup failed:", installErr);
-            followupIssues.push(`Installer setup could not be queued: ${installErr.message || installErr}`);
+            followupIssues.push(`Installer issue: ${installErr.message || installErr}`);
           }
           if (followupIssues.length) {
             this.notify(`Website created. ${followupIssues.join(" ")}`, "warning");
@@ -2233,7 +2269,9 @@ const app = createApp({
         await this.refresh();
       } catch (err) {
         this.siteWizard.errorMessage = err.message || String(err);
-        this.notify(String(err), "error");
+        this.notify(String(err.message || err), "error");
+      } finally {
+        this.siteWizard.isSubmitting = false;
       }
     },
     async createWebsite() {
