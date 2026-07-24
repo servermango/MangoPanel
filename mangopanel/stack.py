@@ -8,6 +8,7 @@ from pathlib import Path
 from mangopanel.config import CONFIG, FILEBROWSER_CUSTOM_JS
 
 from .default_page import DEFAULT_PAGE_CONTENT
+from .error_pages import DEFAULT_ERROR_PAGES
 from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes
 from .snappymail import SNAPPYMAIL_APP_VERSION, SNAPPYMAIL_IMAGE, ensure_snappymail_layout, load_snappymail_state
 
@@ -475,6 +476,12 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         domain_dir.mkdir(parents=True, exist_ok=True)
         (domain_dir / "vhconf.conf").write_text(render_ols_vhconf(account, website), encoding="utf-8")
         
+    # Generate custom error pages
+    errors_dir = paths["stack"] / "errors"
+    errors_dir.mkdir(parents=True, exist_ok=True)
+    for err_code, err_html in DEFAULT_ERROR_PAGES.items():
+        (errors_dir / f"{err_code}.html").write_text(err_html, encoding="utf-8")
+
     (paths["stack"] / "openlitespeed-httpd.conf").write_text(render_openlitespeed_httpd_config(account, websites), encoding="utf-8")
     paths["apache_vhosts"].write_text(render_apache_vhosts(account, websites), encoding="utf-8")
     (paths["stack"] / "cron").write_text(render_crontab(account), encoding="utf-8")
@@ -845,6 +852,27 @@ errorlog {logs_dir}/error.log {{
 
 {accesslog_block}
 
+errorpage 403 {{
+  url                     /_mangopanel_errors/403.html
+}}
+errorpage 404 {{
+  url                     /_mangopanel_errors/404.html
+}}
+errorpage 500 {{
+  url                     /_mangopanel_errors/500.html
+}}
+errorpage 502 {{
+  url                     /_mangopanel_errors/502.html
+}}
+errorpage 503 {{
+  url                     /_mangopanel_errors/503.html
+}}
+
+context /_mangopanel_errors/ {{
+  location                /usr/local/lsws/mangopanel_errors/
+  allowBrowse             1
+}}
+
 context / {{
   type                    NULL
   location                {doc_root}/
@@ -920,6 +948,7 @@ def render_compose(account, plan, websites, runtime):
     domains_local_https = ", ".join([f"https://{d}" for d in local_doms]) if local_doms else ""
     
     username = account["username"]
+    uid = 5000 + int(account["id"])
     base_path = account["base_path"]
     memory = "{}m".format(plan["memory_mb"])
     cpu_count = compose_cpu_limit(plan["cpu_limit"])
@@ -959,12 +988,14 @@ services:
     mem_limit: {memory}
     cpus: "{cpu_count}"
     pids_limit: 256
+    entrypoint: ["/bin/sh", "-c", 'groupadd -g {uid} {username} 2>/dev/null || true; usermod -aG {uid} nobody 2>/dev/null || true; exec /entrypoint.sh "$$@"', "--"]
     labels:
       {labels_str}
     volumes:
       - {base_path}:/home/{username}
       - {base_path}/.runtime/stack/openlitespeed-httpd.conf:/usr/local/lsws/conf/httpd_config.conf:ro
       - {base_path}/.runtime/stack/vhosts:/usr/local/lsws/conf/vhosts:ro
+      - {base_path}/.runtime/stack/errors:/usr/local/lsws/mangopanel_errors:ro
     networks:
       - account
       - mangopanel-edge
@@ -986,7 +1017,7 @@ services:
     user: "{uid}:{uid}"
     restart: unless-stopped
     mem_limit: 128m
-    entrypoint: ["/bin/sh", "-c", "umask 0000 && exec /init.sh \"$$@\"", "--"]
+    entrypoint: ["/bin/sh", "-c", 'if [ ! -f /config/settings.json ]; then cp -a /defaults/settings.json /config/settings.json; fi; umask 0000; exec /bin/filebrowser "$$@"', "--"]
     command: ["--config", "/config/settings.json", "--noauth", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
     environment:
       FB_BRANDING_DISABLE_USED_PERCENTAGE: "true"
