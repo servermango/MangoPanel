@@ -3515,6 +3515,14 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not admin_username or not (admin_username.replace("_", "").replace("-", "").isalnum()):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_admin_username")
                 admin_email = normalize_email(body.get("admin_email", ""))
+                user_email = (actor.get("email") if actor and isinstance(actor, dict) else "") or ""
+                if not user_email and account and isinstance(account, dict) and account.get("user_id"):
+                    user_row = conn.execute("SELECT email FROM users WHERE id = ?", (account["user_id"],)).fetchone()
+                    if user_row:
+                        user_email = user_row["email"]
+                if not admin_email or "@mail.com" in admin_email or "@example." in admin_email or admin_email == "admin@example.com":
+                    if user_email:
+                        admin_email = user_email
                 admin_password = body.get("admin_password", "")
                 if not admin_password or len(admin_password) < 8:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "password_too_short")
@@ -3528,12 +3536,42 @@ class MangoHandler(BaseHTTPRequestHandler):
                 # Create database for WordPress
                 db_name = f"{account['username']}_wp_{website_id}"
                 db_user = f"{account['username']}_wp"
-                cur_db = conn.execute(
-                    "INSERT INTO databases(account_id, name, username, status) VALUES (?, ?, ?, ?)",
-                    (account["id"], db_name, db_user, "active"),
-                )
-                database_id = cur_db.lastrowid
-                enqueue_agent_job(conn, "create_database", "database", database_id, {"name": db_name})
+                db_password = "dev-db-password-change-me"
+                
+                existing_db = conn.execute("SELECT id FROM databases WHERE name = ?", (db_name,)).fetchone()
+                if existing_db:
+                    database_id = existing_db["id"]
+                else:
+                    cur_db = conn.execute(
+                        "INSERT INTO databases(account_id, name, username, status) VALUES (?, ?, ?, ?)",
+                        (account["id"], db_name, db_user, "active"),
+                    )
+                    database_id = cur_db.lastrowid
+                    enqueue_agent_job(conn, "create_database", "database", database_id, {"name": db_name, "account_id": account["id"]})
+
+                existing_user = conn.execute("SELECT id FROM database_users WHERE username = ?", (db_user,)).fetchone()
+                if existing_user:
+                    user_id = existing_user["id"]
+                else:
+                    user_cur = conn.execute(
+                        "INSERT INTO database_users(account_id, username, password_hash, status) VALUES (?, ?, ?, ?)",
+                        (account["id"], db_user, hash_password(db_password), "active"),
+                    )
+                    user_id = user_cur.lastrowid
+                    enqueue_agent_job(conn, "create_database_user", "database_user", user_id, {"username": db_user, "password": db_password, "account_id": account["id"]})
+
+                grant = conn.execute("SELECT id FROM database_grants WHERE database_id = ? AND user_id = ?", (database_id, user_id)).fetchone()
+                if not grant:
+                    grant_cur = conn.execute(
+                        "INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')",
+                        (database_id, user_id),
+                    )
+                    enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {
+                        "database_id": database_id,
+                        "user_id": user_id,
+                        "privileges": "ALL",
+                        "account_id": account["id"],
+                    })
 
                 # Create WordPress install record
                 cur = conn.execute(
@@ -3604,6 +3642,14 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not admin_username or not (admin_username.replace("_", "").replace("-", "").isalnum()):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_admin_username")
                 admin_email = normalize_email(body.get("admin_email", ""))
+                user_email = (actor.get("email") if actor and isinstance(actor, dict) else "") or ""
+                if not user_email and account and isinstance(account, dict) and account.get("user_id"):
+                    user_row = conn.execute("SELECT email FROM users WHERE id = ?", (account["user_id"],)).fetchone()
+                    if user_row:
+                        user_email = user_row["email"]
+                if not admin_email or "@mail.com" in admin_email or "@example." in admin_email or admin_email == "admin@example.com":
+                    if user_email:
+                        admin_email = user_email
                 admin_password = body.get("admin_password", "")
                 if not admin_password or len(admin_password) < 8:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "password_too_short")
@@ -3649,7 +3695,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                             "INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')",
                             (database_id, user_id),
                         )
-                        enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {})
+                        enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {
+                            "database_id": database_id,
+                            "user_id": user_id,
+                            "privileges": "ALL",
+                            "account_id": account["id"],
+                        })
                     
                     conn.execute(
                         """

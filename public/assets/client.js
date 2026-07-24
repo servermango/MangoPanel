@@ -448,6 +448,9 @@ const app = createApp({
       return this.notifications.filter(n => n.toastVisible);
     },
     currentUserEmail() {
+      if (this.home && this.home.user && this.home.user.email) return this.home.user.email;
+      if (this.home && this.home.account && this.home.account.email) return this.home.account.email;
+      if (this.home && this.home.email) return this.home.email;
       return this.login.email || "client@mangopanel.local";
     },
     userInitial() {
@@ -3004,7 +3007,11 @@ const app = createApp({
       };
       if (script.required_fields) {
         for (const field of script.required_fields) {
-          form[field.name] = field.default || "";
+          if (field.name === "admin_email") {
+            form[field.name] = this.currentUserEmail || field.default || "";
+          } else {
+            form[field.name] = field.default || "";
+          }
         }
       }
       this.installer.form = form;

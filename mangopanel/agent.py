@@ -526,6 +526,9 @@ class Agent:
             if account:
                 runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
                 sql.append(f"GRANT ALL PRIVILEGES ON *.* TO {sql_literal(runtime['db_user'])}@'%';")
+                db_dict = row_to_dict(database) if database else {}
+                if db_dict.get("username") and db_dict["username"] != runtime["db_user"]:
+                    sql.append(f"GRANT ALL PRIVILEGES ON `{db_dict['name']}`.* TO {sql_literal(db_dict['username'])}@'%';")
                 sql.append("FLUSH PRIVILEGES;")
             self.execute_mariadb_sql(conn, database["account_id"], sql)
             return self.provision_hosting_account(conn, database["account_id"])
@@ -1434,15 +1437,17 @@ class Agent:
         if not account or not sql_statements:
             return
         runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
-        if self.config.agent_mode == "docker":
-            docker = shutil.which("docker")
-            if docker:
+        docker = shutil.which("docker")
+        if docker and self.config.agent_mode != "simulate":
+            container_name = f"mp-{account['username']}-db"
+            check_proc = subprocess.run([docker, "ps", "-q", "-f", f"name=^{container_name}$"], capture_output=True, text=True)
+            if check_proc.stdout.strip():
                 sql_body = "\n".join(sql_statements)
-                subprocess.run(
+                proc = subprocess.run(
                     [
                         docker,
                         "exec",
-                        f"mp-{account['username']}-db",
+                        container_name,
                         "mariadb",
                         "-uroot",
                         f"-p{runtime['db_root_password']}",
@@ -1453,6 +1458,8 @@ class Agent:
                     capture_output=True,
                     text=True,
                 )
+                if proc.returncode != 0:
+                    raise AgentError(f"mariadb_sql_failed: {proc.stderr.strip()}")
 
     def sync_hotlink_protection(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -2112,6 +2119,10 @@ class Agent:
                 raise AgentError("document_root_not_empty")
             raise exc
 
+        # Auto-complete WordPress installation via WP-CLI so the install page
+        # never shows and admin credentials from the payload are used correctly.
+        self._wpcli_core_install(account, website, payload)
+
         return {
             "install_id": install_id,
             "website_id": install["website_id"],
@@ -2120,7 +2131,71 @@ class Agent:
             "site_title": payload.get("site_title"),
         }
 
+    def _wpcli_core_install(self, account, website, payload):
+        """Run `wp core install` inside the account's web container via WP-CLI.
+
+        This silently completes the WordPress installation so the user is never
+        shown the native WP install page and the admin credentials entered in
+        the MangoPanel installer modal are used as-is.
+        """
+        if self.config.agent_mode != "docker":
+            return
+        docker = shutil.which("docker")
+        if not docker:
+            return
+
+        username = account["username"]
+        container = f"mp-{username}-web"
+
+        # Check container is running
+        check = subprocess.run(
+            [docker, "ps", "-q", "-f", f"name=^{container}$"],
+            capture_output=True, text=True, check=False,
+        )
+        if not check.stdout.strip():
+            return
+
+        # Translate host document_root to path inside container.
+        # Mount: /root/MangoPanel/user_files/accounts/u000010 -> /home/u000010
+        base_path = str(account["base_path"])  # e.g. /root/MangoPanel/user_files/accounts/u000010
+        doc_root = str(website["document_root"])  # e.g. /root/MangoPanel/user_files/accounts/u000010/domains/x.com/public_html
+        container_home = f"/home/{username}"
+        if doc_root.startswith(base_path):
+            container_path = container_home + doc_root[len(base_path):]
+        else:
+            return  # Can't determine container path; skip
+
+        site_url = payload.get("site_url") or f"http://{website['domain']}"
+        site_title = payload.get("site_title", "My Site")
+        admin_user = payload.get("admin_username", "admin")
+        admin_email = payload.get("admin_email", "admin@example.com")
+        admin_password = payload.get("admin_password", "")
+
+        if not admin_password:
+            return  # Can't run install without a password
+
+        cmd = [
+            docker, "exec", container,
+            "wp", "core", "install",
+            f"--path={container_path}",
+            f"--url={site_url}",
+            f"--title={site_title}",
+            f"--admin_user={admin_user}",
+            f"--admin_email={admin_email}",
+            f"--admin_password={admin_password}",
+            "--skip-email",
+            "--allow-root",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+        # Log but don't raise — a pre-existing install ("WordPress is already installed")
+        # is acceptable; only a real failure should bubble up.
+        if result.returncode != 0:
+            already = "already install" in (result.stdout + result.stderr).lower()
+            if not already:
+                raise AgentError(f"wpcli_install_failed: {result.stderr.strip() or result.stdout.strip()}")
+
     def install_script(self, conn, job):
+
         payload = json.loads(job["payload"]) if isinstance(job["payload"], str) else job["payload"]
         script_id = payload.get("script_id")
         install_id = job["target_id"]

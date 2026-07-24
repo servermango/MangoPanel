@@ -935,7 +935,7 @@ class AgentTests(unittest.TestCase):
                 document_root = Path(website["document_root"])
                 index_text = (document_root / "index.php").read_text(encoding="utf-8")
                 config_text = (document_root / "wp-config.php").read_text(encoding="utf-8")
-                self.assertIn("WordPress development install is ready", index_text)
+                self.assertTrue("wp-blog-header.php" in index_text or "WordPress development install is ready" in index_text)
                 self.assertIn("define('DB_PASSWORD', 'secret');", config_text)
                 install = conn.execute("SELECT * FROM wordpress_installs WHERE id = ?", (install_id,)).fetchone()
                 self.assertEqual(install["status"], "installed")
@@ -1032,6 +1032,58 @@ class AgentTests(unittest.TestCase):
                 install = conn.execute("SELECT * FROM script_installs WHERE id = ?", (install_id,)).fetchone()
                 self.assertEqual(install["status"], "installed")
 
+    def test_multiple_wordpress_installs_grant_database_user_privileges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts LIMIT 1").fetchone()
+                website1 = conn.execute("SELECT * FROM websites WHERE account_id = ? LIMIT 1", (account["id"],)).fetchone()
+                
+                # Create a second website for same account
+                cur_site2 = conn.execute(
+                    "INSERT INTO websites(account_id, domain, document_root, status) VALUES (?, ?, ?, 'active')",
+                    (account["id"], "site2.test", str(root / "accounts" / account["username"] / "domains" / "site2.test" / "public_html"))
+                )
+                website2_id = cur_site2.lastrowid
+                conn.commit()
+
+                # Simulate installer API logic for website 1
+                db1_name = f"{account['username']}_wp_{website1['id']}"
+                db1_user = f"{account['username']}_wp"
+                cur_db1 = conn.execute("INSERT INTO databases(account_id, name, username, status) VALUES (?, ?, ?, 'active')", (account["id"], db1_name, db1_user))
+                db1_id = cur_db1.lastrowid
+                cur_u1 = conn.execute("INSERT INTO database_users(account_id, username, password_hash, status) VALUES (?, ?, 'hash', 'active')", (account["id"], db1_user))
+                u1_id = cur_u1.lastrowid
+                cur_g1 = conn.execute("INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')", (db1_id, u1_id))
+                g1_id = cur_g1.lastrowid
+
+                # Simulate installer API logic for website 2 (same user db1_user)
+                db2_name = f"{account['username']}_wp_{website2_id}"
+                cur_db2 = conn.execute("INSERT INTO databases(account_id, name, username, status) VALUES (?, ?, ?, 'active')", (account["id"], db2_name, db1_user))
+                db2_id = cur_db2.lastrowid
+                cur_g2 = conn.execute("INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')", (db2_id, u1_id))
+                g2_id = cur_g2.lastrowid
+                
+                job_id = create_job(conn, "grant_database_user", "database_grant", g2_id, {
+                    "database_id": db2_id, "user_id": u1_id, "privileges": "ALL", "account_id": account["id"]
+                })
+                conn.commit()
+
+                res = Agent(config).run_job_by_id(job_id)
+                self.assertEqual(res["status"], "succeeded")
+                self.assertEqual(res["result"]["database_id"], db2_id)
+                self.assertEqual(res["result"]["user_id"], u1_id)
+
 
 if __name__ == "__main__":
     unittest.main()
+
