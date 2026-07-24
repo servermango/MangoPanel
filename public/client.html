@@ -2825,21 +2825,12 @@
                   </div>
                 </div>
 
-                <div class="info-box" v-else-if="siteWizard.dnsPreview && siteWizard.dnsPreview.nameservers && siteWizard.dnsPreview.nameservers.length" style="margin-bottom: 1rem; background: rgba(59, 130, 246, 0.08); border-color: rgba(59, 130, 246, 0.3);">
-                  <app-icon name="globe"></app-icon>
-                  <div>
-                    <strong>{{ siteWizard.dnsPreview.dns_provider === 'cloudflare' ? 'Cloudflare Nameservers' : 'Nameservers' }}</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">
-                      {{ siteWizard.dnsPreview.dns_provider === 'cloudflare' ? 'Your website domain is linked to Cloudflare. Update your domain nameservers at your registrar to:' : 'Point your domain nameservers at your registrar to:' }}
-                    </p>
-                    <ul style="margin: .75rem 0 0; padding-left: 1.2rem; list-style: disc;">
-                      <li v-for="ns in siteWizard.dnsPreview.nameservers" :key="ns"><code style="font-size: 13px; font-weight: 600; color: var(--primary);">{{ ns }}</code></li>
-                    </ul>
-                  </div>
-                </div>
-
                 <div class="ssh-info-card">
-                  <label>DNS Bundle</label>
+                  <template v-if="siteWizard.dnsPreview && siteWizard.dnsPreview.nameservers && siteWizard.dnsPreview.nameservers.length">
+                    <label>Nameservers to update at registrar</label>
+                    <code v-for="ns in siteWizard.dnsPreview.nameservers" :key="ns">{{ ns }}</code>
+                  </template>
+                  <label style="margin-top: 12px;">DNS Bundle</label>
                   <code>Name: @</code>
                   <code>Type: A</code>
                   <code>Value: {{ (siteWizard.dnsPreview && siteWizard.dnsPreview.server_ip) || serverIp }}</code>
@@ -3164,6 +3155,6 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/client.js?v=1.0.6"></script>
+    <script src="/assets/client.js?v=1.0.7"></script>
   </body>
 </html>
