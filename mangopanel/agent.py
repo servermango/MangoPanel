@@ -521,6 +521,13 @@ class Agent:
             database = conn.execute("SELECT * FROM databases WHERE id = ?", (job["target_id"],)).fetchone()
             if not database:
                 raise AgentError("database_not_found")
+            account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (database["account_id"],)).fetchone()
+            sql = [f"CREATE DATABASE IF NOT EXISTS `{database['name']}`;"]
+            if account:
+                runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+                sql.append(f"GRANT ALL PRIVILEGES ON *.* TO {sql_literal(runtime['db_user'])}@'%';")
+                sql.append("FLUSH PRIVILEGES;")
+            self.execute_mariadb_sql(conn, database["account_id"], sql)
             return self.provision_hosting_account(conn, database["account_id"])
         if job_type == "create_mailbox":
             mailbox = conn.execute("SELECT * FROM mailboxes WHERE id = ?", (job["target_id"],)).fetchone()
@@ -608,33 +615,92 @@ class Agent:
                 raise AgentError("database_not_found")
             return {"database_id": database["id"], "name": database["name"], "status": database["status"], "synced": True}
         if job_type == "delete_database":
-            # Database row already removed by API; agent would drop the MySQL database in production.
+            payload = self.job_payload(job)
+            db_name = payload.get("name")
+            account_id = payload.get("account_id")
+            if db_name and account_id:
+                self.execute_mariadb_sql(conn, account_id, [f"DROP DATABASE IF EXISTS `{db_name}`;"])
             return {"database_id": job["target_id"], "deleted": True}
         if job_type == "create_database_user":
-            db_user = conn.execute("SELECT id, username FROM database_users WHERE id = ?", (job["target_id"],)).fetchone()
+            db_user = conn.execute("SELECT id, account_id, username FROM database_users WHERE id = ?", (job["target_id"],)).fetchone()
             if not db_user:
                 raise AgentError("database_user_not_found")
+            payload = self.job_payload(job)
+            password = payload.get("password")
+            if password:
+                sql = [
+                    f"CREATE USER IF NOT EXISTS {sql_literal(db_user['username'])}@'%' IDENTIFIED BY {sql_literal(password)};",
+                    f"ALTER USER {sql_literal(db_user['username'])}@'%' IDENTIFIED BY {sql_literal(password)};",
+                    "FLUSH PRIVILEGES;",
+                ]
+                self.execute_mariadb_sql(conn, db_user["account_id"], sql)
             return {"database_user_id": db_user["id"], "username": db_user["username"], "created": True}
         if job_type == "update_database_user":
-            db_user = conn.execute("SELECT id, username, status FROM database_users WHERE id = ?", (job["target_id"],)).fetchone()
+            db_user = conn.execute("SELECT id, account_id, username, status FROM database_users WHERE id = ?", (job["target_id"],)).fetchone()
             if not db_user:
                 raise AgentError("database_user_not_found")
+            payload = self.job_payload(job)
+            password = payload.get("password")
+            sql = []
+            if password:
+                sql.append(f"ALTER USER {sql_literal(db_user['username'])}@'%' IDENTIFIED BY {sql_literal(password)};")
+            if db_user["status"] == "suspended":
+                sql.append(f"ALTER USER {sql_literal(db_user['username'])}@'%' ACCOUNT LOCK;")
+            elif db_user["status"] == "active":
+                sql.append(f"ALTER USER {sql_literal(db_user['username'])}@'%' ACCOUNT UNLOCK;")
+            if sql:
+                sql.append("FLUSH PRIVILEGES;")
+                self.execute_mariadb_sql(conn, db_user["account_id"], sql)
             return {"database_user_id": db_user["id"], "username": db_user["username"], "status": db_user["status"], "synced": True}
         if job_type == "delete_database_user":
-            # Database user row already removed by API; agent would drop MySQL user in production.
+            payload = self.job_payload(job)
+            username = payload.get("username")
+            account_id = payload.get("account_id")
+            if username and account_id:
+                self.execute_mariadb_sql(conn, account_id, [f"DROP USER IF EXISTS {sql_literal(username)}@'%';", "FLUSH PRIVILEGES;"])
             return {"database_user_id": job["target_id"], "deleted": True}
         if job_type == "grant_database_user":
             grant = conn.execute("SELECT id, database_id, user_id, privileges FROM database_grants WHERE id = ?", (job["target_id"],)).fetchone()
             if not grant:
                 raise AgentError("database_grant_not_found")
+            database = conn.execute("SELECT account_id, name FROM databases WHERE id = ?", (grant["database_id"],)).fetchone()
+            db_user = conn.execute("SELECT username FROM database_users WHERE id = ?", (grant["user_id"],)).fetchone()
+            if database and db_user:
+                priv = "ALL PRIVILEGES" if grant["privileges"] == "ALL" else grant["privileges"]
+                sql = [
+                    f"GRANT {priv} ON `{database['name']}`.* TO {sql_literal(db_user['username'])}@'%';",
+                    "FLUSH PRIVILEGES;",
+                ]
+                self.execute_mariadb_sql(conn, database["account_id"], sql)
             return {"grant_id": grant["id"], "database_id": grant["database_id"], "user_id": grant["user_id"], "privileges": grant["privileges"], "granted": True}
         if job_type == "update_database_grant":
             grant = conn.execute("SELECT id, database_id, user_id, privileges, status FROM database_grants WHERE id = ?", (job["target_id"],)).fetchone()
             if not grant:
                 raise AgentError("database_grant_not_found")
+            database = conn.execute("SELECT account_id, name FROM databases WHERE id = ?", (grant["database_id"],)).fetchone()
+            db_user = conn.execute("SELECT username FROM database_users WHERE id = ?", (grant["user_id"],)).fetchone()
+            if database and db_user:
+                priv = "ALL PRIVILEGES" if grant["privileges"] == "ALL" else grant["privileges"]
+                sql = [
+                    f"GRANT {priv} ON `{database['name']}`.* TO {sql_literal(db_user['username'])}@'%';",
+                    "FLUSH PRIVILEGES;",
+                ]
+                self.execute_mariadb_sql(conn, database["account_id"], sql)
             return {"grant_id": grant["id"], "privileges": grant["privileges"], "status": grant["status"], "synced": True}
         if job_type == "revoke_database_user":
-            # Grant row already removed by API; agent would run REVOKE in production.
+            payload = self.job_payload(job)
+            db_id = payload.get("database_id")
+            user_id = payload.get("user_id")
+            account_id = payload.get("account_id")
+            if db_id and user_id:
+                database = conn.execute("SELECT account_id, name FROM databases WHERE id = ?", (db_id,)).fetchone()
+                db_user = conn.execute("SELECT username FROM database_users WHERE id = ?", (user_id,)).fetchone()
+                if database and db_user:
+                    sql = [
+                        f"REVOKE ALL PRIVILEGES ON `{database['name']}`.* FROM {sql_literal(db_user['username'])}@'%';",
+                        "FLUSH PRIVILEGES;",
+                    ]
+                    self.execute_mariadb_sql(conn, database["account_id"] if database else account_id, sql)
             return {"grant_id": job["target_id"], "revoked": True}
         raise AgentError("unsupported_job_type: {}".format(job_type))
 
@@ -1337,6 +1403,31 @@ class Agent:
         )
         return {"mode": "native", "synced": True, "account_id": account_id, "hosts_count": len(hosts), "artifact_path": artifact}
 
+    def execute_mariadb_sql(self, conn, account_id, sql_statements):
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not account or not sql_statements:
+            return
+        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker")
+            if docker:
+                sql_body = "\n".join(sql_statements)
+                subprocess.run(
+                    [
+                        docker,
+                        "exec",
+                        f"mp-{account['username']}-db",
+                        "mariadb",
+                        "-uroot",
+                        f"-p{runtime['db_root_password']}",
+                        "-e",
+                        sql_body,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
     def sync_hotlink_protection(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
@@ -1853,6 +1944,37 @@ class Agent:
         cron_jobs = rows_to_dicts(conn.execute("SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         ensure_cron_runtime_artifacts(row_to_dict(account), cron_jobs)
         apply_result = self.apply_stack(paths["compose"], account["username"])
+        self.sync_account_databases(conn, account_id)
+
+    def sync_account_databases(self, conn, account_id):
+        databases = conn.execute("SELECT id, name FROM databases WHERE account_id = ? AND status = 'active'", (account_id,)).fetchall()
+        if not databases:
+            return
+        sql = []
+        for db in databases:
+            sql.append(f"CREATE DATABASE IF NOT EXISTS `{db['name']}`;")
+
+        grants = conn.execute(
+            """
+            SELECT g.id, g.privileges, d.name AS database_name, u.username
+            FROM database_grants g
+            JOIN databases d ON d.id = g.database_id
+            JOIN database_users u ON u.id = g.user_id
+            WHERE d.account_id = ? AND g.status = 'active' AND u.status = 'active'
+            """,
+            (account_id,),
+        ).fetchall()
+
+        for grant in grants:
+            priv = "ALL PRIVILEGES" if grant["privileges"] == "ALL" else grant["privileges"]
+            sql.append(f"GRANT {priv} ON `{grant['database_name']}`.* TO {sql_literal(grant['username'])}@'%';")
+
+        if sql:
+            sql.append("FLUSH PRIVILEGES;")
+            try:
+                self.execute_mariadb_sql(conn, account_id, sql)
+            except Exception as exc:
+                print(f"Warning: sync_account_databases failed for account {account_id}: {exc}")
         
 
         services_json = json.dumps(STACK_SERVICES)

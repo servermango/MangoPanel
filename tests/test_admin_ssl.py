@@ -59,6 +59,51 @@ class AdminSslTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_idle_tcp_connection_does_not_block_server(self):
+        import socket
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = app_module.load_config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.ssl_cert_path = root / "ssl" / "admin.crt"
+            config.ssl_key_path = root / "ssl" / "admin.key"
+            config.enable_ssl = True
+            seed_dev_data(config.db_path, config.account_root)
+
+            server = app_module.MangoDualServer(
+                ("127.0.0.1", 0),
+                app_module.MangoHandler,
+                ssl_cert_path=config.ssl_cert_path,
+                ssl_key_path=config.ssl_key_path,
+                enable_ssl=True,
+            )
+            server.panel = "admin"
+            port = server.server_address[1]
+
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            idle_sock = None
+            try:
+                # Open an idle TCP connection that sends no data
+                idle_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                idle_sock.connect(("127.0.0.1", port))
+
+                # Verify server can still process concurrent HTTP requests without hanging
+                http_url = f"http://127.0.0.1:{port}/health"
+                req_http = urllib.request.Request(http_url)
+                with urllib.request.urlopen(req_http, timeout=3) as resp:
+                    self.assertEqual(resp.status, 200)
+                    self.assertIn(b"mangopanel-api", resp.read())
+            finally:
+                if idle_sock:
+                    idle_sock.close()
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()

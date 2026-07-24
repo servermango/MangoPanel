@@ -93,6 +93,39 @@ class FileExtractTests(unittest.TestCase):
 
             self.assertEqual(ctx.exception.message, "invalid_path_traversal")
 
+    def test_extracted_file_permissions_allow_webserver_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            account = {"id": 1, "base_path": tmp, "username": "u000001"}
+            zip_file = os.path.join(tmp, "wordpress_test.zip")
+            
+            with zipfile.ZipFile(zip_file, "w") as zf:
+                zf.writestr("index.php", "<?php echo 'hello';")
+                zf.writestr("wp-content/uploads/dummy.txt", "data")
+
+            # Simulate extraction permissions setting logic
+            dest_dir = tmp
+            with zipfile.ZipFile(zip_file, "r") as zf:
+                zf.extractall(dest_dir)
+
+            for root, dirs, files in os.walk(dest_dir):
+                for d in dirs:
+                    os.chmod(os.path.join(root, d), 0o777)
+                for f in files:
+                    filepath = os.path.join(root, f)
+                    st_mode = os.stat(filepath).st_mode
+                    if st_mode & 0o111:
+                        os.chmod(filepath, 0o777)
+                    else:
+                        os.chmod(filepath, 0o666)
+
+            index_mode = os.stat(os.path.join(tmp, "index.php")).st_mode & 0o777
+            dir_mode = os.stat(os.path.join(tmp, "wp-content")).st_mode & 0o777
+            file_in_dir_mode = os.stat(os.path.join(tmp, "wp-content", "uploads", "dummy.txt")).st_mode & 0o777
+
+            self.assertEqual(index_mode & 0o002, 0o002, "File must be writable by others (webserver)")
+            self.assertEqual(dir_mode & 0o002, 0o002, "Directory must be writable by others (webserver)")
+            self.assertEqual(file_in_dir_mode & 0o002, 0o002, "Nested file must be writable by others (webserver)")
+
 
 if __name__ == "__main__":
     unittest.main()

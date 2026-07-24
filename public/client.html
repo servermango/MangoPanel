@@ -767,7 +767,11 @@
                             {{ database.status }}
                           </span>
                         </td>
-                        <td><small>{{ database.connection?.host || '127.0.0.1' }}:{{ database.connection?.port || 3306 }}</small></td>
+                        <td>
+                          <div style="font-size: 12px; font-weight: 500;">for sites on this server</div>
+                          <div style="font-size: 12px;" class="muted">Host : {{ database.connection?.host || 'db' }};</div>
+                          <div style="font-size: 12px;" class="muted">port - {{ database.connection?.port || 3306 }}</div>
+                        </td>
                         <td class="actions">
                           <button class="small-button" @click="openEditDbModal(database)">Edit</button>
                           <button class="danger-button" @click="deleteDatabase(database)"><app-icon name="trash"></app-icon></button>
@@ -2880,13 +2884,31 @@
               </div>
 
               <div class="modal-footer">
-                <button class="ghost-button" @click="closeDbModal">Cancel</button>
-                <button v-if="dbModal === 'database'" class="primary-button" @click="createDatabase" :disabled="!newDatabase.name">Create Database</button>
-                <button v-if="dbModal === 'user'" class="primary-button" @click="createDatabaseUser" :disabled="!newDatabaseUser.username || !newDatabaseUser.password">Create User</button>
-                <button v-if="dbModal === 'grant'" class="primary-button" @click="createDatabaseGrant" :disabled="!newDatabaseGrant.database_id || !newDatabaseGrant.user_id">Grant Access</button>
-                <button v-if="dbModal === 'edit_database'" class="primary-button" @click="saveEditDatabase" :disabled="!editingDatabase.name">Save Database</button>
-                <button v-if="dbModal === 'change_password'" class="primary-button" @click="saveChangePassword" :disabled="!editingDatabaseUser.newPassword">Reset Password</button>
-                <button v-if="dbModal === 'edit_grant'" class="primary-button" @click="saveEditGrant">Save Privileges</button>
+                <button class="ghost-button" @click="closeDbModal" :disabled="dbSubmitting">Cancel</button>
+                <button v-if="dbModal === 'database'" class="primary-button" @click="createDatabase" :disabled="!newDatabase.name || dbSubmitting">
+                  <span v-if="dbSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbSubmitting ? 'Creating Database...' : 'Create Database' }}</span>
+                </button>
+                <button v-if="dbModal === 'user'" class="primary-button" @click="createDatabaseUser" :disabled="!newDatabaseUser.username || !newDatabaseUser.password || dbSubmitting">
+                  <span v-if="dbSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbSubmitting ? 'Creating User...' : 'Create User' }}</span>
+                </button>
+                <button v-if="dbModal === 'grant'" class="primary-button" @click="createDatabaseGrant" :disabled="!newDatabaseGrant.database_id || !newDatabaseGrant.user_id || dbSubmitting">
+                  <span v-if="dbSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbSubmitting ? 'Granting Access...' : 'Grant Access' }}</span>
+                </button>
+                <button v-if="dbModal === 'edit_database'" class="primary-button" @click="saveEditDatabase" :disabled="!editingDatabase.name || dbSubmitting">
+                  <span v-if="dbSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbSubmitting ? 'Saving Database...' : 'Save Database' }}</span>
+                </button>
+                <button v-if="dbModal === 'change_password'" class="primary-button" @click="saveChangePassword" :disabled="!editingDatabaseUser.newPassword || dbSubmitting">
+                  <span v-if="dbSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbSubmitting ? 'Resetting Password...' : 'Reset Password' }}</span>
+                </button>
+                <button v-if="dbModal === 'edit_grant'" class="primary-button" @click="saveEditGrant" :disabled="dbSubmitting">
+                  <span v-if="dbSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbSubmitting ? 'Saving Privileges...' : 'Save Privileges' }}</span>
+                </button>
               </div>
             </div>
           </div>

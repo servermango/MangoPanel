@@ -283,6 +283,7 @@ const app = createApp({
       searchQuery: "",
       userMenuOpen: false,
       dbModal: null,
+      dbSubmitting: false,
       newDatabase: { name: "", username: "" },
       newDatabaseUser: { username: "", password: "" },
       newDatabaseGrant: { database_id: "", user_id: "", privileges: "ALL" },
@@ -2233,25 +2234,31 @@ const app = createApp({
     },
     // Database Modals
     openDbModal(type) {
+      this.dbSubmitting = false;
       this.dbModal = type;
       this.newDatabase = { name: "", username: "" };
       this.newDatabaseUser = { username: "", password: "" };
       this.newDatabaseGrant = { database_id: "", user_id: "", privileges: "ALL" };
     },
     closeDbModal() {
+      if (this.dbSubmitting) return;
       this.dbModal = null;
       this.editingDatabase = null;
       this.editingDatabaseUser = null;
       this.editingDatabaseGrant = null;
+      this.dbSubmitting = false;
     },
     refresh() {
       return this.load();
     },
     openEditDbModal(database) {
+      this.dbSubmitting = false;
       this.editingDatabase = { ...database };
       this.dbModal = 'edit_database';
     },
     async saveEditDatabase() {
+      if (!this.editingDatabase || !this.editingDatabase.name || this.dbSubmitting) return;
+      this.dbSubmitting = true;
       try {
         await this.api(`/api/client/databases/${this.editingDatabase.id}`, {
           method: "PATCH",
@@ -2260,17 +2267,23 @@ const app = createApp({
             status: this.editingDatabase.status
           })
         });
+        this.notify("Database updated successfully", "success");
+        this.dbSubmitting = false;
         this.closeDbModal();
         await this.refresh();
       } catch (err) {
+        this.dbSubmitting = false;
         this.notify(String(err), "error");
       }
     },
     openChangePasswordModal(user) {
+      this.dbSubmitting = false;
       this.editingDatabaseUser = { ...user, newPassword: "" };
       this.dbModal = 'change_password';
     },
     async saveChangePassword() {
+      if (!this.editingDatabaseUser || !this.editingDatabaseUser.newPassword || this.dbSubmitting) return;
+      this.dbSubmitting = true;
       try {
         await this.api(`/api/client/database-users/${this.editingDatabaseUser.id}`, {
           method: "PATCH",
@@ -2280,17 +2293,23 @@ const app = createApp({
             password: this.editingDatabaseUser.newPassword
           })
         });
+        this.notify("User password updated successfully", "success");
+        this.dbSubmitting = false;
         this.closeDbModal();
         await this.refresh();
       } catch (err) {
+        this.dbSubmitting = false;
         this.notify(String(err), "error");
       }
     },
     openEditGrantModal(grant) {
+      this.dbSubmitting = false;
       this.editingDatabaseGrant = { ...grant };
       this.dbModal = 'edit_grant';
     },
     async saveEditGrant() {
+      if (!this.editingDatabaseGrant || this.dbSubmitting) return;
+      this.dbSubmitting = true;
       try {
         await this.api(`/api/client/database-grants/${this.editingDatabaseGrant.id}`, {
           method: "PATCH",
@@ -2299,9 +2318,12 @@ const app = createApp({
             status: this.editingDatabaseGrant.status
           })
         });
+        this.notify("Privileges updated successfully", "success");
+        this.dbSubmitting = false;
         this.closeDbModal();
         await this.refresh();
       } catch (err) {
+        this.dbSubmitting = false;
         this.notify(String(err), "error");
       }
     },
@@ -2394,32 +2416,44 @@ const app = createApp({
     },
 
     async createDatabase() {
-      if (!this.newDatabase.name) return;
+      if (!this.newDatabase.name || this.dbSubmitting) return;
+      this.dbSubmitting = true;
       try {
         await this.api("/api/client/databases", { method: "POST", body: JSON.stringify(this.newDatabase) });
+        this.notify("Database created successfully", "success");
+        this.dbSubmitting = false;
         this.closeDbModal();
-        this.refresh();
+        await this.refresh();
       } catch (err) {
+        this.dbSubmitting = false;
         this.notify(String(err), "error");
       }
     },
     async createDatabaseUser() {
-      if (!this.newDatabaseUser.username || !this.newDatabaseUser.password) return;
+      if (!this.newDatabaseUser.username || !this.newDatabaseUser.password || this.dbSubmitting) return;
+      this.dbSubmitting = true;
       try {
         await this.api("/api/client/database-users", { method: "POST", body: JSON.stringify(this.newDatabaseUser) });
+        this.notify("Database user created successfully", "success");
+        this.dbSubmitting = false;
         this.closeDbModal();
-        this.refresh();
+        await this.refresh();
       } catch (err) {
+        this.dbSubmitting = false;
         this.notify(String(err), "error");
       }
     },
     async createDatabaseGrant() {
-      if (!this.newDatabaseGrant.database_id || !this.newDatabaseGrant.user_id) return;
+      if (!this.newDatabaseGrant.database_id || !this.newDatabaseGrant.user_id || this.dbSubmitting) return;
+      this.dbSubmitting = true;
       try {
         await this.api("/api/client/database-grants", { method: "POST", body: JSON.stringify(this.newDatabaseGrant) });
+        this.notify("Privileges granted successfully", "success");
+        this.dbSubmitting = false;
         this.closeDbModal();
-        this.refresh();
+        await this.refresh();
       } catch (err) {
+        this.dbSubmitting = false;
         this.notify(String(err), "error");
       }
     },

@@ -1014,7 +1014,7 @@ services:
       PMA_HOST: db
       PMA_USER: {db_user}
       PMA_PASSWORD: {db_password}
-      PMA_ABSOLUTE_URI: "http://{phpmyadmin_raw_domain}/db/"
+      PMA_ABSOLUTE_URI: "/db/"
       UPLOAD_LIMIT: 256M
     networks:
       - account

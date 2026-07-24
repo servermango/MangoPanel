@@ -343,11 +343,12 @@ def strip_magic_launch_segment(forwarded_uri):
     return cleaned or "/"
 
 
-def build_tool_redirect_url(host, path):
+def build_tool_redirect_url(host, path, is_https=False):
     host = host or "localhost"
     if not path.startswith("/"):
         path = "/" + path
-    return f"http://{host}{path}"
+    scheme = "https" if is_https else "http"
+    return f"{scheme}://{host}{path}"
 
 
 def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host, is_https=False):
@@ -440,19 +441,29 @@ class MangoDualServer(ThreadingHTTPServer):
                 print(f"Warning: Failed to initialize SSL context: {e}")
 
     def get_request(self):
-        newsock, client_addr = self.socket.accept()
-        if self.ssl_context:
-            try:
-                first_byte = newsock.recv(1, socket.MSG_PEEK)
-                if first_byte == b"\x16":
-                    newsock = self.ssl_context.wrap_socket(newsock, server_side=True)
-            except Exception:
-                pass
-        return newsock, client_addr
+        return self.socket.accept()
 
 
 class MangoHandler(BaseHTTPRequestHandler):
     server_version = "MangoPanel/0.1"
+
+    def setup(self):
+        self.connection = self.request
+        ssl_ctx = getattr(self.server, "ssl_context", None)
+        if ssl_ctx:
+            try:
+                self.connection.settimeout(2.0)
+                first_byte = self.connection.recv(1, socket.MSG_PEEK)
+                if first_byte == b"\x16":
+                    self.connection = ssl_ctx.wrap_socket(self.connection, server_side=True)
+                    self.request = self.connection
+                self.connection.settimeout(None)
+            except Exception:
+                try:
+                    self.connection.settimeout(None)
+                except Exception:
+                    pass
+        super().setup()
 
     @property
     def is_https(self):
@@ -759,7 +770,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 cookie_headers = named_cookie_headers("mp_mail_token", mail_access_token, forwarded_host, 3600, is_https=self.is_https)
             for cookie_header in cookie_headers:
                 self.send_header("Set-Cookie", cookie_header)
-            self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path))
+            self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path, is_https=self.is_https))
             self.end_headers()
             return
 
@@ -927,20 +938,25 @@ class MangoHandler(BaseHTTPRequestHandler):
             if uid and gid:
                 try:
                     subprocess.run(["chown", "-R", f"{uid}:{gid}", dest_dir], check=False)
-                    subprocess.run(["chmod", "-R", "u+rwX", dest_dir], check=False)
+                    subprocess.run(["chmod", "-R", "a+rwX", dest_dir], check=False)
                 except Exception:
                     pass
                 for root, dirs, files in os.walk(dest_dir):
                     for d in dirs:
                         try:
                             os.chown(os.path.join(root, d), uid, gid)
-                            os.chmod(os.path.join(root, d), 0o755)
+                            os.chmod(os.path.join(root, d), 0o777)
                         except Exception:
                             pass
                     for f in files:
                         try:
-                            os.chown(os.path.join(root, f), uid, gid)
-                            os.chmod(os.path.join(root, f), 0o644)
+                            filepath = os.path.join(root, f)
+                            os.chown(filepath, uid, gid)
+                            st_mode = os.stat(filepath).st_mode
+                            if st_mode & 0o111:
+                                os.chmod(filepath, 0o777)
+                            else:
+                                os.chmod(filepath, 0o666)
                         except Exception:
                             pass
 
@@ -1584,6 +1600,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             forwarded_uri.startswith("/files/static/")
             or "/static/" in forwarded_uri
             or forwarded_uri.startswith("/db/themes/")
+            or forwarded_uri.startswith("/db/js/")
+            or forwarded_uri.startswith("/db/favicon")
             or forwarded_uri.startswith("/webmail/assets/")
         ):
             self.send_response(HTTPStatus.OK)
@@ -1689,9 +1707,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                     )
                     clean_path = strip_magic_launch_segment(forwarded_uri)
                     self.send_response(HTTPStatus.FOUND)
-                    for cookie_header in auth_cookie_headers(access_token, forwarded_host):
+                    for cookie_header in auth_cookie_headers(access_token, forwarded_host, is_https=self.is_https):
                         self.send_header("Set-Cookie", cookie_header)
-                    self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path))
+                    self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path, is_https=self.is_https))
                     self.end_headers()
                     return
 
@@ -2719,15 +2737,37 @@ class MangoHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 name = validate_db_identifier(body.get("name") or f"{account['username']}_app", "invalid_database_name")
                 username = validate_db_identifier(body.get("username") or name, "invalid_database_username")
+                password = body.get("password")
                 if conn.execute("SELECT id FROM databases WHERE name = ?", (name,)).fetchone():
                     raise ApiError(HTTPStatus.CONFLICT, "database_name_already_exists")
                 cur = conn.execute(
                     "INSERT INTO databases(account_id, name, username, status) VALUES (?, ?, ?, ?)",
                     (account["id"], name, username, "active"),
                 )
-                job_id = enqueue_agent_job(conn, "create_database", "database", cur.lastrowid, {"name": name})
+                db_id = cur.lastrowid
+                if password:
+                    password = validate_db_password(password)
+                    db_user = conn.execute("SELECT id FROM database_users WHERE username = ?", (username,)).fetchone()
+                    if db_user:
+                        user_id = db_user["id"]
+                    else:
+                        user_cur = conn.execute(
+                            "INSERT INTO database_users(account_id, username, password_hash, status) VALUES (?, ?, ?, ?)",
+                            (account["id"], username, hash_password(password), "active"),
+                        )
+                        user_id = user_cur.lastrowid
+                        enqueue_agent_job(conn, "create_database_user", "database_user", user_id, {"username": username, "password": password, "account_id": account["id"]})
+
+                    grant = conn.execute("SELECT id FROM database_grants WHERE database_id = ? AND user_id = ?", (db_id, user_id)).fetchone()
+                    if not grant:
+                        grant_cur = conn.execute(
+                            "INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')",
+                            (db_id, user_id),
+                        )
+                        enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {})
+                job_id = enqueue_agent_job(conn, "create_database", "database", db_id, {"name": name, "account_id": account["id"]})
                 log_activity(conn, actor["id"], "database_created", {"name": name})
-                return self.json_response({"database_id": cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"])}, HTTPStatus.CREATED)
+                return self.json_response({"database_id": db_id, "job_id": job_id, **client_databases_payload(conn, account["id"])}, HTTPStatus.CREATED)
             if path.startswith("/api/client/databases/"):
                 require_active_account(account)
                 database_id = path_int_id(path, "/api/client/databases/")
@@ -2752,7 +2792,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     conn.execute("DELETE FROM database_grants WHERE database_id = ?", (database_id,))
                     conn.execute("UPDATE wordpress_installs SET database_id = NULL WHERE database_id = ?", (database_id,))
                     conn.execute("DELETE FROM databases WHERE id = ?", (database_id,))
-                    job_id = enqueue_agent_job(conn, "delete_database", "database", database_id, {"name": database["name"]})
+                    job_id = enqueue_agent_job(conn, "delete_database", "database", database_id, {"name": database["name"], "account_id": account["id"]})
                     log_activity(conn, actor["id"], "database_deleted", {"name": database["name"]})
                     return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"])})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_database_route")
@@ -2773,7 +2813,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     """,
                     (account["id"], username, hash_password(password), "active"),
                 )
-                job_id = enqueue_agent_job(conn, "create_database_user", "database_user", cur.lastrowid, {"username": username})
+                job_id = enqueue_agent_job(conn, "create_database_user", "database_user", cur.lastrowid, {"username": username, "password": password, "account_id": account["id"]})
                 log_activity(conn, actor["id"], "database_user_created", {"username": username})
                 return self.json_response({"database_user_id": cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"])}, HTTPStatus.CREATED)
             if path.startswith("/api/client/database-users/"):
@@ -2800,13 +2840,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                         f"UPDATE database_users SET username = ?, status = ?, updated_at = CURRENT_TIMESTAMP{password_sql} WHERE id = ?",
                         tuple(params),
                     )
-                    job_id = enqueue_agent_job(conn, "update_database_user", "database_user", user_id, {"username": username, "status": status, "password_changed": bool(body.get("password"))})
+                    job_id = enqueue_agent_job(conn, "update_database_user", "database_user", user_id, {"username": username, "status": status, "password": body.get("password"), "account_id": account["id"]})
                     log_activity(conn, actor["id"], "database_user_updated", {"username": username})
                     return self.json_response({"job_id": job_id, **client_databases_payload(conn, account["id"])})
                 if method == "DELETE":
                     conn.execute("DELETE FROM database_grants WHERE user_id = ?", (user_id,))
                     conn.execute("DELETE FROM database_users WHERE id = ?", (user_id,))
-                    job_id = enqueue_agent_job(conn, "delete_database_user", "database_user", user_id, {"username": db_user["username"]})
+                    job_id = enqueue_agent_job(conn, "delete_database_user", "database_user", user_id, {"username": db_user["username"], "account_id": account["id"]})
                     log_activity(conn, actor["id"], "database_user_deleted", {"username": db_user["username"]})
                     return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"])})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_database_user_route")
@@ -2830,7 +2870,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     if "UNIQUE" in str(exc).upper():
                         raise ApiError(HTTPStatus.CONFLICT, "database_grant_already_exists") from exc
                     raise
-                job_id = enqueue_agent_job(conn, "grant_database_user", "database_grant", cur.lastrowid, {"database_id": database_id, "user_id": user_id, "privileges": privileges})
+                job_id = enqueue_agent_job(conn, "grant_database_user", "database_grant", cur.lastrowid, {"database_id": database_id, "user_id": user_id, "privileges": privileges, "account_id": account["id"]})
                 log_activity(conn, actor["id"], "database_user_added_to_database", {"database_id": database_id, "user_id": user_id})
                 return self.json_response({"database_grant_id": cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"])}, HTTPStatus.CREATED)
             if path.startswith("/api/client/database-grants/"):
@@ -2852,7 +2892,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     return self.json_response({"job_id": job_id, **client_databases_payload(conn, account["id"])})
                 if method == "DELETE":
                     conn.execute("DELETE FROM database_grants WHERE id = ?", (grant_id,))
-                    job_id = enqueue_agent_job(conn, "revoke_database_user", "database_grant", grant_id, {"database_id": grant["database_id"], "user_id": grant["user_id"]})
+                    job_id = enqueue_agent_job(conn, "revoke_database_user", "database_grant", grant_id, {"database_id": grant["database_id"], "user_id": grant["user_id"], "account_id": account["id"]})
                     log_activity(conn, actor["id"], "database_user_removed_from_database", {"grant_id": grant_id})
                     return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"])})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_database_grant_route")
@@ -6893,8 +6933,12 @@ def client_databases_payload(conn, account_id):
         primary_user = database_grants[0]["username"] if database_grants else database["username"]
         database["grants"] = database_grants
         database["connection"] = {
-            "host": runtime.get("db_host"),
-            "port": runtime.get("db_port"),
+            "host": "db",
+            "port": 3306,
+            "internal_host": "db",
+            "internal_port": 3306,
+            "external_host": runtime.get("db_host"),
+            "external_port": runtime.get("db_port"),
             "database": database["name"],
             "username": primary_user,
             "password": None,
