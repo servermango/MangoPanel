@@ -314,7 +314,7 @@ const app = createApp({
       },
       siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], isSubmitting: false, errorMessage: '' },
       connectWizard: { isOpen: false, website: null, method: 'nameservers', checking: false, result: null },
-      sshState: { enabled: false, toggling: false, loaded: false },
+      sshState: { enabled: false, toggling: false, loaded: false, hasPassword: false, settingPassword: false, newPassword: null, passwordModal: false, passwordInput: "", passwordError: "" },
       sslModal: { isOpen: false, website_id: "", crt: "", key: "", isSubmitting: false, errorMessage: "" },
       issuingSsl: {},
       mailboxes: [],
@@ -3017,6 +3017,7 @@ const app = createApp({
       try {
         const payload = await this.api("/api/client/ssh");
         this.sshState.enabled = !!payload.enabled;
+        this.sshState.hasPassword = !!payload.has_password;
         this.sshState.loaded = true;
       } catch (err) {
         console.error("Failed to load SSH state:", err);
@@ -3039,6 +3040,61 @@ const app = createApp({
         this.sshState.toggling = false;
       }
     },
+    async generateSshPassword() {
+      if (this.sshState.settingPassword) return;
+      this.sshState.settingPassword = true;
+      this.sshState.newPassword = null;
+      try {
+        const payload = await this.api("/api/client/ssh/password", { method: "POST", body: JSON.stringify({}) });
+        this.sshState.newPassword = payload.password;
+        this.sshState.hasPassword = true;
+        this.notify("SSH password generated successfully", "success");
+      } catch (err) {
+        this.notify("Failed to generate SSH password: " + (err.message || err), "error");
+      } finally {
+        this.sshState.settingPassword = false;
+      }
+    },
+    openSshPasswordModal() {
+      this.sshState.passwordInput = "";
+      this.sshState.passwordError = "";
+      this.sshState.passwordModal = true;
+    },
+    closeSshPasswordModal() {
+      this.sshState.passwordModal = false;
+      this.sshState.passwordInput = "";
+      this.sshState.passwordError = "";
+    },
+    async submitSshPassword() {
+      if (this.sshState.settingPassword || !this.sshState.passwordInput) return;
+      if (this.sshState.passwordInput.length < 8 || this.sshState.passwordInput.length > 64) {
+        this.sshState.passwordError = "Password must be 8–64 characters.";
+        return;
+      }
+      this.sshState.settingPassword = true;
+      this.sshState.passwordError = "";
+      try {
+        const payload = await this.api("/api/client/ssh/password", {
+          method: "POST",
+          body: JSON.stringify({ password: this.sshState.passwordInput }),
+        });
+        this.sshState.newPassword = payload.password;
+        this.sshState.hasPassword = true;
+        this.closeSshPasswordModal();
+        this.notify("SSH password updated successfully", "success");
+      } catch (err) {
+        this.sshState.passwordError = err.message || String(err);
+      } finally {
+        this.sshState.settingPassword = false;
+      }
+    },
+    copySshPassword() {
+      if (!this.sshState.newPassword) return;
+      navigator.clipboard.writeText(this.sshState.newPassword).then(() => {
+        this.notify("Password copied to clipboard", "success");
+      }).catch(() => {});
+    },
+
     openCustomSslModal(website) {
       this.sslModal.website_id = website ? website.id : (this.websites[0]?.id || "");
       this.sslModal.crt = "";

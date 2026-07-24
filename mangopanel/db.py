@@ -890,6 +890,7 @@ def ensure_schema(conn):
         "hosting_accounts",
         {
             "ssh_access": "TEXT NOT NULL DEFAULT 'disabled'",
+            "ssh_password": "TEXT",
         },
     )
     ensure_table_columns(

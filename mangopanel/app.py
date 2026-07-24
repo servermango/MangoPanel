@@ -2036,7 +2036,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response(client_php_info_payload(conn, account, website_id))
             if path == "/api/client/analytics" and method == "GET":
                 require_account(account)
-                return self.json_response(client_analytics_payload(conn, account["id"], website_id, filter_key))
+                _analytics_website_id = optional_positive_int(query.get("website_id", [""])[0])
+                _analytics_filter_key = str(query.get("filter", ["top-countries"])[0] or "top-countries")
+                return self.json_response(client_analytics_payload(conn, account["id"], _analytics_website_id, _analytics_filter_key))
             if path == "/api/client/websites" and method == "GET":
                 def check_domain_tls_handshake(domain):
                     try:
@@ -2484,6 +2486,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "port": runtime["sftp_port"],
                     "user": account["username"],
                     "path": account["base_path"],
+                    "has_password": bool(acc_dict.get("ssh_password")),
                 })
             if path == "/api/client/ssh/toggle" and method == "POST":
                 require_active_account(account)
@@ -2507,6 +2510,20 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "user": res["user"],
                     "path": account["base_path"],
                 })
+            if path == "/api/client/ssh/password" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                new_pw = str(body.get("password") or "").strip()
+                if not new_pw:
+                    # Auto-generate a secure password
+                    import secrets as _secrets
+                    new_pw = _secrets.token_urlsafe(16)
+                if len(new_pw) < 8 or len(new_pw) > 64:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_ssh_password_length")
+                Agent(CONFIG).set_ssh_password(conn, account["id"], new_pw)
+                log_activity(conn, actor["id"], "ssh_password_changed", {"account_id": account["id"]})
+                return self.json_response({"success": True, "password": new_pw})
+
             if path == "/api/client/ssl/issue" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()

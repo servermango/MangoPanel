@@ -1560,7 +1560,38 @@
 
             <div class="info-box" style="margin-top: 1rem;">
               <app-icon name="info"></app-icon>
-              <p>Authentication uses your account password or an SSH key. Key-based authentication is recommended for security.</p>
+              <p>Authentication uses your SSH password set below. You can also use SSH key-based authentication for added security.</p>
+            </div>
+
+            <!-- SSH Password Management -->
+            <div style="margin-top: 1.25rem; padding: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface2);">
+              <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .75rem;">
+                <div>
+                  <h3 style="margin: 0 0 .25rem;">SSH / SFTP Password</h3>
+                  <p style="margin: 0; font-size: 13px; color: var(--muted);">
+                    <span v-if="sshState.hasPassword">A password is set. You can change or regenerate it below.</span>
+                    <span v-else>No password set yet. Generate one or enter a custom password.</span>
+                  </p>
+                </div>
+                <div style="display: flex; gap: .5rem; flex-wrap: wrap;">
+                  <button class="secondary-button" @click="openSshPasswordModal(false)" :disabled="sshState.settingPassword">
+                    <app-icon name="edit" style="width:14px;height:14px;"></app-icon> Set Custom Password
+                  </button>
+                  <button class="primary-button" @click="generateSshPassword" :disabled="sshState.settingPassword">
+                    <span v-if="sshState.settingPassword" class="btn-spinner"></span>
+                    <app-icon v-else name="refresh" style="width:14px;height:14px;"></app-icon>
+                    Auto-Generate Password
+                  </button>
+                </div>
+              </div>
+              <!-- Newly generated/set password reveal -->
+              <div v-if="sshState.newPassword" style="margin-top: .75rem; padding: .75rem; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px;">
+                <p style="margin: 0 0 .4rem; font-size: 12px; color: #059669; font-weight: 600;">✓ New SSH password (copy it now — it won't be shown again):</p>
+                <div style="display: flex; gap: .5rem; align-items: center;">
+                  <code style="flex: 1; word-break: break-all; font-size: 14px; background: var(--surface); padding: .5rem .75rem; border-radius: 4px; border: 1px solid var(--border);">{{ sshState.newPassword }}</code>
+                  <button class="secondary-button" style="white-space: nowrap;" @click="copySshPassword">Copy</button>
+                </div>
+              </div>
             </div>
 
             <h3 style="margin: 1.25rem 0 .5rem;">Quick connect commands</h3>
@@ -1575,6 +1606,39 @@
               </div>
             </div>
           </section>
+
+          <!-- SSH Password Modal -->
+          <div v-if="sshState.passwordModal" class="modal-backdrop" @click.self="closeSshPasswordModal">
+            <div class="modal-card" style="max-width: 440px;">
+              <div class="modal-header">
+                <h3>Set SSH / SFTP Password</h3>
+                <button class="icon-button" @click="closeSshPasswordModal"><app-icon name="close"></app-icon></button>
+              </div>
+              <div class="modal-body">
+                <div class="form-group">
+                  <label class="form-label">New Password</label>
+                  <input
+                    class="form-input"
+                    type="password"
+                    v-model="sshState.passwordInput"
+                    placeholder="Enter a password (min 8 chars)"
+                    autocomplete="new-password"
+                    @keydown.enter="submitSshPassword"
+                  />
+                  <p style="margin: .4rem 0 0; font-size: 12px; color: var(--muted);">Must be 8–64 characters.</p>
+                </div>
+                <p v-if="sshState.passwordError" style="color: #ef4444; font-size: 13px; margin-top: .5rem;">{{ sshState.passwordError }}</p>
+              </div>
+              <div class="modal-footer">
+                <button class="secondary-button" @click="closeSshPasswordModal">Cancel</button>
+                <button class="primary-button" @click="submitSshPassword" :disabled="sshState.settingPassword || !sshState.passwordInput">
+                  <span v-if="sshState.settingPassword" class="btn-spinner"></span>
+                  <span>Set Password</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
 
           <!-- ═══════════════════════════════════════════════════════════ SSL / TLS CERTIFICATES -->
           <section v-if="activePage === 'ssl-tls'" class="panel">

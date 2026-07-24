@@ -2893,7 +2893,8 @@ class Agent:
         if not account:
             raise AgentError("hosting_account_not_found")
         conn.execute("UPDATE hosting_accounts SET ssh_access = ? WHERE id = ?", (status, account_id))
-        
+        # Re-read so we pick up the latest ssh_password stored in the DB
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
         sftp_conf = Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf"
         
@@ -2920,6 +2921,32 @@ class Agent:
             "account_id": account_id,
             "username": account["username"],
             "ssh_access": status,
+            "port": runtime["sftp_port"],
+            "user": account["username"],
+        }
+
+    def set_ssh_password(self, conn, account_id, password):
+        """Set the SSH/SFTP password for an account, update sftp_users.conf, and restart container."""
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        conn.execute("UPDATE hosting_accounts SET ssh_password = ? WHERE id = ?", (password, account_id))
+        # Re-read so runtime picks up the new password
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        sftp_conf = Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf"
+        ssh_status = dict(account).get("ssh_access") or "disabled"
+        if ssh_status == "enabled" and sftp_conf.parent.exists():
+            sftp_conf.write_text(f"{account['username']}:{password}:1001:1001::/bin/ash\n", encoding="utf-8")
+            container_name = f"mp-{account['username']}-sftp"
+            if self.config.agent_mode == "docker":
+                docker = shutil.which("docker")
+                if docker:
+                    subprocess.run([docker, "restart", container_name], check=False, capture_output=True)
+        return {
+            "account_id": account_id,
+            "username": account["username"],
+            "ssh_access": ssh_status,
             "port": runtime["sftp_port"],
             "user": account["username"],
         }

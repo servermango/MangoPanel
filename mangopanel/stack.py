@@ -81,7 +81,7 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "db_user": "{}_app".format(username),
         "db_password": "dev-db-password-change-me",
         "db_root_password": "dev-root-password-change-me",
-        "sftp_password": "dev-sftp-password",
+        "sftp_password": account.get("ssh_password") or "dev-sftp-password",
         "filebrowser_password": "dev-fb-password",
         "filebrowser_secret_path": "files",
         "phpmyadmin_secret_path": "db",
