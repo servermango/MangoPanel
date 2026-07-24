@@ -2804,36 +2804,26 @@
                 </div>
               </div>
               
-              <!-- Step 4: Configure DNS -->
+              <!-- Step 4: Website Added (Completion Screen) -->
               <div class="modal-body" v-if="siteWizard.step === 4">
-                <h3 style="margin-bottom: 1rem;">Configure DNS</h3>
+                <h3 style="margin-bottom: 1rem;">Website Added</h3>
                 <div class="info-box" style="margin-bottom: 1rem;">
-                  <app-icon name="info"></app-icon>
+                  <app-icon name="check"></app-icon>
                   <div>
-                    <strong>Point your domain to MangoPanel</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">
-                      Configure your domain at your registrar using the nameservers and DNS bundle records below.
-                    </p>
-                  </div>
-                </div>
-
-                <div class="info-box" v-if="siteWizard.loadingDnsPreview" style="margin-bottom: 1rem;">
-                  <span class="btn-spinner" style="border-color: var(--primary); border-top-color: transparent;"></span>
-                  <div>
-                    <strong>Retrieving DNS configuration...</strong>
-                    <p style="margin: .25rem 0 0; font-size: 13px;">Checking DNS provider assignment and nameservers for {{ siteWizard.domain }}</p>
+                    <strong>{{ siteWizard.domain }} is ready in the panel</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">The website has been created. Update your domain nameservers and DNS records at your registrar using the bundle below.</p>
                   </div>
                 </div>
 
                 <div class="ssh-info-card">
-                  <template v-if="siteWizard.dnsPreview && siteWizard.dnsPreview.nameservers && siteWizard.dnsPreview.nameservers.length">
+                  <template v-if="(siteWizard.createdWebsite && siteWizard.createdWebsite.nameservers && siteWizard.createdWebsite.nameservers.length) || (siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length)">
                     <label>Nameservers to update at registrar</label>
-                    <code v-for="ns in siteWizard.dnsPreview.nameservers" :key="ns">{{ ns }}</code>
+                    <code v-for="ns in (siteWizard.createdWebsite?.nameservers || siteWizard.createdDomainNameservers)" :key="ns">{{ ns }}</code>
                   </template>
                   <label style="margin-top: 12px;">DNS Bundle</label>
                   <code>Name: @</code>
                   <code>Type: A</code>
-                  <code>Value: {{ (siteWizard.dnsPreview && siteWizard.dnsPreview.server_ip) || serverIp }}</code>
+                  <code>Value: {{ serverIp }}</code>
                   <code>Name: www</code>
                   <code>Type: CNAME</code>
                   <code>Value: @</code>
@@ -2852,38 +2842,28 @@
                 </div>
               </div>
 
-              <div class="modal-body" v-if="siteWizard.step === 5">
-                <h3 style="margin-bottom: 1rem;">Website Added</h3>
-                <div class="info-box" style="margin-bottom: 1rem;">
-                  <app-icon name="check"></app-icon>
-                  <div>
-                    <strong>{{ siteWizard.domain }} is ready in the panel</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">The domain has been added to your account and the DNS bundle has been saved.</p>
-                  </div>
-                </div>
-                <div class="ssh-info-card" v-if="siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length">
-                  <label>Saved nameservers</label>
-                  <code v-for="ns in siteWizard.createdDomainNameservers" :key="ns">{{ ns }}</code>
-                </div>
-              </div>
-
               <div class="modal-footer">
-                <button v-if="siteWizard.step > 1" class="ghost-button" @click="prevSiteWizardStep" :disabled="siteWizard.isSubmitting">Back</button>
-                <button v-else class="ghost-button" @click="closeSiteWizard" :disabled="siteWizard.isSubmitting">Cancel</button>
+                <button v-if="siteWizard.step > 1 && siteWizard.step < 4" class="ghost-button" @click="prevSiteWizardStep" :disabled="siteWizard.isSubmitting">Back</button>
+                <button v-else-if="siteWizard.step < 4" class="ghost-button" @click="closeSiteWizard" :disabled="siteWizard.isSubmitting">Cancel</button>
                 
                 <button 
-                  v-if="siteWizard.step < 4" 
+                  v-if="siteWizard.step === 1 || (siteWizard.step === 2 && siteWizard.type !== 'blank')" 
                   class="primary-button" 
                   @click="nextSiteWizardStep" 
-                  :disabled="(siteWizard.step === 2 && !siteWizard.domain) || (siteWizard.step === 3 && (!siteWizard.site_title || !siteWizard.admin_username || !siteWizard.admin_email || !siteWizard.admin_password || siteWizard.admin_password.length < 8))"
+                  :disabled="siteWizard.step === 2 && !siteWizard.domain"
                 >
                   Next
                 </button>
-                <button v-if="siteWizard.step === 4" class="primary-button" @click="finishSiteWizard" :disabled="siteWizard.isSubmitting">
+                <button 
+                  v-if="(siteWizard.step === 2 && siteWizard.type === 'blank') || (siteWizard.step === 3 && siteWizard.type !== 'blank')" 
+                  class="primary-button" 
+                  @click="finishSiteWizard" 
+                  :disabled="siteWizard.isSubmitting || (siteWizard.step === 2 && !siteWizard.domain) || (siteWizard.step === 3 && (!siteWizard.site_title || !siteWizard.admin_username || !siteWizard.admin_email || !siteWizard.admin_password || siteWizard.admin_password.length < 8))"
+                >
                   <span v-if="siteWizard.isSubmitting" class="btn-spinner"></span>
-                  <span>{{ siteWizard.isSubmitting ? 'Adding Website...' : 'Create Website' }}</span>
+                  <span>{{ siteWizard.isSubmitting ? 'Creating Website...' : 'Create Website' }}</span>
                 </button>
-                <button v-if="siteWizard.step === 5" class="primary-button" @click="closeSiteWizard">Done</button>
+                <button v-if="siteWizard.step === 4" class="primary-button" @click="closeSiteWizard">Done</button>
               </div>
             </div>
           </div>
@@ -3155,6 +3135,6 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/client.js?v=1.0.7"></script>
+    <script src="/assets/client.js?v=1.0.8"></script>
   </body>
 </html>

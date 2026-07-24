@@ -2125,6 +2125,25 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
                 website_id = cur.lastrowid
                 dns_assignment = default_domain_dns_assignment(conn, account["id"])
+                if dns_assignment["dns_provider"] == DNS_PROVIDER_CLOUDFLARE:
+                    provider_account_id = dns_assignment.get("dns_provider_account_id")
+                    if provider_account_id:
+                        acc_row = conn.execute("SELECT * FROM dns_provider_accounts WHERE id = ?", (provider_account_id,)).fetchone()
+                        if acc_row:
+                            try:
+                                token = decrypt_secret(acc_row["encrypted_secret"], CONFIG.jwt_secret) if "encrypted_secret" in acc_row.keys() and acc_row["encrypted_secret"] else ""
+                                cf_account_id = acc_row["external_account_id"] if "external_account_id" in acc_row.keys() else None
+                                if token:
+                                    cf = CloudflareDNSProvider(token, account_id=cf_account_id, api_base=CONFIG.cloudflare_api_base)
+                                    if cf.configured():
+                                        zone = cf.ensure_zone(domain)
+                                        if zone and isinstance(zone, dict):
+                                            cf_ns = zone.get("name_servers") or zone.get("nameservers")
+                                            if cf_ns and isinstance(cf_ns, list):
+                                                dns_assignment["nameservers"] = [str(ns).strip() for ns in cf_ns if str(ns).strip()]
+                                                dns_assignment["dns_status"] = "active"
+                            except Exception as exc:
+                                logging.warning("Cloudflare zone creation during website insert failed: %s", exc)
                 if existing_domain:
                     conn.execute(
                         """

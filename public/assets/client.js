@@ -2190,21 +2190,13 @@ const app = createApp({
       if (this.siteWizard.step === 2) {
         if (!this.siteWizard.domain) return;
         if (this.siteWizard.type === 'blank') {
-          this.siteWizard.step = 4; // Skip installer step
-          this.fetchDnsPreview();
+          this.finishSiteWizard();
           return;
         }
       }
       this.siteWizard.step++;
-      if (this.siteWizard.step === 4) {
-        this.fetchDnsPreview();
-      }
     },
     prevSiteWizardStep() {
-      if (this.siteWizard.step === 4 && this.siteWizard.type === 'blank') {
-        this.siteWizard.step = 2;
-        return;
-      }
       this.siteWizard.step--;
     },
     async finishSiteWizard() {
@@ -2265,7 +2257,7 @@ const app = createApp({
           }
         }
 
-        this.siteWizard.step = 5;
+        this.siteWizard.step = 4; // Website Added step
         await this.refresh();
       } catch (err) {
         this.siteWizard.errorMessage = err.message || String(err);
