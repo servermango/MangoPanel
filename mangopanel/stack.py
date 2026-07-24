@@ -476,7 +476,26 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     
     sftp_users_conf = paths["stack"] / "sftp_users.conf"
     if not sftp_users_conf.exists():
-        sftp_users_conf.write_text(f"{account['username']}:{runtime['sftp_password']}:1001\n", encoding="utf-8")
+        acc_d = dict(account) if not isinstance(account, dict) else account
+        ssh_status = acc_d.get("ssh_access", "disabled")
+        if ssh_status == "enabled":
+            sftp_users_conf.write_text(f"{account['username']}:{runtime['sftp_password']}:1001:1001::/bin/ash\n", encoding="utf-8")
+        else:
+            sftp_users_conf.write_text(f"# SSH/SFTP access disabled for {account['username']}\n", encoding="utf-8")
+
+    sshd_config = paths["stack"] / "sshd_config"
+    sshd_config_content = """Protocol 2
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+UseDNS no
+PermitRootLogin no
+X11Forwarding no
+AllowTcpForwarding yes
+PasswordAuthentication yes
+Subsystem sftp internal-sftp
+"""
+    sshd_config.write_text(sshd_config_content, encoding="utf-8")
 
     paths["compose"].write_text(
         render_compose(account, plan, websites, runtime),
@@ -1162,10 +1181,11 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     ports:
-      - "127.0.0.1:{sftp_port}:22"
+      - "0.0.0.0:{sftp_port}:22"
     volumes:
       - {base_path}:/home/{username}
       - {base_path}/.runtime/stack/sftp_users.conf:/etc/sftp/users.conf:ro
+      - {base_path}/.runtime/stack/sshd_config:/etc/ssh/sshd_config:ro
     networks:
       - account
       - mangopanel-edge

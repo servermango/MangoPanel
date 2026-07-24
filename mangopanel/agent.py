@@ -886,7 +886,24 @@ class Agent:
             raise AgentError("ownership_fix_failed") from exc
 
         if not preserve_permissions:
-            mode = 0o755 if Path(path).is_dir() else 0o644
+            path_obj = Path(path).resolve()
+            base_path = Path(account["base_path"]).resolve()
+            domains_path = base_path / "domains"
+            is_domain_file = False
+            try:
+                is_domain_file = domains_path in path_obj.parents or path_obj == domains_path
+            except Exception:
+                pass
+
+            if is_domain_file:
+                if path_obj.is_dir():
+                    mode = 0o777
+                else:
+                    st_mode = path_obj.stat().st_mode if path_obj.exists() else 0
+                    mode = 0o777 if (st_mode & 0o111) else 0o666
+            else:
+                mode = 0o755 if path_obj.is_dir() else 0o644
+
             try:
                 os.chmod(path, mode)
             except OSError as exc:
@@ -1316,21 +1333,30 @@ class Agent:
         else:
             cert_path.write_text("-----BEGIN CERTIFICATE-----\ndev\n-----END CERTIFICATE-----\n", encoding="utf-8")
             key_path.write_text("-----BEGIN PRIVATE KEY-----\ndev\n-----END PRIVATE KEY-----\n", encoding="utf-8")
-        conn.execute("UPDATE websites SET ssl_status = 'local-dev' WHERE id = ?", (website_id,))
-        cur = conn.execute(
-            """
-            INSERT INTO ssl_certificates(account_id, website_id, domain, status, issued_at, expires_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, datetime('now', '+90 days'))
-            """,
-            (account["id"], website_id, website["domain"], "local-dev"),
-        )
-        provider_state = self.publish_acme_order_state(conn, account, website, cur.lastrowid, cert_path, key_path)
+        conn.execute("UPDATE websites SET ssl_status = 'active' WHERE id = ?", (website_id,))
+        existing_cert = conn.execute("SELECT id FROM ssl_certificates WHERE website_id = ?", (website_id,)).fetchone()
+        if existing_cert:
+            conn.execute(
+                "UPDATE ssl_certificates SET status = 'active', issued_at = CURRENT_TIMESTAMP, expires_at = datetime('now', '+90 days') WHERE id = ?",
+                (existing_cert["id"],),
+            )
+            cert_id = existing_cert["id"]
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO ssl_certificates(account_id, website_id, domain, status, issued_at, expires_at)
+                VALUES (?, ?, ?, 'active', CURRENT_TIMESTAMP, datetime('now', '+90 days'))
+                """,
+                (account["id"], website_id, website["domain"]),
+            )
+            cert_id = cur.lastrowid
+        provider_state = self.publish_acme_order_state(conn, account, website, cert_id, cert_path, key_path)
         artifact = write_account_json(
             account,
             Path(".runtime") / "ssl" / f"{website['domain']}-issued.json",
-            {"mode": "native", "domain": website["domain"], "status": "local-dev", "website_id": website_id, "cert_path": str(cert_path), "key_path": str(key_path), "provider_state": provider_state},
+            {"mode": "native", "domain": website["domain"], "status": "active", "website_id": website_id, "cert_path": str(cert_path), "key_path": str(key_path), "provider_state": provider_state},
         )
-        return {"mode": "native", "ssl_status": "local-dev", "website_id": website_id, "artifact_path": artifact, "cert_path": str(cert_path), "key_path": str(key_path), "provider": ACME_PROVIDER_LOCAL, "provider_state": provider_state}
+        return {"mode": "native", "ssl_status": "active", "website_id": website_id, "artifact_path": artifact, "cert_path": str(cert_path), "key_path": str(key_path), "provider": ACME_PROVIDER_LOCAL, "provider_state": provider_state}
 
     def sync_dns_record(self, conn, record_id):
         record = conn.execute("SELECT * FROM dns_records WHERE id = ?", (record_id,)).fetchone()
@@ -1945,6 +1971,40 @@ class Agent:
         ensure_cron_runtime_artifacts(row_to_dict(account), cron_jobs)
         apply_result = self.apply_stack(paths["compose"], account["username"])
         self.sync_account_databases(conn, account_id)
+        ssh_status = dict(account).get("ssh_access") or "disabled"
+        try:
+            self.set_ssh_access(conn, account_id, ssh_status)
+        except Exception:
+            pass
+        
+
+        services_json = json.dumps(STACK_SERVICES)
+        runtime_json = json.dumps(runtime)
+        conn.execute(
+            """
+            INSERT INTO account_stacks(account_id, compose_path, mode, status, services_json, runtime_json, generated_at, last_applied_at, last_error)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)
+            ON CONFLICT(account_id) DO UPDATE SET
+              compose_path = excluded.compose_path,
+              mode = excluded.mode,
+              status = excluded.status,
+              services_json = excluded.services_json,
+              runtime_json = excluded.runtime_json,
+              generated_at = CURRENT_TIMESTAMP,
+              last_applied_at = CURRENT_TIMESTAMP,
+              last_error = NULL
+            """,
+            (account_id, str(paths["compose"]), self.config.agent_mode, apply_result["status"], services_json, runtime_json),
+        )
+        if account["status"] == "provisioning":
+            conn.execute("UPDATE hosting_accounts SET status = 'active' WHERE id = ?", (account_id,))
+        summary = stack_summary(paths)
+        summary.update(apply_result)
+        summary["runtime"] = runtime
+        summary["mail_edge_provider"] = mail_edge_provider
+        if touched_website_id:
+            summary["website_id"] = touched_website_id
+        return summary
 
     def sync_account_databases(self, conn, account_id):
         databases = conn.execute("SELECT id, name FROM databases WHERE account_id = ? AND status = 'active'", (account_id,)).fetchall()
@@ -1975,35 +2035,6 @@ class Agent:
                 self.execute_mariadb_sql(conn, account_id, sql)
             except Exception as exc:
                 print(f"Warning: sync_account_databases failed for account {account_id}: {exc}")
-        
-
-        services_json = json.dumps(STACK_SERVICES)
-        runtime_json = json.dumps(runtime)
-        conn.execute(
-            """
-            INSERT INTO account_stacks(account_id, compose_path, mode, status, services_json, runtime_json, generated_at, last_applied_at, last_error)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)
-            ON CONFLICT(account_id) DO UPDATE SET
-              compose_path = excluded.compose_path,
-              mode = excluded.mode,
-              status = excluded.status,
-              services_json = excluded.services_json,
-              runtime_json = excluded.runtime_json,
-              generated_at = CURRENT_TIMESTAMP,
-              last_applied_at = CURRENT_TIMESTAMP,
-              last_error = NULL
-            """,
-            (account_id, str(paths["compose"]), self.config.agent_mode, apply_result["status"], services_json, runtime_json),
-        )
-        if account["status"] == "provisioning":
-            conn.execute("UPDATE hosting_accounts SET status = 'active' WHERE id = ?", (account_id,))
-        summary = stack_summary(paths)
-        summary.update(apply_result)
-        summary["runtime"] = runtime
-        summary["mail_edge_provider"] = mail_edge_provider
-        if touched_website_id:
-            summary["website_id"] = touched_website_id
-        return summary
 
     def sync_mailboxes(self, conn, account_id):
         return self.provision_hosting_account(conn, account_id)
@@ -2517,6 +2548,26 @@ class Agent:
                 else:
                     files_fixed += 1
 
+        domains_dir = base_path / "domains"
+        if domains_dir.exists():
+            for root, dirs, files in os.walk(domains_dir):
+                if "wp-config.php" in files:
+                    wp_cfg_path = Path(root) / "wp-config.php"
+                    try:
+                        text = wp_cfg_path.read_text(encoding="utf-8")
+                        if "FS_METHOD" not in text:
+                            text = text.replace("<?php", "<?php\ndefine('FS_METHOD', 'direct');\n", 1)
+                            wp_cfg_path.write_text(text, encoding="utf-8")
+                    except Exception:
+                        pass
+                    try:
+                        mu_dir = Path(root) / "wp-content" / "mu-plugins"
+                        mu_dir.mkdir(parents=True, exist_ok=True)
+                        mu_file = mu_dir / "mangopanel-compat.php"
+                        mu_file.write_text("<?php\n// MangoPanel Compatibility\nadd_filter('wp_signature_hosts', '__return_empty_array', 999);\n", encoding="utf-8")
+                    except Exception:
+                        pass
+
         stack_path = base_path / ".runtime" / "stack"
         if stack_path.exists():
             try:
@@ -2834,6 +2885,44 @@ class Agent:
                     raise AgentError(result.stderr.strip() or "docker_reboot_failed")
                     
         return {"rebooted": True}
+
+    def set_ssh_access(self, conn, account_id, status):
+        if status not in {"enabled", "disabled"}:
+            raise AgentError("invalid_ssh_status")
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        conn.execute("UPDATE hosting_accounts SET ssh_access = ? WHERE id = ?", (status, account_id))
+        
+        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        sftp_conf = Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf"
+        
+        if status == "enabled":
+            password = runtime.get("sftp_password", "dev-sftp-password")
+            lines = [f"{account['username']}:{password}:1001:1001::/bin/ash\n"]
+            if sftp_conf.parent.exists():
+                sftp_conf.write_text("".join(lines), encoding="utf-8")
+            container_name = f"mp-{account['username']}-sftp"
+            if self.config.agent_mode == "docker":
+                docker = shutil.which("docker")
+                if docker:
+                    subprocess.run([docker, "start", container_name], check=False, capture_output=True)
+        else:
+            if sftp_conf.parent.exists():
+                sftp_conf.write_text(f"# SSH/SFTP access disabled for {account['username']}\n", encoding="utf-8")
+            container_name = f"mp-{account['username']}-sftp"
+            if self.config.agent_mode == "docker":
+                docker = shutil.which("docker")
+                if docker:
+                    subprocess.run([docker, "stop", container_name], check=False, capture_output=True)
+
+        return {
+            "account_id": account_id,
+            "username": account["username"],
+            "ssh_access": status,
+            "port": runtime["sftp_port"],
+            "user": account["username"],
+        }
 
 
 def run_agent_once(config=None):

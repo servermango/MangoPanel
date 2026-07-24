@@ -38,6 +38,9 @@ const CLIENT_PAGE_TARGETS = new Set([
   "api-tokens",
   "two-factor-auth",
   "ftp-accounts",
+  "ssl-tls",
+  "ssh-sftp-access",
+  "fix-permissions",
 ]);
 
 const PHP_VERSIONS = ["8.2", "8.3", "8.4"];
@@ -68,7 +71,6 @@ function normalizedClientTarget(target) {
     "postgresql-databases": "databases",
     "postgresql-database-wizard": "databases",
     "site-builder": "installer",
-    "ssl-tls": "security",
   };
   return targetMap[target] || target;
 }
@@ -300,6 +302,7 @@ const app = createApp({
       installer: {
         scripts: [],
         selectedScript: null,
+        isSubmitting: false,
         form: {
           website_id: "",
           site_title: "",
@@ -309,8 +312,11 @@ const app = createApp({
           allow_overwrite: false,
         }
       },
-      siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], errorMessage: '' },
+      siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], isSubmitting: false, errorMessage: '' },
       connectWizard: { isOpen: false, website: null, method: 'nameservers', checking: false, result: null },
+      sshState: { enabled: false, toggling: false, loaded: false },
+      sslModal: { isOpen: false, website_id: "", crt: "", key: "", isSubmitting: false, errorMessage: "" },
+      issuingSsl: {},
       mailboxes: [],
       mailRouting: {
         mail_domains: [],
@@ -756,9 +762,18 @@ const app = createApp({
     },
     sshInfo() {
       const runtime = this.home.accounts[0]?.runtime || {};
+      let host = window.location.hostname;
+      if (!host || host === "127.0.0.1" || host === "localhost" || host === "0.0.0.0") {
+        if (runtime.sftp_host && runtime.sftp_host !== "127.0.0.1" && runtime.sftp_host !== "0.0.0.0") {
+          host = runtime.sftp_host;
+        } else {
+          host = "seeds.servermango.com";
+        }
+      }
       return {
-        host: runtime.sftp_host || window.location.hostname,
-        port: runtime.sftp_port || 2222,
+        enabled: this.sshState ? this.sshState.enabled : false,
+        host: host,
+        port: runtime.sftp_port || 18104,
         user: runtime.sftp_user || (this.home.accounts[0]?.username || "—"),
         path: this.home.accounts[0]?.base_path || "/home/user",
       };
@@ -979,6 +994,7 @@ const app = createApp({
         await this.loadDatabases();
         await this.loadResourceUsage();
         await this.loadAnalytics();
+        await this.loadSshState();
         this.activity = (await this.api("/api/client/activity")).activity;
         await this.loadSyncJobs();
         if (this.activePage === "php-info") {
@@ -2981,6 +2997,7 @@ const app = createApp({
     },
     openInstallerModal(script) {
       this.installer.selectedScript = script;
+      this.installer.isSubmitting = false;
       const form = {
         website_id: "",
         allow_overwrite: false,
@@ -2994,10 +3011,107 @@ const app = createApp({
     },
     closeInstallerModal() {
       this.installer.selectedScript = null;
+      this.installer.isSubmitting = false;
+    },
+    async loadSshState() {
+      try {
+        const payload = await this.api("/api/client/ssh");
+        this.sshState.enabled = !!payload.enabled;
+        this.sshState.loaded = true;
+      } catch (err) {
+        console.error("Failed to load SSH state:", err);
+      }
+    },
+    async toggleSshAccess() {
+      if (this.sshState.toggling) return;
+      this.sshState.toggling = true;
+      const targetState = !this.sshState.enabled;
+      try {
+        const payload = await this.api("/api/client/ssh/toggle", {
+          method: "POST",
+          body: JSON.stringify({ enabled: targetState }),
+        });
+        this.sshState.enabled = !!payload.enabled;
+        this.notify(targetState ? "SSH/SFTP access enabled" : "SSH/SFTP access disabled", "success");
+      } catch (err) {
+        this.notify(String(err), "error");
+      } finally {
+        this.sshState.toggling = false;
+      }
+    },
+    openCustomSslModal(website) {
+      this.sslModal.website_id = website ? website.id : (this.websites[0]?.id || "");
+      this.sslModal.crt = "";
+      this.sslModal.key = "";
+      this.sslModal.errorMessage = "";
+      this.sslModal.isSubmitting = false;
+      this.sslModal.isOpen = true;
+    },
+    closeCustomSslModal() {
+      this.sslModal.isOpen = false;
+    },
+    async submitCustomSsl() {
+      if (!this.sslModal.website_id || !this.sslModal.crt || !this.sslModal.key || this.sslModal.isSubmitting) return;
+      this.sslModal.isSubmitting = true;
+      this.sslModal.errorMessage = "";
+      try {
+        const payload = await this.api("/api/client/ssl/custom", {
+          method: "POST",
+          body: JSON.stringify({
+            website_id: this.sslModal.website_id,
+            crt: this.sslModal.crt,
+            key: this.sslModal.key,
+          }),
+        });
+        this.notify("Custom SSL certificate installed successfully", "success");
+        this.closeCustomSslModal();
+        await this.refresh();
+      } catch (err) {
+        this.sslModal.errorMessage = String(err);
+        this.notify(String(err), "error");
+      } finally {
+        this.sslModal.isSubmitting = false;
+      }
+    },
+    async issueFreeSsl(website) {
+      if (this.issuingSsl[website.id]) return;
+      this.$set ? this.$set(this.issuingSsl, website.id, true) : (this.issuingSsl[website.id] = true);
+      try {
+        const payload = await this.api("/api/client/ssl/issue", {
+          method: "POST",
+          body: JSON.stringify({ website_id: website.id }),
+        });
+        this.notify(`Free SSL certificate queued/issued for ${website.domain}`, "success");
+        await this.refresh();
+      } catch (err) {
+        this.notify(`SSL Notice: ${err.message || err}`, "error");
+      } finally {
+        this.$set ? this.$set(this.issuingSsl, website.id, false) : (this.issuingSsl[website.id] = false);
+      }
+    },
+    async checkDomainSslDns(website) {
+      if (this.issuingSsl[website.id]) return;
+      this.$set ? this.$set(this.issuingSsl, website.id, true) : (this.issuingSsl[website.id] = true);
+      try {
+        const payload = await this.api(`/api/client/websites/${website.id}/connection-check`, {
+          method: "POST",
+        });
+        if (payload.verified) {
+          this.notify(`DNS is verified! AutoSSL queued for ${website.domain}`, "success");
+        } else {
+          this.notify(`DNS Notice for ${website.domain}: ${payload.message || "Domain DNS is not pointing to this server yet."}`, "error");
+        }
+        await this.refresh();
+      } catch (err) {
+        this.notify(String(err), "error");
+      } finally {
+        this.$set ? this.$set(this.issuingSsl, website.id, false) : (this.issuingSsl[website.id] = false);
+      }
     },
     async submitInstallScript() {
-      if (!this.installer.form.website_id) return;
+      if (!this.installer.form.website_id || this.installer.isSubmitting) return;
       const script = this.installer.selectedScript;
+      this.installer.isSubmitting = true;
       try {
         const body = {
           script_id: script.id,
@@ -3013,9 +3127,11 @@ const app = createApp({
           body: JSON.stringify(body),
         });
         this.notify(`${script.name} installation started (Job #${payload.job_id})`, "success");
+        this.installer.isSubmitting = false;
         this.closeInstallerModal();
         await this.refresh();
       } catch (err) {
+        this.installer.isSubmitting = false;
         this.notify(String(err), "error");
       }
     },

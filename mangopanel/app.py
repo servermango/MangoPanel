@@ -2036,10 +2036,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response(client_php_info_payload(conn, account, website_id))
             if path == "/api/client/analytics" and method == "GET":
                 require_account(account)
-                website_id = optional_positive_int(query.get("website_id", [""])[0])
-                filter_key = query.get("filter", ["top-countries"])[0]
                 return self.json_response(client_analytics_payload(conn, account["id"], website_id, filter_key))
             if path == "/api/client/websites" and method == "GET":
+                def check_domain_tls_handshake(domain):
+                    try:
+                        ctx = ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                        with socket.create_connection(("127.0.0.1", 443), timeout=1.5) as sock:
+                            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
+                                return True
+                    except Exception:
+                        return False
                 rows = conn.execute(
                     """
                     SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
@@ -2062,6 +2070,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                     website["provider_state"] = provider_state
                     website["dns_last_error"] = provider_state.get("last_error") or ""
                     website["dns_warnings"] = dns_state_warnings(website)
+
+                    if website.get("ssl_status") != "custom":
+                        has_tls = check_domain_tls_handshake(website["domain"])
+                        real_status = "active" if has_tls else "missing"
+                        if website.get("ssl_status") != real_status:
+                            website["ssl_status"] = real_status
+                            try:
+                                conn.execute("UPDATE websites SET ssl_status = ? WHERE id = ?", (real_status, website["id"]))
+                                conn.execute("UPDATE ssl_certificates SET status = ? WHERE website_id = ? AND status != 'custom'", (real_status, website["id"]))
+                            except Exception:
+                                pass
                 return self.json_response({"websites": websites})
             if path == "/api/client/websites" and method == "POST":
                 require_active_account(account)
@@ -2446,6 +2465,48 @@ class MangoHandler(BaseHTTPRequestHandler):
                 zone_rows = conn.execute("SELECT * FROM dns_zones WHERE domain_id = ? ORDER BY zone_name", (record["domain_id"],)).fetchall()
                 dns_zones = [decorate_dns_zone(row) for row in zone_rows]
                 return self.json_response({"deleted": True, "job_id": job_id, "dns_records": decorated_dns_records(all_records), "dns_zones": dns_zones})
+            if path == "/api/client/ssh" and method == "GET":
+                require_active_account(account)
+                acc_dict = dict(account)
+                ssh_status = acc_dict.get("ssh_access") or "disabled"
+                runtime = build_account_runtime(acc_dict, CONFIG.public_host, CONFIG.account_port_base)
+                host_hdr = (self.headers.get("Host") or self.headers.get("host") or "") if hasattr(self, "headers") and self.headers else ""
+                host = host_hdr.split(":")[0] if host_hdr else ""
+                if not host or host in {"127.0.0.1", "localhost", "0.0.0.0"}:
+                    if CONFIG.public_host and CONFIG.public_host not in {"127.0.0.1", "0.0.0.0", "localhost"}:
+                        host = CONFIG.public_host
+                    else:
+                        host = "seeds.servermango.com"
+                return self.json_response({
+                    "enabled": (ssh_status == "enabled"),
+                    "ssh_access": ssh_status,
+                    "host": host,
+                    "port": runtime["sftp_port"],
+                    "user": account["username"],
+                    "path": account["base_path"],
+                })
+            if path == "/api/client/ssh/toggle" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                enabled = bool(body.get("enabled", False))
+                new_status = "enabled" if enabled else "disabled"
+                res = Agent(CONFIG).set_ssh_access(conn, account["id"], new_status)
+                log_activity(conn, actor["id"], f"ssh_access_{new_status}", {"account_id": account["id"]})
+                host_hdr = (self.headers.get("Host") or self.headers.get("host") or "") if hasattr(self, "headers") and self.headers else ""
+                host = host_hdr.split(":")[0] if host_hdr else ""
+                if not host or host in {"127.0.0.1", "localhost", "0.0.0.0"}:
+                    if CONFIG.public_host and CONFIG.public_host not in {"127.0.0.1", "0.0.0.0", "localhost"}:
+                        host = CONFIG.public_host
+                    else:
+                        host = "seeds.servermango.com"
+                return self.json_response({
+                    "enabled": (new_status == "enabled"),
+                    "ssh_access": new_status,
+                    "host": host,
+                    "port": res["port"],
+                    "user": res["user"],
+                    "path": account["base_path"],
+                })
             if path == "/api/client/ssl/issue" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -2496,7 +2557,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 job_id = None
                 if verified:
                     job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto", "connection_check": True})
-                    conn.execute("UPDATE websites SET ssl_status = 'pending' WHERE id = ?", (website_id,))
+                    conn.execute("UPDATE websites SET ssl_status = 'active' WHERE id = ?", (website_id,))
                 return self.json_response({"verified": verified, "nameservers_verified": ns_ok, "ip_verified": ip_ok, "observed_nameservers": observed_ns, "observed_ips": observed_a, "expected_nameservers": expected_ns, "auto_ssl_job_id": job_id, "message": "DNS is reachable. AutoSSL has been queued." if verified else "DNS is not pointing to this hosting account yet."})
             if path == "/api/client/ssl/custom" and method == "POST":
                 require_active_account(account)
@@ -3534,16 +3595,44 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if script_id == "wordpress":
                     existing = conn.execute("SELECT id FROM wordpress_installs WHERE website_id = ?", (website_id,)).fetchone()
                     if existing:
-                        raise ApiError(HTTPStatus.CONFLICT, "wordpress_already_installed")
+                        if not allow_overwrite:
+                            raise ApiError(HTTPStatus.CONFLICT, "wordpress_already_installed")
+                        conn.execute("DELETE FROM wordpress_installs WHERE website_id = ?", (website_id,))
+                        conn.execute("DELETE FROM script_installs WHERE website_id = ? AND script_id = 'wordpress'", (website_id,))
                     
                     db_name = f"{account['username']}_wp_{website_id}"
                     db_user = f"{account['username']}_wp"
-                    cur_db = conn.execute(
-                        "INSERT INTO databases(account_id, name, username, status) VALUES (?, ?, ?, ?)",
-                        (account["id"], db_name, db_user, "active"),
-                    )
-                    database_id = cur_db.lastrowid
-                    enqueue_agent_job(conn, "create_database", "database", database_id, {"name": db_name})
+                    db_password = "dev-db-password-change-me"
+                    
+                    existing_db = conn.execute("SELECT id FROM databases WHERE name = ?", (db_name,)).fetchone()
+                    if existing_db:
+                        database_id = existing_db["id"]
+                    else:
+                        cur_db = conn.execute(
+                            "INSERT INTO databases(account_id, name, username, status) VALUES (?, ?, ?, ?)",
+                            (account["id"], db_name, db_user, "active"),
+                        )
+                        database_id = cur_db.lastrowid
+                        enqueue_agent_job(conn, "create_database", "database", database_id, {"name": db_name, "account_id": account["id"]})
+
+                    existing_user = conn.execute("SELECT id FROM database_users WHERE username = ?", (db_user,)).fetchone()
+                    if existing_user:
+                        user_id = existing_user["id"]
+                    else:
+                        user_cur = conn.execute(
+                            "INSERT INTO database_users(account_id, username, password_hash, status) VALUES (?, ?, ?, ?)",
+                            (account["id"], db_user, hash_password(db_password), "active"),
+                        )
+                        user_id = user_cur.lastrowid
+                        enqueue_agent_job(conn, "create_database_user", "database_user", user_id, {"username": db_user, "password": db_password, "account_id": account["id"]})
+
+                    grant = conn.execute("SELECT id FROM database_grants WHERE database_id = ? AND user_id = ?", (database_id, user_id)).fetchone()
+                    if not grant:
+                        grant_cur = conn.execute(
+                            "INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')",
+                            (database_id, user_id),
+                        )
+                        enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {})
                     
                     conn.execute(
                         """
@@ -3567,7 +3656,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "database_id": database_id,
                         "database_name": db_name,
                         "database_user": db_user,
-                        "database_password": "dev-db-password-change-me",
+                        "database_password": db_password,
                         "database_host": "db",
                         "site_title": site_title,
                         "admin_username": admin_username,

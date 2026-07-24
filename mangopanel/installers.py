@@ -61,6 +61,25 @@ class WordPressInstaller(BaseInstaller):
         cls.verify_empty_root(conn, website, bool(payload.get("allow_overwrite")))
         
         document_root = Path(website["document_root"])
+        document_root.mkdir(parents=True, exist_ok=True)
+
+        template_zip = Path(__file__).resolve().parent.parent / "templates" / "wordpress.zip"
+        if template_zip.exists():
+            import zipfile, shutil
+            with zipfile.ZipFile(template_zip, "r") as zf:
+                zf.extractall(document_root)
+            extracted_sub = document_root / "wordpress"
+            if extracted_sub.is_dir():
+                for item in extracted_sub.iterdir():
+                    dest = document_root / item.name
+                    if dest.exists():
+                        if dest.is_dir():
+                            shutil.rmtree(dest)
+                        else:
+                            dest.unlink()
+                    shutil.move(str(item), str(document_root))
+                shutil.rmtree(extracted_sub, ignore_errors=True)
+
         wp_config = document_root / "wp-config.php"
         
         db_name = payload.get("database_name", "wordpress")
@@ -73,8 +92,7 @@ class WordPressInstaller(BaseInstaller):
         
         config_content = f"""<?php
 // MangoPanel WordPress Configuration
-// Development installation marker
-
+define('FS_METHOD', 'direct');
 define('DB_NAME', '{db_name}');
 define('DB_USER', '{db_user}');
 define('DB_PASSWORD', '{db_password}');
@@ -107,24 +125,13 @@ require_once(ABSPATH . 'wp-settings.php');
         wp_config.write_text(config_content, encoding="utf-8")
 
         index_php_file = document_root / "index.php"
-        index_php_file.write_text(
-            "<?php\n"
-            "$title = defined('WP_SITE_TITLE') ? WP_SITE_TITLE : '{}';\n"
-            "$admin = defined('WP_ADMIN_USER') ? WP_ADMIN_USER : '{}';\n"
-            "header('Content-Type: text/html; charset=utf-8');\n"
-            "?>\n"
-            "<!doctype html>\n"
-            "<html lang=\"en\"><head><meta charset=\"utf-8\"><title><?php echo htmlspecialchars($title); ?></title></head>\n"
-            "<body style=\"font-family: system-ui, sans-serif; max-width: 760px; margin: 4rem auto; line-height: 1.5;\">\n"
-            "<h1><?php echo htmlspecialchars($title); ?></h1>\n"
-            "<p>WordPress development install is ready for this MangoPanel site.</p>\n"
-            "<p><strong>Admin user:</strong> <?php echo htmlspecialchars($admin); ?></p>\n"
-            "</body></html>\n".format(
-                site_title.replace("\\", "\\\\").replace("'", "\\'"),
-                admin_username.replace("\\", "\\\\").replace("'", "\\'"),
-            ),
-            encoding="utf-8"
-        )
+        if not index_php_file.exists():
+            index_php_file.write_text(
+                "<?php\n"
+                "define('WP_USE_THEMES', true);\n"
+                "require __DIR__ . '/wp-blog-header.php';\n",
+                encoding="utf-8"
+            )
 
         htaccess = document_root / ".htaccess"
         htaccess.write_text(
@@ -153,6 +160,44 @@ require_once(ABSPATH . 'wp-settings.php');
             }),
             encoding="utf-8"
         )
+
+        try:
+            mu_dir = document_root / "wp-content" / "mu-plugins"
+            mu_dir.mkdir(parents=True, exist_ok=True)
+            (mu_dir / "mangopanel-compat.php").write_text(
+                "<?php\n// MangoPanel Compatibility Plugin\nadd_filter('wp_signature_hosts', '__return_empty_array', 999);\n",
+                encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+        import os, subprocess
+        uid = 5000 + int(account["id"])
+        gid = 5000 + int(account["id"])
+        if uid and gid:
+            try:
+                subprocess.run(["chown", "-R", f"{uid}:{gid}", str(document_root)], check=False)
+                subprocess.run(["chmod", "-R", "a+rwX", str(document_root)], check=False)
+            except Exception:
+                pass
+            for root_dir, dirs, files in os.walk(str(document_root)):
+                for d in dirs:
+                    try:
+                        os.chown(os.path.join(root_dir, d), uid, gid)
+                        os.chmod(os.path.join(root_dir, d), 0o777)
+                    except Exception:
+                        pass
+                for f in files:
+                    try:
+                        filepath = os.path.join(root_dir, f)
+                        os.chown(filepath, uid, gid)
+                        st_mode = os.stat(filepath).st_mode
+                        if st_mode & 0o111:
+                            os.chmod(filepath, 0o777)
+                        else:
+                            os.chmod(filepath, 0o666)
+                    except Exception:
+                        pass
 
         conn.execute(
             "UPDATE wordpress_installs SET status = 'installed', installed_at = CURRENT_TIMESTAMP WHERE id = ?",

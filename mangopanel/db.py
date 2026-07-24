@@ -887,6 +887,13 @@ def ensure_schema(conn):
     )
     ensure_table_columns(
         conn,
+        "hosting_accounts",
+        {
+            "ssh_access": "TEXT NOT NULL DEFAULT 'disabled'",
+        },
+    )
+    ensure_table_columns(
+        conn,
         "resource_usage_samples",
         {
             "memory_limit_mb": "REAL NOT NULL DEFAULT 0",

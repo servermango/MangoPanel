@@ -1505,18 +1505,43 @@
             </div>
           </section>
 
-          <!-- ═══════════════════════════════════════════════════════════ SSH ACCESS -->
-          <section v-if="activePage === 'ssh-access'" class="panel">
-            <div class="advanced-tool-header">
-              <app-icon name="terminal"></app-icon>
-              <div>
-                <h2>SSH / SFTP Access</h2>
-                <p>Use these credentials with any SFTP client (FileZilla, Cyberduck, WinSCP) or SSH terminal.</p>
+          <!-- ═══════════════════════════════════════════════════════════ SSH / SFTP ACCESS -->
+          <section v-if="activePage === 'ssh-access' || activePage === 'ssh-sftp-access'" class="panel">
+            <div class="advanced-tool-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <app-icon name="terminal"></app-icon>
+                <div>
+                  <h2>SSH / SFTP Access</h2>
+                  <p>Use these credentials with any SFTP client (FileZilla, Cyberduck, WinSCP) or SSH terminal.</p>
+                </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span class="status-badge" :class="sshState.enabled ? 'badge-success' : 'badge-disabled'">
+                  {{ sshState.enabled ? 'Enabled' : 'Disabled' }}
+                </span>
+                <button
+                  class="primary-button"
+                  :style="sshState.enabled ? 'background: #dc2626; border-color: #dc2626;' : ''"
+                  @click="toggleSshAccess"
+                  :disabled="sshState.toggling"
+                >
+                  <span v-if="sshState.toggling" class="btn-spinner"></span>
+                  <span>{{ sshState.toggling ? 'Updating...' : (sshState.enabled ? 'Disable SSH Access' : 'Enable SSH Access') }}</span>
+                </button>
               </div>
             </div>
-            <div class="ssh-info-grid">
+
+            <div v-if="!sshState.enabled" class="info-box" style="margin-top: 1rem; border-color: #f97316; background: rgba(249, 115, 22, 0.08);">
+              <app-icon name="warning"></app-icon>
+              <div>
+                <strong>SSH & SFTP Logins Off by Default</strong>
+                <p style="margin: .25rem 0 0; font-size: 13px;">SSH and SFTP login into the container is currently disabled for security. Click "Enable SSH Access" above to activate connection ports.</p>
+              </div>
+            </div>
+
+            <div class="ssh-info-grid" style="margin-top: 1rem;">
               <div class="ssh-info-card">
-                <label>Host</label>
+                <label>Host (Public IP / Domain)</label>
                 <code>{{ sshInfo.host }}</code>
               </div>
               <div class="ssh-info-card">
@@ -1532,12 +1557,115 @@
                 <code>{{ sshInfo.path }}</code>
               </div>
             </div>
-            <div class="info-box">
+
+            <div class="info-box" style="margin-top: 1rem;">
               <app-icon name="info"></app-icon>
               <p>Authentication uses your account password or an SSH key. Key-based authentication is recommended for security.</p>
             </div>
-            <h3 style="margin: 1.25rem 0 .5rem;">Quick connect command</h3>
-            <pre class="code-block">sftp -P {{ sshInfo.port }} {{ sshInfo.user }}@{{ sshInfo.host }}</pre>
+
+            <h3 style="margin: 1.25rem 0 .5rem;">Quick connect commands</h3>
+            <div style="display: grid; gap: 12px;">
+              <div>
+                <label style="font-size: 12px; color: var(--muted); margin-bottom: 4px; display: block; font-weight: 600;">SSH Terminal Line:</label>
+                <pre class="code-block">ssh -p {{ sshInfo.port }} {{ sshInfo.user }}@{{ sshInfo.host }}</pre>
+              </div>
+              <div>
+                <label style="font-size: 12px; color: var(--muted); margin-bottom: 4px; display: block; font-weight: 600;">SFTP Command Line:</label>
+                <pre class="code-block">sftp -P {{ sshInfo.port }} {{ sshInfo.user }}@{{ sshInfo.host }}</pre>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ SSL / TLS CERTIFICATES -->
+          <section v-if="activePage === 'ssl-tls'" class="panel">
+            <div class="advanced-tool-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <app-icon name="lock"></app-icon>
+                <div>
+                  <h2>SSL / TLS Certificates</h2>
+                  <p>Manage free Let's Encrypt / AutoSSL certificates or install custom SSL certificates for your domains.</p>
+                </div>
+              </div>
+              <button class="primary-button" @click="openCustomSslModal(null)">
+                + Install Custom Certificate
+              </button>
+            </div>
+
+            <div class="info-box" style="margin-top: 1rem;">
+              <app-icon name="info"></app-icon>
+              <div>
+                <strong>Automatic SSL Protection</strong>
+                <p style="margin: .25rem 0 0; font-size: 13px;">MangoPanel automatically issues and renews free SSL certificates for domains pointing to this server. You can also paste your own custom SSL certificate and private key below.</p>
+              </div>
+            </div>
+
+            <div class="table-container" style="margin-top: 1.25rem;">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Domain</th>
+                    <th>SSL Status</th>
+                    <th>Certificate Type</th>
+                    <th style="text-align: right;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="site in websites" :key="site.id">
+                    <td>
+                      <strong>{{ site.domain }}</strong>
+                      <small style="display: block; color: var(--muted);">{{ site.document_root }}</small>
+                    </td>
+                    <td>
+                      <span class="status-badge" :class="{
+                        'badge-success': site.ssl_status === 'active' || site.ssl_status === 'custom' || site.ssl_status === 'local-dev',
+                        'badge-warning': site.ssl_status === 'pending',
+                        'badge-disabled': site.ssl_status === 'missing' || !site.ssl_status
+                      }">
+                        {{ site.ssl_status === 'custom' ? 'Custom SSL Active' : ((site.ssl_status === 'active' || site.ssl_status === 'local-dev') ? 'SSL Active' : (site.ssl_status === 'pending' ? 'Pending' : 'Missing / Unsecured')) }}
+                      </span>
+                    </td>
+                    <td>
+                      <span style="font-size: 13px;">
+                        {{ site.ssl_status === 'custom' ? 'Custom Certificate' : ((site.ssl_status === 'active' || site.ssl_status === 'local-dev') ? 'Let\'s Encrypt / AutoSSL' : 'None') }}
+                      </span>
+                    </td>
+                    <td style="text-align: right;">
+                      <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                        <button
+                          class="ghost-button"
+                          style="font-size: 12px; padding: 4px 10px;"
+                          @click="issueFreeSsl(site)"
+                          :disabled="issuingSsl[site.id]"
+                        >
+                          <span v-if="issuingSsl[site.id]" class="btn-spinner"></span>
+                          <span>{{ issuingSsl[site.id] ? 'Issuing...' : 'Install Free SSL' }}</span>
+                        </button>
+                        <button
+                          class="ghost-button"
+                          style="font-size: 12px; padding: 4px 10px;"
+                          @click="openCustomSslModal(site)"
+                        >
+                          Custom SSL
+                        </button>
+                        <button
+                          class="ghost-button"
+                          style="font-size: 12px; padding: 4px 10px;"
+                          @click="checkDomainSslDns(site)"
+                          :disabled="issuingSsl[site.id]"
+                        >
+                          Check DNS
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr v-if="!websites || !websites.length">
+                    <td colspan="4" style="text-align: center; padding: 2rem; color: var(--muted);">
+                      No websites found. Add a website first to manage SSL certificates.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </section>
 
           <!-- ═══════════════════════════════════════════════════════════ PHP CONFIGURATION -->
@@ -2491,9 +2619,54 @@
                 <button
                   class="primary-button"
                   @click="submitInstallScript"
-                  :disabled="!installer.form.website_id || (installer.selectedScript.required_fields || []).some(f => !installer.form[f.name] || (f.name === 'admin_password' && installer.form[f.name].length < 8))"
+                  :disabled="installer.isSubmitting || !installer.form.website_id || (installer.selectedScript.required_fields || []).some(f => !installer.form[f.name] || (f.name === 'admin_password' && installer.form[f.name].length < 8))"
                 >
-                  Install Now
+                  <span v-if="installer.isSubmitting" class="btn-spinner"></span>
+                  <span>{{ installer.isSubmitting ? 'Installing...' : 'Install Now' }}</span>
+                </button>
+          </div>
+
+          <!-- Custom SSL Modal -->
+          <div v-if="sslModal.isOpen" class="modal-overlay" @click.self="closeCustomSslModal">
+            <div class="modal-panel" style="max-width: 600px;">
+              <div class="modal-header">
+                <h2>Install Custom SSL Certificate</h2>
+                <button class="close-button" @click="closeCustomSslModal">×</button>
+              </div>
+              <div v-if="sslModal.errorMessage" class="modal-body" style="padding-top: 0;">
+                <div class="info-box" style="border-color: #c2410c; background: rgba(194, 65, 12, 0.08);">
+                  <app-icon name="warning"></app-icon>
+                  <div>
+                    <strong>Custom SSL Error</strong>
+                    <p style="margin: .25rem 0 0; font-size: 13px;">{{ sslModal.errorMessage }}</p>
+                  </div>
+                </div>
+              </div>
+              <div class="modal-body">
+                <div class="form-grid">
+                  <label>Select Website
+                    <select v-model="sslModal.website_id">
+                      <option value="" disabled>Select website</option>
+                      <option v-for="site in websites" :key="site.id" :value="site.id">{{ site.domain }}</option>
+                    </select>
+                  </label>
+                  <label>Certificate (CRT / PEM)
+                    <textarea v-model="sslModal.crt" rows="6" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box; resize: vertical; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text);"></textarea>
+                  </label>
+                  <label>Private Key (KEY)
+                    <textarea v-model="sslModal.key" rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----" style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box; resize: vertical; margin-top: 4px; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text);"></textarea>
+                  </label>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="ghost-button" @click="closeCustomSslModal">Cancel</button>
+                <button
+                  class="primary-button"
+                  @click="submitCustomSsl"
+                  :disabled="sslModal.isSubmitting || !sslModal.website_id || !sslModal.crt || !sslModal.key"
+                >
+                  <span v-if="sslModal.isSubmitting" class="btn-spinner"></span>
+                  <span>{{ sslModal.isSubmitting ? 'Installing...' : 'Install Certificate' }}</span>
                 </button>
               </div>
             </div>
