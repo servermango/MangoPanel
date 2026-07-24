@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mangopanel.config import CONFIG, FILEBROWSER_CUSTOM_JS
 
+from .default_page import DEFAULT_PAGE_CONTENT
 from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes
 from .snappymail import SNAPPYMAIL_APP_VERSION, SNAPPYMAIL_IMAGE, ensure_snappymail_layout, load_snappymail_state
 
@@ -316,7 +317,7 @@ def render_mail_edge_manifest(runtime, mailboxes, mail_policy=None):
     }
 
 
-def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes=None, mail_policy=None):
+def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes=None, mail_policy=None, default_page_content=None):
     runtime = runtime or build_account_runtime(account)
     mailboxes = mailboxes or []
     mail_policy = mail_policy or {}
@@ -336,14 +337,20 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         tmp = root.parent / "tmp"
         logs.mkdir(parents=True, exist_ok=True)
         tmp.mkdir(parents=True, exist_ok=True)
+        for p in [root.parent, root, logs, tmp]:
+            try:
+                os.chmod(p, 0o777)
+            except Exception:
+                pass
         index = root / "index.php"
         if not index.exists():
-            index.write_text(
-                "<?php\n"
-                "header('Content-Type: text/plain');\n"
-                "echo \"MangoPanel dev site: {}\\n\";\n".format(website["domain"]),
-                encoding="utf-8",
-            )
+            tmpl = default_page_content or DEFAULT_PAGE_CONTENT
+            content = tmpl.replace("{domain}", website["domain"])
+            index.write_text(content, encoding="utf-8")
+            try:
+                os.chmod(index, 0o666)
+            except Exception:
+                pass
 
     mailbox_map = []
     for mailbox in mailboxes:
@@ -979,6 +986,7 @@ services:
     user: "{uid}:{uid}"
     restart: unless-stopped
     mem_limit: 128m
+    entrypoint: ["/bin/sh", "-c", "umask 0000 && exec /init.sh \"$$@\"", "--"]
     command: ["--config", "/config/settings.json", "--noauth", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
     environment:
       FB_BRANDING_DISABLE_USED_PERCENTAGE: "true"

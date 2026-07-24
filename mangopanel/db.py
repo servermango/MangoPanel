@@ -753,6 +753,12 @@ CREATE TABLE IF NOT EXISTS status_notifications (
   status TEXT NOT NULL DEFAULT 'pending',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -775,6 +781,15 @@ def init_db(db_path):
 
 
 def ensure_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS auth_attempts (
@@ -2037,3 +2052,24 @@ def seed_dev_data(db_path, account_root=None):
         seed_legacy_database_users(conn)
         log_audit(conn, "system", None, "dev_seed", "hosting_account", account_id, metadata={"ts": int(time.time())})
         log_activity(conn, user_id, "dev_seed_completed", {"account": "u000001"})
+
+
+def get_system_setting(conn, key, default=None):
+    row = conn.execute("SELECT value FROM system_settings WHERE key = ?", (key,)).fetchone()
+    if row is not None and row["value"] is not None:
+        return row["value"]
+    return default
+
+
+def set_system_setting(conn, key, value):
+    conn.execute(
+        """
+        INSERT INTO system_settings(key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (key, value),
+    )
+

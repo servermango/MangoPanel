@@ -32,7 +32,7 @@ class BaseInstaller:
         if index_php.exists():
             try:
                 content = index_php.read_text(encoding="utf-8")
-                if content.startswith("<?php\nheader('Content-Type: text/plain');\necho \"MangoPanel dev site:"):
+                if content.startswith("<?php\nheader('Content-Type: text/plain');\necho \"MangoPanel dev site:") or "<!-- mangopanel default page -->" in content.lower() or "mangopanel dev site:" in content.lower():
                     placeholder_index = index_php
             except Exception:
                 pass

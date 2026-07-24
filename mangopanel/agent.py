@@ -29,7 +29,8 @@ import time
 from pathlib import Path
 
 from .config import load_config
-from .db import connect, log_job_event, row_to_dict, rows_to_dicts
+from .db import connect, get_system_setting, log_job_event, row_to_dict, rows_to_dicts
+from .default_page import DEFAULT_PAGE_CONTENT
 from .providers import (
     ACME_PROVIDER_LOCAL,
     DNS_PROVIDER_CLOUDFLARE,
@@ -1964,6 +1965,7 @@ class Agent:
                     "catch_all_destination": row["catch_all_destination"] or "",
                 }
             )
+        default_page_content = get_system_setting(conn, "default_page_content", DEFAULT_PAGE_CONTENT)
         paths = ensure_account_layout(
             row_to_dict(account),
             row_to_dict(plan),
@@ -1972,6 +1974,7 @@ class Agent:
             runtime,
             mailboxes,
             mail_policy,
+            default_page_content=default_page_content,
         )
         mail_edge_provider = self.publish_mail_edge_state(conn, account, runtime, mailboxes, mail_policy)
         cron_jobs = rows_to_dicts(conn.execute("SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
@@ -2285,7 +2288,8 @@ class Agent:
         if not index_php.exists():
             return None
         try:
-            if index_php.read_text(encoding="utf-8").startswith(MANGOPANEL_PLACEHOLDER_PREFIX):
+            content = index_php.read_text(encoding="utf-8")
+            if content.startswith(MANGOPANEL_PLACEHOLDER_PREFIX) or "<!-- mangopanel default page -->" in content.lower() or "mangopanel dev site:" in content.lower():
                 return index_php
         except UnicodeDecodeError:
             return None

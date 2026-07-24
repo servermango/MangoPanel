@@ -25,13 +25,16 @@ from .mail import build_mail_message_bytes, dkim_dns_value, ensure_mailbox_stora
 from .db import (
     connect,
     create_job,
+    get_system_setting,
     init_db,
     log_activity,
     log_audit,
     row_to_dict,
     rows_to_dicts,
     seed_dev_data,
+    set_system_setting,
 )
+from .default_page import DEFAULT_PAGE_CONTENT
 from .providers import (
     DNS_PROVIDER_CLOUDFLARE,
     DNS_PROVIDER_LOCAL,
@@ -524,12 +527,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if admin_count() == 0:
                     return self.serve_file(PUBLIC_DIR / "admin_setup.html")
                 return self.serve_file(PUBLIC_DIR / "admin.html")
-            if path == "/admin/plans":
+            if path in {"/admin/plans", "/admin/default-page", "/admin/default_page"}:
                 if panel == "client":
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
                 if admin_count() == 0:
                     return self.serve_file(PUBLIC_DIR / "admin_setup.html")
-                return self.redirect_response("/admin#plans")
+                target = "default-page" if "default" in path else "plans"
+                return self.redirect_response(f"/admin#{target}")
             if path == "/status":
                 return self.serve_file(PUBLIC_DIR / "status.html")
             if path.startswith("/assets/"):
@@ -4491,6 +4495,34 @@ class MangoHandler(BaseHTTPRequestHandler):
                     log_audit(conn, "admin", actor["id"], "delete_client", "user", user_id, metadata=deleted)
                     return self.json_response({"deleted": deleted})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_client_admin_route")
+            if path == "/api/admin/system/default-page" and method == "GET":
+                custom_val = get_system_setting(conn, "default_page_content")
+                content = custom_val if custom_val is not None else DEFAULT_PAGE_CONTENT
+                return self.json_response({
+                    "default_page_content": content,
+                    "is_customized": custom_val is not None,
+                    "default_content": DEFAULT_PAGE_CONTENT,
+                })
+            if path == "/api/admin/system/default-page" and method in {"POST", "PUT"}:
+                body = self.read_json()
+                content = body.get("default_page_content")
+                if content is None:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "default_page_content_required")
+                set_system_setting(conn, "default_page_content", content)
+                log_audit(conn, "admin", actor["id"], "update_default_page_content", "system_settings", 0)
+                return self.json_response({
+                    "default_page_content": content,
+                    "is_customized": True,
+                    "message": "Default page content updated successfully",
+                })
+            if path == "/api/admin/system/default-page/reset" and method == "POST":
+                conn.execute("DELETE FROM system_settings WHERE key = 'default_page_content'")
+                log_audit(conn, "admin", actor["id"], "reset_default_page_content", "system_settings", 0)
+                return self.json_response({
+                    "default_page_content": DEFAULT_PAGE_CONTENT,
+                    "is_customized": False,
+                    "message": "Default page content reset to system default",
+                })
             if path == "/api/admin/dns-settings" and method == "GET":
                 return self.json_response({"dns_settings": dns_settings_payload(conn)})
             if path == "/api/admin/dns-settings" and method == "PATCH":

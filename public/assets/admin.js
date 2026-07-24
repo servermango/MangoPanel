@@ -1,10 +1,11 @@
 const { createApp } = Vue;
 
 const ADMIN_ROUTE_PREFIX = "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "registrars", "dns-domains", "system", "admins", "status", "security"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "registrars", "dns-domains", "system", "admins", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
-  const hash = window.location.hash.replace(/^#/, "");
+  let hash = window.location.hash.replace(/^#/, "");
+  if (hash === "default_page") hash = "default-page";
   return ADMIN_PAGE_TARGETS.has(hash) ? hash : "overview";
 }
 
@@ -110,6 +111,10 @@ createApp({
         hostname: "",
         quota_backend: "dev-simulator",
       },
+      defaultPageContent: "",
+      defaultPageIsCustomized: false,
+      savingDefaultPage: false,
+      showDefaultPagePreviewModal: false,
     };
   },
   mounted() {
@@ -147,6 +152,7 @@ createApp({
         {
           label: "System",
           items: [
+            { label: "Default Page", target: "default-page", description: "Default index.php template content for newly created websites." },
             { label: "Security Checklist", target: "security", description: "Server security audit, SSH hardening, firewall, SSL, and WAF status." },
             { label: "Stack & Jobs", target: "system", description: "Generated stacks, agent runs, recent jobs, and events." },
             { label: "Admins", target: "admins", description: "Admin users, TOTP secrets, nodes, and PHP availability." },
@@ -279,7 +285,47 @@ createApp({
         this.registrars = (await this.api("/api/admin/registrars")).registrars || [];
         this.stacks = (await this.api("/api/admin/account-stacks")).account_stacks;
         await this.loadSecurityAudit();
+        await this.loadDefaultPage();
         this.jobEvents = (await this.api("/api/admin/job-events")).job_events;
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async loadDefaultPage() {
+      try {
+        const res = await this.api("/api/admin/system/default-page");
+        this.defaultPageContent = res.default_page_content;
+        this.defaultPageIsCustomized = res.is_customized;
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async saveDefaultPage() {
+      this.savingDefaultPage = true;
+      try {
+        const res = await this.api("/api/admin/system/default-page", {
+          method: "POST",
+          body: JSON.stringify({ default_page_content: this.defaultPageContent }),
+        });
+        this.defaultPageContent = res.default_page_content;
+        this.defaultPageIsCustomized = res.is_customized;
+        this.message = res.message || "Default page content saved successfully.";
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.savingDefaultPage = false;
+      }
+    },
+    async resetDefaultPage() {
+      if (!confirm("Reset default page content to system default template?")) return;
+      try {
+        const res = await this.api("/api/admin/system/default-page/reset", {
+          method: "POST",
+          body: "{}",
+        });
+        this.defaultPageContent = res.default_page_content;
+        this.defaultPageIsCustomized = false;
+        this.message = res.message || "Default page content reset to system default.";
       } catch (error) {
         this.message = error.message;
       }
