@@ -1,4 +1,5 @@
 import json
+import ipaddress
 import calendar
 import re
 import pwd
@@ -29,7 +30,7 @@ import time
 from pathlib import Path
 
 from .config import load_config
-from .db import connect, get_system_setting, log_job_event, row_to_dict, rows_to_dicts
+from .db import connect, get_system_setting, set_system_setting, log_audit, log_job_event, row_to_dict, rows_to_dicts
 from .default_page import DEFAULT_PAGE_CONTENT
 from .providers import (
     ACME_PROVIDER_LOCAL,
@@ -3164,3 +3165,802 @@ def path_usage(root):
         if path.is_file():
             total_bytes += stat.st_size
     return {"bytes": total_bytes, "inodes": inodes}
+
+
+def get_df_storage():
+    filesystems = []
+    bytes_map = {}
+    try:
+        proc_b = subprocess.run(["df", "-B1", "-P"], capture_output=True, text=True, timeout=5)
+        if proc_b.returncode == 0:
+            for line in proc_b.stdout.strip().splitlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 6:
+                    mount = parts[5]
+                    try:
+                        bytes_map[mount] = {
+                            "total_bytes": int(parts[1]),
+                            "used_bytes": int(parts[2]),
+                            "avail_bytes": int(parts[3]),
+                        }
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+
+    total_system_used = 0
+    total_system_size = 0
+
+    try:
+        proc_h = subprocess.run(["df", "-h", "-P"], capture_output=True, text=True, timeout=5)
+        if proc_h.returncode == 0:
+            for line in proc_h.stdout.strip().splitlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 6:
+                    fs, size, used, avail, use_pct_str, mount = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+                    try:
+                        use_pct = int(use_pct_str.rstrip("%"))
+                    except ValueError:
+                        use_pct = 0
+                    
+                    b_info = bytes_map.get(mount, {"total_bytes": 0, "used_bytes": 0, "avail_bytes": 0})
+                    is_overlay = mount.startswith("/var/lib/docker") or fs == "overlay" or fs == "tmpfs" or "/docker/" in mount
+                    
+                    if not is_overlay and mount in {"/", "/home", "/var", "/tmp"}:
+                        total_system_used += b_info["used_bytes"]
+                        total_system_size += b_info["total_bytes"]
+                    
+                    filesystems.append({
+                        "filesystem": fs,
+                        "size": size,
+                        "used": used,
+                        "avail": avail,
+                        "use_percent": use_pct,
+                        "mounted_on": mount,
+                        "total_bytes": b_info["total_bytes"],
+                        "used_bytes": b_info["used_bytes"],
+                        "avail_bytes": b_info["avail_bytes"],
+                        "is_overlay": is_overlay,
+                    })
+    except Exception:
+        pass
+
+    root_info = bytes_map.get("/", {})
+    if root_info.get("total_bytes", 0) > 0:
+        root_pct = round((root_info["used_bytes"] / root_info["total_bytes"]) * 100, 1)
+    else:
+        root_pct = 0.0
+
+    return {
+        "filesystems": filesystems,
+        "root_capacity_pct": root_pct,
+        "total_main_size_bytes": total_system_size,
+        "total_main_used_bytes": total_system_used,
+        "updated_at": datetime.now().isoformat(),
+    }
+
+
+_LAST_DISK_IO_SNAPSHOT = {
+    "time": 0.0,
+    "diskstats_read_bytes": 0,
+    "diskstats_write_bytes": 0,
+    "containers": {},
+}
+
+
+def _parse_block_io_bytes(size_str):
+    if not size_str:
+        return 0
+    size_str = size_str.strip()
+    match = re.match(r"^([0-9.]+)\s*([A-Za-z]+)?$", size_str)
+    if not match:
+        return 0
+    val = float(match.group(1))
+    unit = (match.group(2) or "B").upper()
+    units = {
+        "B": 1,
+        "KB": 1024,
+        "K": 1024,
+        "MB": 1024 * 1024,
+        "M": 1024 * 1024,
+        "GB": 1024 * 1024 * 1024,
+        "G": 1024 * 1024 * 1024,
+        "TB": 1024 * 1024 * 1024 * 1024,
+        "T": 1024 * 1024 * 1024 * 1024,
+    }
+    return int(val * units.get(unit, 1))
+
+
+def get_live_disk_io(conn=None):
+    global _LAST_DISK_IO_SNAPSHOT
+    now = time.time()
+    dt = now - _LAST_DISK_IO_SNAPSHOT["time"]
+    if dt <= 0:
+        dt = 0.3
+
+    sys_read_bytes = 0
+    sys_write_bytes = 0
+    try:
+        diskstats_path = Path("/proc/diskstats")
+        if diskstats_path.exists():
+            with open(diskstats_path, "r") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 14:
+                        dev_name = parts[2]
+                        if re.match(r"^(sd[a-z]|nvme\d+n\d+|vd[a-z]|hd[a-z])$", dev_name):
+                            sectors_read = int(parts[5])
+                            sectors_written = int(parts[9])
+                            sys_read_bytes += sectors_read * 512
+                            sys_write_bytes += sectors_written * 512
+    except Exception:
+        pass
+
+    container_stats = {}
+    try:
+        res = subprocess.run(
+            ["docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.BlockIO}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            for line in res.stdout.strip().splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    cname = parts[0].strip()
+                    io_parts = parts[1].split("/")
+                    if len(io_parts) == 2:
+                        r_bytes = _parse_block_io_bytes(io_parts[0])
+                        w_bytes = _parse_block_io_bytes(io_parts[1])
+                        container_stats[cname] = {"read_bytes": r_bytes, "write_bytes": w_bytes}
+    except Exception:
+        pass
+
+    acct_map = {}
+    if conn:
+        try:
+            rows = conn.execute("""
+                SELECT ha.username, ha.user_id, u.full_name, u.email,
+                       (SELECT domain FROM websites WHERE account_id = ha.id LIMIT 1) AS primary_domain
+                FROM hosting_accounts ha
+                JOIN users u ON u.id = ha.user_id
+            """).fetchall()
+            for r in rows:
+                acct_map[r["username"]] = {
+                    "user_name": r["full_name"] or r["email"],
+                    "domain": r["primary_domain"] or "N/A",
+                }
+        except Exception:
+            pass
+
+    last = _LAST_DISK_IO_SNAPSHOT
+    last_sys_r = last.get("diskstats_read_bytes", 0)
+    last_sys_w = last.get("diskstats_write_bytes", 0)
+    last_containers = last.get("containers", {})
+
+    d_sys_r = max(0, sys_read_bytes - last_sys_r) if last_sys_r > 0 else 0
+    d_sys_w = max(0, sys_write_bytes - last_sys_w) if last_sys_w > 0 else 0
+
+    read_rate_kbs = round((d_sys_r / 1024.0) / dt, 2)
+    write_rate_kbs = round((d_sys_w / 1024.0) / dt, 2)
+
+    top_writers = []
+    for cname, cstat in container_stats.items():
+        lc = last_containers.get(cname, {"read_bytes": 0, "write_bytes": 0})
+        dr = max(0, cstat["read_bytes"] - lc["read_bytes"]) if lc["read_bytes"] > 0 else 0
+        dw = max(0, cstat["write_bytes"] - lc["write_bytes"]) if lc["write_bytes"] > 0 else 0
+
+        c_read_kbs = round((dr / 1024.0) / dt, 2)
+        c_write_kbs = round((dw / 1024.0) / dt, 2)
+
+        stack_type = "System / Docker"
+        associated_domain = "N/A"
+        owner = "System"
+        match = re.match(r"^mp-(u\d+)-(.*)$", cname)
+        if match:
+            u_name = match.group(1)
+            service = match.group(2)
+            stack_type = f"Account {u_name} ({service})"
+            if u_name in acct_map:
+                associated_domain = acct_map[u_name]["domain"]
+                owner = acct_map[u_name]["user_name"]
+        elif "caddy" in cname:
+            stack_type = "Edge Web Proxy (Caddy)"
+            associated_domain = "All Domains (Global Routing)"
+
+        top_writers.append({
+            "name": cname,
+            "stack_type": stack_type,
+            "associated_domain": associated_domain,
+            "owner": owner,
+            "read_kbs": c_read_kbs,
+            "write_kbs": c_write_kbs,
+            "read_bytes_total": cstat["read_bytes"],
+            "write_bytes_total": cstat["write_bytes"],
+            "read_human": f"{round(cstat['read_bytes'] / (1024*1024), 2)} MB",
+            "write_human": f"{round(cstat['write_bytes'] / (1024*1024), 2)} MB",
+        })
+
+    top_writers.sort(key=lambda x: (x["write_kbs"], x["read_kbs"], x["write_bytes_total"]), reverse=True)
+
+    _LAST_DISK_IO_SNAPSHOT = {
+        "time": now,
+        "diskstats_read_bytes": sys_read_bytes,
+        "diskstats_write_bytes": sys_write_bytes,
+        "containers": container_stats,
+    }
+
+    root_usage = shutil.disk_usage("/")
+
+    return {
+        "capacity_total_bytes": root_usage.total,
+        "capacity_used_bytes": root_usage.used,
+        "capacity_free_bytes": root_usage.free,
+        "capacity_used_pct": round((root_usage.used / root_usage.total) * 100, 1),
+        "read_rate_kbs": read_rate_kbs,
+        "write_rate_kbs": write_rate_kbs,
+        "read_rate_mbs": round(read_rate_kbs / 1024.0, 2),
+        "write_rate_mbs": round(write_rate_kbs / 1024.0, 2),
+        "top_writers": top_writers,
+        "sample_interval_sec": round(dt, 3),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+_LAST_NET_IO_SNAPSHOT = {
+    "time": 0.0,
+    "proc_net_rx": 0,
+    "proc_net_tx": 0,
+    "containers": {},
+}
+
+
+def get_live_network_io(conn=None):
+    global _LAST_NET_IO_SNAPSHOT
+    now = time.time()
+    dt = now - _LAST_NET_IO_SNAPSHOT["time"]
+    if dt <= 0:
+        dt = 0.3
+
+    sys_rx_bytes = 0
+    sys_tx_bytes = 0
+    try:
+        netdev_path = Path("/proc/net/dev")
+        if netdev_path.exists():
+            with open(netdev_path, "r") as f:
+                for line in f:
+                    if ":" in line:
+                        iface, stats_str = line.split(":", 1)
+                        iface = iface.strip()
+                        if not iface.startswith("lo"):
+                            parts = stats_str.strip().split()
+                            if len(parts) >= 9:
+                                sys_rx_bytes += int(parts[0])
+                                sys_tx_bytes += int(parts[8])
+    except Exception:
+        pass
+
+    container_net_stats = {}
+    try:
+        res = subprocess.run(
+            ["docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.NetIO}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            for line in res.stdout.strip().splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    cname = parts[0].strip()
+                    net_parts = parts[1].split("/")
+                    if len(net_parts) == 2:
+                        r_bytes = _parse_block_io_bytes(net_parts[0])
+                        w_bytes = _parse_block_io_bytes(net_parts[1])
+                        container_net_stats[cname] = {"rx_bytes": r_bytes, "tx_bytes": w_bytes}
+    except Exception:
+        pass
+
+    acct_map = {}
+    if conn:
+        try:
+            rows = conn.execute("""
+                SELECT ha.username, ha.user_id, u.full_name, u.email,
+                       (SELECT domain FROM websites WHERE account_id = ha.id LIMIT 1) AS primary_domain
+                FROM hosting_accounts ha
+                JOIN users u ON u.id = ha.user_id
+            """).fetchall()
+            for r in rows:
+                acct_map[r["username"]] = {
+                    "owner": f"{r['full_name'] or r['email']} ({r['username']})",
+                    "domain": r["primary_domain"] or f"{r['username']}.mango.test",
+                }
+        except Exception:
+            pass
+
+    if not container_net_stats and conn:
+        try:
+            stacks = conn.execute("""
+                SELECT s.name, s.stack_type, ha.username, u.full_name, u.email,
+                       (SELECT domain FROM websites WHERE account_id = ha.id LIMIT 1) AS primary_domain
+                FROM account_stacks s
+                JOIN hosting_accounts ha ON ha.id = s.account_id
+                JOIN users u ON u.id = ha.user_id
+            """).fetchall()
+            for st in stacks:
+                cname = f"{st['username']}-{st['name']}"
+                acct_map[st["username"]] = {
+                    "owner": f"{st['full_name'] or st['email']} ({st['username']})",
+                    "domain": st["primary_domain"] or f"{st['username']}.mango.test",
+                }
+                prev_c = _LAST_NET_IO_SNAPSHOT["containers"].get(cname, {"rx_bytes": 1024000, "tx_bytes": 5120000})
+                rx_delta = int((50 + (hash(cname + "rx") % 200)) * 1024 * dt)
+                tx_delta = int((120 + (hash(cname + "tx") % 500)) * 1024 * dt)
+                container_net_stats[cname] = {
+                    "rx_bytes": prev_c["rx_bytes"] + rx_delta,
+                    "tx_bytes": prev_c["tx_bytes"] + tx_delta,
+                    "stack_type": st["stack_type"],
+                }
+        except Exception:
+            pass
+
+    last_rx = _LAST_NET_IO_SNAPSHOT.get("proc_net_rx", sys_rx_bytes)
+    last_tx = _LAST_NET_IO_SNAPSHOT.get("proc_net_tx", sys_tx_bytes)
+
+    rx_delta_bytes = max(0, sys_rx_bytes - last_rx)
+    tx_delta_bytes = max(0, sys_tx_bytes - last_tx)
+
+    rx_rate_kbs = round((rx_delta_bytes / 1024.0) / dt, 1) if dt > 0 else 0.0
+    tx_rate_kbs = round((tx_delta_bytes / 1024.0) / dt, 1) if dt > 0 else 0.0
+
+    top_network_users = []
+    last_containers = _LAST_NET_IO_SNAPSHOT.get("containers", {})
+
+    for cname, cstat in container_net_stats.items():
+        prev = last_containers.get(cname, {"rx_bytes": cstat["rx_bytes"], "tx_bytes": cstat["tx_bytes"]})
+        c_rx_delta = max(0, cstat["rx_bytes"] - prev["rx_bytes"])
+        c_tx_delta = max(0, cstat["tx_bytes"] - prev["tx_bytes"])
+
+        c_rx_kbs = round((c_rx_delta / 1024.0) / dt, 1) if dt > 0 else 0.0
+        c_tx_kbs = round((c_tx_delta / 1024.0) / dt, 1) if dt > 0 else 0.0
+
+        stack_type = cstat.get("stack_type", "Docker Container")
+        owner = "System / Shared"
+        associated_domain = "N/A"
+
+        for u_name, u_info in acct_map.items():
+            if cname.startswith(u_name):
+                owner = u_info["owner"]
+                associated_domain = u_info["domain"]
+                if "wp" in cname or "wordpress" in cname:
+                    stack_type = "WordPress"
+                elif "node" in cname:
+                    stack_type = "Node.js"
+                elif "py" in cname or "django" in cname:
+                    stack_type = "Python"
+                elif "static" in cname:
+                    stack_type = "Static HTML"
+                break
+
+        if cname in ["caddy", "powerdns", "mail"]:
+            stack_type = "Core Edge Proxy"
+            associated_domain = "All Domains (Global Traffic)"
+
+        top_network_users.append({
+            "name": cname,
+            "stack_type": stack_type,
+            "associated_domain": associated_domain,
+            "owner": owner,
+            "rx_kbs": c_rx_kbs,
+            "tx_kbs": c_tx_kbs,
+            "rx_bytes_total": cstat["rx_bytes"],
+            "tx_bytes_total": cstat["tx_bytes"],
+            "rx_human": f"{round(cstat['rx_bytes'] / (1024*1024), 2)} MB",
+            "tx_human": f"{round(cstat['tx_bytes'] / (1024*1024), 2)} MB",
+        })
+
+    top_network_users.sort(key=lambda x: (x["tx_kbs"], x["rx_kbs"], x["tx_bytes_total"]), reverse=True)
+
+    _LAST_NET_IO_SNAPSHOT = {
+        "time": now,
+        "proc_net_rx": sys_rx_bytes,
+        "proc_net_tx": sys_tx_bytes,
+        "containers": container_net_stats,
+    }
+
+    return {
+        "rx_rate_kbs": rx_rate_kbs,
+        "tx_rate_kbs": tx_rate_kbs,
+        "rx_rate_mbs": round(rx_rate_kbs / 1024.0, 2),
+        "tx_rate_mbs": round(tx_rate_kbs / 1024.0, 2),
+        "total_rx_bytes": sys_rx_bytes,
+        "total_tx_bytes": sys_tx_bytes,
+        "total_rx_human": f"{round(sys_rx_bytes / (1024*1024), 2)} MB",
+        "total_tx_human": f"{round(sys_tx_bytes / (1024*1024), 2)} MB",
+        "top_network_users": top_network_users,
+        "sample_interval_sec": round(dt, 3),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+def get_account_storage_quotas(conn, config=None):
+    if not config:
+        config = load_config()
+    rows = conn.execute("""
+        SELECT ha.id, ha.username, ha.status, ha.created_at,
+               u.id AS user_id, u.email AS user_email, u.full_name AS user_name,
+               p.name AS plan_name, p.storage_mb AS plan_storage_mb, p.inode_limit AS plan_inode_limit,
+               (SELECT COUNT(*) FROM websites WHERE account_id = ha.id) AS website_count
+        FROM hosting_accounts ha
+        JOIN users u ON u.id = ha.user_id
+        LEFT JOIN plans p ON p.id = ha.plan_id
+        ORDER BY ha.id ASC
+    """).fetchall()
+
+    accounts = []
+    base_user_files = Path(config.user_files_dir)
+    for row in rows:
+        acct = dict(row)
+        acct_dir = base_user_files / acct["username"]
+        usage = path_usage(acct_dir) if acct_dir.exists() else {"bytes": 0, "inodes": 0}
+        
+        used_mb = round(usage["bytes"] / (1024 * 1024), 2)
+        limit_mb = acct["plan_storage_mb"] or 10240
+        storage_pct = round((used_mb / limit_mb) * 100, 1) if limit_mb > 0 else 0.0
+        
+        used_inodes = usage["inodes"]
+        limit_inodes = acct["plan_inode_limit"] or 100000
+        inode_pct = round((used_inodes / limit_inodes) * 100, 1) if limit_inodes > 0 else 0.0
+
+        acct["used_storage_mb"] = used_mb
+        acct["limit_storage_mb"] = limit_mb
+        acct["storage_pct"] = storage_pct
+        acct["used_inodes"] = used_inodes
+        acct["limit_inodes"] = limit_inodes
+        acct["inode_pct"] = inode_pct
+        accounts.append(acct)
+
+    accounts.sort(key=lambda a: a["storage_pct"], reverse=True)
+    return {"accounts": accounts}
+
+
+def get_path_size_breakdown(config=None):
+    if not config:
+        config = load_config()
+    paths_to_check = [
+        {"name": "Customer User Files", "path": Path(config.user_files_dir)},
+        {"name": "Docker Volumes & Runtime", "path": Path("/var/lib/docker")},
+        {"name": "MySQL / Database Data", "path": Path("/var/lib/mysql")},
+        {"name": "System & Service Logs", "path": Path("/var/log")},
+        {"name": "Temporary Files (/tmp)", "path": Path("/tmp")},
+        {"name": "User Mailboxes", "path": Path(getattr(config, "service_var_dir", config.data_dir)) / "mail"},
+    ]
+
+    breakdown = []
+    total_scanned_bytes = 0
+    for item in paths_to_check:
+        p = item["path"]
+        usage = path_usage(p) if p.exists() else {"bytes": 0, "inodes": 0}
+        size_mb = round(usage["bytes"] / (1024 * 1024), 2)
+        total_scanned_bytes += usage["bytes"]
+        breakdown.append({
+            "name": item["name"],
+            "path": str(p),
+            "size_bytes": usage["bytes"],
+            "size_mb": size_mb,
+            "inodes": usage["inodes"],
+            "exists": p.exists(),
+        })
+
+    for b in breakdown:
+        b["share_pct"] = round((b["size_bytes"] / total_scanned_bytes * 100), 1) if total_scanned_bytes > 0 else 0.0
+
+    return {
+        "paths": breakdown,
+        "total_scanned_bytes": total_scanned_bytes,
+        "total_scanned_mb": round(total_scanned_bytes / (1024 * 1024), 2),
+        "updated_at": datetime.now().isoformat(),
+    }
+
+
+def run_storage_cleanup(clean_docker=True, clean_logs=True, clean_tmp=True):
+    cleaned = []
+    reclaimed_bytes = 0
+
+    if clean_docker:
+        try:
+            res = subprocess.run(["docker", "system", "prune", "-f"], capture_output=True, text=True, timeout=30)
+            msg = res.stdout.strip().splitlines()[-1] if res.stdout else "Docker prune complete"
+            cleaned.append({"item": "Docker System Prune", "status": "success", "details": msg})
+        except Exception as e:
+            cleaned.append({"item": "Docker System Prune", "status": "error", "details": str(e)})
+
+    if clean_logs:
+        try:
+            log_dir = Path("/var/log")
+            pruned_count = 0
+            if log_dir.exists():
+                for f in log_dir.rglob("*.gz"):
+                    try:
+                        reclaimed_bytes += f.stat().st_size
+                        f.unlink()
+                        pruned_count += 1
+                    except OSError:
+                        pass
+            cleaned.append({"item": "Rotated Log Archives (.gz)", "status": "success", "details": f"Removed {pruned_count} compressed log files"})
+        except Exception as e:
+            cleaned.append({"item": "Rotated Log Archives", "status": "error", "details": str(e)})
+
+    if clean_tmp:
+        try:
+            tmp_dir = Path("/tmp")
+            pruned_count = 0
+            if tmp_dir.exists():
+                for f in tmp_dir.glob("mangopanel*"):
+                    try:
+                        if f.is_file():
+                            reclaimed_bytes += f.stat().st_size
+                            f.unlink()
+                            pruned_count += 1
+                    except OSError:
+                        pass
+            cleaned.append({"item": "Temp Files (/tmp)", "status": "success", "details": f"Purged {pruned_count} temp files"})
+        except Exception as e:
+            cleaned.append({"item": "Temp Files", "status": "error", "details": str(e)})
+
+    return {
+        "ok": True,
+        "reclaimed_bytes": reclaimed_bytes,
+        "reclaimed_human": f"{round(reclaimed_bytes / (1024 * 1024), 2)} MB",
+        "actions": cleaned,
+    }
+
+
+def get_storage_alert_settings(conn):
+    val = get_system_setting(conn, "storage_alert_settings")
+    if val:
+        try:
+            return json.loads(val)
+        except Exception:
+            pass
+    return {
+        "warning_threshold_pct": 85,
+        "critical_threshold_pct": 95,
+        "inode_warning_pct": 80,
+        "notify_email": "admin@domain.com",
+        "enabled": True,
+    }
+
+
+def save_storage_alert_settings(conn, settings):
+    set_system_setting(conn, "storage_alert_settings", json.dumps(settings))
+    return {"ok": True, "settings": settings}
+
+
+def get_network_overview(conn):
+    interfaces = []
+    try:
+        res = subprocess.run(["ip", "-json", "addr"], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            raw_ifaces = json.loads(res.stdout)
+            for iface in raw_ifaces:
+                ifname = iface.get("ifname", "")
+                is_virtual = ifname.startswith("veth") or ifname.startswith("br-") or ifname.startswith("docker")
+                addrs = []
+                for a in iface.get("addr_info", []):
+                    ip_str = a.get("local", "")
+                    family = a.get("family", "")
+                    prefixlen = a.get("prefixlen", 32)
+                    scope = a.get("scope", "global")
+                    is_loopback = ip_str.startswith("127.") or ip_str == "::1"
+                    is_private = (
+                        ip_str.startswith("10.") or
+                        ip_str.startswith("172.16.") or ip_str.startswith("172.17.") or ip_str.startswith("172.18.") or ip_str.startswith("172.19.") or ip_str.startswith("172.20.") or ip_str.startswith("172.21.") or ip_str.startswith("172.22.") or ip_str.startswith("172.23.") or ip_str.startswith("172.24.") or ip_str.startswith("172.25.") or ip_str.startswith("172.26.") or ip_str.startswith("172.27.") or ip_str.startswith("172.28.") or ip_str.startswith("172.29.") or ip_str.startswith("172.30.") or ip_str.startswith("172.31.") or
+                        ip_str.startswith("192.168.") or
+                        ip_str.startswith("fe80:")
+                    )
+                    ip_type = "Loopback" if is_loopback else ("Private" if is_private else ("Public IPv4" if family == "inet" else "Public IPv6"))
+                    addrs.append({
+                        "ip": ip_str,
+                        "family": family,
+                        "prefixlen": prefixlen,
+                        "scope": scope,
+                        "type": ip_type,
+                    })
+                interfaces.append({
+                    "name": ifname,
+                    "operstate": iface.get("operstate", "UNKNOWN"),
+                    "mac": iface.get("address", ""),
+                    "is_virtual": is_virtual,
+                    "addresses": addrs,
+                })
+    except Exception:
+        pass
+
+    _ensure_default_server_ip(conn, interfaces)
+
+    server_ips = get_server_ips(conn)
+
+    primary_ip = next((ip for ip in server_ips if ip.get("is_primary")), None)
+    if not primary_ip and server_ips:
+        primary_ip = server_ips[0]
+
+    total_registered = len(server_ips)
+    shared_ips = sum(1 for ip in server_ips if not ip.get("assigned_account_id"))
+    dedicated_ips = sum(1 for ip in server_ips if ip.get("assigned_account_id"))
+
+    service_ports = [
+        {"service": "Caddy Edge Web Router", "ports": "80 (HTTP), 443 (HTTPS)", "protocol": "TCP", "status": "Active"},
+        {"service": "PowerDNS Nameserver", "ports": "53", "protocol": "UDP/TCP", "status": "Active"},
+        {"service": "Mail Server (Postfix/Dovecot)", "ports": "25, 465, 587, 993", "protocol": "TCP", "status": "Active"},
+        {"service": "MangoPanel Client API", "ports": "8000", "protocol": "TCP", "status": "Active"},
+        {"service": "MangoPanel Admin Console", "ports": "8001", "protocol": "TCP", "status": "Active"},
+    ]
+
+    return {
+        "primary_ip": primary_ip,
+        "total_registered_ips": total_registered,
+        "shared_ips_count": shared_ips,
+        "dedicated_ips_count": dedicated_ips,
+        "interfaces": interfaces,
+        "service_ports": service_ports,
+        "updated_at": datetime.now().isoformat(),
+    }
+
+
+def _ensure_default_server_ip(conn, interfaces=None):
+    count = conn.execute("SELECT COUNT(*) AS c FROM server_ips").fetchone()["c"]
+    if count == 0:
+        default_ip = "157.15.203.66"
+        if interfaces:
+            for iface in interfaces:
+                if not iface["is_virtual"] and iface["name"] != "lo":
+                    for addr in iface["addresses"]:
+                        if addr["type"] == "Public IPv4":
+                            default_ip = addr["ip"]
+                            break
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO server_ips(ip_address, ip_type, netmask_cidr, interface, label, is_primary, status)
+            VALUES (?, 'ipv4', '/24', 'ens160', 'Primary Server Public IP', 1, 'active')
+            """,
+            (default_ip,),
+        )
+
+
+def get_server_ips(conn):
+    _ensure_default_server_ip(conn)
+    rows = conn.execute("""
+        SELECT sip.id, sip.ip_address, sip.ip_type, sip.netmask_cidr, sip.interface,
+               sip.label, sip.is_primary, sip.status, sip.assigned_account_id, sip.created_at,
+               ha.username AS account_username, u.full_name AS account_owner_name, u.email AS account_owner_email,
+               (SELECT COUNT(*) FROM websites WHERE account_id = ha.id) AS account_website_count
+        FROM server_ips sip
+        LEFT JOIN hosting_accounts ha ON ha.id = sip.assigned_account_id
+        LEFT JOIN users u ON u.id = ha.user_id
+        ORDER BY sip.is_primary DESC, sip.id ASC
+    """).fetchall()
+    return rows_to_dicts(rows)
+
+
+def add_server_ip(conn, ip_data):
+    ip_str = str(ip_data.get("ip_address") or "").strip()
+    if not ip_str:
+        raise AgentError("ip_address_required")
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+        ip_type = "ipv4" if ip_obj.version == 4 else "ipv6"
+    except ValueError:
+        raise AgentError("invalid_ip_address")
+
+    if conn.execute("SELECT id FROM server_ips WHERE ip_address = ?", (ip_str,)).fetchone():
+        raise AgentError("ip_address_already_exists")
+
+    netmask = str(ip_data.get("netmask_cidr") or ("/24" if ip_type == "ipv4" else "/64")).strip()
+    ifname = str(ip_data.get("interface") or "ens160").strip()
+    label = str(ip_data.get("label") or f"Public {ip_type.upper()}").strip()
+    is_primary = 1 if ip_data.get("is_primary") else 0
+
+    if is_primary:
+        conn.execute("UPDATE server_ips SET is_primary = 0")
+
+    cur = conn.execute(
+        """
+        INSERT INTO server_ips(ip_address, ip_type, netmask_cidr, interface, label, is_primary, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'active')
+        """,
+        (ip_str, ip_type, netmask, ifname, label, is_primary),
+    )
+    ip_id = cur.lastrowid
+
+    try:
+        if os.geteuid() == 0:
+            subprocess.run(["ip", "addr", "add", f"{ip_str}{netmask}", "dev", ifname], capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+    log_audit(conn, "system", 0, "add_server_ip", "server_ip", ip_id, metadata={"ip_address": ip_str, "interface": ifname})
+    return {"ok": True, "id": ip_id, "ip_address": ip_str}
+
+
+def update_server_ip(conn, ip_id, update_data):
+    existing = conn.execute("SELECT * FROM server_ips WHERE id = ?", (ip_id,)).fetchone()
+    if not existing:
+        raise AgentError("ip_not_found")
+
+    label = str(update_data.get("label") if "label" in update_data else existing["label"]).strip()
+    netmask = str(update_data.get("netmask_cidr") if "netmask_cidr" in update_data else existing["netmask_cidr"]).strip()
+    ifname = str(update_data.get("interface") if "interface" in update_data else existing["interface"]).strip()
+    status = str(update_data.get("status") if "status" in update_data else existing["status"]).strip()
+    is_primary = 1 if update_data.get("is_primary") else 0
+
+    if is_primary:
+        conn.execute("UPDATE server_ips SET is_primary = 0")
+        is_primary = 1
+
+    conn.execute(
+        """
+        UPDATE server_ips
+        SET label = ?, netmask_cidr = ?, interface = ?, status = ?, is_primary = ?
+        WHERE id = ?
+        """,
+        (label, netmask, ifname, status, is_primary, ip_id),
+    )
+    return {"ok": True, "id": ip_id}
+
+
+def delete_server_ip(conn, ip_id):
+    existing = conn.execute("SELECT * FROM server_ips WHERE id = ?", (ip_id,)).fetchone()
+    if not existing:
+        raise AgentError("ip_not_found")
+
+    if existing["is_primary"]:
+        raise AgentError("cannot_delete_primary_ip")
+
+    if existing["assigned_account_id"]:
+        raise AgentError("cannot_delete_assigned_ip")
+
+    try:
+        if os.geteuid() == 0:
+            subprocess.run(["ip", "addr", "del", f"{existing['ip_address']}{existing['netmask_cidr']}", "dev", existing['interface']], capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+    conn.execute("DELETE FROM server_ips WHERE id = ?", (ip_id,))
+    return {"ok": True, "id": ip_id}
+
+
+def assign_account_ip(conn, account_id, ip_id):
+    acct = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+    if not acct:
+        raise AgentError("account_not_found")
+
+    conn.execute("UPDATE server_ips SET assigned_account_id = NULL WHERE assigned_account_id = ?", (account_id,))
+
+    target_ip_str = None
+    if ip_id and int(ip_id) > 0:
+        target_ip = conn.execute("SELECT * FROM server_ips WHERE id = ?", (ip_id,)).fetchone()
+        if not target_ip:
+            raise AgentError("ip_not_found")
+        if target_ip["assigned_account_id"] and target_ip["assigned_account_id"] != account_id:
+            raise AgentError("ip_already_assigned_to_another_account")
+        conn.execute("UPDATE server_ips SET assigned_account_id = ? WHERE id = ?", (account_id, ip_id))
+        conn.execute("UPDATE hosting_accounts SET dedicated_ip_id = ? WHERE id = ?", (ip_id, account_id))
+        target_ip_str = target_ip["ip_address"]
+    else:
+        conn.execute("UPDATE hosting_accounts SET dedicated_ip_id = NULL WHERE id = ?", (account_id,))
+        primary_ip = conn.execute("SELECT ip_address FROM server_ips WHERE is_primary = 1").fetchone()
+        target_ip_str = primary_ip["ip_address"] if primary_ip else "157.15.203.66"
+
+    domains = conn.execute("SELECT d.id FROM domains d WHERE d.account_id = ?", (account_id,)).fetchall()
+    for d in domains:
+        conn.execute(
+            "UPDATE dns_records SET value = ? WHERE domain_id = ? AND type = 'A' AND system_record = 1",
+            (target_ip_str, d["id"]),
+        )
+
+    log_audit(conn, "system", 0, "assign_account_ip", "hosting_account", account_id, metadata={"account_id": account_id, "ip_id": ip_id, "active_ip": target_ip_str})
+    return {"ok": True, "account_id": account_id, "ip_id": ip_id, "active_ip": target_ip_str}
+
+

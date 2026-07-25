@@ -19,7 +19,28 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-from .agent import Agent, AgentError, cron_next_run_at, decorate_cron_jobs, path_usage, validate_cron_schedule
+from .agent import (
+    Agent,
+    AgentError,
+    add_server_ip,
+    assign_account_ip,
+    cron_next_run_at,
+    decorate_cron_jobs,
+    delete_server_ip,
+    get_account_storage_quotas,
+    get_df_storage,
+    get_live_disk_io,
+    get_live_network_io,
+    get_network_overview,
+    get_path_size_breakdown,
+    get_server_ips,
+    get_storage_alert_settings,
+    path_usage,
+    run_storage_cleanup,
+    save_storage_alert_settings,
+    update_server_ip,
+    validate_cron_schedule,
+)
 from .config import FILEBROWSER_CUSTOM_JS, load_config
 from .mail import build_mail_message_bytes, dkim_dns_value, ensure_mailbox_storage, generate_dkim_material, mailbox_storage_inode_count, mailbox_storage_path, mailbox_storage_size_bytes, mail_auth_health, move_mailbox_storage, recommended_dmarc_record, recommended_spf_record, remove_mailbox_storage, sanitize_mailbox_component, split_mailbox_address
 from .db import (
@@ -1901,6 +1922,10 @@ class MangoHandler(BaseHTTPRequestHandler):
 
     def require_auth(self, *allowed_actor_types):
         auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            token_q = (self.query_params.get("token") or [""])[0].strip()
+            if token_q:
+                auth = f"Bearer {token_q}"
         if not auth.startswith("Bearer "):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "missing_bearer_token")
         raw_token = auth.removeprefix("Bearer ").strip()
@@ -4377,6 +4402,90 @@ class MangoHandler(BaseHTTPRequestHandler):
     def admin_api(self, method, path, query, actor):
         path = path.rstrip("/")
         with connect(CONFIG.db_path) as conn:
+            if path == "/api/admin/storage/df" and method == "GET":
+                return self.json_response(get_df_storage())
+            if path == "/api/admin/storage/live" and method == "GET":
+                return self.json_response(get_live_disk_io(conn))
+            if path == "/api/admin/storage/live/stream" and method == "GET":
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                try:
+                    for _ in range(100):
+                        data = get_live_disk_io(conn)
+                        msg = f"data: {json.dumps(data)}\n\n"
+                        self.wfile.write(msg.encode("utf-8"))
+                        self.wfile.flush()
+                        time.sleep(0.3)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                return
+            if path == "/api/admin/storage/quotas" and method == "GET":
+                return self.json_response(get_account_storage_quotas(conn))
+            if path == "/api/admin/storage/paths" and method == "GET":
+                return self.json_response(get_path_size_breakdown())
+            if path == "/api/admin/storage/cleanup" and method == "POST":
+                require_admin_permission(actor, "system.manage")
+                body = self.read_json() if self.headers.get("Content-Length") else {}
+                return self.json_response(run_storage_cleanup(
+                    clean_docker=body.get("clean_docker", True),
+                    clean_logs=body.get("clean_logs", True),
+                    clean_tmp=body.get("clean_tmp", True),
+                ))
+            if path == "/api/admin/storage/alerts" and method == "GET":
+                return self.json_response(get_storage_alert_settings(conn))
+            if path == "/api/admin/storage/alerts" and method == "POST":
+                require_admin_permission(actor, "system.manage")
+                body = self.read_json()
+                return self.json_response(save_storage_alert_settings(conn, body))
+            if path == "/api/admin/network/overview" and method == "GET":
+                return self.json_response(get_network_overview(conn))
+            if path == "/api/admin/network/live" and method == "GET":
+                return self.json_response(get_live_network_io(conn))
+            if path == "/api/admin/network/live/stream" and method == "GET":
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                try:
+                    for _ in range(100):
+                        data = get_live_network_io(conn)
+                        msg = f"data: {json.dumps(data)}\n\n"
+                        self.wfile.write(msg.encode("utf-8"))
+                        self.wfile.flush()
+                        time.sleep(0.3)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                return
+            if path == "/api/admin/network/ips" and method == "GET":
+                return self.json_response({"server_ips": get_server_ips(conn)})
+            if path == "/api/admin/network/ips" and method == "POST":
+                require_admin_permission(actor, "system.manage")
+                body = self.read_json()
+                return self.json_response(add_server_ip(conn, body), HTTPStatus.CREATED)
+            
+            ip_match = re.match(r"^/api/admin/network/ips/(\d+)$", path)
+            if ip_match:
+                ip_id = int(ip_match.group(1))
+                if method == "PUT":
+                    require_admin_permission(actor, "system.manage")
+                    body = self.read_json()
+                    return self.json_response(update_server_ip(conn, ip_id, body))
+                if method == "DELETE":
+                    require_admin_permission(actor, "system.manage")
+                    return self.json_response(delete_server_ip(conn, ip_id))
+
+            if path == "/api/admin/network/assign-account-ip" and method == "POST":
+                require_admin_permission(actor, "system.manage")
+                body = self.read_json()
+                account_id = int(body.get("account_id", 0))
+                ip_id = int(body.get("ip_id", 0)) if body.get("ip_id") else None
+                return self.json_response(assign_account_ip(conn, account_id, ip_id))
             if path == "/api/admin/dashboard" and method == "GET":
                 return self.json_response(admin_dashboard(conn))
             if path == "/api/admin/security/audit" and method == "GET":

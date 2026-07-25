@@ -4443,7 +4443,9 @@ body.app-loaded #app-preloader {
 .admin-shell .table-wrap {
   border-radius: 8px;
   border: 1px solid #e8eaed;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: auto;
+  max-height: 420px;
   background: #fff;
 }
 
@@ -4639,7 +4641,7 @@ body.app-loaded #app-preloader {
 }
 
 /* ── Inputs & selects (keep light) ────────────────────────────────── */
-.admin-shell input:not(.admin-form-input),
+.admin-shell input,
 .admin-shell select,
 .admin-shell textarea {
   background: #fff !important;
@@ -4650,7 +4652,7 @@ body.app-loaded #app-preloader {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.admin-shell input:not(.admin-form-input):focus,
+.admin-shell input:focus,
 .admin-shell select:focus,
 .admin-shell textarea:focus {
   border-color: #fdb528 !important;
@@ -5118,4 +5120,72 @@ body.app-loaded #app-preloader {
   .admin-shell .metric-grid {
     grid-template-columns: 1fr 1fr;
   }
+}
+
+/* ── Panel Max-Height, Scrolling & Minimizable Controls ───────────────────── */
+.admin-shell .table-wrap,
+.table-wrap,
+.panel-scrollable {
+  max-height: 420px !important;
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+  display: block;
+  width: 100%;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(253, 181, 40, 0.4) rgba(0, 0, 0, 0.1);
+}
+.table-wrap::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.table-wrap::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+}
+.table-wrap::-webkit-scrollbar-thumb {
+  background: rgba(253, 181, 40, 0.4);
+  border-radius: 4px;
+}
+.table-wrap::-webkit-scrollbar-thumb:hover {
+  background: rgba(253, 181, 40, 0.7);
+}
+.admin-shell table th,
+.admin-shell table thead th,
+.table-wrap table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8f9fb !important;
+  color: #475569 !important;
+  border-bottom: 2px solid #e2e8f0 !important;
+}
+
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+.sortable-th:hover {
+  color: #fdb528 !important;
+}
+
+.panel-toggle-btn {
+  font-size: 0.78rem;
+  padding: 3px 8px;
+  opacity: 0.85;
+  transition: opacity 0.2s, background 0.2s;
+}
+.panel-toggle-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.metric-clickable {
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.metric-clickable:hover {
+  transform: translateY(-2px);
+  border-color: rgba(253, 181, 40, 0.4);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.25);
 }

@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 
 const ADMIN_ROUTE_PREFIX = "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "dns", "registrars", "dns-domains", "system", "admins", "status", "security", "default-page"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "storage", "networking", "dns", "registrars", "dns-domains", "system", "admins", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
   let hash = window.location.hash.replace(/^#/, "");
@@ -51,6 +51,31 @@ createApp({
       newAdminTotpCode: "",
       newAdminTotpMessage: "",
       adminPasswordModal: { open: false, admin: null, password: "", confirm: "" },
+      storageDf: { filesystems: [], root_capacity_pct: 0, total_main_size_bytes: 0, total_main_used_bytes: 0, updated_at: "" },
+      storageLive: { capacity_total_bytes: 0, capacity_used_bytes: 0, capacity_free_bytes: 0, capacity_used_pct: 0, read_rate_kbs: 0, write_rate_kbs: 0, read_rate_mbs: 0, write_rate_mbs: 0, top_writers: [], sample_interval_sec: 0.3 },
+      storageLiveActive: true,
+      storageLiveTimer: null,
+      storageQuotas: [],
+      storagePaths: { paths: [], total_scanned_mb: 0 },
+      storageAlerts: { warning_threshold_pct: 85, critical_threshold_pct: 95, inode_warning_pct: 80, notify_email: "admin@domain.com", enabled: true },
+      storageFilter: "all",
+      storageCleanupRunning: false,
+      storageCleanupResult: null,
+      storageAlertsSaving: false,
+      storageAlertsMsg: "",
+      networkOverview: { primary_ip: null, total_registered_ips: 0, shared_ips_count: 0, dedicated_ips_count: 0, interfaces: [], service_ports: [] },
+      networkLive: { rx_rate_kbs: 0, tx_rate_kbs: 0, rx_rate_mbs: 0, tx_rate_mbs: 0, total_rx_human: "0 MB", total_tx_human: "0 MB", top_network_users: [], sample_interval_sec: 0.3 },
+      networkLiveActive: true,
+      networkLiveTimer: null,
+      serverIps: [],
+      showAddIpModal: false,
+      showAssignIpModal: false,
+      ipForm: { id: null, ip_address: "", ip_type: "ipv4", netmask_cidr: "/24", interface: "ens160", label: "Public IP", is_primary: false },
+      assignIpForm: { account_id: "", ip_id: "" },
+      savingIp: false,
+      assigningIp: false,
+      collapsedPanels: JSON.parse(localStorage.getItem("mp_admin_collapsed_panels") || "{}"),
+      sortState: { tableKey: "", colKey: "", desc: false },
       newPlan: {
         name: "",
         cpu_limit: "1",
@@ -132,6 +157,46 @@ createApp({
       if (!this.selectedClientId) return this.clients;
       return this.clients.filter((client) => Number(client.id) === Number(this.selectedClientId));
     },
+    filteredFilesystems() {
+      if (!this.storageDf || !this.storageDf.filesystems) return [];
+      let list = this.storageDf.filesystems;
+      if (this.storageFilter === "main") {
+        list = list.filter((f) => !f.is_overlay);
+      } else if (this.storageFilter === "docker") {
+        list = list.filter((f) => f.is_overlay);
+      }
+      return this.getSortedList(list, "storage_df", this.sortState.colKey, ["use_percent", "size_bytes", "used_bytes"].includes(this.sortState.colKey));
+    },
+    storagePieChart() {
+      if (!this.storageDf || !this.storageDf.total_main_size_bytes) {
+        return { used_pct: 0, total_gb: "0", used_gb: "0", slices: [] };
+      }
+      const total = this.storageDf.total_main_size_bytes || 1;
+      const used = this.storageDf.total_main_used_bytes || 0;
+      const used_pct = this.storageDf.root_capacity_pct || 0;
+      const total_gb = (total / (1024 * 1024 * 1024)).toFixed(1);
+      const used_gb = (used / (1024 * 1024 * 1024)).toFixed(1);
+
+      const paths = (this.storagePaths && this.storagePaths.paths) ? this.storagePaths.paths : [];
+      const colors = ["#72e128", "#38bdf8", "#fdb528", "#a855f7", "#ec4899", "#64748b"];
+
+      let cumulativePct = 0;
+      const slices = paths.map((p, idx) => {
+        const pct = p.share_pct || 0;
+        const start = cumulativePct;
+        cumulativePct += pct;
+        return {
+          name: p.name,
+          size_mb: p.size_mb,
+          pct: pct,
+          color: colors[idx % colors.length],
+          dashArray: `${(pct * 2.83).toFixed(1)} 283`,
+          dashOffset: `-${(start * 2.83).toFixed(1)}`,
+        };
+      });
+
+      return { used_pct, total_gb, used_gb, slices };
+    },
     sidebarSections() {
       return [
         {
@@ -140,6 +205,8 @@ createApp({
             { label: "Overview", target: "overview", description: "Resource counts, node health, and service summary." },
             { label: "Clients", target: "clients", description: "Customer profiles, account status, and package moves." },
             { label: "Plans", target: "plans", description: "Hosting packages, resource limits, and DNS policy." },
+            { label: "Storage", target: "storage", description: "Disk capacity graph (df -h), SSE live read/write rates, WHM quotas, path sizes, and cleanup." },
+            { label: "Networking", target: "networking", description: "Public IP addresses, interface topology, IP aliases, and client dedicated IP assignment." },
           ],
         },
         {
@@ -176,6 +243,312 @@ createApp({
       const nextHash = target === "overview" ? "" : `#${target}`;
       if (window.location.hash !== nextHash) {
         window.history.pushState(null, "", `${ADMIN_ROUTE_PREFIX}${nextHash}`);
+      }
+      if (target === "storage") {
+        this.stopNetworkLiveStream();
+        this.loadStorage();
+      } else if (target === "networking") {
+        this.stopStorageLiveStream();
+        this.loadNetworking();
+      } else if (target === "overview") {
+        this.loadStorage();
+        this.loadNetworking();
+      } else {
+        this.stopStorageLiveStream();
+        this.stopNetworkLiveStream();
+      }
+    },
+    togglePanel(panelId) {
+      this.collapsedPanels = {
+        ...this.collapsedPanels,
+        [panelId]: !this.collapsedPanels[panelId]
+      };
+      localStorage.setItem("mp_admin_collapsed_panels", JSON.stringify(this.collapsedPanels));
+    },
+    isPanelCollapsed(panelId) {
+      return Boolean(this.collapsedPanels[panelId]);
+    },
+    sortBy(tableKey, colKey) {
+      if (this.sortState.tableKey === tableKey && this.sortState.colKey === colKey) {
+        this.sortState.desc = !this.sortState.desc;
+      } else {
+        this.sortState.tableKey = tableKey;
+        this.sortState.colKey = colKey;
+        this.sortState.desc = false;
+      }
+    },
+    getSortIcon(tableKey, colKey) {
+      if (this.sortState.tableKey !== tableKey || this.sortState.colKey !== colKey) {
+        return " ↕";
+      }
+      return this.sortState.desc ? " ▼" : " ▲";
+    },
+    getSortedList(list, tableKey, colKey, isNumeric = false) {
+      if (!list || !Array.isArray(list)) return [];
+      if (this.sortState.tableKey !== tableKey || this.sortState.colKey !== colKey) {
+        return list;
+      }
+      const desc = this.sortState.desc ? -1 : 1;
+      return [...list].slice().sort((a, b) => {
+        let valA = a[colKey] ?? "";
+        let valB = b[colKey] ?? "";
+        if (isNumeric) {
+          valA = Number(valA) || 0;
+          valB = Number(valB) || 0;
+          return (valA - valB) * desc;
+        }
+        if (typeof valA === "string") valA = valA.toLowerCase();
+        if (typeof valB === "string") valB = valB.toLowerCase();
+        if (valA < valB) return -1 * desc;
+        if (valA > valB) return 1 * desc;
+        return 0;
+      });
+    },
+    formatMountPath(path) {
+      if (!path) return "";
+      if (path.length > 45 && path.includes("/overlayfs/")) {
+        const parts = path.split("/overlayfs/");
+        const hash = parts[1] || "";
+        return parts[0] + "/overlayfs/" + (hash.length > 12 ? hash.slice(0, 10) + "..." : hash);
+      }
+      if (path.length > 55) {
+        return path.slice(0, 30) + "..." + path.slice(-20);
+      }
+      return path;
+    },
+    async loadNetworking() {
+      try {
+        this.networkOverview = await this.api("/api/admin/network/overview");
+        this.serverIps = (await this.api("/api/admin/network/ips")).server_ips || [];
+        this.startNetworkLiveStream();
+      } catch (error) {
+        console.error("Networking load error:", error);
+      }
+    },
+    async startNetworkLiveStream() {
+      this.stopNetworkLiveStream();
+      this.networkLiveActive = true;
+      try {
+        this.networkLive = await this.api("/api/admin/network/live");
+      } catch (e) {}
+
+      if (window.EventSource) {
+        try {
+          const url = `/api/admin/network/live/stream${this.token ? '?token=' + encodeURIComponent(this.token) : ''}`;
+          const es = new EventSource(url);
+          es.onmessage = (e) => {
+            if (!this.networkLiveActive || (this.activePage !== "networking" && this.activePage !== "overview")) return;
+            try {
+              this.networkLive = JSON.parse(e.data);
+            } catch (err) {}
+          };
+          es.onerror = () => {
+            this.stopNetworkLiveStream();
+            this.startNetworkPollingFallback();
+          };
+          this.networkLiveEs = es;
+          return;
+        } catch (e) {}
+      }
+      this.startNetworkPollingFallback();
+    },
+    startNetworkPollingFallback() {
+      if (this.networkLiveTimer) clearInterval(this.networkLiveTimer);
+      this.networkLiveTimer = setInterval(async () => {
+        if (!this.networkLiveActive || (this.activePage !== "networking" && this.activePage !== "overview")) return;
+        try {
+          this.networkLive = await this.api("/api/admin/network/live");
+        } catch (e) {}
+      }, 300);
+    },
+    stopNetworkLiveStream() {
+      if (this.networkLiveEs) {
+        this.networkLiveEs.close();
+        this.networkLiveEs = null;
+      }
+      if (this.networkLiveTimer) {
+        clearInterval(this.networkLiveTimer);
+        this.networkLiveTimer = null;
+      }
+    },
+    toggleNetworkLive() {
+      this.networkLiveActive = !this.networkLiveActive;
+    },
+    openAddIpModal() {
+      this.ipForm = { id: null, ip_address: "", ip_type: "ipv4", netmask_cidr: "/24", interface: "ens160", label: "Public IPv4", is_primary: false };
+      this.showAddIpModal = true;
+    },
+    editServerIp(ip) {
+      this.ipForm = { id: ip.id, ip_address: ip.ip_address, ip_type: ip.ip_type, netmask_cidr: ip.netmask_cidr, interface: ip.interface, label: ip.label, is_primary: Boolean(ip.is_primary) };
+      this.showAddIpModal = true;
+    },
+    async saveServerIp() {
+      this.savingIp = true;
+      try {
+        if (this.ipForm.id) {
+          await this.api(`/api/admin/network/ips/${this.ipForm.id}`, {
+            method: "PUT",
+            body: JSON.stringify(this.ipForm),
+          });
+        } else {
+          await this.api("/api/admin/network/ips", {
+            method: "POST",
+            body: JSON.stringify(this.ipForm),
+          });
+        }
+        this.showAddIpModal = false;
+        await this.loadNetworking();
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.savingIp = false;
+      }
+    },
+    async setPrimaryIp(ip) {
+      try {
+        await this.api(`/api/admin/network/ips/${ip.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ is_primary: true }),
+        });
+        await this.loadNetworking();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async deleteServerIp(ip) {
+      if (!confirm(`Are you sure you want to remove IP ${ip.ip_address}?`)) return;
+      try {
+        await this.api(`/api/admin/network/ips/${ip.id}`, { method: "DELETE" });
+        await this.loadNetworking();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    openAssignIpModal(ip = null) {
+      this.assignIpForm = { account_id: ip && ip.assigned_account_id ? ip.assigned_account_id : "", ip_id: ip ? ip.id : "" };
+      this.showAssignIpModal = true;
+    },
+    async submitAssignAccountIp() {
+      if (!this.assignIpForm.account_id) return;
+      this.assigningIp = true;
+      try {
+        await this.api("/api/admin/network/assign-account-ip", {
+          method: "POST",
+          body: JSON.stringify(this.assignIpForm),
+        });
+        this.showAssignIpModal = false;
+        await this.loadNetworking();
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.assigningIp = false;
+      }
+    },
+    async loadStorage() {
+      try {
+        this.storageDf = await this.api("/api/admin/storage/df");
+        this.storageQuotas = (await this.api("/api/admin/storage/quotas")).accounts || [];
+        this.storagePaths = await this.api("/api/admin/storage/paths");
+        this.storageAlerts = await this.api("/api/admin/storage/alerts");
+        this.startStorageLiveStream();
+      } catch (error) {
+        console.error("Storage load error:", error);
+      }
+    },
+    startStorageLiveStream() {
+      this.stopStorageLiveStream();
+      this.storageLiveActive = true;
+      this.fetchStorageLiveOnce();
+
+      if (window.EventSource) {
+        try {
+          const url = `/api/admin/storage/live/stream${this.token ? '?token=' + encodeURIComponent(this.token) : ''}`;
+          const es = new EventSource(url);
+          es.onmessage = (e) => {
+            if (!this.storageLiveActive || (this.activePage !== "storage" && this.activePage !== "overview")) return;
+            try {
+              this.storageLive = JSON.parse(e.data);
+            } catch (err) {}
+          };
+          es.onerror = () => {
+            this.stopStorageLiveStream();
+            this.startStoragePollingFallback();
+          };
+          this.storageLiveEs = es;
+          return;
+        } catch (e) {}
+      }
+      this.startStoragePollingFallback();
+    },
+    startStoragePollingFallback() {
+      if (this.storageLiveTimer) clearInterval(this.storageLiveTimer);
+      this.storageLiveTimer = setInterval(() => {
+        if (this.storageLiveActive && (this.activePage === "storage" || this.activePage === "overview")) {
+          this.fetchStorageLiveOnce();
+        }
+      }, 300);
+    },
+    stopStorageLiveStream() {
+      if (this.storageLiveEs) {
+        this.storageLiveEs.close();
+        this.storageLiveEs = null;
+      }
+      if (this.storageLiveTimer) {
+        clearInterval(this.storageLiveTimer);
+        this.storageLiveTimer = null;
+      }
+    },
+    toggleStorageLive() {
+      this.storageLiveActive = !this.storageLiveActive;
+      if (this.storageLiveActive) {
+        this.startStorageLiveStream();
+      } else {
+        this.stopStorageLiveStream();
+      }
+    },
+    async fetchStorageLiveOnce() {
+      try {
+        const live = await this.api("/api/admin/storage/live");
+        if (live) this.storageLive = live;
+      } catch (e) {
+        // silent background refresh
+      }
+    },
+    async runStorageCleanup(type) {
+      this.storageCleanupRunning = true;
+      this.storageCleanupResult = null;
+      try {
+        const body = {
+          clean_docker: type === 'all' || type === 'docker',
+          clean_logs: type === 'all' || type === 'logs',
+          clean_tmp: type === 'all' || type === 'tmp',
+        };
+        const res = await this.api("/api/admin/storage/cleanup", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        this.storageCleanupResult = res;
+        await this.loadStorage();
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.storageCleanupRunning = false;
+      }
+    },
+    async saveStorageAlerts() {
+      this.storageAlertsSaving = true;
+      this.storageAlertsMsg = "";
+      try {
+        await this.api("/api/admin/storage/alerts", {
+          method: "POST",
+          body: JSON.stringify(this.storageAlerts),
+        });
+        this.storageAlertsMsg = "Storage alert thresholds saved successfully!";
+        setTimeout(() => { this.storageAlertsMsg = ""; }, 3000);
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.storageAlertsSaving = false;
       }
     },
     clearAdminSession(message = "") {
@@ -287,6 +660,8 @@ createApp({
         this.stacks = (await this.api("/api/admin/account-stacks")).account_stacks;
         await this.loadSecurityAudit();
         await this.loadDefaultPage();
+        await this.loadStorage();
+        await this.loadNetworking();
         this.jobEvents = (await this.api("/api/admin/job-events")).job_events;
       } catch (error) {
         this.message = error.message;

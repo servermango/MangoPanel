@@ -85,11 +85,11 @@
       }
       .admin-form-input {
         width: 100%;
-        background: #1c2328;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: #ffffff;
+        border: 1px solid #d1d5db;
         border-radius: 8px;
         padding: 0.75rem 1rem;
-        color: #fff;
+        color: #111827;
         font-size: 0.95rem;
         box-sizing: border-box;
         transition: all 0.25s ease;
@@ -99,7 +99,20 @@
         outline: none;
         border-color: #fdb528;
         box-shadow: 0 0 0 3px rgba(253, 181, 40, 0.2);
-        background: #21292f;
+        background: #ffffff;
+      }
+      .path-badge {
+        display: inline-block;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.1);
+        border: 1px solid rgba(56, 189, 248, 0.25);
+        border-radius: 5px;
+        padding: 2px 7px;
+        word-break: break-all;
+        overflow-wrap: anywhere;
       }
       .admin-form-input.totp-input {
         font-family: 'JetBrains Mono', monospace;
@@ -225,7 +238,7 @@
           <div v-for="section in sidebarSections" :key="section.label" class="nav-section">
             <span class="nav-group">{{ section.label }}</span>
             <button v-for="item in section.items" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
-              <span class="nav-item-icon">{{ {overview:'⊞',clients:'👥',plans:'📋',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[item.target] || '•' }}</span>
+              <span class="nav-item-icon">{{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[item.target] || '•' }}</span>
               <span>{{ item.label }}</span>
             </button>
           </div>
@@ -241,7 +254,7 @@
         <header v-if="token" class="topbar">
           <div class="topbar-context">
             <div class="topbar-page-icon admin-page-glyph">
-              {{ {overview:'⊞',clients:'👥',plans:'📋',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[activePage] || activeMenuItem.label.slice(0, 1) }}
+              {{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[activePage] || activeMenuItem.label.slice(0, 1) }}
             </div>
             <div class="topbar-page-meta">
               <span class="topbar-page-title-row">
@@ -311,60 +324,230 @@
         <template v-else>
           <div class="client-main-content admin-main-content">
             <section v-if="activePage === 'overview'" class="page-stack">
+              <!-- Linked Dashboard Metric Cards -->
               <div class="metric-grid">
-                <div class="metric">
-                  <span>Users</span>
+                <div class="metric metric-clickable" @click="goTo('clients')" title="View Clients & Accounts">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Users</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">👥 Clients →</span>
+                  </div>
                   <strong>{{ dashboard.counts.users }}</strong>
                   <small>customer records</small>
                 </div>
-                <div class="metric">
-                  <span>Accounts</span>
+
+                <div class="metric metric-clickable" @click="goTo('clients')" title="View Hosting Accounts">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Accounts</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">📋 Accounts →</span>
+                  </div>
                   <strong>{{ dashboard.counts.hosting_accounts }}</strong>
                   <small>hosting stacks</small>
                 </div>
-                <div class="metric">
-                  <span>Websites</span>
+
+                <div class="metric metric-clickable" @click="goTo('dns-domains')" title="View Domains & Websites">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Websites</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">🌐 Domains →</span>
+                  </div>
                   <strong>{{ dashboard.counts.websites }}</strong>
                   <small>routed domains</small>
                 </div>
-                <div class="metric">
-                  <span>Stacks</span>
+
+                <div class="metric metric-clickable" @click="goTo('system')" title="View Compose Stacks">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Stacks</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">⚙ System →</span>
+                  </div>
                   <strong>{{ dashboard.counts.account_stacks }}</strong>
                   <small>generated account compose files</small>
                 </div>
-                <div class="metric">
-                  <span>Incidents</span>
-                  <strong>{{ dashboard.counts.open_incidents }}</strong>
+
+                <div class="metric metric-clickable" @click="goTo('storage')" title="View Storage Breakdown">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Disk Capacity</span>
+                    <span style="font-size:0.75rem; color:#72e128;">💾 Storage →</span>
+                  </div>
+                  <strong style="color:#72e128;">{{ storagePieChart.used_pct }}%</strong>
+                  <small>{{ storagePieChart.used_gb }} GB / {{ storagePieChart.total_gb }} GB used</small>
+                </div>
+
+                <div class="metric metric-clickable" @click="goTo('status')" title="View Public Status & Incidents">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Incidents</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">📢 Status →</span>
+                  </div>
+                  <strong :style="{ color: dashboard.counts.open_incidents > 0 ? '#ef4444' : '#10b981' }">{{ dashboard.counts.open_incidents }}</strong>
                   <small>currently open</small>
                 </div>
               </div>
 
+              <!-- Live Real-Time Dashboard Cards (SSE Push Stream) -->
               <div class="two-column">
+                <!-- Live Network Traffic Card (In / Out) -->
+                <div class="panel metric-clickable" @click="goTo('networking')" title="Click to view detailed Networking tab">
+                  <div class="section-head">
+                    <div>
+                      <h2 style="display:flex; align-items:center; gap:0.5rem;">
+                        <span>🌐 Live Network Traffic</span>
+                        <span class="pill pill-success" style="font-size:0.7rem; padding:2px 6px;">● SSE Live</span>
+                      </h2>
+                      <p>Real-time inbound (Rx) download and outbound (Tx) upload bandwidth</p>
+                    </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_live_network')" :title="isPanelCollapsed('panel_live_network') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_live_network') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
+                  </div>
+
+                  <div v-show="!isPanelCollapsed('panel_live_network')">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem; margin-bottom: 0.75rem;">
+                      <!-- Traffic Inbound (Download / Rx) -->
+                      <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 0.85rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:0.72rem; text-transform:uppercase; font-weight:700; color:#38bdf8; letter-spacing:0.05em;">Inbound (Rx)</span>
+                          <span style="font-size:0.75rem; color:#38bdf8;">⬇ Download</span>
+                        </div>
+                        <strong style="font-size:1.4rem; color:#38bdf8; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
+                          {{ networkLive.rx_rate_mbs > 1 ? networkLive.rx_rate_mbs + ' MB/s' : networkLive.rx_rate_kbs + ' KB/s' }}
+                        </strong>
+                        <small style="font-size:0.73rem; color:#8c979e;">Total: {{ networkLive.total_rx_human || '0 MB' }}</small>
+                      </div>
+
+                      <!-- Traffic Outbound (Upload / Tx) -->
+                      <div style="background: rgba(253, 181, 40, 0.08); border: 1px solid rgba(253, 181, 40, 0.25); border-radius: 8px; padding: 0.85rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:0.72rem; text-transform:uppercase; font-weight:700; color:#fdb528; letter-spacing:0.05em;">Outbound (Tx)</span>
+                          <span style="font-size:0.75rem; color:#fdb528;">⬆ Upload</span>
+                        </div>
+                        <strong style="font-size:1.4rem; color:#fdb528; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
+                          {{ networkLive.tx_rate_mbs > 1 ? networkLive.tx_rate_mbs + ' MB/s' : networkLive.tx_rate_kbs + ' KB/s' }}
+                        </strong>
+                        <small style="font-size:0.73rem; color:#8c979e;">Total: {{ networkLive.total_tx_human || '0 MB' }}</small>
+                      </div>
+                    </div>
+
+                    <div v-if="networkLive.top_network_users && networkLive.top_network_users.length > 0" style="font-size:0.78rem; color:#8c979e; display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+                      <span>Top Network User:</span>
+                      <strong style="color:#f7f7f9; font-family:'JetBrains Mono', monospace;">{{ networkLive.top_network_users[0].name }} ({{ networkLive.top_network_users[0].tx_kbs + networkLive.top_network_users[0].rx_kbs }} KB/s)</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Live Disk I/O Card (Read / Write) -->
+                <div class="panel metric-clickable" @click="goTo('storage')" title="Click to view detailed Storage tab">
+                  <div class="section-head">
+                    <div>
+                      <h2 style="display:flex; align-items:center; gap:0.5rem;">
+                        <span>⚡ Live Disk I/O Speed</span>
+                        <span class="pill pill-success" style="font-size:0.7rem; padding:2px 6px;">● SSE Live</span>
+                      </h2>
+                      <p>Real-time disk read throughput and write activity</p>
+                    </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_live_disk')" :title="isPanelCollapsed('panel_live_disk') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_live_disk') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
+                  </div>
+
+                  <div v-show="!isPanelCollapsed('panel_live_disk')">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem; margin-bottom: 0.75rem;">
+                      <!-- Disk Read Rate -->
+                      <div style="background: rgba(114, 225, 40, 0.08); border: 1px solid rgba(114, 225, 40, 0.25); border-radius: 8px; padding: 0.85rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:0.72rem; text-transform:uppercase; font-weight:700; color:#72e128; letter-spacing:0.05em;">Disk Read</span>
+                          <span style="font-size:0.75rem; color:#72e128;">📖 Read</span>
+                        </div>
+                        <strong style="font-size:1.4rem; color:#72e128; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
+                          {{ storageLive.read_rate_mbs > 1 ? storageLive.read_rate_mbs + ' MB/s' : storageLive.read_rate_kbs + ' KB/s' }}
+                        </strong>
+                        <small style="font-size:0.73rem; color:#8c979e;">Read IOPS active</small>
+                      </div>
+
+                      <!-- Disk Write Rate -->
+                      <div style="background: rgba(236, 72, 153, 0.08); border: 1px solid rgba(236, 72, 153, 0.25); border-radius: 8px; padding: 0.85rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:0.72rem; text-transform:uppercase; font-weight:700; color:#ec4899; letter-spacing:0.05em;">Disk Write</span>
+                          <span style="font-size:0.75rem; color:#ec4899;">✏️ Write</span>
+                        </div>
+                        <strong style="font-size:1.4rem; color:#ec4899; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
+                          {{ storageLive.write_rate_mbs > 1 ? storageLive.write_rate_mbs + ' MB/s' : storageLive.write_rate_kbs + ' KB/s' }}
+                        </strong>
+                        <small style="font-size:0.73rem; color:#8c979e;">Write IOPS active</small>
+                      </div>
+                    </div>
+
+                    <div v-if="storageLive.top_writers && storageLive.top_writers.length > 0" style="font-size:0.78rem; color:#8c979e; display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+                      <span>Top Disk Writer:</span>
+                      <strong style="color:#f7f7f9; font-family:'JetBrains Mono', monospace;">{{ storageLive.top_writers[0].name }} ({{ storageLive.top_writers[0].write_kbs }} KB/s)</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Storage Component Breakdown Pie Chart Card & Node Health -->
+              <div class="two-column">
+                <!-- Storage Breakdown Pie Chart Card (Linked to Storage Tab) -->
+                <div class="panel metric-clickable" @click="goTo('storage')" title="Click to view detailed Storage tab">
+                  <div class="section-head">
+                    <div>
+                      <h2>System Storage Breakdown</h2>
+                      <p>Disk space utilization across system components (Click for Storage tab)</p>
+                    </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_storage_pie')" :title="isPanelCollapsed('panel_storage_pie') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_storage_pie') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
+                  </div>
+
+                  <div v-show="!isPanelCollapsed('panel_storage_pie')">
+                    <div style="display:flex; align-items:center; justify-content:space-around; flex-wrap:wrap; gap:1.5rem; padding:0.5rem 0;">
+                      <!-- SVG Donut Chart -->
+                      <div style="position:relative; width:140px; height:140px; display:flex; align-items:center; justify-content:center;">
+                        <svg viewBox="0 0 100 100" style="transform: rotate(-90deg); width:100%; height:100%;">
+                          <circle cx="50" cy="50" r="45" fill="transparent" stroke="rgba(255,255,255,0.08)" stroke-width="10"></circle>
+                          <circle v-for="slice in storagePieChart.slices" :key="slice.name" cx="50" cy="50" r="45" fill="transparent"
+                                  :stroke="slice.color" stroke-width="10"
+                                  :stroke-dasharray="slice.dashArray"
+                                  :stroke-dashoffset="slice.dashOffset"
+                                  style="transition: stroke-dasharray 0.5s ease;"></circle>
+                        </svg>
+                        <div style="position:absolute; text-align:center;">
+                          <strong style="font-size:1.3rem; color:#72e128; display:block;">{{ storagePieChart.used_pct }}%</strong>
+                          <span style="font-size:0.7rem; color:#8c979e;">Used</span>
+                        </div>
+                      </div>
+
+                      <!-- Legend Pills -->
+                      <div style="flex:1; min-width:180px;">
+                        <div v-for="slice in storagePieChart.slices" :key="'leg-' + slice.name" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem; font-size:0.82rem;">
+                          <div style="display:flex; align-items:center; gap:0.4rem;">
+                            <span :style="{ background: slice.color }" style="display:inline-block; width:10px; height:10px; border-radius:50%;"></span>
+                            <span>{{ slice.name }}</span>
+                          </div>
+                          <strong style="font-family:'JetBrains Mono', monospace; font-size:0.8rem;">{{ slice.pct }}% ({{ slice.size_mb }} MB)</strong>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Node Agent Health -->
                 <div class="panel">
                   <div class="section-head">
                     <div>
-                      <h2>Nodes</h2>
-                      <p>Agent and quota state</p>
+                      <h2>Nodes & Agent Health</h2>
+                      <p>Host node status and quota backends</p>
                     </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_nodes')" :title="isPanelCollapsed('panel_nodes') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_nodes') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
                   </div>
-                  <ul class="clean-list">
-                    <li v-for="node in dashboard.nodes" :key="node.id">
-                      <strong>{{ node.name }}</strong>
-                      <span class="pill">{{ node.status }}</span>
-                      <small>{{ node.hostname }} · {{ node.quota_backend }}</small>
-                    </li>
-                  </ul>
-                </div>
-
-                <div class="panel">
-                  <h2>Public Status</h2>
-                  <p class="status-line" :class="dashboard.status.overall_status">{{ statusLabel(dashboard.status.overall_status) }}</p>
-                  <ul class="clean-list">
-                    <li v-for="component in dashboard.status.components.slice(0, 6)" :key="component.id">
-                      <strong>{{ component.name }}</strong>
-                      <span class="pill">{{ component.status }}</span>
-                    </li>
-                  </ul>
+                  <div v-show="!isPanelCollapsed('panel_nodes')">
+                    <ul class="clean-list">
+                      <li v-for="node in dashboard.nodes" :key="node.id">
+                        <strong>{{ node.name }}</strong>
+                        <span class="pill pill-success">{{ node.status }}</span>
+                        <small>{{ node.hostname }} · {{ node.quota_backend }}</small>
+                      </li>
+                    </ul>
+                  </div>
                 </div>
               </div>
             </section>
@@ -435,6 +618,667 @@
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'storage'" class="page-stack">
+            <!-- Top Live Metrics Banner -->
+            <div class="metric-grid">
+              <div class="metric">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Root Capacity</span>
+                  <span class="pill" :class="storageLive.capacity_used_pct >= 90 ? 'pill-danger' : (storageLive.capacity_used_pct >= 85 ? 'pill-warning' : 'pill-success')">
+                    {{ storageLive.capacity_used_pct }}%
+                  </span>
+                </div>
+                <strong>{{ (storageLive.capacity_used_bytes / (1024*1024*1024)).toFixed(1) }} GB</strong>
+                <small>of {{ (storageLive.capacity_total_bytes / (1024*1024*1024)).toFixed(1) }} GB total</small>
+              </div>
+              <div class="metric">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Live Read Rate</span>
+                  <small style="color: #72e128; font-weight:600;">SSE Stream</small>
+                </div>
+                <strong>{{ storageLive.read_rate_mbs }} MB/s</strong>
+                <small>{{ storageLive.read_rate_kbs }} KB/sec</small>
+              </div>
+              <div class="metric">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Live Write Rate</span>
+                  <small style="color: #fdb528; font-weight:600;">SSE Stream</small>
+                </div>
+                <strong>{{ storageLive.write_rate_mbs }} MB/s</strong>
+                <small>{{ storageLive.write_rate_kbs }} KB/sec</small>
+              </div>
+              <div class="metric">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Live Push Stream</span>
+                  <button class="ghost-button" style="padding:2px 8px; font-size:0.75rem;" @click="toggleStorageLive">
+                    {{ storageLiveActive ? '⏸ Pause' : '▶ Resume' }}
+                  </button>
+                </div>
+                <strong style="font-size:1.1rem; display:flex; align-items:center; gap:0.4rem; color: #72e128;" v-if="storageLiveActive">
+                  <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#72e128; box-shadow: 0 0 8px #72e128;"></span>
+                  SSE Streaming
+                </strong>
+                <strong style="font-size:1.1rem; color: #8c979e;" v-else>Paused</strong>
+                <small>Updated: {{ storageLive.timestamp ? storageLive.timestamp.split('T')[1].slice(0,8) : 'N/A' }}</small>
+              </div>
+            </div>
+
+            <!-- df -h Storage Filesystems Graph -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Filesystem Storage Breakdown (df -h)</h2>
+                  <p>Storage capacity and utilization across mounted host filesystems & volumes.</p>
+                </div>
+                <div style="display:flex; gap:0.4rem; align-items:center;">
+                  <button :class="storageFilter === 'all' ? 'primary-button' : 'secondary-button'" @click="storageFilter = 'all'">All Mounts</button>
+                  <button :class="storageFilter === 'main' ? 'primary-button' : 'secondary-button'" @click="storageFilter = 'main'">Main System</button>
+                  <button :class="storageFilter === 'docker' ? 'primary-button' : 'secondary-button'" @click="storageFilter = 'docker'">Docker Overlay</button>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_df_storage')" :title="isPanelCollapsed('panel_df_storage') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_df_storage') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-show="!isPanelCollapsed('panel_df_storage')">
+                <!-- Storage Bar Chart Cards -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                  <div v-for="fs in filteredFilesystems" :key="fs.mounted_on" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 1rem; min-width: 0;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem; margin-bottom:0.5rem;">
+                      <div>
+                        <span class="path-badge" :title="fs.mounted_on">{{ formatMountPath(fs.mounted_on) }}</span>
+                      </div>
+                      <span class="pill" style="flex-shrink:0;" :style="{ background: fs.use_percent >= 85 ? 'rgba(239, 68, 68, 0.2)' : (fs.use_percent >= 70 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)'), color: fs.use_percent >= 85 ? '#ef4444' : (fs.use_percent >= 70 ? '#f59e0b' : '#10b981') }">
+                        {{ fs.use_percent }}% used
+                      </span>
+                    </div>
+
+                    <!-- Progress Bar -->
+                    <div style="background: rgba(255,255,255,0.1); height: 10px; border-radius: 5px; overflow: hidden; margin-bottom: 0.5rem;">
+                      <div :style="{ width: fs.use_percent + '%', height: '100%', transition: 'width 0.4s ease', background: fs.use_percent >= 85 ? 'linear-gradient(90deg, #f59e0b, #ef4444)' : (fs.use_percent >= 70 ? 'linear-gradient(90deg, #10b981, #f59e0b)' : 'linear-gradient(90deg, #72e128, #10b981)') }"></div>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; font-size:0.78rem; color:#8c979e;">
+                      <span>Used: {{ fs.used }} ({{ fs.size }} Total)</span>
+                      <span>Free: {{ fs.avail }}</span>
+                    </div>
+                    <div style="font-size:0.72rem; color:#8c979e; margin-top:0.4rem;" :title="fs.filesystem">
+                      Device: <span class="path-badge" style="font-size:0.75rem; padding:1px 5px; opacity:0.9;">{{ formatMountPath(fs.filesystem) }}</span> {{ fs.is_overlay ? '(Overlay/Virtual)' : '' }}
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Detailed Filesystem Table -->
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'mounted_on')">Mount Point {{ getSortIcon('storage_df', 'mounted_on') }}</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'filesystem')">Filesystem / Device {{ getSortIcon('storage_df', 'filesystem') }}</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'size_bytes')">Size {{ getSortIcon('storage_df', 'size_bytes') }}</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'used_bytes')">Used {{ getSortIcon('storage_df', 'used_bytes') }}</th>
+                        <th>Available</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'use_percent')">Utilization {{ getSortIcon('storage_df', 'use_percent') }}</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'is_overlay')">Type {{ getSortIcon('storage_df', 'is_overlay') }}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="fs in filteredFilesystems" :key="'tbl-' + fs.mounted_on">
+                        <td style="max-width:240px;">
+                          <span class="path-badge" :title="fs.mounted_on">{{ formatMountPath(fs.mounted_on) }}</span>
+                        </td>
+                        <td style="max-width:200px;">
+                          <span class="path-badge" style="font-size:0.75rem; padding:1px 5px; opacity:0.9;" :title="fs.filesystem">{{ formatMountPath(fs.filesystem) }}</span>
+                        </td>
+                        <td>{{ fs.size }}</td>
+                        <td>{{ fs.used }}</td>
+                        <td>{{ fs.avail }}</td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:0.5rem;">
+                            <div style="flex:1; background:rgba(255,255,255,0.1); height:6px; border-radius:3px; overflow:hidden; min-width:60px;">
+                              <div :style="{ width: fs.use_percent + '%', height: '100%', background: fs.use_percent >= 85 ? '#ef4444' : (fs.use_percent >= 70 ? '#f59e0b' : '#72e128') }"></div>
+                            </div>
+                            <span style="font-size:0.8rem; font-weight:600;">{{ fs.use_percent }}%</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span class="pill" :class="fs.is_overlay ? '' : 'pill-success'">{{ fs.is_overlay ? 'Docker Overlay' : 'Physical System' }}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Live Disk I/O Activity & Top Disk Writers -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Top Disk I/O Writers & Readers (Live SSE Stream)</h2>
+                  <p>Real-time disk write and read speeds broken down by Docker containers, hosting account stacks, and active websites.</p>
+                </div>
+                <div style="display:flex; gap:0.4rem; align-items:center;">
+                  <span class="pill pill-success" v-if="storageLiveActive">● SSE Live Feed</span>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_disk_writers')" :title="isPanelCollapsed('panel_disk_writers') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_disk_writers') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-show="!isPanelCollapsed('panel_disk_writers')">
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'name')">Container / Stack {{ getSortIcon('disk_writers', 'name') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'stack_type')">Service / Stack Type {{ getSortIcon('disk_writers', 'stack_type') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'associated_domain')">Primary Domain {{ getSortIcon('disk_writers', 'associated_domain') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'owner')">Account Owner {{ getSortIcon('disk_writers', 'owner') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'read_kbs')">Read Speed {{ getSortIcon('disk_writers', 'read_kbs') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'write_kbs')">Write Speed (Live) {{ getSortIcon('disk_writers', 'write_kbs') }}</th>
+                        <th>Total Block I/O</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="writer in getSortedList(storageLive.top_writers, 'disk_writers', sortState.colKey, ['read_kbs', 'write_kbs', 'read_bytes_total', 'write_bytes_total'].includes(sortState.colKey))" :key="writer.name">
+                        <td style="max-width:200px; word-break:break-all; overflow-wrap:anywhere;">
+                          <strong style="font-family:'JetBrains Mono', monospace;" :title="writer.name">{{ writer.name }}</strong>
+                        </td>
+                        <td><span class="pill">{{ writer.stack_type }}</span></td>
+                        <td>{{ writer.associated_domain }}</td>
+                        <td><small>{{ writer.owner }}</small></td>
+                        <td :style="{ color: writer.read_kbs > 0 ? '#72e128' : '#8c979e', fontWeight: writer.read_kbs > 0 ? '600' : '400' }">
+                          {{ writer.read_kbs > 1024 ? (writer.read_kbs/1024).toFixed(2) + ' MB/s' : writer.read_kbs + ' KB/s' }}
+                        </td>
+                        <td :style="{ color: writer.write_kbs > 0 ? '#fdb528' : '#8c979e', fontWeight: writer.write_kbs > 0 ? '600' : '400' }">
+                          <span v-if="writer.write_kbs > 0" style="background:rgba(253,181,40,0.15); padding:2px 6px; border-radius:4px; border:1px solid rgba(253,181,40,0.3);">
+                            ⚡ {{ writer.write_kbs > 1024 ? (writer.write_kbs/1024).toFixed(2) + ' MB/s' : writer.write_kbs + ' KB/s' }}
+                          </span>
+                          <span v-else>0 KB/s</span>
+                        </td>
+                        <td>
+                          <small>R: {{ writer.read_human }} | W: {{ writer.write_human }}</small>
+                        </td>
+                      </tr>
+                      <tr v-if="!storageLive.top_writers || storageLive.top_writers.length === 0">
+                        <td colspan="7" style="text-align:center; color:#8c979e; padding:2rem;">No active container disk writing activity detected.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- WHM Hosting Control Plane Backend Suite -->
+            <div class="two-column">
+              <!-- Account Disk Quotas -->
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Hosting Account Storage Quotas</h2>
+                    <p>Client disk space and inode consumption against assigned plan limits.</p>
+                  </div>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_storage_quotas')" :title="isPanelCollapsed('panel_storage_quotas') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_storage_quotas') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+                <div v-show="!isPanelCollapsed('panel_storage_quotas')">
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'username')">Account {{ getSortIcon('storage_quotas', 'username') }}</th>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'user_name')">User {{ getSortIcon('storage_quotas', 'user_name') }}</th>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'plan_name')">Plan {{ getSortIcon('storage_quotas', 'plan_name') }}</th>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'storage_pct')">Disk Used / Limit {{ getSortIcon('storage_quotas', 'storage_pct') }}</th>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'inode_pct')">Inodes Used {{ getSortIcon('storage_quotas', 'inode_pct') }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="acct in getSortedList(storageQuotas, 'storage_quotas', sortState.colKey, ['used_storage_mb', 'storage_pct', 'used_inodes', 'inode_pct'].includes(sortState.colKey))" :key="acct.id">
+                          <td><strong>{{ acct.username }}</strong><br><small>#{{ acct.id }} · {{ acct.website_count }} sites</small></td>
+                          <td><small>{{ acct.user_name }}</small></td>
+                          <td><span class="pill">{{ acct.plan_name || 'Default' }}</span></td>
+                          <td>
+                            <div><strong>{{ acct.used_storage_mb }} MB</strong> / {{ acct.limit_storage_mb }} MB</div>
+                            <div style="background:rgba(255,255,255,0.1); height:4px; border-radius:2px; overflow:hidden; margin-top:4px;">
+                              <div :style="{ width: Math.min(100, acct.storage_pct) + '%', height:'100%', background: acct.storage_pct >= 90 ? '#ef4444' : (acct.storage_pct >= 80 ? '#f59e0b' : '#72e128') }"></div>
+                            </div>
+                            <small :style="{ color: acct.storage_pct >= 80 ? '#f59e0b' : '#8c979e' }">{{ acct.storage_pct }}% of quota</small>
+                          </td>
+                          <td>
+                            <div>{{ acct.used_inodes.toLocaleString() }} / {{ acct.limit_inodes.toLocaleString() }}</div>
+                            <small :style="{ color: acct.inode_pct >= 80 ? '#f59e0b' : '#8c979e' }">{{ acct.inode_pct }}%</small>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Directory Path Analyzer & Cleanup -->
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>System Directory Size Analyzer & Cleaner</h2>
+                    <p>Disk footprint of system components and 1-click WHM storage maintenance tools.</p>
+                  </div>
+                </div>
+
+                <ul class="clean-list" style="margin-bottom: 1.5rem;">
+                  <li v-for="p in storagePaths.paths" :key="p.path">
+                    <div>
+                      <strong>{{ p.name }}</strong>
+                      <div><span class="path-badge" style="margin-top:0.2rem; font-size:0.75rem;">{{ p.path }}</span></div>
+                    </div>
+                    <div style="text-align:right;">
+                      <strong>{{ p.size_mb }} MB</strong>
+                      <div><small>{{ p.share_pct }}% of scanned</small></div>
+                    </div>
+                  </li>
+                </ul>
+
+                <h3 style="font-size:1rem; margin-bottom:0.5rem; color:#f7f7f9;">WHM Storage Maintenance & Cleanup</h3>
+                <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem;">
+                  <button class="secondary-button" @click="runStorageCleanup('docker')" :disabled="storageCleanupRunning">
+                    🧹 Prune Docker Cache
+                  </button>
+                  <button class="secondary-button" @click="runStorageCleanup('logs')" :disabled="storageCleanupRunning">
+                    🗑 Clean Compressed Logs (.gz)
+                  </button>
+                  <button class="secondary-button" @click="runStorageCleanup('tmp')" :disabled="storageCleanupRunning">
+                    ⚡ Purge Temp Files (/tmp)
+                  </button>
+                  <button class="primary-button" @click="runStorageCleanup('all')" :disabled="storageCleanupRunning">
+                    {{ storageCleanupRunning ? 'Cleaning...' : '✨ Full System Cleanup' }}
+                  </button>
+                </div>
+
+                <div v-if="storageCleanupResult" style="background:rgba(114, 225, 40, 0.1); border:1px solid rgba(114, 225, 40, 0.3); border-radius:8px; padding:0.75rem; color:#72e128; font-size:0.85rem;">
+                  <strong>Cleanup Finished! Reclaimed {{ storageCleanupResult.reclaimed_human }}</strong>
+                  <ul style="margin:0.5rem 0 0 1rem; padding:0;">
+                    <li v-for="act in storageCleanupResult.actions" :key="act.item">
+                      {{ act.item }}: {{ act.details }}
+                    </li>
+                  </ul>
+                </div>
+
+                <div style="margin-top:1.5rem; border-top:1px solid rgba(255,255,255,0.08); padding-top:1rem;">
+                  <h3 style="font-size:1rem; margin-bottom:0.5rem; color:#f7f7f9;">Storage Alert Thresholds</h3>
+                  <form @submit.prevent="saveStorageAlerts">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-bottom:0.75rem;">
+                      <div>
+                        <label style="font-size:0.78rem; font-weight:600; color:#c5cbd0; display:block; margin-bottom:0.3rem;">Warning Threshold (%)</label>
+                        <input class="admin-form-input" type="number" v-model.number="storageAlerts.warning_threshold_pct" min="50" max="99" required>
+                      </div>
+                      <div>
+                        <label style="font-size:0.78rem; font-weight:600; color:#c5cbd0; display:block; margin-bottom:0.3rem;">Critical Threshold (%)</label>
+                        <input class="admin-form-input" type="number" v-model.number="storageAlerts.critical_threshold_pct" min="60" max="100" required>
+                      </div>
+                    </div>
+                    <div style="margin-bottom:0.75rem;">
+                      <label style="font-size:0.78rem; font-weight:600; color:#c5cbd0; display:block; margin-bottom:0.3rem;">Notification Email</label>
+                      <input class="admin-form-input" type="email" v-model="storageAlerts.notify_email" placeholder="admin@domain.com" required>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <button class="primary-button" type="submit" :disabled="storageAlertsSaving">
+                        {{ storageAlertsSaving ? 'Saving...' : 'Save Alert Thresholds' }}
+                      </button>
+                      <span v-if="storageAlertsMsg" style="color:#72e128; font-size:0.82rem;">{{ storageAlertsMsg }}</span>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'networking'" class="page-stack">
+            <!-- Top Network Metrics & Architecture Banner -->
+            <div class="metric-grid">
+              <div class="metric">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Primary Public IP</span>
+                  <span class="pill pill-success">Active</span>
+                </div>
+                <strong style="font-family:'JetBrains Mono', monospace; font-size:1.15rem; color:#72e128;">
+                  {{ networkOverview.primary_ip ? networkOverview.primary_ip.ip_address : '157.15.203.66' }}
+                </strong>
+                <small>{{ networkOverview.primary_ip ? networkOverview.primary_ip.label : 'Main Server IP' }} ({{ networkOverview.primary_ip ? networkOverview.primary_ip.interface : 'ens160' }})</small>
+              </div>
+              <div class="metric">
+                <span>Registered IPs</span>
+                <strong>{{ networkOverview.total_registered_ips || 1 }}</strong>
+                <small>server pool total</small>
+              </div>
+              <div class="metric">
+                <span>Shared Pool IPs</span>
+                <strong>{{ networkOverview.shared_ips_count || 1 }}</strong>
+                <small>available for accounts</small>
+              </div>
+              <div class="metric">
+                <span>Dedicated IPs</span>
+                <strong style="color: #fdb528;">{{ networkOverview.dedicated_ips_count || 0 }}</strong>
+                <small>assigned to clients</small>
+              </div>
+            </div>
+
+            <!-- Live Network Bandwidth & Container Activity Banner -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Live Network Bandwidth Usage by Stacks & Accounts (SSE Live Feed)</h2>
+                  <p>Real-time inbound (Rx) download and outbound (Tx) upload bandwidth consumption per container stack and client account.</p>
+                </div>
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                  <button class="ghost-button" style="padding:4px 10px; font-size:0.8rem;" @click="toggleNetworkLive">
+                    {{ networkLiveActive ? '⏸ Pause Live Stream' : '▶ Resume Live Stream' }}
+                  </button>
+                  <span class="pill pill-success" v-if="networkLiveActive">● SSE Live Stream</span>
+                  <span class="pill" v-else>Paused</span>
+                </div>
+              </div>
+
+              <!-- Top Live Rates Grid -->
+              <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:1rem; margin-bottom:1.5rem;">
+                <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:1rem;">
+                  <span style="font-size:0.78rem; color:#8c979e;">Inbound Rate (Download / Rx)</span>
+                  <div style="font-size:1.25rem; font-weight:700; color:#38bdf8; font-family:'JetBrains Mono', monospace; margin-top:0.2rem;">
+                    {{ networkLive.rx_rate_mbs > 1 ? networkLive.rx_rate_mbs + ' MB/s' : networkLive.rx_rate_kbs + ' KB/s' }}
+                  </div>
+                  <small style="color:#606a70;">Total: {{ networkLive.total_rx_human || '0 MB' }}</small>
+                </div>
+
+                <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:1rem;">
+                  <span style="font-size:0.78rem; color:#8c979e;">Outbound Rate (Upload / Tx)</span>
+                  <div style="font-size:1.25rem; font-weight:700; color:#fdb528; font-family:'JetBrains Mono', monospace; margin-top:0.2rem;">
+                    {{ networkLive.tx_rate_mbs > 1 ? networkLive.tx_rate_mbs + ' MB/s' : networkLive.tx_rate_kbs + ' KB/s' }}
+                  </div>
+                  <small style="color:#606a70;">Total: {{ networkLive.total_tx_human || '0 MB' }}</small>
+                </div>
+              </div>
+
+              <!-- Top Network Writers / Consumers Table -->
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'name')">Container / Stack {{ getSortIcon('net_writers', 'name') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'stack_type')">Stack Type {{ getSortIcon('net_writers', 'stack_type') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'associated_domain')">Primary Domain {{ getSortIcon('net_writers', 'associated_domain') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'owner')">Account Owner {{ getSortIcon('net_writers', 'owner') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'rx_kbs')">Rx Speed (Inbound) {{ getSortIcon('net_writers', 'rx_kbs') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'tx_kbs')">Tx Speed (Outbound Live) {{ getSortIcon('net_writers', 'tx_kbs') }}</th>
+                      <th>Total Transferred</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="nu in getSortedList(networkLive.top_network_users, 'net_writers', sortState.colKey, ['rx_kbs', 'tx_kbs', 'rx_bytes_total', 'tx_bytes_total'].includes(sortState.colKey))" :key="'net-' + nu.name">
+                      <td style="max-width:200px; word-break:break-all; overflow-wrap:anywhere;">
+                        <strong style="font-family:'JetBrains Mono', monospace;" :title="nu.name">{{ nu.name }}</strong>
+                      </td>
+                      <td><span class="pill">{{ nu.stack_type }}</span></td>
+                      <td>{{ nu.associated_domain }}</td>
+                      <td><small>{{ nu.owner }}</small></td>
+                      <td :style="{ color: nu.rx_kbs > 0 ? '#38bdf8' : '#8c979e', fontWeight: nu.rx_kbs > 0 ? '600' : '400' }">
+                        {{ nu.rx_kbs > 1024 ? (nu.rx_kbs/1024).toFixed(2) + ' MB/s' : nu.rx_kbs + ' KB/s' }}
+                      </td>
+                      <td :style="{ color: nu.tx_kbs > 0 ? '#fdb528' : '#8c979e', fontWeight: nu.tx_kbs > 0 ? '600' : '400' }">
+                        <span v-if="nu.tx_kbs > 0" style="background:rgba(253,181,40,0.15); padding:2px 6px; border-radius:4px; border:1px solid rgba(253,181,40,0.3);">
+                          ⚡ {{ nu.tx_kbs > 1024 ? (nu.tx_kbs/1024).toFixed(2) + ' MB/s' : nu.tx_kbs + ' KB/s' }}
+                        </span>
+                        <span v-else>0 KB/s</span>
+                      </td>
+                      <td>
+                        <small>Rx: {{ nu.rx_human }} | Tx: {{ nu.tx_human }}</small>
+                      </td>
+                    </tr>
+                    <tr v-if="!networkLive.top_network_users || networkLive.top_network_users.length === 0">
+                      <td colspan="7" style="text-align:center; color:#8c979e; padding:2rem;">No active container network traffic detected.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Network Topology & Core Listening Ports -->
+            <div class="two-column">
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Server Network Interfaces</h2>
+                    <p>Detected host hardware, virtual bridges, and IP bindings.</p>
+                  </div>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_interfaces')" :title="isPanelCollapsed('panel_interfaces') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_interfaces') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+                <div v-show="!isPanelCollapsed('panel_interfaces')">
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Interface</th>
+                          <th>State</th>
+                          <th>MAC Address</th>
+                          <th>Assigned IP Addresses</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="iface in networkOverview.interfaces" :key="iface.name">
+                          <td>
+                            <strong style="font-family:'JetBrains Mono', monospace;">{{ iface.name }}</strong>
+                            <span v-if="iface.is_virtual" class="pill" style="margin-left:0.3rem;">Virtual</span>
+                          </td>
+                          <td>
+                            <span class="pill" :class="iface.operstate === 'UP' ? 'pill-success' : ''">{{ iface.operstate }}</span>
+                          </td>
+                          <td><small style="font-family:'JetBrains Mono', monospace;">{{ iface.mac || 'N/A' }}</small></td>
+                          <td>
+                            <div v-for="addr in iface.addresses" :key="addr.ip" style="font-size:0.82rem; margin-bottom:2px;">
+                              <strong style="font-family:'JetBrains Mono', monospace;">{{ addr.ip }}/{{ addr.prefixlen }}</strong>
+                              <span class="pill" style="font-size:0.7rem; padding:1px 5px; margin-left:4px;">{{ addr.type }}</span>
+                            </div>
+                            <span v-if="!iface.addresses || iface.addresses.length === 0" style="color:#8c979e; font-size:0.8rem;">None</span>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Core Network Services & Listening Ports</h2>
+                    <p>Standard control plane and edge proxy service port bindings.</p>
+                  </div>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_services')" :title="isPanelCollapsed('panel_services') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_services') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+                <div v-show="!isPanelCollapsed('panel_services')">
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Service / Daemon</th>
+                          <th>Ports</th>
+                          <th>Proto</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="sp in networkOverview.service_ports" :key="sp.service">
+                          <td><strong>{{ sp.service }}</strong></td>
+                          <td><span style="font-family:'JetBrains Mono', monospace; font-weight:600; color:#f7f7f9;">{{ sp.ports }}</span></td>
+                          <td><small>{{ sp.protocol }}</small></td>
+                          <td><span class="pill pill-success">● {{ sp.status }}</span></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Server IP Address Pool & Dedicated IP Assignments -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Server IP Address Pool</h2>
+                  <p>Manage server IPv4/IPv6 addresses, set netmasks/labels, and assign dedicated IPs to customer hosting accounts.</p>
+                </div>
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                  <button class="secondary-button" @click="openAssignIpModal()">🔌 Assign IP to Client</button>
+                  <button class="primary-button" @click="openAddIpModal()">+ Add IP Address</button>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_server_ips')" :title="isPanelCollapsed('panel_server_ips') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_server_ips') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-show="!isPanelCollapsed('panel_server_ips')">
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'ip_address')">IP Address {{ getSortIcon('server_ips', 'ip_address') }}</th>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'ip_type')">Type & Subnet {{ getSortIcon('server_ips', 'ip_type') }}</th>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'interface')">Interface {{ getSortIcon('server_ips', 'interface') }}</th>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'label')">Label / Description {{ getSortIcon('server_ips', 'label') }}</th>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'is_primary')">Primary {{ getSortIcon('server_ips', 'is_primary') }}</th>
+                        <th>Assigned Account</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="ip in getSortedList(serverIps, 'server_ips', sortState.colKey, ['is_primary', 'id'].includes(sortState.colKey))" :key="ip.id">
+                        <td>
+                          <strong style="font-family:'JetBrains Mono', monospace; font-size:0.95rem;">{{ ip.ip_address }}</strong>
+                        </td>
+                      <td>
+                        <span class="pill">{{ ip.ip_type.toUpperCase() }}</span>
+                        <small style="margin-left:0.3rem;">{{ ip.netmask_cidr }}</small>
+                      </td>
+                      <td><small style="font-family:'JetBrains Mono', monospace;">{{ ip.interface }}</small></td>
+                      <td><strong>{{ ip.label }}</strong></td>
+                      <td>
+                        <span v-if="ip.is_primary" class="pill pill-success">★ Primary Server IP</span>
+                        <button v-else class="ghost-button" style="font-size:0.75rem; padding:2px 6px;" @click="setPrimaryIp(ip)">Set Primary</button>
+                      </td>
+                      <td>
+                        <div v-if="ip.assigned_account_id">
+                          <strong style="color:#fdb528;">Account {{ ip.account_username }}</strong>
+                          <div><small>{{ ip.account_owner_name }} ({{ ip.account_website_count }} sites)</small></div>
+                        </div>
+                        <span v-else style="color:#8c979e; font-size:0.82rem;">Shared IP Pool</span>
+                      </td>
+                      <td>
+                        <div style="display:flex; gap:0.3rem;">
+                          <button class="secondary-button" style="font-size:0.78rem; padding:3px 8px;" @click="editServerIp(ip)">Edit</button>
+                          <button class="secondary-button" style="font-size:0.78rem; padding:3px 8px;" @click="openAssignIpModal(ip)">
+                            {{ ip.assigned_account_id ? 'Reassign' : 'Assign' }}
+                          </button>
+                          <button class="danger-button" style="font-size:0.78rem; padding:3px 8px;" @click="deleteServerIp(ip)" :disabled="ip.is_primary || Boolean(ip.assigned_account_id)">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+            <!-- Modal: Add / Edit IP Address -->
+            <div v-if="showAddIpModal" class="modal-backdrop" @click.self="showAddIpModal = false">
+              <div class="modal-card" style="max-width:480px;">
+                <div class="modal-header">
+                  <h3>{{ ipForm.id ? 'Edit IP Address' : 'Add IP Address to Server Pool' }}</h3>
+                  <button class="ghost-button" @click="showAddIpModal = false">×</button>
+                </div>
+                <form @submit.prevent="saveServerIp" style="padding:1rem;">
+                  <div class="admin-form-group">
+                    <label>IP Address</label>
+                    <input class="admin-form-input" v-model="ipForm.ip_address" placeholder="e.g. 157.15.203.67" required :disabled="Boolean(ipForm.id)">
+                  </div>
+                  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                    <div class="admin-form-group">
+                      <label>IP Type</label>
+                      <select class="admin-form-input" v-model="ipForm.ip_type">
+                        <option value="ipv4">IPv4</option>
+                        <option value="ipv6">IPv6</option>
+                      </select>
+                    </div>
+                    <div class="admin-form-group">
+                      <label>Subnet Mask / CIDR</label>
+                      <input class="admin-form-input" v-model="ipForm.netmask_cidr" placeholder="/24" required>
+                    </div>
+                  </div>
+                  <div class="admin-form-group">
+                    <label>Network Interface</label>
+                    <input class="admin-form-input" v-model="ipForm.interface" placeholder="ens160" required>
+                  </div>
+                  <div class="admin-form-group">
+                    <label>Label / Purpose</label>
+                    <input class="admin-form-input" v-model="ipForm.label" placeholder="e.g. Dedicated IP Pool" required>
+                  </div>
+                  <div class="admin-form-group" style="display:flex; align-items:center; gap:0.5rem;">
+                    <input type="checkbox" id="chk_is_primary" v-model="ipForm.is_primary">
+                    <label for="chk_is_primary" style="margin:0; text-transform:none;">Set as Primary Public Server IP</label>
+                  </div>
+                  <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+                    <button class="secondary-button" type="button" @click="showAddIpModal = false">Cancel</button>
+                    <button class="primary-button" type="submit" :disabled="savingIp">
+                      {{ savingIp ? 'Saving...' : (ipForm.id ? 'Save Changes' : 'Add IP Address') }}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <!-- Modal: Assign Dedicated IP to Client -->
+            <div v-if="showAssignIpModal" class="modal-backdrop" @click.self="showAssignIpModal = false">
+              <div class="modal-card" style="max-width:500px;">
+                <div class="modal-header">
+                  <h3>Assign Dedicated IP to Hosting Account</h3>
+                  <button class="ghost-button" @click="showAssignIpModal = false">×</button>
+                </div>
+                <form @submit.prevent="submitAssignAccountIp" style="padding:1rem;">
+                  <p style="font-size:0.85rem; color:#8c979e; margin-bottom:1rem;">
+                    Assigning a dedicated IP to a hosting account updates its websites' DNS A records and stack routing to use the selected IP address.
+                  </p>
+                  <div class="admin-form-group">
+                    <label>Client Hosting Account</label>
+                    <select class="admin-form-input" v-model="assignIpForm.account_id" required>
+                      <option value="">Select Hosting Account...</option>
+                      <option v-for="client in clients" :key="'opt-c-' + client.id" v-for="account in client.accounts" :key="'opt-a-' + account.id" :value="account.id">
+                        Account {{ account.username }} ({{ client.full_name || client.email }})
+                      </option>
+                    </select>
+                  </div>
+                  <div class="admin-form-group">
+                    <label>IP Address</label>
+                    <select class="admin-form-input" v-model="assignIpForm.ip_id">
+                      <option value="">(None - Use Primary Shared Server IP)</option>
+                      <option v-for="ip in serverIps" :key="'opt-ip-' + ip.id" :value="ip.id">
+                        {{ ip.ip_address }} ({{ ip.label }} - {{ ip.interface }})
+                      </option>
+                    </select>
+                  </div>
+                  <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+                    <button class="secondary-button" type="button" @click="showAssignIpModal = false">Cancel</button>
+                    <button class="primary-button" type="submit" :disabled="assigningIp">
+                      {{ assigningIp ? 'Assigning...' : 'Confirm Assignment' }}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           </section>
 

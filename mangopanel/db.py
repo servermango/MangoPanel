@@ -908,7 +908,24 @@ def ensure_schema(conn):
             "ssh_password": "TEXT",
             "inodes_used": "INTEGER NOT NULL DEFAULT 0",
             "storage_used_mb": "REAL NOT NULL DEFAULT 0",
+            "dedicated_ip_id": "INTEGER REFERENCES server_ips(id)",
         },
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS server_ips (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ip_address TEXT NOT NULL UNIQUE,
+          ip_type TEXT NOT NULL DEFAULT 'ipv4',
+          netmask_cidr TEXT NOT NULL DEFAULT '/24',
+          interface TEXT NOT NULL DEFAULT 'eth0',
+          label TEXT NOT NULL DEFAULT 'Public IP',
+          is_primary INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'active',
+          assigned_account_id INTEGER REFERENCES hosting_accounts(id),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
     )
     ensure_table_columns(
         conn,
