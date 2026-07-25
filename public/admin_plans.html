@@ -107,6 +107,9 @@
                 <h2>Plans</h2>
                 <p>Limits are written into account metadata, quota config, and generated Compose files.</p>
               </div>
+              <button class="secondary-button" type="button" @click="recalculateUsage" :disabled="recalculatingUsage">
+                {{ recalculatingUsage ? 'Scheduling Job...' : 'Recalculate Usage' }}
+              </button>
             </div>
             <div class="table-wrap">
               <table>
@@ -118,6 +121,7 @@
                     <th>Objects</th>
                     <th>Email</th>
                     <th>Backups</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -128,6 +132,9 @@
                     <td>{{ plan.max_websites }} sites<small>{{ plan.max_databases }} DB · {{ plan.max_mailboxes }} mail · {{ plan.max_cron_jobs }} cron</small></td>
                     <td>{{ plan.daily_email_limit }}/day</td>
                     <td>{{ plan.backup_retention_days }} days</td>
+                    <td class="actions">
+                      <button type="button" class="secondary-button" @click="recalculatePlanUsage(plan)">Recalculate Usage</button>
+                    </td>
                   </tr>
                 </tbody>
               </table>

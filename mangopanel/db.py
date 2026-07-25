@@ -906,6 +906,8 @@ def ensure_schema(conn):
         {
             "ssh_access": "TEXT NOT NULL DEFAULT 'disabled'",
             "ssh_password": "TEXT",
+            "inodes_used": "INTEGER NOT NULL DEFAULT 0",
+            "storage_used_mb": "REAL NOT NULL DEFAULT 0",
         },
     )
     ensure_table_columns(
@@ -914,6 +916,8 @@ def ensure_schema(conn):
         {
             "memory_limit_mb": "REAL NOT NULL DEFAULT 0",
             "storage_limit_mb": "REAL NOT NULL DEFAULT 0",
+            "inodes_used": "INTEGER NOT NULL DEFAULT 0",
+            "inodes_limit": "INTEGER NOT NULL DEFAULT 0",
             "source": "TEXT NOT NULL DEFAULT 'panel'",
         },
     )

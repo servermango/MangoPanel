@@ -32,6 +32,7 @@ createApp({
       selectedClientId: "",
       showClientModal: false,
       plans: [],
+      recalculatingUsage: false,
       showPlanModal: false,
       editingPlanId: null,
       applyPlanToExistingAccounts: false,
@@ -576,6 +577,35 @@ createApp({
         }
         this.message = msg;
         this.closePlanModal();
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async recalculateUsage() {
+      this.recalculatingUsage = true;
+      this.message = "";
+      try {
+        const payload = await this.api("/api/admin/plans/recalculate_usage", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        this.message = payload.message || "Usage recalculation job queued.";
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.recalculatingUsage = false;
+      }
+    },
+    async recalculatePlanUsage(plan) {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/plans/${plan.id}/recalculate_usage`, {
+          method: "POST",
+          body: JSON.stringify({ plan_id: plan.id }),
+        });
+        this.message = payload.message || `Usage recalculation job queued for plan #${plan.id}.`;
         await this.load();
       } catch (error) {
         this.message = error.message;

@@ -603,6 +603,10 @@ class Agent:
             if not deployment:
                 raise AgentError("git_deployment_not_found")
             return self.rollback_git_repository(conn, deployment["id"])
+        if job_type == "recalculate_usage":
+            return self.recalculate_usage(conn, job)
+        if job_type == "recalculate_resource_usage":
+            return self.recalculate_usage(conn, job)
         if job_type == "install_wordpress":
             return self.install_wordpress(conn, job)
         if job_type == "install_script":
@@ -3043,6 +3047,98 @@ class Agent:
             "ssh_access": ssh_status,
             "port": runtime["sftp_port"],
             "user": account["username"],
+        }
+
+    def recalculate_usage(self, conn, job):
+        target_type = job.get("target_type")
+        target_id = job.get("target_id")
+        payload = json.loads(job["payload"]) if isinstance(job.get("payload"), str) else (job.get("payload") or {})
+        plan_id = payload.get("plan_id") or (target_id if target_type == "plan" else None)
+
+        if target_type == "plan" or plan_id:
+            accounts = rows_to_dicts(
+                conn.execute(
+                    """
+                    SELECT ha.*, p.storage_mb, p.inode_limit, p.memory_mb
+                    FROM hosting_accounts ha
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE ha.plan_id = ?
+                    ORDER BY ha.id
+                    """,
+                    (plan_id or target_id,),
+                ).fetchall()
+            )
+        elif target_type in {"hosting_account", "account"} and target_id:
+            accounts = rows_to_dicts(
+                conn.execute(
+                    """
+                    SELECT ha.*, p.storage_mb, p.inode_limit, p.memory_mb
+                    FROM hosting_accounts ha
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE ha.id = ?
+                    ORDER BY ha.id
+                    """,
+                    (target_id,),
+                ).fetchall()
+            )
+        else:
+            accounts = rows_to_dicts(
+                conn.execute(
+                    """
+                    SELECT ha.*, p.storage_mb, p.inode_limit, p.memory_mb
+                    FROM hosting_accounts ha
+                    JOIN plans p ON p.id = ha.plan_id
+                    ORDER BY ha.id
+                    """
+                ).fetchall()
+            )
+
+        recalculated = []
+        now = int(time.time())
+        for account in accounts:
+            base_path = Path(account["base_path"])
+            usage = path_usage(base_path)
+            storage_mb = round(usage["bytes"] / (1024 * 1024), 2)
+            inodes_used = int(usage["inodes"])
+            plan_storage_limit = float(account.get("storage_mb") or 0)
+            plan_inode_limit = int(account.get("inode_limit") or 0)
+
+            conn.execute(
+                """
+                INSERT INTO resource_usage_samples(account_id, sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, inodes_used, inodes_limit, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'recalculate_job')
+                """,
+                (
+                    account["id"],
+                    now,
+                    0.0,
+                    0.0,
+                    float(account.get("memory_mb") or 0),
+                    storage_mb,
+                    plan_storage_limit,
+                    inodes_used,
+                    plan_inode_limit,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE hosting_accounts
+                SET inodes_used = ?, storage_used_mb = ?
+                WHERE id = ?
+                """,
+                (inodes_used, storage_mb, account["id"]),
+            )
+            recalculated.append({
+                "account_id": account["id"],
+                "username": account["username"],
+                "storage_mb": storage_mb,
+                "inodes_used": inodes_used,
+            })
+
+        return {
+            "ok": True,
+            "recalculated_accounts_count": len(recalculated),
+            "accounts": recalculated,
         }
 
 

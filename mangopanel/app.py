@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-from .agent import Agent, AgentError, cron_next_run_at, decorate_cron_jobs, validate_cron_schedule
+from .agent import Agent, AgentError, cron_next_run_at, decorate_cron_jobs, path_usage, validate_cron_schedule
 from .config import FILEBROWSER_CUSTOM_JS, load_config
 from .mail import build_mail_message_bytes, dkim_dns_value, ensure_mailbox_storage, generate_dkim_material, mailbox_storage_inode_count, mailbox_storage_path, mailbox_storage_size_bytes, mail_auth_health, move_mailbox_storage, recommended_dmarc_record, recommended_spf_record, remove_mailbox_storage, sanitize_mailbox_component, split_mailbox_address
 from .db import (
@@ -2098,6 +2098,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/websites" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "websites", "max_websites", "website_limit_reached")
+                require_inode_capacity(conn, account["id"])
                 body = self.read_json()
                 domain = sanitize_domain(body.get("domain", ""))
                 existing_website = conn.execute(
@@ -2873,9 +2874,14 @@ class MangoHandler(BaseHTTPRequestHandler):
                     return self.json_response({"deleted": True, "job_id": job_id, **client_pg_databases_payload(conn, account["id"])})
                 raise ApiError(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
 
+            if path == "/api/client/websites" and method == "POST":
+                require_active_account(account)
+                require_plan_capacity(conn, account["id"], "websites", "max_websites", "website_limit_reached")
+                require_inode_capacity(conn, account["id"])
             if path == "/api/client/databases" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "databases", "max_databases", "database_limit_reached")
+                require_inode_capacity(conn, account["id"])
                 body = self.read_json()
                 name = validate_db_identifier(body.get("name") or f"{account['username']}_app", "invalid_database_name")
                 username = validate_db_identifier(body.get("username") or name, "invalid_database_username")
@@ -4920,6 +4926,22 @@ class MangoHandler(BaseHTTPRequestHandler):
                     jobs.append({"domain_id": domain_id, "job_id": migrate_domain_dns_provider(conn, domain, provider_key, provider_account_id, "admin:{}".format(actor["id"]))})
                 log_audit(conn, "admin", actor["id"], "bulk_migrate_dns_provider", "domain", None, metadata={"count": len(jobs), "to": provider_key})
                 return self.json_response({"jobs": jobs, "domains": [decorate_domain(row) for row in conn.execute("SELECT * FROM domains ORDER BY name").fetchall()]})
+            if path in {"/api/admin/plans/recalculate_usage", "/api/admin/recalculate_usage"} and method == "POST":
+                body = self.read_json() if self.headers.get("Content-Length") else {}
+                plan_id = optional_positive_int(body.get("plan_id"))
+                job_id = enqueue_agent_job(conn, "recalculate_usage", "plan" if plan_id else "all", plan_id, body)
+                log_audit(conn, "admin", actor["id"], "recalculate_usage", "plan" if plan_id else "all", plan_id, metadata={"job_id": job_id})
+                return self.json_response({"ok": True, "job_id": job_id, "message": "Usage recalculation job queued."})
+
+            if path.startswith("/api/admin/plans/") and path.endswith("/recalculate_usage") and method == "POST":
+                parts = path.split("/")
+                try:
+                    plan_id = int(parts[-2])
+                except (ValueError, IndexError):
+                    raise ApiError(HTTPStatus.NOT_FOUND, "plan_not_found")
+                job_id = enqueue_agent_job(conn, "recalculate_usage", "plan", plan_id, {"plan_id": plan_id})
+                log_audit(conn, "admin", actor["id"], "recalculate_usage", "plan", plan_id, metadata={"job_id": job_id})
+                return self.json_response({"ok": True, "job_id": job_id, "message": f"Usage recalculation job queued for plan #{plan_id}."})
             if path == "/api/admin/plans" and method == "GET":
                 return self.json_response({"plans": rows_to_dicts(conn.execute("SELECT * FROM plans ORDER BY id").fetchall())})
             if path == "/api/admin/plans" and method == "POST":
@@ -5555,6 +5577,24 @@ def require_plan_capacity(conn, account_id, resource_table, plan_column, error):
         raise ApiError(HTTPStatus.NOT_FOUND, "hosting_account_not_found")
     if int(row["used"]) >= int(row["limit_value"]):
         raise ApiError(HTTPStatus.FORBIDDEN, error)
+
+
+def require_inode_capacity(conn, account_id):
+    row = conn.execute(
+        """
+        SELECT ha.inodes_used, p.inode_limit
+        FROM hosting_accounts ha
+        JOIN plans p ON p.id = ha.plan_id
+        WHERE ha.id = ?
+        """,
+        (account_id,),
+    ).fetchone()
+    if not row:
+        return
+    inodes_used = int(row["inodes_used"] or 0)
+    inode_limit = int(row["inode_limit"] or 0)
+    if inode_limit > 0 and inodes_used >= inode_limit:
+        raise ApiError(HTTPStatus.FORBIDDEN, "inode_quota_exceeded")
 
 
 def parse_json_field(value, fallback):
@@ -7051,19 +7091,27 @@ def collect_all_resource_usage_samples(config=None):
         conn.execute("DELETE FROM resource_usage_samples WHERE sampled_at < ?", (prune_before,))
 
 
-def collect_resource_usage_sample(conn, account):
+def collect_resource_usage_sample(conn, account, force=False):
     now = int(time.time())
-    last = conn.execute(
-        "SELECT sampled_at FROM resource_usage_samples WHERE account_id = ? ORDER BY sampled_at DESC LIMIT 1",
-        (account["id"],),
-    ).fetchone()
-    if last and int(last["sampled_at"]) > now - 45:
-        return
+    if not force:
+        last = conn.execute(
+            "SELECT sampled_at FROM resource_usage_samples WHERE account_id = ? ORDER BY sampled_at DESC LIMIT 1",
+            (account["id"],),
+        ).fetchone()
+        if last and int(last["sampled_at"]) > now - 45:
+            return
     sample = docker_resource_usage(account) or resource_usage_estimate(account)
+    base_path = Path(account["base_path"])
+    path_info = path_usage(base_path) if base_path.exists() else {"bytes": 0, "inodes": 0}
+    storage_mb = round(path_info["bytes"] / (1024 * 1024), 2)
+    inodes_used = int(path_info["inodes"])
+    storage_limit_mb = float(account.get("storage_mb") or sample.get("storage_limit_mb") or 0)
+    inodes_limit = int(account.get("inode_limit") or 0)
+
     conn.execute(
         """
-        INSERT INTO resource_usage_samples(account_id, sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO resource_usage_samples(account_id, sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, inodes_used, inodes_limit, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account["id"],
@@ -7071,10 +7119,20 @@ def collect_resource_usage_sample(conn, account):
             sample["cpu_percent"],
             sample["memory_mb"],
             sample["memory_limit_mb"],
-            sample["storage_mb"],
-            sample["storage_limit_mb"],
+            storage_mb,
+            storage_limit_mb,
+            inodes_used,
+            inodes_limit,
             sample["source"],
         ),
+    )
+    conn.execute(
+        """
+        UPDATE hosting_accounts
+        SET inodes_used = ?, storage_used_mb = ?
+        WHERE id = ?
+        """,
+        (inodes_used, storage_mb, account["id"]),
     )
 
 
@@ -8651,6 +8709,33 @@ def client_home(conn, user_id):
     user = conn.execute("SELECT totp_secret FROM users WHERE id = ?", (user_id,)).fetchone()
     has_2fa = bool(user and user["totp_secret"])
     
+    primary_account = accounts[0] if accounts else None
+    disk_used_mb = 0
+    disk_limit_mb = primary_account["storage_mb"] if primary_account and "storage_mb" in primary_account else 10240
+    inodes_used = 0
+    inodes_limit = primary_account["inode_limit"] if primary_account and "inode_limit" in primary_account else 100000
+
+    if primary_account:
+        sample = conn.execute(
+            """
+            SELECT storage_mb, storage_limit_mb, inodes_used, inodes_limit
+            FROM resource_usage_samples
+            WHERE account_id = ?
+            ORDER BY sampled_at DESC LIMIT 1
+            """,
+            (primary_account["id"],),
+        ).fetchone()
+        if sample:
+            disk_used_mb = round(sample["storage_mb"])
+            if sample["storage_limit_mb"]:
+                disk_limit_mb = round(sample["storage_limit_mb"])
+            inodes_used = sample["inodes_used"]
+            if sample["inodes_limit"]:
+                inodes_limit = sample["inodes_limit"]
+        else:
+            inodes_used = int(primary_account.get("inodes_used") or 0)
+            disk_used_mb = round(float(primary_account.get("storage_used_mb") or 0))
+
     return {
         "accounts": accounts,
         "websites": websites,
@@ -8658,10 +8743,10 @@ def client_home(conn, user_id):
         "has_2fa": has_2fa,
         "server_ip": get_host_public_ip(conn),
         "resources": {
-            "disk_used_mb": 384,
-            "disk_limit_mb": accounts[0]["storage_mb"] if accounts and "storage_mb" in accounts[0] else 10240,
-            "inodes_used": 1250,
-            "inodes_limit": 100000,
+            "disk_used_mb": disk_used_mb,
+            "disk_limit_mb": disk_limit_mb,
+            "inodes_used": inodes_used,
+            "inodes_limit": inodes_limit,
             "cpu": "low",
             "memory": "healthy",
         },

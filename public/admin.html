@@ -444,7 +444,12 @@
                 <h2>Hosting Plans</h2>
                 <p>Create account plans for Docker resource limits, quotas, and backup retention.</p>
               </div>
-              <button class="primary-button" @click="openPlanModal">Create Plan</button>
+              <div style="display:flex; gap:0.5rem; align-items:center;">
+                <button class="secondary-button" type="button" @click="recalculateUsage" :disabled="recalculatingUsage">
+                  {{ recalculatingUsage ? 'Scheduling Job...' : 'Recalculate Usage' }}
+                </button>
+                <button class="primary-button" @click="openPlanModal">Create Plan</button>
+              </div>
             </div>
             <div class="table-wrap plan-table">
               <table>
@@ -456,7 +461,7 @@
                     <th>Objects</th>
                     <th>Email</th>
                     <th>Backups</th>
-                    <th></th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -467,7 +472,10 @@
                     <td>{{ plan.max_websites }} sites<small>{{ plan.max_databases }} DB · {{ plan.max_mailboxes }} mail · {{ plan.max_cron_jobs }} cron</small></td>
                     <td>{{ plan.daily_email_limit }}/day</td>
                     <td>{{ plan.backup_retention_days }} days</td>
-                    <td><button type="button" @click="editPlan(plan)">Edit</button></td>
+                    <td class="actions">
+                      <button type="button" @click="editPlan(plan)">Edit</button>
+                      <button type="button" class="secondary-button" @click="recalculatePlanUsage(plan)">Recalculate Usage</button>
+                    </td>
                   </tr>
                 </tbody>
               </table>
