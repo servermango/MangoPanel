@@ -185,6 +185,21 @@
             border-color: var(--line);
         }
 
+        .top-nav a.nav-docs-highlight {
+            background: var(--brand);
+            color: var(--accent-dark) !important;
+            border-color: var(--brand-strong);
+            font-weight: 700;
+            box-shadow: 0 2px 10px rgba(253, 181, 40, 0.25);
+        }
+
+        .top-nav a.nav-docs-highlight:hover {
+            background: var(--brand-strong);
+            color: var(--accent-dark) !important;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 14px rgba(253, 181, 40, 0.4);
+        }
+
         .nav-icon {
             width: 16px;
             height: 16px;
@@ -911,13 +926,11 @@
             <nav class="top-nav">
                 <a href="#features" class="active"><svg class="nav-icon"><use href="#icon-layout"></use></svg><span>Platform</span></a>
                 <a href="#architecture"><svg class="nav-icon"><use href="#icon-architecture"></use></svg><span>Architecture</span></a>
-                <a href="docs.html"><svg class="nav-icon"><use href="#icon-checklist"></use></svg><span>Docs</span></a>
                 <a href="#maintainer"><svg class="nav-icon"><use href="#icon-user"></use></svg><span>Maintainer</span></a>
+                <a href="docs.html" class="nav-docs-highlight"><svg class="nav-icon"><use href="#icon-checklist"></use></svg><span>Docs</span></a>
             </nav>
             <div class="portal-links">
                 <div class="live-chip"><span class="pulse-dot"></span>Live Release</div>
-                <a href="/login" class="btn-chip btn-chip-primary">Client Portal</a>
-                <a href="/admin" class="btn-chip btn-chip-secondary">Admin</a>
             </div>
         </div>
     </header>
