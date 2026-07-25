@@ -2034,6 +2034,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                 window_key = query.get("range", ["30m"])[0]
                 payload = resource_usage_payload(conn, account, window_key)
                 return self.json_response(payload)
+            if path in {"/api/client/recalculate-usage", "/api/client/recalculate_usage"} and method == "POST":
+                require_active_account(account)
+                job_id = enqueue_agent_job(conn, "recalculate_usage", "hosting_account", account["id"], {"account_id": account["id"], "reason": "client_requested"})
+                collect_resource_usage_sample(conn, account, force=True)
+                log_activity(conn, actor["id"], "recalculate_usage", {"account_id": account["id"], "job_id": job_id})
+                return self.json_response({
+                    "ok": True,
+                    "job_id": job_id,
+                    "message": "Usage recalculation completed.",
+                    "resources": client_home(conn, actor["id"])["resources"],
+                })
             if path == "/api/client/php-info" and method == "GET":
                 require_account(account)
                 website_id = optional_positive_int(query.get("website_id", [""])[0])
@@ -7105,8 +7116,8 @@ def collect_resource_usage_sample(conn, account, force=False):
     path_info = path_usage(base_path) if base_path.exists() else {"bytes": 0, "inodes": 0}
     storage_mb = round(path_info["bytes"] / (1024 * 1024), 2)
     inodes_used = int(path_info["inodes"])
-    storage_limit_mb = float(account.get("storage_mb") or sample.get("storage_limit_mb") or 0)
-    inodes_limit = int(account.get("inode_limit") or 0)
+    storage_limit_mb = float(account["storage_mb"] if "storage_mb" in account.keys() and account["storage_mb"] is not None else sample.get("storage_limit_mb") or 0)
+    inodes_limit = int(account["inode_limit"] if "inode_limit" in account.keys() and account["inode_limit"] is not None else 0)
 
     conn.execute(
         """
@@ -7180,8 +7191,8 @@ def docker_resource_usage(account):
 
 def resource_usage_estimate(account):
     storage_mb = directory_size_mb(Path(account["base_path"]))
-    storage_limit_mb = float(account["storage_mb"] or 0)
-    memory_limit_mb = float(account["memory_mb"] or 0)
+    storage_limit_mb = float(account["storage_mb"] if "storage_mb" in account.keys() and account["storage_mb"] is not None else 0)
+    memory_limit_mb = float(account["memory_mb"] if "memory_mb" in account.keys() and account["memory_mb"] is not None else 0)
     seed = int(account["id"]) * 17 + int(time.time() // 60)
     cpu_percent = 2 + (seed % 19)
     memory_mb = min(memory_limit_mb or 1024, 80 + ((seed * 13) % 260))

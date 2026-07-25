@@ -169,6 +169,12 @@
             </div>
 
             <!-- Resource bars -->
+            <div style="display:flex; justify-content:space-between; align-items:center; margin: 1.5rem 0 0.75rem;">
+              <h3 style="margin:0; font-size: 15px; font-weight: 700;">Resource Summary</h3>
+              <button class="ghost-button" type="button" @click="recalculateUsage" :disabled="recalculatingUsage" style="font-size: 12px; padding: 4px 10px;">
+                {{ recalculatingUsage ? 'Recalculating...' : '⚡ Recalculate Usage' }}
+              </button>
+            </div>
             <div class="resource-summary-grid">
               <div class="resource-summary-card">
                 <div class="resource-summary-header">
@@ -466,7 +472,12 @@
                 <div class="premium-card-header">
                   <div class="premium-card-icon"><app-icon name="performance"></app-icon></div>
                   <h3>Hosting Details</h3>
-                  <button class="premium-btn">Upgrade plan</button>
+                  <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <button class="premium-btn" type="button" @click="recalculateUsage" :disabled="recalculatingUsage">
+                      {{ recalculatingUsage ? 'Recalculating...' : '⚡ Recalculate Usage' }}
+                    </button>
+                    <button class="premium-btn">Upgrade plan</button>
+                  </div>
                 </div>
                 <div class="premium-card-body">
                   <div class="premium-list grid-2">
@@ -2342,12 +2353,17 @@
 
           <!-- ═══════════════════════════════════════════════════════════ DISK USAGE -->
           <section v-if="activePage === 'disk-usage'" class="panel">
-            <div class="advanced-tool-header">
-              <app-icon name="disk-usage"></app-icon>
-              <div>
-                <h2>Disk Usage</h2>
-                <p>Monitor your account's disk space usage per directory.</p>
+            <div class="advanced-tool-header" style="display:flex; justify-content:space-between; align-items:center;">
+              <div style="display:flex; gap:1rem; align-items:center;">
+                <app-icon name="disk-usage"></app-icon>
+                <div>
+                  <h2>Disk Usage</h2>
+                  <p>Monitor your account's disk space usage per directory.</p>
+                </div>
               </div>
+              <button class="ghost-button" type="button" @click="recalculateUsage" :disabled="recalculatingUsage">
+                {{ recalculatingUsage ? 'Recalculating...' : '⚡ Recalculate Usage' }}
+              </button>
             </div>
 
             <div class="table-wrap">

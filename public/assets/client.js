@@ -224,6 +224,7 @@ const app = createApp({
         password: "",
         code: "",
       },
+      recalculatingUsage: false,
       home: {
         resources: { disk_used_mb: 0, disk_limit_mb: 0, inodes_used: 0, inodes_limit: 0, cpu: "unknown", memory: "unknown" },
         warnings: [],
@@ -797,6 +798,24 @@ const app = createApp({
     },
   },
   methods: {
+    async recalculateUsage() {
+      this.recalculatingUsage = true;
+      try {
+        const payload = await this.api("/api/client/recalculate_usage", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        if (payload.resources) {
+          this.home.resources = payload.resources;
+        }
+        await this.loadHome();
+        this.notify(payload.message || "Usage recalculation completed.");
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.recalculatingUsage = false;
+      }
+    },
     openNameserverEditor(domain) {
       const values = domain.nameservers || [];
       this.nameserverEditor = { domainId: domain.id, source: domain.nameserver_source || "default", values: [values[0] || "", values[1] || ""] };

@@ -113,6 +113,23 @@ class PlanLimitTests(unittest.TestCase):
                 self.assertEqual(home["resources"]["inodes_used"], updated["inodes_used"])
                 self.assertNotEqual(home["resources"]["inodes_used"], 1250)
 
+    def test_client_recalculate_usage_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "mangopanel.sqlite3"
+            account_root = tmp_path / "accounts"
+            seed_dev_data(db_path, account_root)
+
+            with connect(db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts LIMIT 1").fetchone()
+                base_path = Path(account["base_path"])
+                base_path.mkdir(parents=True, exist_ok=True)
+                (base_path / "test_file.txt").write_text("content")
+
+                collect_resource_usage_sample(conn, account, force=True)
+                sample = conn.execute("SELECT inodes_used FROM resource_usage_samples WHERE account_id = ? ORDER BY sampled_at DESC LIMIT 1", (account["id"],)).fetchone()
+                self.assertGreater(sample["inodes_used"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
