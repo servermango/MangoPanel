@@ -40,16 +40,18 @@ For production, store the token only in MangoPanel's encrypted provider settings
 
 ## Domain & Subdomain DNS Setup
 
-To instruct users to set up a server domain or subdomain for MangoPanel and tool access, create the following DNS records pointing to your server's IP address:
+To instruct users to set up a server domain or subdomain for MangoPanel and tool access, create the following DNS records pointing to your server's IP address.
 
-| Type | Name | Value |
-| --- | --- | --- |
-| A | `@` | `<SERVER_IP>` |
-| A | `*.files` | `<SERVER_IP>` |
+For example, if you want your users to reach the panel from `hosting.servermango.com`, create the following A records:
+
+| Type | Name / Host | Target / Value | Purpose |
+| --- | --- | --- | --- |
+| A | `hosting.servermango.com` (or `@`) | `<SERVER_IP>` | Main panel and web traffic |
+| A | `*.files.hosting.servermango.com` (or `*.files`) | `<SERVER_IP>` | Per-account Filebrowser tool routing |
 
 Once configured, access MangoPanel at:
-- **Admin Panel**: `http://<domain>:8001/admin`
-- **Client Panel**: `http://<domain>:8000/client`
+- **Admin Panel**: `http://hosting.servermango.com:8001/admin`
+- **Client Panel**: `http://hosting.servermango.com:8000/client` (or `http://hosting.servermango.com:8000/`)
 
 ## Quick Start
 

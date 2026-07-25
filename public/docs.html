@@ -728,7 +728,12 @@ sudo python3 scripts/admin_recovery.py --email admin@example.com --disable-totp<
             <section id="dns-domain-setup" class="docs-section">
                 <span class="badge-pill">DNS Routing</span>
                 <h1>Domain &amp; Subdomain DNS Setup</h1>
-                <p>To route traffic correctly to MangoPanel and per-account file managers/tools, configure the following DNS records pointing to your server's public IP address:</p>
+                <p>To instruct users to set up a server domain or subdomain for MangoPanel and tool access, create DNS A-records pointing to your server's IP address.</p>
+
+                <div class="callout callout-info">
+                    <div class="callout-title">Domain Setup Example</div>
+                    <p>For example, if you want your users to reach the panel from <strong>hosting.servermango.com</strong>, create the following DNS A-records pointing to your server's public IP address:</p>
+                </div>
 
                 <div class="table-wrapper">
                     <table>
@@ -743,19 +748,25 @@ sudo python3 scripts/admin_recovery.py --email admin@example.com --disable-totp<
                         <tbody>
                             <tr>
                                 <td><code>A</code></td>
-                                <td><code>@</code></td>
+                                <td><code>hosting.servermango.com</code> (or <code>@</code>)</td>
                                 <td><code>&lt;SERVER_IP&gt;</code></td>
-                                <td>Main domain and web traffic</td>
+                                <td>Main panel and web traffic</td>
                             </tr>
                             <tr>
                                 <td><code>A</code></td>
-                                <td><code>*.files</code></td>
+                                <td><code>*.files.hosting.servermango.com</code> (or <code>*.files</code>)</td>
                                 <td><code>&lt;SERVER_IP&gt;</code></td>
                                 <td>Per-account Filebrowser tool subdomain routing</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
+
+                <p>Once configured, access MangoPanel at:</p>
+                <ul>
+                    <li><strong>Admin Panel:</strong> <code>http://hosting.servermango.com:8001/admin</code></li>
+                    <li><strong>Client Panel:</strong> <code>http://hosting.servermango.com:8000/client</code> (or <code>http://hosting.servermango.com:8000/</code>)</li>
+                </ul>
             </section>
 
             <!-- CURRENT BUILD -->
