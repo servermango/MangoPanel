@@ -4131,61 +4131,58 @@ body.app-loaded #app-preloader {
    All rules scoped to .admin-shell – client panel untouched
    ═══════════════════════════════════════════════════════════════════ */
 
-/* ── Admin-specific token overrides (light palette stays) ─────────── */
+/* ── Admin-specific token overrides ──────────────────────────────── */
 .admin-shell {
-  --admin-sidebar-bg:   #1e2d3d;
-  --admin-sidebar-bg2:  #162435;
-  --admin-nav-text:     rgba(255,255,255,0.72);
-  --admin-nav-hover:    rgba(255,255,255,0.09);
-  --admin-nav-active:   rgba(253,181,40,0.14);
-  --admin-nav-accent:   #fdb528;
-  --admin-brand-glow:   rgba(253,181,40,0.22);
+  --admin-nav-text:     #374151;
+  --admin-nav-hover:    #f3f4f6;
+  --admin-nav-active:   #fff8e6;
+  --admin-nav-accent:   #e8a417;
 }
 
 /* ── Sidebar ──────────────────────────────────────────────────────── */
 .admin-shell .admin-sidebar {
-  background: linear-gradient(180deg, #1e2d3d 0%, #162435 100%);
-  border-right: 1px solid rgba(0,0,0,0.18);
-  box-shadow: 2px 0 12px rgba(0,0,0,0.12);
-  padding: 20px 14px;
+  background: #ffffff;
+  border-right: 1px solid #e8eaed;
+  box-shadow: 1px 0 4px rgba(0,0,0,0.05);
+  padding: 16px 12px;
 }
 
 /* Brand block */
 .admin-shell .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 10px 18px;
+  gap: 11px;
+  padding: 8px 8px 16px;
   margin-bottom: 6px;
-  border-bottom: 1px solid rgba(255,255,255,0.07);
+  border-bottom: 1px solid #f0f2f4;
 }
 
 .admin-shell .brand-mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
   background: linear-gradient(135deg, #fdb528, #e8a417);
   color: #1a0900;
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 900;
   display: grid;
   place-items: center;
-  box-shadow: 0 2px 10px rgba(253,181,40,0.35);
+  box-shadow: 0 2px 6px rgba(253,181,40,0.3);
   flex-shrink: 0;
 }
 
 .admin-shell .brand strong {
   display: block;
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 700;
-  color: #fff;
+  color: #111827;
   letter-spacing: -0.01em;
 }
 
 .admin-shell .brand small {
   display: block;
   font-size: 10.5px;
-  color: rgba(255,255,255,0.45);
+  color: #9ca3af;
   margin-top: 1px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -4196,20 +4193,20 @@ body.app-loaded #app-preloader {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .admin-shell .nav-section {
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .admin-shell .nav-group {
-  color: rgba(255,255,255,0.38);
+  color: #9ca3af;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  padding: 14px 12px 5px;
+  padding: 14px 10px 5px;
 }
 
 .admin-shell .nav-list button,
@@ -4223,26 +4220,26 @@ body.app-loaded #app-preloader {
   background: transparent;
   text-decoration: none;
   border-radius: 7px;
-  padding: 7px 12px;
-  color: var(--admin-nav-text);
+  padding: 7px 10px;
+  color: #4b5563;
   font-size: 13px;
   font-weight: 500;
   text-align: left;
-  transition: background 0.14s, color 0.14s;
+  transition: background 0.13s, color 0.13s;
   cursor: pointer;
   position: relative;
 }
 
 .admin-shell .nav-list button:hover,
 .admin-shell .nav-list a:hover {
-  background: var(--admin-nav-hover);
-  color: #fff;
+  background: #f3f4f6;
+  color: #111827;
   border-color: transparent;
 }
 
 .admin-shell .nav-list button.active {
-  background: var(--admin-nav-active);
-  color: #fdb528;
+  background: #fff8e6;
+  color: #92400e;
   font-weight: 600;
   border: none;
 }
@@ -4255,7 +4252,7 @@ body.app-loaded #app-preloader {
   bottom: 18%;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: #fdb528;
+  background: #e8a417;
 }
 
 .admin-shell .nav-item-icon {
