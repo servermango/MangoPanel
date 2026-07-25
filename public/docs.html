@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MangoPanel Documentation · Shared Hosting Control Plane</title>
+    <meta name="description" content="Complete single-page documentation for MangoPanel: Installation, System Requirements, Basic Setup, Hosting Plans, Client Provisioning, Cloudflare DNS, Server Migration, and Architecture.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0b0f19;
+            --surface: #151d30;
+            --surface-2: #1e2942;
+            --surface-elevated: #263556;
+            
+            --text: #f1f5f9;
+            --text-secondary: #cbd5e1;
+            --muted: #94a3b8;
+            --line: #222f4c;
+            --line-hover: #33446b;
+            
+            --brand: #fdb528;
+            --brand-strong: #e8a417;
+            --brand-ink: #8a5800;
+            --brand-tint: rgba(253, 181, 40, 0.12);
+            --brand-glow: rgba(253, 181, 40, 0.22);
+            
+            --accent: #2c3136;
+            --accent-dark: #1e2528;
+            
+            --success: #22c55e;
+            --success-ink: #86efac;
+            --success-tint: rgba(34, 197, 94, 0.12);
+            
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --info: #3b82f6;
+            --info-tint: rgba(59, 130, 246, 0.12);
+            
+            --shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+            --shadow-premium: 0 20px 45px -10px rgba(0, 0, 0, 0.5);
+            --transition: all 0.2s ease-in-out;
+            
+            --font-body: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Top Header */
+        header {
+            height: 64px;
+            padding: 0 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(21, 29, 48, 0.9);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--line);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+            color: var(--text);
+        }
+
+        .brand-mark {
+            width: 34px;
+            height: 34px;
+            background: var(--brand);
+            color: var(--accent-dark);
+            font-weight: 800;
+            font-size: 18px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 3px 10px var(--brand-glow);
+        }
+
+        .brand-text strong {
+            font-size: 1.1rem;
+            font-weight: 800;
+        }
+
+        .brand-text small {
+            color: var(--brand);
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-left: 6px;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .btn-nav {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.45rem 0.85rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: var(--transition);
+            border: 1px solid var(--line);
+            background: var(--surface-2);
+            color: var(--text);
+        }
+
+        .btn-nav:hover {
+            border-color: var(--brand);
+            color: var(--brand);
+        }
+
+        .btn-nav-primary {
+            background: var(--brand);
+            color: var(--accent-dark);
+            border-color: var(--brand-strong);
+        }
+
+        .btn-nav-primary:hover {
+            background: var(--brand-strong);
+            color: var(--accent-dark);
+        }
+
+        /* Documentation Layout */
+        .docs-container {
+            display: grid;
+            grid-template-columns: 280px minmax(0, 1fr);
+            min-height: calc(100vh - 64px);
+        }
+
+        /* Sidebar Navigation */
+        .docs-sidebar {
+            position: sticky;
+            top: 64px;
+            height: calc(100vh - 64px);
+            overflow-y: auto;
+            background: var(--surface);
+            border-right: 1px solid var(--line);
+            padding: 1.5rem 1rem;
+        }
+
+        .docs-search {
+            margin-bottom: 1.25rem;
+            position: relative;
+        }
+
+        .docs-search input {
+            width: 100%;
+            padding: 0.55rem 0.75rem;
+            background: var(--bg);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 0.85rem;
+            font-family: var(--font-body);
+            outline: none;
+        }
+
+        .docs-search input:focus {
+            border-color: var(--brand);
+        }
+
+        .nav-group-title {
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--brand);
+            margin: 1.25rem 0.5rem 0.5rem;
+        }
+
+        .nav-menu {
+            list-style: none;
+        }
+
+        .nav-menu li a {
+            display: block;
+            padding: 0.42rem 0.65rem;
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.86rem;
+            font-weight: 500;
+            border-radius: 6px;
+            transition: var(--transition);
+            line-height: 1.3;
+        }
+
+        .nav-menu li a:hover,
+        .nav-menu li a.active {
+            color: var(--text);
+            background: var(--surface-2);
+        }
+
+        .nav-menu li a.active {
+            color: var(--brand);
+            font-weight: 700;
+            border-left: 2px solid var(--brand);
+            border-radius: 0 6px 6px 0;
+        }
+
+        /* Main Content Area */
+        .docs-content {
+            padding: 2.5rem 4rem 6rem;
+            max-width: 960px;
+        }
+
+        .docs-section {
+            margin-bottom: 4rem;
+            padding-bottom: 2.5rem;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .docs-section:last-child {
+            border-bottom: none;
+        }
+
+        .docs-section h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -0.025em;
+            margin-bottom: 1rem;
+            color: var(--text);
+        }
+
+        .docs-section h2 {
+            font-size: 1.75rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            margin: 2rem 0 1rem;
+            color: var(--text);
+        }
+
+        .docs-section h3 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin: 1.5rem 0 0.75rem;
+            color: var(--brand);
+        }
+
+        .docs-section h4 {
+            font-size: 1rem;
+            font-weight: 700;
+            margin: 1.2rem 0 0.5rem;
+            color: var(--text);
+        }
+
+        .docs-section p {
+            color: var(--text-secondary);
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            line-height: 1.7;
+        }
+
+        .docs-section ul, .docs-section ol {
+            margin: 0.5rem 0 1.25rem 1.5rem;
+            color: var(--text-secondary);
+        }
+
+        .docs-section li {
+            margin-bottom: 0.4rem;
+            line-height: 1.6;
+        }
+
+        /* Callout Cards & Badges */
+        .callout {
+            padding: 1.2rem 1.4rem;
+            border-radius: 10px;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-left: 4px solid var(--brand);
+            margin: 1.25rem 0;
+        }
+
+        .callout-title {
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: var(--brand);
+            margin-bottom: 0.4rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .callout p {
+            margin-bottom: 0;
+            font-size: 0.92rem;
+            color: var(--text-secondary);
+        }
+
+        .callout-info { border-left-color: var(--info); }
+        .callout-info .callout-title { color: var(--info); }
+
+        .callout-warning { border-left-color: var(--warning); }
+        .callout-warning .callout-title { color: var(--warning); }
+
+        /* Tables */
+        .table-wrapper {
+            overflow-x: auto;
+            margin: 1.25rem 0;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 0.9rem;
+        }
+
+        th {
+            background: var(--surface-2);
+            color: var(--text);
+            font-weight: 700;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--line);
+        }
+
+        td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--line);
+            color: var(--text-secondary);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Code Blocks */
+        pre {
+            background: #060911;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 1.1rem;
+            overflow-x: auto;
+            font-family: var(--font-mono);
+            font-size: 0.88rem;
+            color: #e2e8f0;
+            margin: 1rem 0 1.5rem;
+            position: relative;
+        }
+
+        code {
+            font-family: var(--font-mono);
+            font-size: 0.86rem;
+            background: var(--surface-2);
+            color: var(--brand);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            border: 1px solid var(--line);
+        }
+
+        pre code {
+            background: transparent;
+            color: inherit;
+            padding: 0;
+            border: none;
+        }
+
+        .badge-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.25rem 0.65rem;
+            background: var(--brand-tint);
+            border: 1px solid rgba(253, 181, 40, 0.3);
+            border-radius: 999px;
+            font-size: 0.76rem;
+            font-weight: 700;
+            color: var(--brand);
+            text-transform: uppercase;
+        }
+
+        /* Responsive UI */
+        @media (max-width: 900px) {
+            .docs-container {
+                grid-template-columns: 1fr;
+            }
+            .docs-sidebar {
+                display: none;
+            }
+            .docs-content {
+                padding: 2rem 1.5rem 4rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <header>
+        <a href="/" class="brand">
+            <span class="brand-mark">M</span>
+            <div class="brand-text">
+                <strong>MangoPanel</strong>
+                <small>DOCS</small>
+            </div>
+        </a>
+        <div class="header-actions">
+            <a href="/" class="btn-nav">Home</a>
+            <a href="/login" class="btn-nav btn-nav-primary">Client Portal</a>
+            <a href="/admin" class="btn-nav">Admin Panel</a>
+        </div>
+    </header>
+
+    <div class="docs-container">
+        <!-- Sidebar Navigation -->
+        <aside class="docs-sidebar">
+            <div class="docs-search">
+                <input type="text" id="menu-search" placeholder="Search documentation..." onkeyup="filterDocsNav()">
+            </div>
+            
+            <div class="nav-group-title">Getting Started</div>
+            <ul class="nav-menu">
+                <li><a href="#introduction" class="active">Introduction</a></li>
+                <li><a href="#requirements">Requirements</a></li>
+                <li><a href="#installation">Installation</a></li>
+                <li><a href="#quick-start">Quick Start</a></li>
+            </ul>
+
+            <div class="nav-group-title">Operations &amp; Setup</div>
+            <ul class="nav-menu">
+                <li><a href="#basic-setup">Basic Setup</a></li>
+                <li><a href="#admin-management">Admin Setup &amp; Recovery</a></li>
+                <li><a href="#creating-plans">Hosting Plans Setup</a></li>
+                <li><a href="#provisioning-clients">Client Provisioning</a></li>
+                <li><a href="#cloudflare-dns">Cloudflare DNS Setup</a></li>
+                <li><a href="#dns-domain-setup">Domain &amp; Subdomain DNS</a></li>
+            </ul>
+
+            <div class="nav-group-title">Architecture &amp; Data</div>
+            <ul class="nav-menu">
+                <li><a href="#current-build">Current Build Features</a></li>
+                <li><a href="#how-it-works">How It Works</a></li>
+                <li><a href="#data-layout">Data Layout</a></li>
+                <li><a href="#service-command">Service Command</a></li>
+                <li><a href="#server-migration">Server Migration</a></li>
+                <li><a href="#local-development">Local &amp; Docker Dev</a></li>
+                <li><a href="#thesis-direction">Thesis Integration</a></li>
+                <li><a href="#next-steps">Implementation Roadmap</a></li>
+            </ul>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="docs-content">
+
+            <!-- INTRODUCTION -->
+            <section id="introduction" class="docs-section">
+                <span class="badge-pill">Overview</span>
+                <h1>Introduction</h1>
+                <p>MangoPanel is a lightweight, self-hosted, hPanel-style shared hosting control panel. It provides a complete web hosting control plane designed for real account stacks, queued jobs, DNS management, SSL certificates, email services, databases, file managers, and backups.</p>
+                
+                <div class="callout">
+                    <div class="callout-title">Core Philosophy</div>
+                    <p>MangoPanel uses a zero-external-framework Python HTTP API backed by SQLite WAL mode. Desired infrastructure state is written to SQLite, while a dedicated local Node Agent processes privileged operations asynchronously.</p>
+                </div>
+
+                <h3>Key Platform Highlights</h3>
+                <ul>
+                    <li><strong>Account Isolation:</strong> One dedicated Docker Compose stack per customer account (OpenLiteSpeed, MariaDB, phpMyAdmin, Filebrowser, SFTP, Mail).</li>
+                    <li><strong>Audited Control Plane:</strong> Single SQLite database (`mangopanel.sqlite3`) tracking users, websites, databases, mailboxes, and job logs.</li>
+                    <li><strong>Built-in Security:</strong> Signed JWT session tokens, mandatory TOTP multi-factor authentication, and short-lived launch tokens for sub-services.</li>
+                    <li><strong>Dual-Port Panel Architecture:</strong> Separate listening ports for Client (`8000`) and Admin (`8001`) to isolate administrative API routes.</li>
+                </ul>
+            </section>
+
+            <!-- REQUIREMENTS -->
+            <section id="requirements" class="docs-section">
+                <span class="badge-pill">Prerequisites</span>
+                <h1>Requirements</h1>
+                <p>Before installing MangoPanel, ensure your server or development environment satisfies the following system specifications:</p>
+
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Component</th>
+                                <th>Minimum Requirement</th>
+                                <th>Recommended</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Operating System</strong></td>
+                                <td>Linux (Ubuntu 22.04 / 24.04 LTS, Debian 12) or macOS</td>
+                                <td>Ubuntu 24.04 LTS Server</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Python</strong></td>
+                                <td>Python 3.10+</td>
+                                <td>Python 3.12+</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Container Engine</strong></td>
+                                <td>Docker Engine 24.0+ &amp; Docker Compose v2</td>
+                                <td>Docker Engine 26.0+</td>
+                            </tr>
+                            <tr>
+                                <td><strong>System Tools</strong></td>
+                                <td>`git`, `make`, `curl`, `tar`, `sqlite3`</td>
+                                <td>`git`, `make`, `curl`, `rsync`</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Network Ports</strong></td>
+                                <td>`8000` (Client), `8001` (Admin)</td>
+                                <td>Public IPs for 80, 443, 53 (DNS), 587 (SMTP), 993 (IMAP)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- INSTALLATION -->
+            <section id="installation" class="docs-section">
+                <span class="badge-pill">Setup</span>
+                <h1>Installation</h1>
+                <p>Choose one of the following methods to install MangoPanel on your host system.</p>
+
+                <h3>Option A: Automated One-Line Install (Recommended)</h3>
+                <p>Fresh clone and auto-installation using `git`:</p>
+                <pre><code>git clone https://github.com/servermango/MangoPanel.git MangoPanel &amp;&amp; cd MangoPanel &amp;&amp; bash scripts/install.sh</code></pre>
+
+                <h3>Option B: Archive Install (If Git is unavailable)</h3>
+                <pre><code>mkdir MangoPanel &amp;&amp; curl -fsSL https://codeload.github.com/servermango/MangoPanel/tar.gz/refs/heads/main | tar -xz -C MangoPanel --strip-components=1 &amp;&amp; cd MangoPanel &amp;&amp; bash scripts/install.sh</code></pre>
+
+                <h3>Option C: Manual Makefile Step-by-Step</h3>
+                <pre><code>cd MangoPanel
+
+# 1. Install system prerequisites, Python venv, Docker tools &amp; pre-pull images
+make install
+
+# 2. Check Python, Docker, and listening ports
+make dev-init
+
+# 3. Start the client and admin panel services (seeds dev data on first run)
+make dev-up</code></pre>
+            </section>
+
+            <!-- QUICK START -->
+            <section id="quick-start" class="docs-section">
+                <span class="badge-pill">Getting Started</span>
+                <h1>Quick Start</h1>
+                <p>Once installation finishes, MangoPanel runs as a local background daemon or development server.</p>
+
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Interface</th>
+                                <th>URL</th>
+                                <th>Default Credentials</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Client Portal</strong></td>
+                                <td>`http://127.0.0.1:8000/`</td>
+                                <td>`owner@example.mango.test` / `ChangeMe-DevOnly-123!`</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Admin Panel</strong></td>
+                                <td>`http://127.0.0.1:8001/admin`</td>
+                                <td>`admin@mango.test` / `ChangeMe-DevOnly-123!`</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Client Signup</strong></td>
+                                <td>`http://127.0.0.1:8000/signup`</td>
+                                <td>Self-service client registration</td>
+                            </tr>
+                            <tr>
+                                <td><strong>System Status</strong></td>
+                                <td>`http://127.0.0.1:8000/status`</td>
+                                <td>Public platform feature state page</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="callout callout-info">
+                    <div class="callout-title">Development 2FA Code</div>
+                    <p>In development mode (`MP_DEV_AUTH_TEST_MODE=true`), the universal TOTP verification code is <code>000000</code>.</p>
+                </div>
+            </section>
+
+            <!-- BASIC SETUP -->
+            <section id="basic-setup" class="docs-section">
+                <span class="badge-pill">Guide</span>
+                <h1>Basic Setup</h1>
+                <p>Follow these steps to configure your initial administrative credentials, define hosting plans, and provision your first customer accounts.</p>
+
+                <h2 id="admin-management">1. Admin Setup &amp; Recovery</h2>
+                <p>When starting MangoPanel on a fresh database with zero admins, visiting `http://<server-ip>:8001/admin` automatically routes to the <strong>First-Admin Setup Page</strong> (`/admin/setup`).</p>
+                
+                <ul>
+                    <li>Fill in the admin email address and password.</li>
+                    <li>The system generates an initial TOTP authenticator secret and displays an `otpauth://` QR code.</li>
+                    <li>Scan the QR code in Google Authenticator / 1Password and verify a code before completing setup.</li>
+                    <li>Once an admin exists, public first-admin setup is permanently locked.</li>
+                </ul>
+
+                <h4>CLI Admin Recovery Tool</h4>
+                <p>If an administrator loses password or 2FA access, run `scripts/admin_recovery.py` directly on the server host:</p>
+                <pre><code># Reset admin password
+sudo python3 scripts/admin_recovery.py --email admin@example.com --set-password
+
+# Generate new TOTP secret &amp; display QR setup URI
+sudo python3 scripts/admin_recovery.py --email admin@example.com --enable-totp
+
+# Disable TOTP requirement for emergency login
+sudo python3 scripts/admin_recovery.py --email admin@example.com --disable-totp</code></pre>
+
+                <h2 id="creating-plans">2. Creating Hosting Plans</h2>
+                <p>Before customer accounts can be provisioned, define at least one active <strong>Hosting Plan</strong> in the Admin Panel under <strong>Plans</strong> (`/admin#plans`).</p>
+
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Plan Field</th>
+                                <th>Description</th>
+                                <th>Example Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Name &amp; Slug</strong></td>
+                                <td>Human readable label and identifier</td>
+                                <td>`Starter Plan` (`starter`)</td>
+                            </tr>
+                            <tr>
+                                <td><strong>CPU &amp; RAM Limit</strong></td>
+                                <td>Per-account container execution limits</td>
+                                <td>`1.0 CPU` / `512 MB RAM`</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Storage &amp; Inodes</strong></td>
+                                <td>Disk quota in MB and file count limit</td>
+                                <td>`10000 MB` / `250000 inodes`</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Website Count</strong></td>
+                                <td>Maximum allowed hosted domains</td>
+                                <td>`5 websites`</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Databases &amp; Mailboxes</strong></td>
+                                <td>Max MySQL/PostgreSQL DBs and email accounts</td>
+                                <td>`5 DBs` / `10 mailboxes`</td>
+                            </tr>
+                            <tr>
+                                <td><strong>DNS Policy</strong></td>
+                                <td>DNS provider selection (Local PowerDNS / Cloudflare)</td>
+                                <td>`Cloudflare Managed`</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2 id="provisioning-clients">3. Provisioning Customer Clients</h2>
+                <p>Customer accounts can be created through two primary workflows:</p>
+
+                <h4>Workflow A: Self-Service Signup Page (`/signup`)</h4>
+                <ol>
+                    <li>User visits `http://<server-ip>:8000/signup`.</li>
+                    <li>Enters email, password, and selects an available hosting plan.</li>
+                    <li>API executes `POST /api/public/signup`, generates customer credentials, sets up 2FA, and assigns an account ID (e.g., `u000001`).</li>
+                </ol>
+
+                <h4>Workflow B: Admin Dashboard Provisioning</h4>
+                <ol>
+                    <li>Admin opens <strong>Admin Panel &gt; Clients</strong>.</li>
+                    <li>Clicks <strong>Create Client Account</strong>.</li>
+                    <li>Enters user email, password, and selects the hosting plan.</li>
+                    <li>The system creates the user, generates account directory structure under `user_files/accounts/<account_id>/`, and queues container deployment.</li>
+                </ol>
+            </section>
+
+            <!-- CLOUDFLARE DNS -->
+            <section id="cloudflare-dns" class="docs-section">
+                <span class="badge-pill">DNS Integration</span>
+                <h1>Cloudflare as DNS - Setup Instructions</h1>
+                <p>MangoPanel supports Cloudflare as an authoritative DNS provider for managed domains. Configure Cloudflare credentials in the Admin panel under <strong>DNS Settings</strong>.</p>
+
+                <h3>Cloudflare API Prerequisites</h3>
+                <ul>
+                    <li><strong>Account ID:</strong> Found in the right sidebar of the Cloudflare Dashboard on any domain's Overview page.</li>
+                    <li><strong>API Token:</strong> Generated under <strong>My Profile &gt; API Tokens</strong> in Cloudflare.</li>
+                </ul>
+
+                <div class="callout callout-warning">
+                    <div class="callout-title">Required Token Permissions</div>
+                    <p>The Cloudflare API Token must include these explicit permissions:<br>
+                    • <strong>Zone &gt; Zone &gt; Edit</strong><br>
+                    • <strong>Zone &gt; DNS &gt; Edit</strong></p>
+                </div>
+            </section>
+
+            <!-- DOMAIN & SUBDOMAIN DNS SETUP -->
+            <section id="dns-domain-setup" class="docs-section">
+                <span class="badge-pill">DNS Routing</span>
+                <h1>Domain &amp; Subdomain DNS Setup</h1>
+                <p>To route traffic correctly to MangoPanel and per-account file managers/tools, configure the following DNS records pointing to your server's public IP address:</p>
+
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th>Name / Host</th>
+                                <th>Target / Value</th>
+                                <th>Purpose</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>A</code></td>
+                                <td><code>@</code></td>
+                                <td><code>&lt;SERVER_IP&gt;</code></td>
+                                <td>Main domain and web traffic</td>
+                            </tr>
+                            <tr>
+                                <td><code>A</code></td>
+                                <td><code>*.files</code></td>
+                                <td><code>&lt;SERVER_IP&gt;</code></td>
+                                <td>Per-account Filebrowser tool subdomain routing</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- CURRENT BUILD -->
+            <section id="current-build" class="docs-section">
+                <span class="badge-pill">Architecture</span>
+                <h1>Current Build Features</h1>
+                <ul>
+                    <li>Python standard-library HTTP API with zero framework overhead.</li>
+                    <li>SQLite WAL-mode schema with versioned development seed data.</li>
+                    <li>Public client signup (`/signup`), client portal (`/`), admin panel (`/admin`), and status page (`/status`).</li>
+                    <li>Full coverage for websites, MySQL, PostgreSQL, mailboxes, SFTP, cron jobs, backups, Git deployments, and audit logs.</li>
+                    <li>Node-agent job runner with simulated and Docker Compose execution modes.</li>
+                    <li>Account-stack generator for OpenLiteSpeed, Filebrowser, phpMyAdmin, MariaDB, cron, SFTP, and shared mail scaffolding.</li>
+                </ul>
+            </section>
+
+            <!-- SERVICE COMMAND -->
+            <section id="service-command" class="docs-section">
+                <span class="badge-pill">CLI Tooling</span>
+                <h1>Service Command</h1>
+                <p>MangoPanel includes a portable service wrapper at <code>scripts/service</code> that manages background panel processes and agent workers without requiring `systemd`:</p>
+
+                <pre><code># Service lifecycle management
+bash scripts/service mangopanel start
+bash scripts/service mangopanel status
+bash scripts/service mangopanel restart
+bash scripts/service mangopanel stop
+
+# Makefile wrapper equivalent
+make service ACTION=start
+make service ACTION=status</code></pre>
+            </section>
+
+            <!-- HOW IT WORKS -->
+            <section id="how-it-works" class="docs-section">
+                <span class="badge-pill">Internals</span>
+                <h1>How It Works</h1>
+                <p>Request flow in one line:</p>
+                <div class="callout callout-info">
+                    <p><strong>Browser</strong> &rarr; <strong>Panel API</strong> (writes SQLite + enqueues job) &rarr; <strong>Local Agent</strong> (provisions files &amp; containers) &rarr; <strong>Status reported back to SQLite</strong> &rarr; <strong>UI displays result</strong></p>
+                </div>
+            </section>
+
+            <!-- DATA LAYOUT -->
+            <section id="data-layout" class="docs-section">
+                <span class="badge-pill">Filesystem</span>
+                <h1>Data Layout</h1>
+                <p>All persistent control-plane state and customer hosting data lives under <code>user_files/</code>:</p>
+                <pre><code>user_files/
+  accounts/                 # per-customer hosting files  (MP_ACCOUNT_ROOT)
+    u000001/
+      account.json
+      domains/&lt;domain&gt;/public_html/
+      databases/  mail/  backups/  ssl/  git/  .runtime/
+  data/                     # control-plane database       (MP_DATA_DIR)
+    mangopanel.sqlite3</code></pre>
+            </section>
+
+            <!-- SERVER MIGRATION -->
+            <section id="server-migration" class="docs-section">
+                <span class="badge-pill">Maintenance</span>
+                <h1>Server Migration</h1>
+                <p>Because all database state and customer files live inside `user_files/`, migration to a new server takes 5 simple steps:</p>
+
+                <ol>
+                    <li><strong>Stop Services:</strong> <code>bash scripts/service mangopanel stop</code> on old server.</li>
+                    <li><strong>Install on New Server:</strong> Run installation script on destination machine.</li>
+                    <li><strong>Transfer `user_files/`:</strong> <code>rsync -avzP /path/to/old/user_files/ root@new-server:/path/to/new/user_files/</code></li>
+                    <li><strong>Start Services &amp; Provision Stacks:</strong> <code>bash scripts/service mangopanel start</code> &amp; run agent stack rebuild.</li>
+                    <li><strong>Update DNS:</strong> Point A-records to the new server IP.</li>
+                </ol>
+            </section>
+
+            <!-- LOCAL DEVELOPMENT -->
+            <section id="local-development" class="docs-section">
+                <span class="badge-pill">Developer</span>
+                <h1>Local &amp; Docker Development</h1>
+                <pre><code># Start lightweight dev server (Simulated Mode)
+make dev-up
+
+# Start full Docker hosting stack (OpenLiteSpeed, MariaDB, SFTP containers)
+make dev-up-docker
+
+# Run unit tests
+make test
+
+# Run API smoke test suite
+make dev-smoke</code></pre>
+            </section>
+
+            <!-- THESIS DIRECTION -->
+            <section id="thesis-direction" class="docs-section">
+                <span class="badge-pill">Research</span>
+                <h1>Thesis Integration Direction</h1>
+                <p>MangoPanel is evaluated as a case study for Tariq Abdullah's <strong>Cloud Definition Language (CDL)</strong> M.Tech thesis research, exploring how shared-hosting platform intent can be compiled into explainable infrastructure artifacts.</p>
+            </section>
+
+            <!-- NEXT STEPS -->
+            <section id="next-steps" class="docs-section">
+                <span class="badge-pill">Roadmap</span>
+                <h1>Implementation Roadmap</h1>
+                <ul>
+                    <li><strong>Phase 1 (Implemented):</strong> Shared interfaces and control-plane schema.</li>
+                    <li><strong>Phase 2 (Implemented):</strong> Local PowerDNS adapter, ACME provider, and mail edge scaffolding.</li>
+                    <li><strong>Phase 3 (Implemented):</strong> Hardening, auth validation, and client dashboard metrics integration.</li>
+                </ul>
+            </section>
+
+        </main>
+    </div>
+
+    <script>
+        // Sidebar Navigation Active Link Highlight on Scroll
+        const sections = document.querySelectorAll('.docs-section');
+        const navLinks = document.querySelectorAll('.nav-menu li a');
+
+        window.addEventListener('scroll', () => {
+            let current = '';
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop - 100;
+                if (pageYOffset >= sectionTop) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            navLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === `#${current}`) {
+                    link.classList.add('active');
+                }
+            });
+        });
+
+        // Filter Sidebar Nav via Search Input
+        function filterDocsNav() {
+            const input = document.getElementById('menu-search').value.toLowerCase();
+            const items = document.querySelectorAll('.nav-menu li');
+            items.forEach(item => {
+                const text = item.textContent.toLowerCase();
+                item.style.display = text.includes(input) ? '' : 'none';
+            });
+        }
+    </script>
+</body>
+</html>
