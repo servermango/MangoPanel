@@ -283,9 +283,9 @@
 
         /* Hero Section */
         .hero {
-            padding: 7rem 5% 5rem;
+            padding: 5rem 5% 4rem;
             text-align: center;
-            max-width: 960px;
+            max-width: 1200px;
             margin: 0 auto;
             position: relative;
         }
@@ -306,7 +306,7 @@
         }
 
         .hero h1 {
-            font-size: 3.75rem;
+            font-size: 3.6rem;
             line-height: 1.12;
             margin-bottom: 1.5rem;
             letter-spacing: -0.03em;
@@ -322,10 +322,10 @@
         }
 
         .hero p {
-            font-size: 1.2rem;
+            font-size: 1.18rem;
             color: var(--muted);
-            margin-bottom: 2.5rem;
-            max-width: 720px;
+            margin-bottom: 2.2rem;
+            max-width: 760px;
             margin-inline: auto;
             line-height: 1.6;
         }
@@ -334,6 +334,7 @@
             display: flex;
             gap: 1.2rem;
             justify-content: center;
+            margin-bottom: 3rem;
         }
 
         .btn {
@@ -376,6 +377,452 @@
             color: var(--brand);
             transform: translateY(-2px);
         }
+
+        /* Interactive Hero Showcase Frame */
+        .showcase-frame {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            box-shadow: var(--shadow-premium), 0 0 50px rgba(253, 181, 40, 0.08);
+            overflow: hidden;
+            text-align: left;
+            margin-top: 1rem;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+            position: relative;
+        }
+
+        .showcase-frame:hover {
+            border-color: var(--line-hover);
+            box-shadow: var(--shadow-premium), 0 0 60px rgba(253, 181, 40, 0.15);
+        }
+
+        /* Mockup Header Window Controls */
+        .mockup-header {
+            background: var(--surface-2);
+            padding: 0.75rem 1.2rem;
+            border-bottom: 1px solid var(--line);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .window-dots {
+            display: flex;
+            gap: 7px;
+            align-items: center;
+        }
+
+        .window-dot {
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .dot-red { background-color: #ff5f56; }
+        .dot-yellow { background-color: #ffbd2e; }
+        .dot-green { background-color: #27c93f; }
+
+        .address-bar {
+            background: rgba(11, 15, 25, 0.6);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 0.3rem 0.8rem;
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex: 1;
+            max-width: 440px;
+            margin: 0 auto;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .address-bar-lock {
+            color: var(--success);
+            width: 12px;
+            height: 12px;
+            flex-shrink: 0;
+        }
+
+        .showcase-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .showcase-expand-btn {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--line);
+            color: var(--text-secondary);
+            font-size: 0.76rem;
+            font-weight: 600;
+            padding: 0.3rem 0.7rem;
+            border-radius: 6px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            transition: var(--transition);
+        }
+
+        .showcase-expand-btn:hover {
+            background: var(--brand-tint);
+            color: var(--brand);
+            border-color: rgba(253, 181, 40, 0.4);
+        }
+
+        /* Showcase Navigation Tabs */
+        .showcase-tabs-nav {
+            display: flex;
+            background: rgba(15, 22, 37, 0.95);
+            border-bottom: 1px solid var(--line);
+            overflow-x: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+            padding: 0.4rem 0.8rem;
+            gap: 0.4rem;
+        }
+
+        .showcase-tabs-nav::-webkit-scrollbar {
+            display: none;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--muted);
+            padding: 0.55rem 1rem;
+            border-radius: 8px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            white-space: nowrap;
+            transition: var(--transition);
+            font-family: var(--font-body);
+        }
+
+        .tab-btn:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .tab-btn.active {
+            background: var(--surface-2);
+            color: var(--brand);
+            border-color: var(--line-hover);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+
+        .tab-btn.active .tab-icon {
+            color: var(--brand);
+        }
+
+        .tab-icon {
+            width: 15px;
+            height: 15px;
+            stroke: currentColor;
+            stroke-width: 2;
+            fill: none;
+            flex-shrink: 0;
+        }
+
+        /* Showcase Screen Viewport */
+        .showcase-viewport {
+            position: relative;
+            background: #0d121f;
+            aspect-ratio: 16 / 9;
+            overflow: hidden;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .showcase-viewport img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: top center;
+            display: block;
+            transition: opacity 0.4s ease, transform 0.4s ease;
+        }
+
+        .showcase-viewport:hover img {
+            transform: scale(1.015);
+        }
+
+        .viewport-overlay-hint {
+            position: absolute;
+            inset: 0;
+            background: rgba(11, 15, 25, 0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+        }
+
+        .showcase-viewport:hover .viewport-overlay-hint {
+            opacity: 1;
+        }
+
+        .zoom-badge {
+            background: rgba(21, 29, 48, 0.9);
+            color: var(--text);
+            border: 1px solid var(--brand);
+            padding: 0.6rem 1.2rem;
+            border-radius: 999px;
+            font-size: 0.86rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+            backdrop-filter: blur(8px);
+        }
+
+        /* Caption Bar */
+        .showcase-caption {
+            background: var(--surface-2);
+            padding: 1rem 1.4rem;
+            border-top: 1px solid var(--line);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .caption-info h4 {
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 0.2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+        }
+
+        .caption-badge {
+            font-size: 0.72rem;
+            padding: 0.15rem 0.55rem;
+            border-radius: 4px;
+            background: var(--brand-tint);
+            color: var(--brand);
+            border: 1px solid rgba(253, 181, 40, 0.25);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .caption-info p {
+            font-size: 0.84rem;
+            color: var(--muted);
+            margin: 0;
+            line-height: 1.4;
+            max-width: 780px;
+        }
+
+        /* Interactive Grid Cards below frame */
+        .showcase-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 0.8rem;
+            margin-top: 1.8rem;
+        }
+
+        @media (max-width: 1024px) {
+            .showcase-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        @media (max-width: 640px) {
+            .showcase-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            .hero h1 {
+                font-size: 2.4rem;
+            }
+        }
+
+        .grid-card {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 0.8rem;
+            cursor: pointer;
+            transition: var(--transition);
+            text-align: left;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .grid-card:hover {
+            border-color: var(--line-hover);
+            transform: translateY(-2px);
+            background: var(--surface-2);
+        }
+
+        .grid-card.active {
+            border-color: var(--brand);
+            background: var(--surface-2);
+            box-shadow: 0 4px 16px rgba(253, 181, 40, 0.15);
+        }
+
+        .grid-card-thumb {
+            width: 100%;
+            height: 75px;
+            border-radius: 6px;
+            overflow: hidden;
+            margin-bottom: 0.6rem;
+            background: #0d121f;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .grid-card-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: top center;
+            opacity: 0.85;
+            transition: opacity 0.3s ease;
+        }
+
+        .grid-card:hover .grid-card-thumb img,
+        .grid-card.active .grid-card-thumb img {
+            opacity: 1;
+        }
+
+        .grid-card-title {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .grid-card-subtitle {
+            font-size: 0.72rem;
+            color: var(--muted);
+            margin-top: 0.2rem;
+            line-height: 1.3;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        /* Lightbox Modal */
+        .lightbox-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: rgba(5, 8, 15, 0.92);
+            backdrop-filter: blur(12px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .lightbox-modal.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .lightbox-content {
+            max-width: 92vw;
+            max-height: 90vh;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .lightbox-img {
+            max-width: 100%;
+            max-height: 80vh;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(253, 181, 40, 0.2);
+            border: 1px solid var(--line-hover);
+            object-fit: contain;
+        }
+
+        .lightbox-close {
+            position: absolute;
+            top: -45px;
+            right: 0;
+            background: var(--surface-2);
+            border: 1px solid var(--line-hover);
+            color: var(--text);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            font-size: 1.2rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: var(--transition);
+        }
+
+        .lightbox-close:hover {
+            background: var(--brand);
+            color: var(--accent-dark);
+        }
+
+        .lightbox-caption {
+            margin-top: 1rem;
+            color: var(--text);
+            font-size: 0.95rem;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .lightbox-nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--surface-2);
+            border: 1px solid var(--line);
+            color: var(--text);
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .lightbox-nav:hover {
+            background: var(--brand);
+            color: var(--accent-dark);
+        }
+
+        .lightbox-prev { left: -60px; }
+        .lightbox-next { right: -60px; }
 
         /* Hero Spec Cards Grid */
         .hero-meta {
@@ -936,13 +1383,116 @@
     </header>
 
     <section class="hero">
-        <div class="badge-pill">● Shared hosting platform · SQLite control plane · Isolated Docker stacks</div>
+        <div class="badge-pill">● Shared Hosting Control Plane · Live Interface Showcase</div>
         <h1>Run shared hosting with a control plane <br><span class="highlight">built for real operations.</span></h1>
-        <p>MangoPanel powers isolated account stacks, audited jobs, live mail and database tooling, and one place to run hosting operations without opening SSH for every task.</p>
+        <p>MangoPanel powers isolated account stacks, audited jobs, live mail and database tooling, and total operational visibility — explore the real control plane interface below.</p>
+        
         <div class="btn-group">
-            <a href="#platform-status" class="btn btn-primary"><svg class="nav-icon" aria-hidden="true"><use href="#icon-chart"></use></svg><span>See platform status</span></a>
-            <a href="#architecture" class="btn btn-secondary"><svg class="nav-icon" aria-hidden="true"><use href="#icon-layers"></use></svg><span>Read the architecture</span></a>
+            <a href="#hero-showcase" class="btn btn-primary"><svg class="nav-icon" aria-hidden="true"><use href="#icon-layout"></use></svg><span>Explore Live Screenshots</span></a>
+            <a href="#architecture" class="btn btn-secondary"><svg class="nav-icon" aria-hidden="true"><use href="#icon-layers"></use></svg><span>Read the Architecture</span></a>
         </div>
+
+        <!-- Interactive Screenshots Showcase -->
+        <div id="hero-showcase" class="showcase-frame reveal">
+            <!-- Window Control Header -->
+            <div class="mockup-header">
+                <div class="window-dots">
+                    <span class="window-dot dot-red"></span>
+                    <span class="window-dot dot-yellow"></span>
+                    <span class="window-dot dot-green"></span>
+                </div>
+                <div class="address-bar">
+                    <svg class="address-bar-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+                    <span id="showcase-url">https://demo.mangopanel.io/client/dashboard</span>
+                </div>
+                <div class="showcase-actions">
+                    <button id="lightbox-trigger" class="showcase-expand-btn" title="View Fullscreen">
+                        <svg class="nav-icon" style="width:14px;height:14px;"><use href="#icon-external"></use></svg>
+                        <span>Fullscreen View</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tab Switcher Strip -->
+            <div class="showcase-tabs-nav" id="showcase-tabs">
+                <button class="tab-btn active" data-index="0" data-img="public/assets/img/111.png" data-url="https://demo.mangopanel.io/client/dashboard" data-badge="Client Portal" data-title="Client Overview Dashboard" data-desc="Client portal home view displaying disk, inodes, CPU and memory usage along with quick tool cards for File Manager, SFTP, Databases, and Backups.">
+                    <svg class="tab-icon"><use href="#icon-layout"></use></svg><span>Client Dashboard</span>
+                </button>
+                <button class="tab-btn" data-index="1" data-img="public/assets/img/222.png" data-url="https://demo.mangopanel.io/admin/auth/2fa" data-badge="Security Auth" data-title="Admin 2FA Verification Console" data-desc="Enforced multi-factor authenticator gate with 6-digit TOTP verification protecting the super admin control plane.">
+                    <svg class="tab-icon"><use href="#icon-shield"></use></svg><span>Admin 2FA Auth</span>
+                </button>
+                <button class="tab-btn" data-index="2" data-img="public/assets/img/333.png" data-url="https://demo.mangopanel.io/admin/overview" data-badge="Super Admin" data-title="Admin Console System Overview" data-desc="Super admin operations view tracking system accounts, hosted domains, active Docker stacks, live bandwidth, and disk capacity.">
+                    <svg class="tab-icon"><use href="#icon-server"></use></svg><span>Admin Console</span>
+                </button>
+                <button class="tab-btn" data-index="3" data-img="public/assets/img/444.png" data-url="https://demo.mangopanel.io/admin/telemetry" data-badge="Live Metrics" data-title="Real-Time Telemetry &amp; Traffic Stream" data-desc="Server-Sent Events (SSE) streaming live inbound/outbound network speeds and real-time disk read/write throughput.">
+                    <svg class="tab-icon"><use href="#icon-activity"></use></svg><span>Live Telemetry</span>
+                </button>
+                <button class="tab-btn" data-index="4" data-img="public/assets/img/555.png" data-url="https://demo.mangopanel.io/admin/storage" data-badge="Storage Diagnostics" data-title="Storage Capacity &amp; Container IOPS Breakdown" data-desc="Detailed storage breakdown with df -h capacity graph, Docker overlay inspection, and top disk I/O readers/writers per stack.">
+                    <svg class="tab-icon"><use href="#icon-database"></use></svg><span>Storage Analysis</span>
+                </button>
+                <button class="tab-btn" data-index="5" data-img="public/assets/img/666.png" data-url="https://demo.mangopanel.io/client/login" data-badge="Client Portal" data-title="Client Sign-In &amp; System Status Gate" data-desc="Sleek split-screen sign-in portal presenting account login form alongside real-time virtual host and memory allocation status.">
+                    <svg class="tab-icon"><use href="#icon-user"></use></svg><span>Client Login</span>
+                </button>
+            </div>
+
+            <!-- Main Viewport Window -->
+            <div class="showcase-viewport" id="showcase-viewport">
+                <img id="showcase-img" src="public/assets/img/111.png" alt="MangoPanel Client Portal Overview Dashboard" loading="eager">
+                <div class="viewport-overlay-hint">
+                    <span class="zoom-badge">
+                        <svg class="nav-icon" style="width:16px;height:16px;"><use href="#icon-external"></use></svg>
+                        Click to Expand Fullscreen
+                    </span>
+                </div>
+            </div>
+
+            <!-- Caption Info Footer -->
+            <div class="showcase-caption">
+                <div class="caption-info">
+                    <h4>
+                        <span id="showcase-badge" class="caption-badge">Client Portal</span>
+                        <span id="showcase-title">Client Overview Dashboard</span>
+                    </h4>
+                    <p id="showcase-desc">Client portal home view displaying disk, inodes, CPU and memory usage along with quick tool cards for File Manager, SFTP, Databases, and Backups.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 6-Card Interactive Selector Grid -->
+        <div class="showcase-grid">
+            <div class="grid-card active" data-index="0">
+                <div class="grid-card-thumb"><img src="public/assets/img/111.png" alt="Client Dashboard Thumbnail"></div>
+                <div class="grid-card-title">Client Dashboard</div>
+                <div class="grid-card-subtitle">Overview &amp; Account Tools</div>
+            </div>
+            <div class="grid-card" data-index="1">
+                <div class="grid-card-thumb"><img src="public/assets/img/222.png" alt="Admin 2FA Thumbnail"></div>
+                <div class="grid-card-title">Admin 2FA Auth</div>
+                <div class="grid-card-subtitle">TOTP Security Flow</div>
+            </div>
+            <div class="grid-card" data-index="2">
+                <div class="grid-card-thumb"><img src="public/assets/img/333.png" alt="Admin Console Thumbnail"></div>
+                <div class="grid-card-title">Admin Console</div>
+                <div class="grid-card-subtitle">System Health &amp; Stats</div>
+            </div>
+            <div class="grid-card" data-index="3">
+                <div class="grid-card-thumb"><img src="public/assets/img/444.png" alt="Live Telemetry Thumbnail"></div>
+                <div class="grid-card-title">Live Telemetry</div>
+                <div class="grid-card-subtitle">SSE Traffic &amp; IOPS</div>
+            </div>
+            <div class="grid-card" data-index="4">
+                <div class="grid-card-thumb"><img src="public/assets/img/555.png" alt="Storage Analysis Thumbnail"></div>
+                <div class="grid-card-title">Storage Analysis</div>
+                <div class="grid-card-subtitle">Disk Capacity &amp; Mounts</div>
+            </div>
+            <div class="grid-card" data-index="5">
+                <div class="grid-card-thumb"><img src="public/assets/img/666.png" alt="Client Login Thumbnail"></div>
+                <div class="grid-card-title">Client Login</div>
+                <div class="grid-card-subtitle">Portal Authenticator</div>
+            </div>
+        </div>
+
+        <!-- Spec Highlights Cards -->
         <div class="hero-meta">
             <div class="hero-meta-card reveal"><strong>JWT + TOTP</strong><span>Mandatory auth for users and admins.</span></div>
             <div class="hero-meta-card reveal"><strong>Queued jobs</strong><span>State changes go through the local agent.</span></div>
@@ -950,6 +1500,17 @@
             <div class="hero-meta-card reveal"><strong>Account stacks</strong><span>One isolated Docker stack per hosting account.</span></div>
         </div>
     </section>
+
+    <!-- Lightbox Modal -->
+    <div id="lightbox-modal" class="lightbox-modal">
+        <div class="lightbox-content">
+            <button id="lightbox-close" class="lightbox-close" title="Close modal">&times;</button>
+            <button id="lightbox-prev" class="lightbox-nav lightbox-prev" title="Previous Image">&#10094;</button>
+            <button id="lightbox-next" class="lightbox-nav lightbox-next" title="Next Image">&#10095;</button>
+            <img id="lightbox-img" class="lightbox-img" src="" alt="Expanded View">
+            <div id="lightbox-caption" class="lightbox-caption"></div>
+        </div>
+    </div>
 
     <section id="platform-status" class="section-padding container status-board">
         <div class="section-header reveal">
@@ -1213,6 +1774,142 @@
         }, { rootMargin: '-20% 0px -60% 0px', threshold: 0.2 });
 
         sectionTargets.forEach((section) => navObserver.observe(section));
+
+        // Showcase interactive switching and auto-play logic
+        const showcaseTabs = document.querySelectorAll('#showcase-tabs .tab-btn');
+        const gridCards = document.querySelectorAll('.showcase-grid .grid-card');
+        const showcaseImg = document.getElementById('showcase-img');
+        const showcaseUrl = document.getElementById('showcase-url');
+        const showcaseBadge = document.getElementById('showcase-badge');
+        const showcaseTitle = document.getElementById('showcase-title');
+        const showcaseDesc = document.getElementById('showcase-desc');
+        const showcaseViewport = document.getElementById('showcase-viewport');
+        const lightboxTrigger = document.getElementById('lightbox-trigger');
+
+        const lightboxModal = document.getElementById('lightbox-modal');
+        const lightboxImg = document.getElementById('lightbox-img');
+        const lightboxCaption = document.getElementById('lightbox-caption');
+        const lightboxClose = document.getElementById('lightbox-close');
+        const lightboxPrev = document.getElementById('lightbox-prev');
+        const lightboxNext = document.getElementById('lightbox-next');
+
+        let currentIndex = 0;
+        let autoplayInterval = null;
+
+        function updateShowcase(index) {
+            currentIndex = index;
+            const tab = showcaseTabs[index];
+            if (!tab) return;
+
+            showcaseImg.style.opacity = '0.3';
+            showcaseImg.style.transform = 'scale(0.98)';
+
+            setTimeout(() => {
+                showcaseImg.src = tab.dataset.img;
+                showcaseImg.alt = tab.dataset.title;
+                showcaseUrl.textContent = tab.dataset.url;
+                showcaseBadge.textContent = tab.dataset.badge;
+                showcaseTitle.textContent = tab.dataset.title;
+                showcaseDesc.textContent = tab.dataset.desc;
+
+                showcaseImg.style.opacity = '1';
+                showcaseImg.style.transform = 'scale(1)';
+            }, 150);
+
+            showcaseTabs.forEach((t, i) => t.classList.toggle('active', i === index));
+            gridCards.forEach((c, i) => c.classList.toggle('active', i === index));
+        }
+
+        showcaseTabs.forEach((tab, index) => {
+            tab.addEventListener('click', () => {
+                updateShowcase(index);
+                resetAutoplay();
+            });
+        });
+
+        gridCards.forEach((card, index) => {
+            card.addEventListener('click', () => {
+                updateShowcase(index);
+                resetAutoplay();
+            });
+        });
+
+        function startAutoplay() {
+            autoplayInterval = setInterval(() => {
+                const nextIndex = (currentIndex + 1) % showcaseTabs.length;
+                updateShowcase(nextIndex);
+            }, 6000);
+        }
+
+        function resetAutoplay() {
+            clearInterval(autoplayInterval);
+            startAutoplay();
+        }
+
+        const showcaseFrame = document.getElementById('hero-showcase');
+        if (showcaseFrame) {
+            showcaseFrame.addEventListener('mouseenter', () => clearInterval(autoplayInterval));
+            showcaseFrame.addEventListener('mouseleave', () => startAutoplay());
+        }
+
+        // Lightbox modal logic
+        function openLightbox(index) {
+            const tab = showcaseTabs[index];
+            if (!tab) return;
+            lightboxImg.src = tab.dataset.img;
+            lightboxCaption.textContent = `${tab.dataset.badge} - ${tab.dataset.title}`;
+            lightboxModal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeLightbox() {
+            lightboxModal.classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        if (showcaseViewport) {
+            showcaseViewport.addEventListener('click', () => openLightbox(currentIndex));
+        }
+        if (lightboxTrigger) {
+            lightboxTrigger.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openLightbox(currentIndex);
+            });
+        }
+
+        if (lightboxClose) lightboxClose.addEventListener('click', closeLightbox);
+        if (lightboxModal) {
+            lightboxModal.addEventListener('click', (e) => {
+                if (e.target === lightboxModal) closeLightbox();
+            });
+        }
+
+        if (lightboxPrev) {
+            lightboxPrev.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const prevIndex = (currentIndex - 1 + showcaseTabs.length) % showcaseTabs.length;
+                updateShowcase(prevIndex);
+                openLightbox(prevIndex);
+            });
+        }
+
+        if (lightboxNext) {
+            lightboxNext.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const nextIndex = (currentIndex + 1) % showcaseTabs.length;
+                updateShowcase(nextIndex);
+                openLightbox(nextIndex);
+            });
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (!lightboxModal.classList.contains('active')) return;
+            if (e.key === 'Escape') closeLightbox();
+            if (e.key === 'ArrowLeft' && lightboxPrev) lightboxPrev.click();
+            if (e.key === 'ArrowRight' && lightboxNext) lightboxNext.click();
+        });
+
+        startAutoplay();
     </script>
 </body>
 </html>
