@@ -555,8 +555,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                     return self.serve_file(PUBLIC_DIR / "admin_setup.html")
                 target = "default-page" if "default" in path else "plans"
                 return self.redirect_response(f"/admin#{target}")
-            if path in {"/docs", "/docs.html"}:
-                return self.serve_file(PUBLIC_DIR / "docs.html")
+            if path in {"/docs", "/docs.html", "/docs/"}:
+                docs_file = ROOT_DIR / "docs.html" if (ROOT_DIR / "docs.html").exists() else PUBLIC_DIR / "docs.html"
+                return self.serve_file(docs_file)
             if path == "/status":
                 return self.serve_file(PUBLIC_DIR / "status.html")
             if path.startswith("/assets/"):
