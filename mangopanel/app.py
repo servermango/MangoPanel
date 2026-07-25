@@ -591,9 +591,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             return self.public_status(path)
 
         if path.startswith("/api/client/"):
-            if panel == "admin":
-                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
-            actor = self.require_auth("user")
+            actor = self.require_auth("user", "admin")
             return self.client_api(method, path, query, actor)
 
         if path.startswith("/api/admin/"):
@@ -1901,7 +1899,7 @@ class MangoHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
 
-    def require_auth(self, actor_type):
+    def require_auth(self, *allowed_actor_types):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "missing_bearer_token")
@@ -1910,7 +1908,7 @@ class MangoHandler(BaseHTTPRequestHandler):
         if not payload:
             raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_access_token")
 
-        if payload.get("purpose") == "impersonation_exchange" and actor_type == "user":
+        if payload.get("purpose") == "impersonation_exchange" and "user" in allowed_actor_types:
             token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
             now = int(time.time())
             with connect(CONFIG.db_path) as conn:
@@ -1920,16 +1918,21 @@ class MangoHandler(BaseHTTPRequestHandler):
                         conn.execute("UPDATE impersonation_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_hash = ?", (token_hash,))
                     user = conn.execute("SELECT * FROM users WHERE id = ? AND status = 'active'", (payload["sub"],)).fetchone()
                     if user:
-                        return row_to_dict(user)
+                        user_dict = row_to_dict(user)
+                        user_dict["actor_type"] = "user"
+                        return user_dict
 
-        if payload.get("purpose") != "access" or payload.get("actor_type") != actor_type:
+        token_actor_type = payload.get("actor_type")
+        if payload.get("purpose") != "access" or token_actor_type not in allowed_actor_types:
             raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_access_token")
-        table = "admins" if actor_type == "admin" else "users"
+        table = "admins" if token_actor_type == "admin" else "users"
         with connect(CONFIG.db_path) as conn:
             actor = conn.execute(f"SELECT * FROM {table} WHERE id = ? AND status = 'active'", (payload["sub"],)).fetchone()
             if not actor:
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "actor_not_found")
-            return row_to_dict(actor)
+            actor_dict = row_to_dict(actor)
+            actor_dict["actor_type"] = token_actor_type
+            return actor_dict
 
     def exchange_impersonation(self):
         body = self.read_json()
@@ -1981,10 +1984,30 @@ class MangoHandler(BaseHTTPRequestHandler):
             req_account_id = int(query["account_id"][0])
 
         with connect(CONFIG.db_path) as conn:
-            if req_account_id:
+            if actor.get("actor_type") == "admin":
+                if req_account_id:
+                    account = conn.execute(
+                        """
+                        SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
+                        FROM hosting_accounts ha
+                        JOIN plans p ON p.id = ha.plan_id
+                        WHERE ha.id = ?
+                        """,
+                        (req_account_id,),
+                    ).fetchone()
+                else:
+                    account = conn.execute(
+                        """
+                        SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
+                        FROM hosting_accounts ha
+                        JOIN plans p ON p.id = ha.plan_id
+                        ORDER BY ha.id LIMIT 1
+                        """,
+                    ).fetchone()
+            elif req_account_id:
                 account = conn.execute(
                     """
-                    SELECT ha.*, p.memory_mb, p.storage_mb
+                    SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
                     FROM hosting_accounts ha
                     JOIN plans p ON p.id = ha.plan_id
                     WHERE ha.id = ? AND ha.user_id = ?
@@ -1996,7 +2019,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             else:
                 account = conn.execute(
                     """
-                    SELECT ha.*, p.memory_mb, p.storage_mb
+                    SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
                     FROM hosting_accounts ha
                     JOIN plans p ON p.id = ha.plan_id
                     WHERE ha.user_id = ?
@@ -2007,13 +2030,15 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             path = path.rstrip("/")
             if path == "/api/client/home" and method == "GET":
-                return self.json_response(client_home(conn, actor["id"]))
+                user_id = account["user_id"] if account else actor["id"]
+                return self.json_response(client_home(conn, user_id))
             if path == "/api/client/feature-status" and method == "GET":
                 return self.json_response({"features": FEATURE_STATUS})
             if path == "/api/client/sync-jobs" and method == "GET":
                 require_account(account)
                 return self.json_response({"jobs": client_sync_jobs(conn, account)})
             if path == "/api/client/hosting-accounts" and method == "GET":
+                user_id = account["user_id"] if account else actor["id"]
                 rows = conn.execute(
                     """
                     SELECT ha.*, p.name AS plan_name, n.name AS node_name
@@ -2023,7 +2048,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     WHERE ha.user_id = ?
                     ORDER BY ha.id
                     """,
-                    (actor["id"],),
+                    (user_id,),
                 ).fetchall()
                 accounts = rows_to_dicts(rows)
                 for item in accounts:
@@ -2034,16 +2059,28 @@ class MangoHandler(BaseHTTPRequestHandler):
                 window_key = query.get("range", ["30m"])[0]
                 payload = resource_usage_payload(conn, account, window_key)
                 return self.json_response(payload)
-            if path in {"/api/client/recalculate-usage", "/api/client/recalculate_usage"} and method == "POST":
+            if (
+                path in {
+                    "/api/client/recalculate-usage",
+                    "/api/client/recalculate_usage",
+                    "/api/client/plans/recalculate-usage",
+                    "/api/client/plans/recalculate_usage",
+                    "/api/client/hosting-accounts/recalculate-usage",
+                    "/api/client/hosting-accounts/recalculate_usage",
+                }
+                or (path.startswith("/api/client/") and path.endswith("/recalculate_usage"))
+                or (path.startswith("/api/client/") and path.endswith("/recalculate-usage"))
+            ) and method == "POST":
                 require_active_account(account)
                 job_id = enqueue_agent_job(conn, "recalculate_usage", "hosting_account", account["id"], {"account_id": account["id"], "reason": "client_requested"})
                 collect_resource_usage_sample(conn, account, force=True)
                 log_activity(conn, actor["id"], "recalculate_usage", {"account_id": account["id"], "job_id": job_id})
+                user_id = account["user_id"] if account else actor["id"]
                 return self.json_response({
                     "ok": True,
                     "job_id": job_id,
                     "message": "Usage recalculation completed.",
-                    "resources": client_home(conn, actor["id"])["resources"],
+                    "resources": client_home(conn, user_id)["resources"],
                 })
             if path == "/api/client/php-info" and method == "GET":
                 require_account(account)
