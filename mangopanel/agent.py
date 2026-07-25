@@ -2918,8 +2918,8 @@ class Agent:
         ftp_accounts = conn.execute("SELECT * FROM ftp_accounts WHERE account_id = ?", (account_id,)).fetchall()
         
         lines = []
-        # Default user (uid 1001)
-        lines.append(f"{account['username']}:{runtime.get('sftp_password', 'dev-sftp-password')}:1001")
+        # Default user (uid 1001:gid 1001)
+        lines.append(f"{account['username']}:{runtime.get('sftp_password', 'dev-sftp-password')}:1001:1001")
         
         # Additional users (uid 1001 as well, so they map to the same base permissions? No, wait:
         # atmoz/sftp accepts: USER:PASS:UID:GID:DIR
@@ -2979,7 +2979,7 @@ class Agent:
         
         if status == "enabled":
             password = runtime.get("sftp_password", "dev-sftp-password")
-            lines = [f"{account['username']}:{password}:1001:1001::/bin/ash\n"]
+            lines = [f"{account['username']}:{password}:1001:1001\n"]
             if sftp_conf.parent.exists():
                 sftp_conf.write_text("".join(lines), encoding="utf-8")
             container_name = f"mp-{account['username']}-sftp"
@@ -2987,6 +2987,13 @@ class Agent:
                 docker = shutil.which("docker")
                 if docker:
                     subprocess.run([docker, "start", container_name], check=False, capture_output=True)
+                    subprocess.run(
+                        [docker, "exec", "-i", container_name, "chpasswd"],
+                        input=f"{account['username']}:{password}\n",
+                        text=True,
+                        check=False,
+                        capture_output=True
+                    )
         else:
             if sftp_conf.parent.exists():
                 sftp_conf.write_text(f"# SSH/SFTP access disabled for {account['username']}\n", encoding="utf-8")
@@ -3016,12 +3023,20 @@ class Agent:
         sftp_conf = Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf"
         ssh_status = dict(account).get("ssh_access") or "disabled"
         if ssh_status == "enabled" and sftp_conf.parent.exists():
-            sftp_conf.write_text(f"{account['username']}:{password}:1001:1001::/bin/ash\n", encoding="utf-8")
+            sftp_conf.write_text(f"{account['username']}:{password}:1001:1001\n", encoding="utf-8")
             container_name = f"mp-{account['username']}-sftp"
             if self.config.agent_mode == "docker":
                 docker = shutil.which("docker")
                 if docker:
                     subprocess.run([docker, "restart", container_name], check=False, capture_output=True)
+                    # Update shadow password inside container directly so it takes effect even if user exists
+                    subprocess.run(
+                        [docker, "exec", "-i", container_name, "chpasswd"],
+                        input=f"{account['username']}:{password}\n",
+                        text=True,
+                        check=False,
+                        capture_output=True
+                    )
         return {
             "account_id": account_id,
             "username": account["username"],

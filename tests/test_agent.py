@@ -573,6 +573,27 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(status["services"][0]["health"], "healthy")
             self.assertEqual(status["services"][0]["container"], "mp-u000001-web")
 
+    def test_set_ssh_password_updates_sftp_conf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                Agent(config).set_ssh_access(conn, account["id"], "enabled")
+                res = Agent(config).set_ssh_password(conn, account["id"], "NewSecurePass123!")
+
+            self.assertEqual(res["user"], account["username"])
+            sftp_conf = (Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf").read_text(encoding="utf-8")
+            self.assertIn(f"{account['username']}:NewSecurePass123!:1001:1001\n", sftp_conf)
+
     def test_hotlink_sync_writes_real_htaccess_and_removes_it_on_disable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

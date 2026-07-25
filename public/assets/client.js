@@ -312,7 +312,7 @@ const app = createApp({
           allow_overwrite: false,
         }
       },
-      siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], isSubmitting: false, errorMessage: '' },
+      siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], isSubmitting: false, isBuilding: false, errorMessage: '', dnsTab: 'records' },
       connectWizard: { isOpen: false, website: null, method: 'nameservers', checking: false, result: null },
       sshState: { enabled: false, toggling: false, loaded: false, hasPassword: false, settingPassword: false, newPassword: null, passwordModal: false, passwordInput: "", passwordError: "" },
       sslModal: { isOpen: false, website_id: "", crt: "", key: "", isSubmitting: false, errorMessage: "" },
@@ -2163,7 +2163,9 @@ const app = createApp({
         dnsPreview: null,
         loadingDnsPreview: false,
         isSubmitting: false,
+        isBuilding: false,
         errorMessage: "",
+        dnsTab: 'records',
       });
       this.siteWizard.isOpen = true;
     },
@@ -2202,6 +2204,7 @@ const app = createApp({
     async finishSiteWizard() {
       if (this.siteWizard.isSubmitting) return;
       this.siteWizard.isSubmitting = true;
+      this.siteWizard.isBuilding = true;
       try {
         this.siteWizard.errorMessage = "";
         this.notify("Creating website...", "success");
@@ -2264,6 +2267,7 @@ const app = createApp({
         this.notify(String(err.message || err), "error");
       } finally {
         this.siteWizard.isSubmitting = false;
+        this.siteWizard.isBuilding = false;
       }
     },
     async createWebsite() {

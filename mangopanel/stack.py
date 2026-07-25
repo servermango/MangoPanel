@@ -495,7 +495,7 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         acc_d = dict(account) if not isinstance(account, dict) else account
         ssh_status = acc_d.get("ssh_access", "disabled")
         if ssh_status == "enabled":
-            sftp_users_conf.write_text(f"{account['username']}:{runtime['sftp_password']}:1001:1001::/bin/ash\n", encoding="utf-8")
+            sftp_users_conf.write_text(f"{account['username']}:{runtime['sftp_password']}:1001:1001\n", encoding="utf-8")
         else:
             sftp_users_conf.write_text(f"# SSH/SFTP access disabled for {account['username']}\n", encoding="utf-8")
 

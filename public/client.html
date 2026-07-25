@@ -2738,133 +2738,303 @@
             </div>
           </div>
 
-          <!-- Website Wizard Modal -->
-          <div v-if="siteWizard.isOpen" class="modal-overlay" @click.self="closeSiteWizard">
-            <div class="modal-panel">
-              <div class="modal-header">
-                <h2>Add Website (Step {{ siteWizard.step === 5 ? (siteWizard.type === 'blank' ? 4 : 5) : (siteWizard.step === 4 ? (siteWizard.type === 'blank' ? 3 : 4) : (siteWizard.step === 2 ? 2 : (siteWizard.step === 3 ? 3 : 1))) }} of {{ siteWizard.type === 'blank' ? 4 : 5 }})</h2>
-                <button class="close-button" @click="closeSiteWizard">×</button>
+          <!-- Website Wizard Modal (Full-screen redesign) -->
+          <div v-if="siteWizard.isOpen" class="sw-overlay" @click.self="closeSiteWizard">
+            <div class="sw-panel" :class="{ 'sw-building': siteWizard.isBuilding }">
+
+              <!-- ── Building animation screen ── -->
+              <div v-if="siteWizard.isBuilding" class="sw-building-screen">
+                <div class="sw-crane">
+                  <!-- Sky backdrop dots -->
+                  <div class="sw-crane-stars"></div>
+                  <!-- SVG Crane -->
+                  <svg class="sw-crane-svg" viewBox="0 0 240 260" xmlns="http://www.w3.org/2000/svg" fill="none">
+                    <!-- Base -->
+                    <rect x="90" y="230" width="60" height="20" rx="4" fill="#fdb528" opacity="0.9"/>
+                    <!-- Tower -->
+                    <rect x="113" y="80" width="14" height="155" rx="3" fill="#fdb528"/>
+                    <!-- Horizontal jib -->
+                    <rect x="40" y="74" width="160" height="10" rx="3" fill="#e8a417"/>
+                    <!-- Counter jib (left shorter) -->
+                    <rect x="40" y="74" width="60" height="10" rx="3" fill="#fdb528" opacity="0.7"/>
+                    <!-- Operator cab -->
+                    <rect x="105" y="60" width="30" height="20" rx="4" fill="#2c3136"/>
+                    <rect x="110" y="64" width="10" height="10" rx="2" fill="#fdb528" opacity="0.6"/>
+                    <!-- Hook cable (animated) -->
+                    <line x1="160" y1="84" x2="160" y2="145" stroke="#fdb528" stroke-width="2" class="sw-cable"/>
+                    <!-- Hook -->
+                    <path d="M155 145 Q160 155 165 145" stroke="#e8a417" stroke-width="2.5" stroke-linecap="round" class="sw-hook"/>
+                    <!-- Load block being hoisted -->
+                    <rect x="148" y="148" width="24" height="18" rx="3" fill="#245a97" class="sw-load"/>
+                    <!-- Ground / building blocks (stacked) -->
+                    <rect x="50" y="218" width="80" height="16" rx="2" fill="#fdb528" opacity="0.55"/>
+                    <rect x="58" y="202" width="64" height="16" rx="2" fill="#fdb528" opacity="0.7"/>
+                    <rect x="66" y="186" width="48" height="16" rx="2" fill="#fdb528" opacity="0.85"/>
+                    <!-- Ground line -->
+                    <line x1="20" y1="250" x2="220" y2="250" stroke="#e3e5e9" stroke-width="1.5" opacity="0.4"/>
+                  </svg>
+                  <p class="sw-building-label">Building your website…</p>
+                  <div class="sw-building-dots"><span></span><span></span><span></span></div>
+                </div>
               </div>
-              <div v-if="siteWizard.errorMessage" class="modal-body" style="padding-top: 0;">
-                <div class="info-box" style="border-color: #c2410c; background: rgba(194, 65, 12, 0.08);">
-                  <app-icon name="warning"></app-icon>
+
+              <!-- ── Normal wizard UI ── -->
+              <template v-if="!siteWizard.isBuilding">
+
+                <!-- Header -->
+                <div class="sw-header">
+                  <div class="sw-header-left">
+                    <div class="sw-badge">New Website</div>
+                    <h2 class="sw-title">
+                      {{ siteWizard.step === 4 ? 'Website Created!' : 'Add Website' }}
+                    </h2>
+                  </div>
+                  <button class="sw-close" @click="closeSiteWizard" aria-label="Close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+
+                <!-- Progress bar -->
+                <div class="sw-progress-track" v-if="siteWizard.step < 4">
+                  <div class="sw-progress-fill" :style="{ width: (siteWizard.step / (siteWizard.type === 'blank' ? 2 : 3) * 100) + '%' }"></div>
+                </div>
+
+                <!-- Step pills -->
+                <div class="sw-steps" v-if="siteWizard.step < 4">
+                  <div class="sw-step" :class="{ active: siteWizard.step >= 1, done: siteWizard.step > 1 }">
+                    <span class="sw-step-dot"><svg v-if="siteWizard.step > 1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg><span v-else>1</span></span>
+                    <span class="sw-step-label">Type</span>
+                  </div>
+                  <div class="sw-step-connector" :class="{ done: siteWizard.step > 1 }"></div>
+                  <div class="sw-step" :class="{ active: siteWizard.step >= 2, done: siteWizard.step > 2 }">
+                    <span class="sw-step-dot"><svg v-if="siteWizard.step > 2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg><span v-else>2</span></span>
+                    <span class="sw-step-label">Domain</span>
+                  </div>
+                  <template v-if="siteWizard.type !== 'blank'">
+                    <div class="sw-step-connector" :class="{ done: siteWizard.step > 2 }"></div>
+                    <div class="sw-step" :class="{ active: siteWizard.step >= 3 }">
+                      <span class="sw-step-dot"><span>3</span></span>
+                      <span class="sw-step-label">Configure</span>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- Error box -->
+                <div v-if="siteWizard.errorMessage" class="sw-error">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                   <div>
                     <strong>Could not create website</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">{{ siteWizard.errorMessage }}</p>
-                  </div>
-                </div>
-              </div>
-              
-              <!-- Step 1: Type Selection -->
-              <div class="modal-body" v-if="siteWizard.step === 1">
-                <h3 style="margin-bottom: 1rem;">What do you want to build?</h3>
-                <div style="display: grid; grid-template-columns: 1fr; gap: 12px;">
-                  <label style="border: 1px solid var(--line); padding: 14px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px;">
-                    <input type="radio" v-model="siteWizard.type" value="blank">
-                    <div>
-                      <strong style="display: block; color: var(--text);">Blank Website</strong>
-                      <span class="muted">Start from scratch with HTML/PHP files.</span>
-                    </div>
-                  </label>
-                  <label v-for="script in (installer.scripts || [])" :key="script.id" style="border: 1px solid var(--line); padding: 14px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px;">
-                    <input type="radio" v-model="siteWizard.type" :value="script.id">
-                    <div>
-                      <strong style="display: block; color: var(--text);">{{ script.name }}</strong>
-                      <span class="muted">Install {{ script.name }} dynamically with a database automatically set up.</span>
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              <!-- Step 2: Domain Name -->
-              <div class="modal-body" v-if="siteWizard.step === 2">
-                <h3 style="margin-bottom: 1rem;">Enter your domain</h3>
-                <div class="form-grid">
-                  <label>Domain Name
-                    <input v-model="siteWizard.domain" placeholder="example.com">
-                    <small>Do not include http:// or www.</small>
-                  </label>
-                </div>
-              </div>
-              
-              <!-- Step 3: CMS Details (Only for CMS types) -->
-              <div class="modal-body" v-if="siteWizard.step === 3 && siteWizard.type !== 'blank'">
-                <h3 style="margin-bottom: 1rem;">Configure {{ ((installer.scripts || []).find(s => s.id === siteWizard.type) || {name: siteWizard.type}).name }} Installation</h3>
-                <div class="form-grid">
-                  <label>Site Title <input v-model="siteWizard.site_title" placeholder="My Site"></label>
-                  <label>Admin Username <input v-model="siteWizard.admin_username" placeholder="admin"></label>
-                  <label>Admin Email <input v-model="siteWizard.admin_email" type="email" placeholder="admin@example.com"></label>
-                  <label>Admin Password 
-                    <input v-model="siteWizard.admin_password" type="password" placeholder="At least 8 characters">
-                    <small>Minimum 8 characters required</small>
-                  </label>
-                  <label>
-                    <input v-model="siteWizard.allow_overwrite" type="checkbox"> Allow overwriting existing files
-                  </label>
-                </div>
-              </div>
-              
-              <!-- Step 4: Website Added (Completion Screen) -->
-              <div class="modal-body" v-if="siteWizard.step === 4">
-                <h3 style="margin-bottom: 1rem;">Website Added</h3>
-                <div class="info-box" style="margin-bottom: 1rem;">
-                  <app-icon name="check"></app-icon>
-                  <div>
-                    <strong>{{ siteWizard.domain }} is ready in the panel</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">The website has been created. Update your domain nameservers and DNS records at your registrar using the bundle below.</p>
+                    <p>{{ siteWizard.errorMessage }}</p>
                   </div>
                 </div>
 
-                <div class="ssh-info-card">
-                  <template v-if="(siteWizard.createdWebsite && siteWizard.createdWebsite.nameservers && siteWizard.createdWebsite.nameservers.length) || (siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length)">
-                    <label>Nameservers to update at registrar</label>
-                    <code v-for="ns in (siteWizard.createdWebsite?.nameservers || siteWizard.createdDomainNameservers)" :key="ns">{{ ns }}</code>
-                  </template>
-                  <label style="margin-top: 12px;">DNS Bundle</label>
-                  <code>Name: @</code>
-                  <code>Type: A</code>
-                  <code>Value: {{ serverIp }}</code>
-                  <code>Name: www</code>
-                  <code>Type: CNAME</code>
-                  <code>Value: @</code>
-                  <code>Name: @</code>
-                  <code>Type: MX</code>
-                  <code>Value: mail.{{ siteWizard.domain || 'your-domain' }}</code>
-                  <code>Name: @</code>
-                  <code>Type: TXT</code>
-                  <code>Value: v=spf1 mx a ~all</code>
-                  <code>Name: _dmarc</code>
-                  <code>Type: TXT</code>
-                  <code>Value: v=DMARC1; p=quarantine; rua=mailto:postmaster@{{ siteWizard.domain || 'your-domain' }}</code>
-                  <code>Name: mango._domainkey</code>
-                  <code>Type: TXT</code>
-                  <code>Value: v=DKIM1; k=rsa; p=...</code>
-                </div>
-              </div>
+                <!-- Body -->
+                <div class="sw-body">
 
-              <div class="modal-footer">
-                <button v-if="siteWizard.step > 1 && siteWizard.step < 4" class="ghost-button" @click="prevSiteWizardStep" :disabled="siteWizard.isSubmitting">Back</button>
-                <button v-else-if="siteWizard.step < 4" class="ghost-button" @click="closeSiteWizard" :disabled="siteWizard.isSubmitting">Cancel</button>
-                
-                <button 
-                  v-if="siteWizard.step === 1 || (siteWizard.step === 2 && siteWizard.type !== 'blank')" 
-                  class="primary-button" 
-                  @click="nextSiteWizardStep" 
-                  :disabled="siteWizard.step === 2 && !siteWizard.domain"
-                >
-                  Next
-                </button>
-                <button 
-                  v-if="(siteWizard.step === 2 && siteWizard.type === 'blank') || (siteWizard.step === 3 && siteWizard.type !== 'blank')" 
-                  class="primary-button" 
-                  @click="finishSiteWizard" 
-                  :disabled="siteWizard.isSubmitting || (siteWizard.step === 2 && !siteWizard.domain) || (siteWizard.step === 3 && (!siteWizard.site_title || !siteWizard.admin_username || !siteWizard.admin_email || !siteWizard.admin_password || siteWizard.admin_password.length < 8))"
-                >
-                  <span v-if="siteWizard.isSubmitting" class="btn-spinner"></span>
-                  <span>{{ siteWizard.isSubmitting ? 'Creating Website...' : 'Create Website' }}</span>
-                </button>
-                <button v-if="siteWizard.step === 4" class="primary-button" @click="closeSiteWizard">Done</button>
-              </div>
+                  <!-- Step 1: Type -->
+                  <div v-if="siteWizard.step === 1" class="sw-step-content">
+                    <p class="sw-step-desc">Choose what kind of website you want to create.</p>
+                    <div class="sw-type-grid">
+                      <label class="sw-type-card" :class="{ selected: siteWizard.type === 'blank' }">
+                        <input type="radio" v-model="siteWizard.type" value="blank" style="display:none;">
+                        <div class="sw-type-icon">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/><line x1="8" y1="16" x2="11" y2="16"/></svg>
+                        </div>
+                        <div>
+                          <strong>Blank Website</strong>
+                          <span>Start from scratch with HTML/PHP files.</span>
+                        </div>
+                        <div class="sw-type-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+                      </label>
+                      <label v-for="script in (installer.scripts || [])" :key="script.id" class="sw-type-card" :class="{ selected: siteWizard.type === script.id }">
+                        <input type="radio" v-model="siteWizard.type" :value="script.id" style="display:none;">
+                        <div class="sw-type-icon sw-type-icon-cms">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                        </div>
+                        <div>
+                          <strong>{{ script.name }}</strong>
+                          <span>Install {{ script.name }} with database set up automatically.</span>
+                        </div>
+                        <div class="sw-type-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+                      </label>
+                    </div>
+                  </div>
+
+                  <!-- Step 2: Domain -->
+                  <div v-if="siteWizard.step === 2" class="sw-step-content">
+                    <p class="sw-step-desc">Enter the domain name you want to use for this website.</p>
+                    <div class="sw-domain-wrap">
+                      <label class="sw-label">Domain Name</label>
+                      <div class="sw-domain-input-wrap">
+                        <svg class="sw-domain-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                        <input class="sw-domain-input" v-model="siteWizard.domain" placeholder="example.com" autocomplete="off" spellcheck="false">
+                      </div>
+                      <small class="sw-hint">Enter the bare domain — no http:// or www.</small>
+                    </div>
+                  </div>
+
+                  <!-- Step 3: CMS Config -->
+                  <div v-if="siteWizard.step === 3 && siteWizard.type !== 'blank'" class="sw-step-content">
+                    <p class="sw-step-desc">Configure your {{ ((installer.scripts || []).find(s => s.id === siteWizard.type) || {name: siteWizard.type}).name }} installation.</p>
+                    <div class="sw-form-grid">
+                      <div class="sw-field">
+                        <label class="sw-label">Site Title</label>
+                        <input class="sw-input" v-model="siteWizard.site_title" placeholder="My Site">
+                      </div>
+                      <div class="sw-field">
+                        <label class="sw-label">Admin Username</label>
+                        <input class="sw-input" v-model="siteWizard.admin_username" placeholder="admin">
+                      </div>
+                      <div class="sw-field">
+                        <label class="sw-label">Admin Email</label>
+                        <input class="sw-input" v-model="siteWizard.admin_email" type="email" placeholder="admin@example.com">
+                      </div>
+                      <div class="sw-field">
+                        <label class="sw-label">Admin Password</label>
+                        <input class="sw-input" v-model="siteWizard.admin_password" type="password" placeholder="At least 8 characters">
+                        <small class="sw-hint">Minimum 8 characters required.</small>
+                      </div>
+                      <div class="sw-field sw-field-inline">
+                        <input v-model="siteWizard.allow_overwrite" type="checkbox" id="sw-overwrite">
+                        <label for="sw-overwrite" class="sw-label-inline">Allow overwriting existing files</label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Step 4: Completion + DNS -->
+                  <div v-if="siteWizard.step === 4" class="sw-step-content sw-step-done">
+                    <div class="sw-success-banner">
+                      <div class="sw-success-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      </div>
+                      <div>
+                        <strong>{{ siteWizard.domain }} is ready</strong>
+                        <p>The website has been created. Point your domain using the instructions below.</p>
+                      </div>
+                    </div>
+
+                    <!-- Tab bar -->
+                    <div class="sw-dns-tabs">
+                      <button class="sw-dns-tab" :class="{ active: siteWizard.dnsTab === 'records' }" @click="siteWizard.dnsTab = 'records'">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                        Update with DNS Records
+                      </button>
+                      <button class="sw-dns-tab" :class="{ active: siteWizard.dnsTab === 'nameservers' }" @click="siteWizard.dnsTab = 'nameservers'">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                        Update with Nameservers
+                      </button>
+                    </div>
+
+                    <!-- Tab: DNS Records -->
+                    <div v-if="siteWizard.dnsTab === 'records'" class="sw-dns-panel">
+                      <p class="sw-dns-intro">Add these DNS records at your domain registrar or DNS provider to connect your domain.</p>
+                      <div class="sw-dns-table-wrap">
+                        <table class="sw-dns-table">
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>Type</th>
+                              <th>Value</th>
+                              <th>Purpose</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td><code class="sw-code">@</code></td>
+                              <td><span class="sw-badge-type sw-type-a">A</span></td>
+                              <td><code class="sw-code">{{ serverIp }}</code></td>
+                              <td class="sw-muted">Root domain → server</td>
+                            </tr>
+                            <tr>
+                              <td><code class="sw-code">www</code></td>
+                              <td><span class="sw-badge-type sw-type-cname">CNAME</span></td>
+                              <td><code class="sw-code">@</code></td>
+                              <td class="sw-muted">www → root</td>
+                            </tr>
+                            <tr>
+                              <td><code class="sw-code">@</code></td>
+                              <td><span class="sw-badge-type sw-type-mx">MX</span></td>
+                              <td><code class="sw-code">mail.{{ siteWizard.domain || 'your-domain' }}</code></td>
+                              <td class="sw-muted">Mail server</td>
+                            </tr>
+                            <tr>
+                              <td><code class="sw-code">@</code></td>
+                              <td><span class="sw-badge-type sw-type-txt">TXT</span></td>
+                              <td><code class="sw-code">v=spf1 mx a ~all</code></td>
+                              <td class="sw-muted">SPF anti-spam</td>
+                            </tr>
+                            <tr>
+                              <td><code class="sw-code">_dmarc</code></td>
+                              <td><span class="sw-badge-type sw-type-txt">TXT</span></td>
+                              <td><code class="sw-code">v=DMARC1; p=quarantine; rua=mailto:postmaster@{{ siteWizard.domain || 'your-domain' }}</code></td>
+                              <td class="sw-muted">DMARC policy</td>
+                            </tr>
+                            <tr>
+                              <td><code class="sw-code">mango._domainkey</code></td>
+                              <td><span class="sw-badge-type sw-type-txt">TXT</span></td>
+                              <td><code class="sw-code">v=DKIM1; k=rsa; p=…</code></td>
+                              <td class="sw-muted">DKIM signature</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <!-- Tab: Nameservers -->
+                    <div v-if="siteWizard.dnsTab === 'nameservers'" class="sw-dns-panel">
+                      <template v-if="(siteWizard.createdWebsite && siteWizard.createdWebsite.nameservers && siteWizard.createdWebsite.nameservers.length) || (siteWizard.createdDomainNameservers && siteWizard.createdDomainNameservers.length)">
+                        <p class="sw-dns-intro">Point your domain to these nameservers at your registrar. DNS changes can take up to 48 hours to propagate.</p>
+                        <div class="sw-ns-list">
+                          <div class="sw-ns-item" v-for="ns in (siteWizard.createdWebsite?.nameservers || siteWizard.createdDomainNameservers)" :key="ns">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                            <code class="sw-ns-code">{{ ns }}</code>
+                          </div>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <p class="sw-dns-intro">No custom nameservers are configured for your account. Use the DNS Records tab instead to point individual records.</p>
+                      </template>
+                    </div>
+                  </div>
+
+                </div><!-- /.sw-body -->
+
+                <!-- Footer -->
+                <div class="sw-footer">
+                  <div class="sw-footer-left">
+                    <button v-if="siteWizard.step > 1 && siteWizard.step < 4" class="sw-btn sw-btn-ghost" @click="prevSiteWizardStep" :disabled="siteWizard.isSubmitting">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+                      Back
+                    </button>
+                    <button v-else-if="siteWizard.step < 4" class="sw-btn sw-btn-ghost" @click="closeSiteWizard" :disabled="siteWizard.isSubmitting">Cancel</button>
+                  </div>
+                  <div class="sw-footer-right">
+                    <button
+                      v-if="siteWizard.step === 1 || (siteWizard.step === 2 && siteWizard.type !== 'blank')"
+                      class="sw-btn sw-btn-primary"
+                      @click="nextSiteWizardStep"
+                      :disabled="siteWizard.step === 2 && !siteWizard.domain"
+                    >
+                      Continue
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
+                    <button
+                      v-if="(siteWizard.step === 2 && siteWizard.type === 'blank') || (siteWizard.step === 3 && siteWizard.type !== 'blank')"
+                      class="sw-btn sw-btn-primary"
+                      @click="finishSiteWizard"
+                      :disabled="siteWizard.isSubmitting || (siteWizard.step === 2 && !siteWizard.domain) || (siteWizard.step === 3 && (!siteWizard.site_title || !siteWizard.admin_username || !siteWizard.admin_email || !siteWizard.admin_password || siteWizard.admin_password.length < 8))"
+                    >
+                      <span class="sw-spinner" v-if="siteWizard.isSubmitting"></span>
+                      {{ siteWizard.isSubmitting ? 'Creating…' : 'Create Website' }}
+                    </button>
+                    <button v-if="siteWizard.step === 4" class="sw-btn sw-btn-primary" @click="closeSiteWizard">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      Done
+                    </button>
+                  </div>
+                </div>
+
+              </template><!-- /!isBuilding -->
             </div>
           </div>
 
