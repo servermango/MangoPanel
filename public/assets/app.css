@@ -4124,3 +4124,1025 @@ body.app-loaded #app-preloader {
   }
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════
+   ADMIN SHELL REDESIGN — Premium dark aesthetic
+   All rules scoped to .admin-shell to avoid touching the client panel
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Admin root variables ─────────────────────────────────────────── */
+.admin-shell {
+  --admin-bg:          #0d1117;
+  --admin-surface:     #161b22;
+  --admin-surface-2:   #1c2230;
+  --admin-surface-3:   #21293a;
+  --admin-line:        rgba(255,255,255,0.07);
+  --admin-text:        #e6edf3;
+  --admin-muted:       #7d8590;
+  --admin-brand:       #fdb528;
+  --admin-brand-glow:  rgba(253,181,40,0.18);
+  --admin-brand-tint:  rgba(253,181,40,0.1);
+  --admin-accent:      #58a6ff;
+  --admin-success:     #3fb950;
+  --admin-danger:      #f85149;
+  --admin-warning:     #d29922;
+}
+
+/* Body reset for admin */
+.admin-shell {
+  background: var(--admin-bg);
+  color: var(--admin-text);
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────── */
+.admin-shell .admin-sidebar {
+  background: linear-gradient(180deg, #0f1923 0%, #111827 60%, #0d1117 100%);
+  border-right: 1px solid var(--admin-line);
+  box-shadow: 4px 0 24px rgba(0,0,0,0.4);
+  padding: 20px 14px 20px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent;
+}
+
+.admin-shell .brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px 18px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--admin-line);
+}
+
+.admin-shell .brand-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #fdb528 0%, #f59e0b 100%);
+  color: #1a0e00;
+  font-size: 20px;
+  font-weight: 900;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 16px rgba(253,181,40,0.4), 0 2px 8px rgba(0,0,0,0.4);
+  flex-shrink: 0;
+}
+
+.admin-shell .brand strong {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f0f6fc;
+  letter-spacing: -0.02em;
+}
+
+.admin-shell .brand small {
+  color: var(--admin-muted);
+  font-size: 11px;
+  margin-top: 1px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.admin-shell .nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.admin-shell .nav-section {
+  margin-bottom: 6px;
+}
+
+.admin-shell .nav-group {
+  color: var(--admin-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 14px 12px 6px;
+}
+
+.admin-shell .nav-list button,
+.admin-shell .nav-list a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  border: 0;
+  background: transparent;
+  text-decoration: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: rgba(230,237,243,0.7);
+  font-size: 13.5px;
+  font-weight: 500;
+  text-align: left;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+  cursor: pointer;
+  position: relative;
+}
+
+.admin-shell .nav-list button:hover,
+.admin-shell .nav-list a:hover {
+  background: rgba(255,255,255,0.06);
+  color: #f0f6fc;
+  transform: translateX(2px);
+  border-color: transparent;
+}
+
+.admin-shell .nav-list button.active {
+  background: linear-gradient(90deg, rgba(253,181,40,0.16) 0%, rgba(253,181,40,0.06) 100%);
+  color: #fdb528;
+  font-weight: 600;
+  border: none;
+}
+
+.admin-shell .nav-list button.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #fdb528;
+  box-shadow: 0 0 8px rgba(253,181,40,0.6);
+}
+
+/* ── Topbar ───────────────────────────────────────────────────────── */
+.admin-shell .topbar {
+  background: rgba(13,17,23,0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--admin-line);
+  box-shadow: 0 1px 0 var(--admin-line), 0 4px 20px rgba(0,0,0,0.3);
+  height: 62px;
+  padding: 0 28px;
+}
+
+.admin-shell .topbar-page-icon {
+  background: rgba(253,181,40,0.1);
+  color: #fdb528;
+  border: 1px solid rgba(253,181,40,0.2);
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-shell .topbar-page-title {
+  color: var(--admin-text);
+  font-weight: 650;
+  font-size: 14.5px;
+}
+
+.admin-shell .topbar-page-desc {
+  color: var(--admin-muted);
+  font-size: 11.5px;
+}
+
+.admin-shell .feature-status-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 99px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.admin-shell .feature-status-functional {
+  background: rgba(253,181,40,0.15);
+  color: #fdb528;
+  border: 1px solid rgba(253,181,40,0.25);
+}
+
+.admin-shell .ghost-button {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--admin-text);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0 14px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.admin-shell .ghost-button:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.18);
+}
+
+/* ── Main content area ────────────────────────────────────────────── */
+.admin-shell .admin-main {
+  background: var(--admin-bg);
+}
+
+.admin-shell .client-main-content {
+  padding: 28px;
+}
+
+/* ── Panel cards ──────────────────────────────────────────────────── */
+.admin-shell .panel {
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-line);
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+  padding: 22px;
+  margin-bottom: 20px;
+  transition: border-color 0.2s;
+}
+
+.admin-shell .panel:hover {
+  border-color: rgba(255,255,255,0.1);
+}
+
+/* ── Section header ───────────────────────────────────────────────── */
+.admin-shell .section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.admin-shell .section-head h2,
+.admin-shell .panel > h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--admin-text);
+  margin-bottom: 4px;
+  letter-spacing: -0.02em;
+}
+
+.admin-shell .section-head p,
+.admin-shell .muted,
+.admin-shell small {
+  color: var(--admin-muted);
+  font-size: 13px;
+}
+
+/* ── Metric grid ──────────────────────────────────────────────────── */
+.admin-shell .metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.admin-shell .metric {
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-line);
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+}
+
+.admin-shell .metric:hover {
+  border-color: rgba(253,181,40,0.25);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4), 0 0 16px rgba(253,181,40,0.06);
+}
+
+.admin-shell .metric::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #fdb528, transparent);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.admin-shell .metric:hover::before {
+  opacity: 1;
+}
+
+.admin-shell .metric span:first-child {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--admin-muted);
+}
+
+.admin-shell .metric strong {
+  font-size: 28px;
+  font-weight: 800;
+  color: #f0f6fc;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  font-family: 'Space Grotesk', 'Inter', sans-serif;
+}
+
+.admin-shell .metric small {
+  font-size: 11px;
+  color: var(--admin-muted);
+}
+
+/* ── Tables ───────────────────────────────────────────────────────── */
+.admin-shell .table-wrap {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--admin-line);
+  background: var(--admin-surface);
+}
+
+.admin-shell table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--admin-text);
+}
+
+.admin-shell th {
+  background: rgba(255,255,255,0.03);
+  color: var(--admin-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--admin-line);
+}
+
+.admin-shell td {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--admin-line);
+  color: var(--admin-text);
+  font-size: 13.5px;
+  vertical-align: middle;
+}
+
+.admin-shell tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.admin-shell tbody tr {
+  transition: background 0.12s;
+}
+
+.admin-shell tbody tr:hover {
+  background: rgba(255,255,255,0.03);
+}
+
+.admin-shell td small {
+  color: var(--admin-muted);
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.admin-shell td strong {
+  color: #e6edf3;
+  font-weight: 600;
+}
+
+.admin-shell .empty-row {
+  text-align: center;
+  color: var(--admin-muted);
+  padding: 32px 16px !important;
+  font-size: 13px;
+}
+
+/* ── Pills / badges ───────────────────────────────────────────────── */
+.admin-shell .pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 99px;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: rgba(255,255,255,0.07);
+  color: var(--admin-muted);
+  border: 1px solid rgba(255,255,255,0.08);
+  white-space: nowrap;
+}
+
+.admin-shell .pill.active,
+.admin-shell .pill.healthy,
+.admin-shell .pill.operational,
+.admin-shell .pill.running {
+  background: rgba(63,185,80,0.12);
+  color: #3fb950;
+  border-color: rgba(63,185,80,0.2);
+}
+
+.admin-shell .pill.suspended,
+.admin-shell .pill.danger,
+.admin-shell .pill.critical {
+  background: rgba(248,81,73,0.12);
+  color: #f85149;
+  border-color: rgba(248,81,73,0.2);
+}
+
+.admin-shell .pill.warning,
+.admin-shell .pill.degraded {
+  background: rgba(210,153,34,0.12);
+  color: #d29922;
+  border-color: rgba(210,153,34,0.2);
+}
+
+.admin-shell .pill.info,
+.admin-shell .pill.queued {
+  background: rgba(88,166,255,0.12);
+  color: #58a6ff;
+  border-color: rgba(88,166,255,0.2);
+}
+
+/* ── Primary / Danger / Ghost / Secondary buttons ─────────────────── */
+.admin-shell .primary-button {
+  background: linear-gradient(135deg, #fdb528 0%, #e8a417 100%);
+  border: 1px solid #e8a417;
+  color: #1a0e00;
+  font-weight: 700;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 0 16px;
+  min-height: 36px;
+  transition: all 0.18s;
+  box-shadow: 0 2px 8px rgba(253,181,40,0.2);
+}
+
+.admin-shell .primary-button:hover {
+  background: linear-gradient(135deg, #ffc23a 0%, #fdb528 100%);
+  box-shadow: 0 4px 16px rgba(253,181,40,0.35);
+  transform: translateY(-1px);
+  border-color: #fdb528;
+}
+
+.admin-shell .primary-button:disabled {
+  opacity: 0.45;
+  transform: none;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.admin-shell .danger-button {
+  background: rgba(248,81,73,0.12);
+  border: 1px solid rgba(248,81,73,0.3);
+  color: #f85149;
+  font-weight: 600;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 0 14px;
+  min-height: 36px;
+  transition: all 0.18s;
+}
+
+.admin-shell .danger-button:hover {
+  background: rgba(248,81,73,0.2);
+  border-color: rgba(248,81,73,0.5);
+  box-shadow: 0 0 12px rgba(248,81,73,0.2);
+}
+
+.admin-shell .secondary-button {
+  background: rgba(88,166,255,0.1);
+  border: 1px solid rgba(88,166,255,0.25);
+  color: #58a6ff;
+  font-weight: 600;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 0 14px;
+  min-height: 36px;
+  transition: all 0.18s;
+}
+
+.admin-shell .secondary-button:hover {
+  background: rgba(88,166,255,0.18);
+  border-color: rgba(88,166,255,0.4);
+}
+
+/* Generic buttons (plain) */
+.admin-shell button:not(.primary-button):not(.danger-button):not(.ghost-button):not(.secondary-button):not(.close-button):not(.admin-submit-btn):not(.alert-dismiss):not(.admin-alert-dismiss) {
+  background: var(--admin-surface-2);
+  border: 1px solid var(--admin-line);
+  color: var(--admin-text);
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.admin-shell button:not(.primary-button):not(.danger-button):not(.ghost-button):not(.secondary-button):not(.close-button):not(.admin-submit-btn):not(.alert-dismiss):not(.admin-alert-dismiss):hover {
+  background: var(--admin-surface-3);
+  border-color: rgba(255,255,255,0.14);
+}
+
+/* ── Inputs & selects ─────────────────────────────────────────────── */
+.admin-shell input:not(.admin-form-input),
+.admin-shell select,
+.admin-shell textarea {
+  background: var(--admin-surface-2) !important;
+  border: 1px solid rgba(255,255,255,0.1) !important;
+  border-radius: 8px !important;
+  color: var(--admin-text) !important;
+  font-size: 13.5px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.admin-shell input:not(.admin-form-input)::placeholder {
+  color: var(--admin-muted) !important;
+}
+
+.admin-shell input:not(.admin-form-input):focus,
+.admin-shell select:focus,
+.admin-shell textarea:focus {
+  border-color: rgba(253,181,40,0.45) !important;
+  box-shadow: 0 0 0 3px rgba(253,181,40,0.12) !important;
+  outline: none;
+}
+
+.admin-shell select option {
+  background: #1c2230;
+  color: #e6edf3;
+}
+
+/* ── Labels ───────────────────────────────────────────────────────── */
+.admin-shell label {
+  color: var(--admin-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ── Two-column layout ────────────────────────────────────────────── */
+.admin-shell .two-column {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+/* ── Clean list ───────────────────────────────────────────────────── */
+.admin-shell .clean-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-shell .clean-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--admin-line);
+  font-size: 13.5px;
+}
+
+.admin-shell .clean-list li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.admin-shell .clean-list strong {
+  color: #e6edf3;
+  font-weight: 600;
+}
+
+/* ── Modal ────────────────────────────────────────────────────────── */
+.admin-shell .modal-overlay {
+  background: rgba(0,0,0,0.72);
+  backdrop-filter: blur(6px);
+}
+
+.admin-shell .modal-panel {
+  background: var(--admin-surface);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+  color: var(--admin-text);
+}
+
+.admin-shell .modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--admin-line);
+}
+
+.admin-shell .modal-header h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--admin-text);
+  margin: 0;
+}
+
+.admin-shell .modal-body {
+  padding: 22px;
+  overflow-y: auto;
+}
+
+.admin-shell .modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 22px;
+  border-top: 1px solid var(--admin-line);
+  margin-top: 16px;
+}
+
+.admin-shell .close-button {
+  background: rgba(255,255,255,0.06) !important;
+  border: 1px solid rgba(255,255,255,0.08) !important;
+  color: var(--admin-muted) !important;
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+  min-height: unset;
+  transition: background 0.15s, color 0.15s;
+}
+
+.admin-shell .close-button:hover {
+  background: rgba(248,81,73,0.12) !important;
+  border-color: rgba(248,81,73,0.25) !important;
+  color: #f85149 !important;
+}
+
+/* ── Plan form grid ───────────────────────────────────────────────── */
+.admin-shell .plan-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+/* ── Form grid ────────────────────────────────────────────────────── */
+.admin-shell .form-grid {
+  display: grid;
+  gap: 16px;
+}
+
+/* ── Incident form ────────────────────────────────────────────────── */
+.admin-shell .incident-form {
+  display: grid;
+  grid-template-columns: 1.2fr 150px 1.4fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+/* ── Admin create form ────────────────────────────────────────────── */
+.admin-shell .admin-create-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 150px 1fr auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 18px;
+}
+
+/* ── Client selector ──────────────────────────────────────────────── */
+.admin-shell .client-selector {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 6px 0 20px;
+}
+
+.admin-shell .client-selector label {
+  display: grid;
+  gap: 6px;
+  min-width: min(480px, 100%);
+}
+
+/* ── Account manage row ───────────────────────────────────────────── */
+.admin-shell .account-manage-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(160px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+}
+
+.admin-shell .account-manage-row + .account-manage-row {
+  border-top: 1px solid var(--admin-line);
+}
+
+/* ── Client & actions ─────────────────────────────────────────────── */
+.admin-shell .client-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.admin-shell .client-edit {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-shell .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ── Secret box ───────────────────────────────────────────────────── */
+.admin-shell .secret-box {
+  background: rgba(253,181,40,0.06);
+  border: 1px solid rgba(253,181,40,0.2);
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin: 14px 0;
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.admin-shell .secret-box span {
+  color: var(--admin-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.admin-shell .secret-box strong {
+  color: #fdb528;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+}
+
+/* ── Admin alert (toast) ──────────────────────────────────────────── */
+.admin-shell .admin-alert {
+  position: fixed;
+  top: 70px;
+  right: 24px;
+  max-width: 480px;
+  width: auto;
+  background: var(--admin-surface);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05);
+  padding: 12px 44px 12px 16px;
+  margin: 0;
+  z-index: 9999;
+  backdrop-filter: blur(12px);
+  animation: admin-toast-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes admin-toast-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.admin-shell .admin-alert .message {
+  color: var(--admin-text);
+  font-size: 13.5px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.admin-shell .alert-dismiss {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(255,255,255,0.06) !important;
+  border: 1px solid rgba(255,255,255,0.06) !important;
+  color: var(--admin-muted) !important;
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  min-height: unset;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* ── PHP version badges ───────────────────────────────────────────── */
+.admin-shell .php-versions-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.admin-shell .php-version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid;
+}
+
+.admin-shell .php-version-badge.supported {
+  background: rgba(63,185,80,0.08);
+  color: #3fb950;
+  border-color: rgba(63,185,80,0.2);
+}
+
+.admin-shell .php-version-badge.legacy {
+  background: rgba(210,153,34,0.08);
+  color: #d29922;
+  border-color: rgba(210,153,34,0.2);
+}
+
+/* ── Metric cards (security page) ────────────────────────────────── */
+.admin-shell .metric-card {
+  background: var(--admin-surface);
+  border: 1px solid var(--admin-line);
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: border-color 0.2s, transform 0.2s;
+}
+
+.admin-shell .metric-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255,255,255,0.1);
+}
+
+.admin-shell .card-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.admin-shell .dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+/* ── Data table (security page) ──────────────────────────────────── */
+.admin-shell .table-responsive {
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid var(--admin-line);
+}
+
+/* ── Service links ────────────────────────────────────────────────── */
+.admin-shell .service-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.admin-shell .service-links a {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  background: rgba(88,166,255,0.1);
+  border: 1px solid rgba(88,166,255,0.2);
+  border-radius: 99px;
+  color: #58a6ff;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.admin-shell .service-links a:hover {
+  background: rgba(88,166,255,0.2);
+  border-color: rgba(88,166,255,0.35);
+}
+
+/* ── Code ─────────────────────────────────────────────────────────── */
+.admin-shell code {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #e6edf3;
+}
+
+/* ── Headings ─────────────────────────────────────────────────────── */
+.admin-shell h2 {
+  color: var(--admin-text);
+  letter-spacing: -0.02em;
+}
+
+.admin-shell h3 {
+  color: var(--admin-text);
+}
+
+/* ── Status line ──────────────────────────────────────────────────── */
+.admin-shell .status-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+
+.admin-shell .status-line.operational,
+.admin-shell .status-line.healthy {
+  color: #3fb950;
+}
+
+.admin-shell .status-line.degraded,
+.admin-shell .status-line.warning {
+  color: #d29922;
+}
+
+.admin-shell .status-line.down,
+.admin-shell .status-line.critical {
+  color: #f85149;
+}
+
+/* ── Page stack ───────────────────────────────────────────────────── */
+.admin-shell .page-stack {
+  display: grid;
+  gap: 20px;
+}
+
+/* ── btn-spinner ──────────────────────────────────────────────────── */
+.admin-shell .btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(0,0,0,0.3);
+  border-top-color: rgba(0,0,0,0.8);
+  border-radius: 50%;
+  animation: admin-spin 0.7s linear infinite;
+}
+
+@keyframes admin-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────── */
+.admin-shell ::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.admin-shell ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.admin-shell ::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 99px;
+}
+
+.admin-shell ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.18);
+}
+
+/* ── Responsive ───────────────────────────────────────────────────── */
+@media (max-width: 920px) {
+  .admin-shell .admin-sidebar {
+    position: sticky;
+    top: 0;
+    width: auto;
+    max-height: none;
+    padding: 12px 14px;
+  }
+
+  .admin-shell .brand {
+    padding-bottom: 0;
+    border-bottom: none;
+    margin-bottom: 0;
+  }
+
+  .admin-shell .client-main-content {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-shell .incident-form,
+  .admin-shell .admin-create-form,
+  .admin-shell .plan-form,
+  .admin-shell .account-manage-row {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-shell .metric-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

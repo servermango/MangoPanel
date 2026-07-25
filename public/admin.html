@@ -192,6 +192,17 @@
         font-weight: 600;
         margin-bottom: 1rem;
       }
+      .nav-item-icon {
+        font-size: 14px;
+        line-height: 1;
+        flex-shrink: 0;
+        opacity: 0.8;
+        transition: opacity 0.15s;
+      }
+      .admin-shell .nav-list button.active .nav-item-icon,
+      .admin-shell .nav-list button:hover .nav-item-icon {
+        opacity: 1;
+      }
     </style>
     <script>
       (function() {
@@ -204,23 +215,24 @@
     <div id="admin-app" class="app-shell admin-shell" v-cloak>
       <aside class="sidebar admin-sidebar" v-if="token">
         <div class="brand">
-          <span class="brand-mark">M</span>
+          <span class="brand-mark">🥭</span>
           <div>
             <strong>MangoPanel</strong>
-            <small>Admin panel</small>
+            <small>Admin console</small>
           </div>
         </div>
         <nav class="nav-list">
           <div v-for="section in sidebarSections" :key="section.label" class="nav-section">
             <span class="nav-group">{{ section.label }}</span>
             <button v-for="item in section.items" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
+              <span class="nav-item-icon">{{ {overview:'⊞',clients:'👥',plans:'📋',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[item.target] || '•' }}</span>
               <span>{{ item.label }}</span>
             </button>
           </div>
           <div class="nav-section">
-            <span class="nav-group">Links</span>
-            <a href="/admin/setup">Setup</a>
-            <a href="/status">Public Status</a>
+            <span class="nav-group">Quick Links</span>
+            <a href="/admin/setup">⚡ Setup Wizard</a>
+            <a href="/status">📡 Public Status</a>
           </div>
         </nav>
       </aside>
@@ -229,7 +241,7 @@
         <header v-if="token" class="topbar">
           <div class="topbar-context">
             <div class="topbar-page-icon admin-page-glyph">
-              {{ activeMenuItem.label.slice(0, 1) }}
+              {{ {overview:'⊞',clients:'👥',plans:'📋',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[activePage] || activeMenuItem.label.slice(0, 1) }}
             </div>
             <div class="topbar-page-meta">
               <span class="topbar-page-title-row">
@@ -240,7 +252,7 @@
             </div>
           </div>
           <div class="topbar-actions">
-            <button class="ghost-button" @click="logout">Sign out</button>
+            <button class="ghost-button" @click="logout">Sign out →</button>
           </div>
         </header>
 
