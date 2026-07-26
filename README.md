@@ -20,6 +20,36 @@ MangoPanel is an hPanel-style shared hosting control panel. This repository curr
 
 This is not the production hosting runtime yet. The agent now generates account filesystem layout and Docker Compose files, but real ACME and quota enforcement still need their production providers.
 
+## Screenshots & Capabilities
+
+### Client & Admin Control Plane Interfaces
+
+| Client Overview Dashboard | Super Admin 2FA Verification |
+| :---: | :---: |
+| ![Client Overview Dashboard](public/assets/img/111.png) | ![Super Admin 2FA Verification](public/assets/img/222.png) |
+
+| Super Admin Console | Real-Time Telemetry Stream |
+| :---: | :---: |
+| ![Super Admin Console Overview](public/assets/img/333.png) | ![Real-Time Telemetry Stream](public/assets/img/444.png) |
+
+| Storage & Filesystem IOPS Breakdown | Client Portal Sign-In |
+| :---: | :---: |
+| ![Storage Analysis & Container IOPS](public/assets/img/555.png) | ![Client Portal Sign-In](public/assets/img/666.png) |
+
+### Architecture & Feature Highlights
+
+| Built for Performance | Essential Tools Included | 70% Resource Savings |
+| :---: | :---: | :---: |
+| ![Built for Performance](public/assets/img/1.png) | ![Everything You Need](public/assets/img/2.png) | ![Faster Lighter Efficiency](public/assets/img/3.png) |
+
+| Per-Account Isolation | Clean Admin & Client UX | 100% Self-Hosted Data |
+| :---: | :---: | :---: |
+| ![True Account Isolation](public/assets/img/4.png) | ![Easy for Admins and Clients](public/assets/img/5.png) | ![Own Your Data](public/assets/img/6.png) |
+
+| Scalable Architecture | 5-Step Simple Migration | Control & Profit |
+| :---: | :---: | :---: |
+| ![Built for Scale](public/assets/img/7.png) | ![Migrate in 5 Steps](public/assets/img/8.png) | ![More Power and Control](public/assets/img/9.png) |
+
 ## Cloudflare as DNS - Setup Instructions
 
 MangoPanel can use Cloudflare as the authoritative DNS provider for managed domains. Configure the Cloudflare account in the Admin panel under **DNS Settings** before assigning Cloudflare DNS to a plan or domain.
