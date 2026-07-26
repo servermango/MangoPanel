@@ -730,6 +730,183 @@
             overflow: hidden;
         }
 
+        /* 9-Card Feature Graphic Carousel */
+        .graphic-carousel-section {
+            padding: 4rem 5% 3rem;
+            position: relative;
+        }
+
+        .carousel-wrapper {
+            position: relative;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 3.5rem;
+        }
+
+        .carousel-container {
+            overflow: hidden;
+            border-radius: 16px;
+            padding: 0.8rem 0.4rem;
+        }
+
+        .carousel-track {
+            display: flex;
+            gap: 1.5rem;
+            transition: transform 0.45s cubic-bezier(0.25, 1, 0.5, 1);
+        }
+
+        .carousel-slide {
+            flex: 0 0 calc(33.333% - 1rem);
+            max-width: calc(33.333% - 1rem);
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 1.2rem;
+            box-shadow: var(--shadow);
+            transition: var(--transition);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            cursor: pointer;
+        }
+
+        @media (max-width: 1024px) {
+            .carousel-slide {
+                flex: 0 0 calc(50% - 0.75rem);
+                max-width: calc(50% - 0.75rem);
+            }
+        }
+
+        @media (max-width: 640px) {
+            .carousel-wrapper {
+                padding: 0 1rem;
+            }
+            .carousel-slide {
+                flex: 0 0 100%;
+                max-width: 100%;
+            }
+        }
+
+        .carousel-slide:hover {
+            border-color: var(--brand);
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-premium), 0 0 30px rgba(253, 181, 40, 0.12);
+            background: var(--surface-2);
+        }
+
+        .carousel-img-wrap {
+            width: 100%;
+            height: 380px;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #0d121f;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.8rem;
+            margin-bottom: 1rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .carousel-img-wrap img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            transition: transform 0.3s ease;
+        }
+
+        .carousel-slide:hover .carousel-img-wrap img {
+            transform: scale(1.03);
+        }
+
+        .carousel-slide-badge {
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            background: var(--brand-tint);
+            color: var(--brand);
+            border: 1px solid rgba(253, 181, 40, 0.25);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .carousel-slide-title {
+            font-size: 0.98rem;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 0.3rem;
+            line-height: 1.3;
+        }
+
+        .carousel-slide-desc {
+            font-size: 0.82rem;
+            color: var(--muted);
+            line-height: 1.4;
+        }
+
+        /* Carousel Navigation Buttons */
+        .carousel-btn {
+            position: absolute;
+            top: 48%;
+            transform: translateY(-50%);
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: var(--surface-2);
+            border: 1px solid var(--line-hover);
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 10;
+            transition: var(--transition);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+
+        .carousel-btn:hover {
+            background: var(--brand);
+            color: var(--accent-dark);
+            border-color: var(--brand-strong);
+            transform: translateY(-50%) scale(1.08);
+        }
+
+        .carousel-btn-prev { left: 0; }
+        .carousel-btn-next { right: 0; }
+
+        /* Carousel Dots Pagination */
+        .carousel-dots {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1.8rem;
+        }
+
+        .carousel-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--line-hover);
+            border: none;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .carousel-dot:hover {
+            background: var(--muted);
+        }
+
+        .carousel-dot.active {
+            background: var(--brand);
+            width: 28px;
+            border-radius: 999px;
+            box-shadow: 0 0 10px rgba(253, 181, 40, 0.4);
+        }
+
         /* Lightbox Modal */
         .lightbox-modal {
             position: fixed;
@@ -1513,6 +1690,116 @@
         </div>
     </div>
 
+    <!-- 9-Card Feature Graphic Carousel Section -->
+    <section id="platform-highlights" class="graphic-carousel-section container">
+        <div class="section-header reveal">
+            <h2>Platform Capabilities at a Glance</h2>
+            <p>Explore the architecture, zero-bloat efficiency, per-account isolation, and 5-step effortless migration that set MangoPanel apart.</p>
+        </div>
+
+        <div class="carousel-wrapper reveal">
+            <button id="feat-carousel-prev" class="carousel-btn carousel-btn-prev" aria-label="Previous Slide">&#10094;</button>
+            <button id="feat-carousel-next" class="carousel-btn carousel-btn-next" aria-label="Next Slide">&#10095;</button>
+            
+            <div class="carousel-container">
+                <div id="feat-carousel-track" class="carousel-track">
+                    <!-- Slide 1 -->
+                    <div class="carousel-slide" data-img="public/assets/img/1.png" data-title="Modern Control Panel" data-badge="Overview">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/1.png" alt="MangoPanel Overview Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">01 · Overview</span>
+                        <div class="carousel-slide-title">Built for Performance &amp; Simplicity</div>
+                        <div class="carousel-slide-desc">Lightweight, fast, secure, and self-hosted with zero framework overhead.</div>
+                    </div>
+
+                    <!-- Slide 2 -->
+                    <div class="carousel-slide" data-img="public/assets/img/2.png" data-title="Essential Tools" data-badge="Essentials">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/2.png" alt="Everything You Need Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">02 · Essentials</span>
+                        <div class="carousel-slide-title">Everything You Need, Nothing You Don't</div>
+                        <div class="carousel-slide-desc">Websites, DBs, Email, Domains, Files, Backups, SSL, and 2FA built-in.</div>
+                    </div>
+
+                    <!-- Slide 3 -->
+                    <div class="carousel-slide" data-img="public/assets/img/3.png" data-title="Maximum Efficiency" data-badge="Performance">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/3.png" alt="Faster Lighter Efficiency Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">03 · Performance</span>
+                        <div class="carousel-slide-title">Faster, Lighter &amp; More Efficient</div>
+                        <div class="carousel-slide-desc">Engineered to use up to 70% fewer resources compared to traditional panels.</div>
+                    </div>
+
+                    <!-- Slide 4 -->
+                    <div class="carousel-slide" data-img="public/assets/img/4.png" data-title="Account Isolation" data-badge="Security">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/4.png" alt="True Account Isolation Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">04 · Isolation</span>
+                        <div class="carousel-slide-title">True Account Isolation</div>
+                        <div class="carousel-slide-desc">One isolated Docker Compose stack per customer for maximum security.</div>
+                    </div>
+
+                    <!-- Slide 5 -->
+                    <div class="carousel-slide" data-img="public/assets/img/5.png" data-title="Intuitive Experience" data-badge="UX Design">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/5.png" alt="Easy for Admins &amp; Clients Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">05 · UX Design</span>
+                        <div class="carousel-slide-title">Easy for Admins, Effortless for Clients</div>
+                        <div class="carousel-slide-desc">Clean, intuitive interfaces for client self-service and super admin control.</div>
+                    </div>
+
+                    <!-- Slide 6 -->
+                    <div class="carousel-slide" data-img="public/assets/img/6.png" data-title="Self-Hosted Freedom" data-badge="Data Ownership">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/6.png" alt="Own Your Data Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">06 · Self-Hosted</span>
+                        <div class="carousel-slide-title">Own Your Data, Host It Your Way</div>
+                        <div class="carousel-slide-desc">100% self-hosted platform with zero monthly per-account licensing fees.</div>
+                    </div>
+
+                    <!-- Slide 7 -->
+                    <div class="carousel-slide" data-img="public/assets/img/7.png" data-title="Designed for Scale" data-badge="Scalability">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/7.png" alt="Built for Growth Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">07 · Scalability</span>
+                        <div class="carousel-slide-title">Built for Growth &amp; Designed for Scale</div>
+                        <div class="carousel-slide-desc">Cloudflare, PowerDNS &amp; ACME integrations for hosting businesses and resellers.</div>
+                    </div>
+
+                    <!-- Slide 8 -->
+                    <div class="carousel-slide" data-img="public/assets/img/8.png" data-title="5-Step Migration" data-badge="Migration">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/8.png" alt="Migrate in 5 Simple Steps Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">08 · Migration</span>
+                        <div class="carousel-slide-title">Migrate in 5 Simple Steps</div>
+                        <div class="carousel-slide-desc">Zero complicated exports or hidden steps — move your platform headache-free.</div>
+                    </div>
+
+                    <!-- Slide 9 -->
+                    <div class="carousel-slide" data-img="public/assets/img/9.png" data-title="More Power &amp; Control" data-badge="Get Started">
+                        <div class="carousel-img-wrap">
+                            <img src="public/assets/img/9.png" alt="More Power Control Profit Graphic" loading="lazy">
+                        </div>
+                        <span class="carousel-slide-badge">09 · Next Steps</span>
+                        <div class="carousel-slide-title">More Power, Control &amp; Profit</div>
+                        <div class="carousel-slide-desc">Modern open-source hosting software putting you back in complete control.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dots Track -->
+            <div id="feat-carousel-dots" class="carousel-dots"></div>
+        </div>
+    </section>
+
     <section id="platform-status" class="section-padding container status-board">
         <div class="section-header reveal">
             <h2>Platform status at a glance</h2>
@@ -1911,6 +2198,101 @@
         });
 
         startAutoplay();
+
+        // 9-Card Feature Graphic Carousel Logic
+        const featTrack = document.getElementById('feat-carousel-track');
+        const featSlides = document.querySelectorAll('#feat-carousel-track .carousel-slide');
+        const featPrevBtn = document.getElementById('feat-carousel-prev');
+        const featNextBtn = document.getElementById('feat-carousel-next');
+        const featDotsContainer = document.getElementById('feat-carousel-dots');
+
+        if (featTrack && featSlides.length > 0) {
+            let featCurrentIndex = 0;
+            let slidesPerPage = getSlidesPerPage();
+            const totalSlides = featSlides.length;
+            let maxIndex = Math.max(0, totalSlides - slidesPerPage);
+
+            function getSlidesPerPage() {
+                if (window.innerWidth <= 640) return 1;
+                if (window.innerWidth <= 1024) return 2;
+                return 3;
+            }
+
+            function createDots() {
+                featDotsContainer.innerHTML = '';
+                maxIndex = Math.max(0, totalSlides - slidesPerPage);
+                for (let i = 0; i <= maxIndex; i++) {
+                    const dot = document.createElement('button');
+                    dot.className = `carousel-dot ${i === featCurrentIndex ? 'active' : ''}`;
+                    dot.setAttribute('aria-label', `Go to slide ${i + 1}`);
+                    dot.addEventListener('click', () => updateFeatCarousel(i));
+                    featDotsContainer.appendChild(dot);
+                }
+            }
+
+            function updateFeatCarousel(index) {
+                maxIndex = Math.max(0, totalSlides - slidesPerPage);
+                featCurrentIndex = Math.max(0, Math.min(index, maxIndex));
+                const slideWidth = featSlides[0].offsetWidth + 24;
+                featTrack.style.transform = `translateX(-${featCurrentIndex * slideWidth}px)`;
+
+                const dots = featDotsContainer.querySelectorAll('.carousel-dot');
+                dots.forEach((dot, idx) => dot.classList.toggle('active', idx === featCurrentIndex));
+            }
+
+            if (featPrevBtn) {
+                featPrevBtn.addEventListener('click', () => {
+                    const target = featCurrentIndex === 0 ? maxIndex : featCurrentIndex - 1;
+                    updateFeatCarousel(target);
+                });
+            }
+
+            if (featNextBtn) {
+                featNextBtn.addEventListener('click', () => {
+                    const target = featCurrentIndex >= maxIndex ? 0 : featCurrentIndex + 1;
+                    updateFeatCarousel(target);
+                });
+            }
+
+            window.addEventListener('resize', () => {
+                const newSlidesPerPage = getSlidesPerPage();
+                if (newSlidesPerPage !== slidesPerPage) {
+                    slidesPerPage = newSlidesPerPage;
+                    createDots();
+                    updateFeatCarousel(0);
+                }
+            });
+
+            featSlides.forEach((slide) => {
+                slide.addEventListener('click', () => {
+                    const img = slide.dataset.img;
+                    const title = slide.dataset.title;
+                    const badge = slide.dataset.badge;
+                    if (lightboxModal && lightboxImg && lightboxCaption) {
+                        lightboxImg.src = img;
+                        lightboxCaption.textContent = `${badge} - ${title}`;
+                        lightboxModal.classList.add('active');
+                        document.body.style.overflow = 'hidden';
+                    }
+                });
+            });
+
+            let featAutoplay = setInterval(() => {
+                const target = featCurrentIndex >= maxIndex ? 0 : featCurrentIndex + 1;
+                updateFeatCarousel(target);
+            }, 5000);
+
+            featTrack.addEventListener('mouseenter', () => clearInterval(featAutoplay));
+            featTrack.addEventListener('mouseleave', () => {
+                featAutoplay = setInterval(() => {
+                    const target = featCurrentIndex >= maxIndex ? 0 : featCurrentIndex + 1;
+                    updateFeatCarousel(target);
+                }, 5000);
+            });
+
+            createDots();
+            updateFeatCarousel(0);
+        }
     </script>
 </body>
 </html>
