@@ -1005,7 +1005,7 @@
         /* Hero Spec Cards Grid */
         .hero-meta {
             display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 1rem;
             margin-top: 3.5rem;
         }
@@ -1672,10 +1672,12 @@
 
         <!-- Spec Highlights Cards -->
         <div class="hero-meta">
-            <div class="hero-meta-card reveal"><strong>JWT + TOTP</strong><span>Mandatory auth for users and admins.</span></div>
-            <div class="hero-meta-card reveal"><strong>Queued jobs</strong><span>State changes go through the local agent.</span></div>
-            <div class="hero-meta-card reveal"><strong>SQLite WAL</strong><span>Simple control plane, versioned migrations.</span></div>
-            <div class="hero-meta-card reveal"><strong>Account stacks</strong><span>One isolated Docker stack per hosting account.</span></div>
+            <div class="hero-meta-card reveal"><strong>hPanel-Inspired UX</strong><span>Sleek, modern client & admin UI replacing cluttered legacy panels.</span></div>
+            <div class="hero-meta-card reveal"><strong>Docker Account Isolation</strong><span>Dedicated Docker stack per account for true process & resource limits.</span></div>
+            <div class="hero-meta-card reveal"><strong>Ultra-Lightweight Core</strong><span>Pure Python stdlib + SQLite backend delivers 70% memory savings.</span></div>
+            <div class="hero-meta-card reveal"><strong>Instant 1-Folder Migration</strong><span>All DB, accounts, and config reside in user_files/ for 1-step rsync moves.</span></div>
+            <div class="hero-meta-card reveal"><strong>Zero Licensing Fees</strong><span>100% self-hosted & open-source with no per-user or per-domain tax.</span></div>
+            <div class="hero-meta-card reveal"><strong>Decoupled Node Agent</strong><span>Public API never touches root; state updates execute asynchronously via agent.</span></div>
         </div>
     </section>
 
