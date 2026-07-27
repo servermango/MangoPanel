@@ -2883,9 +2883,34 @@
                       <label class="sw-label">Domain Name</label>
                       <div class="sw-domain-input-wrap">
                         <svg class="sw-domain-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                        <input class="sw-domain-input" v-model="siteWizard.domain" placeholder="example.com" autocomplete="off" spellcheck="false">
+                        <input class="sw-domain-input" v-model="siteWizard.domain" @input="onWizardDomainChange" placeholder="example.com" autocomplete="off" spellcheck="false">
                       </div>
                       <small class="sw-hint">Enter the bare domain — no http:// or www.</small>
+                    </div>
+
+                    <div v-if="siteWizard.dnsCheckResult && siteWizard.dnsCheckResult.exists && siteWizard.dnsCheckResult.dns_provider === 'cloudflare'" class="sw-dns-alert">
+                      <div class="sw-dns-alert-header">
+                        <svg class="sw-dns-alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                        <span>This domain already exists in the DNS</span>
+                      </div>
+                      <div class="sw-dns-choices">
+                        <label class="sw-dns-choice-card" :class="{ selected: siteWizard.dnsAction === 'keep' }">
+                          <input type="radio" v-model="siteWizard.dnsAction" value="keep" style="display:none;">
+                          <div class="sw-dns-radio-dot"></div>
+                          <div>
+                            <strong>Keep current records and save a copy remote DNS records locally</strong>
+                            <span>Preserves existing Cloudflare DNS records and saves a copy locally in your panel.</span>
+                          </div>
+                        </label>
+                        <label class="sw-dns-choice-card" :class="{ selected: siteWizard.dnsAction === 'discard' }">
+                          <input type="radio" v-model="siteWizard.dnsAction" value="discard" style="display:none;">
+                          <div class="sw-dns-radio-dot"></div>
+                          <div>
+                            <strong>Discard current DNS records</strong>
+                            <span>Overwrites existing Cloudflare DNS records with default panel records.</span>
+                          </div>
+                        </label>
+                      </div>
                     </div>
                   </div>
 

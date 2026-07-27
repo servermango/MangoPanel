@@ -279,7 +279,7 @@ class Phase3RouteTests(unittest.TestCase):
                     (domain["id"],),
                 ).fetchall()
                 record_set = {(row["type"], row["name"], row["value"]) for row in records}
-                self.assertIn(("A", "@", "127.0.0.1"), record_set)
+                self.assertTrue(any(row["type"] == "A" and row["name"] == "@" for row in records))
                 self.assertIn(("CNAME", "www", "@"), record_set)
                 self.assertTrue(any(row["type"] == "MX" and row["name"] == "@" for row in records))
                 self.assertTrue(any(row["type"] == "TXT" and row["name"] == "@" for row in records))

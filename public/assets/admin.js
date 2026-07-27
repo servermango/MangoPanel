@@ -651,6 +651,8 @@ createApp({
           };
           for (const account of client.accounts) {
             account.selected_plan_id = account.plan_id;
+            account.selected_dns_provider = account.dns_provider || "";
+            account.selected_dns_account_id = account.dns_provider_account_id || "";
           }
         }
         this.plans = (await this.api("/api/admin/plans")).plans;
@@ -1047,6 +1049,22 @@ createApp({
         this.message = error.message;
       }
     },
+    async updateAccountDnsProvider(client, account) {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/hosting-accounts/${account.id}/dns-provider`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            dns_provider: account.selected_dns_provider || "",
+            dns_provider_account_id: account.selected_dns_account_id ? Number(account.selected_dns_account_id) : null,
+          }),
+        });
+        this.message = `Updated DNS provider for ${account.username} to ${payload.dns_policy.display_label}`;
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
     providerLabel(key) {
       const provider = (this.dnsSettings.providers || []).find((item) => item.key === key);
       return provider ? provider.display_name : key;
@@ -1153,8 +1171,11 @@ createApp({
           method: "POST",
           body: JSON.stringify({ provider_account_id: account ? account.id : null }),
         });
-        this.dnsSettings = payload.dns_settings;
+        if (payload.dns_settings) {
+          this.dnsSettings = payload.dns_settings;
+        }
         this.message = payload.message;
+        await this.load();
       } catch (error) {
         this.message = error.message;
       }

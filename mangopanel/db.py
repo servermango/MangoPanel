@@ -1555,6 +1555,10 @@ def ensure_dns_provider_schema(conn):
         )
         """
     )
+    ensure_table_columns(conn, "hosting_accounts", {
+        "dns_provider": "TEXT",
+        "dns_provider_account_id": "INTEGER",
+    })
 
 
 def seed_dns_provider_defaults(conn):

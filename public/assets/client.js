@@ -313,7 +313,7 @@ const app = createApp({
           allow_overwrite: false,
         }
       },
-      siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], isSubmitting: false, isBuilding: false, errorMessage: '', dnsTab: 'records' },
+      siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], dnsCheckResult: null, dnsAction: 'keep', isCheckingDns: false, isSubmitting: false, isBuilding: false, errorMessage: '', dnsTab: 'records' },
       connectWizard: { isOpen: false, website: null, method: 'nameservers', checking: false, result: null },
       sshState: { enabled: false, toggling: false, loaded: false, hasPassword: false, settingPassword: false, newPassword: null, passwordModal: false, passwordInput: "", passwordError: "" },
       sslModal: { isOpen: false, website_id: "", crt: "", key: "", isSubmitting: false, errorMessage: "" },
@@ -2180,6 +2180,9 @@ const app = createApp({
         createdWebsite: null,
         createdDomainNameservers: [],
         dnsPreview: null,
+        dnsCheckResult: null,
+        dnsAction: 'keep',
+        isCheckingDns: false,
         loadingDnsPreview: false,
         isSubmitting: false,
         isBuilding: false,
@@ -2191,6 +2194,34 @@ const app = createApp({
     closeSiteWizard() {
       this.siteWizard.isOpen = false;
       this.siteWizard.errorMessage = "";
+    },
+    onWizardDomainChange() {
+      this.siteWizard.dnsCheckResult = null;
+      this.siteWizard.errorMessage = "";
+    },
+    async checkDomainDns() {
+      if (!this.siteWizard.domain) return true;
+      this.siteWizard.isCheckingDns = true;
+      this.siteWizard.errorMessage = "";
+      try {
+        const checkResult = await this.api("/api/client/dns/check-domain", {
+          method: "POST",
+          body: JSON.stringify({ domain: this.siteWizard.domain })
+        });
+        this.siteWizard.dnsCheckResult = checkResult;
+        if (checkResult.exists && checkResult.blocked) {
+          this.siteWizard.errorMessage = checkResult.error_message || "This website can't be added to this account because it already exists on another account on this hosting. Kindly contact support";
+          return false;
+        }
+        return true;
+      } catch (err) {
+        if (err && err.message) {
+          this.siteWizard.errorMessage = err.message;
+        }
+        return false;
+      } finally {
+        this.siteWizard.isCheckingDns = false;
+      }
     },
     async fetchDnsPreview() {
       if (!this.siteWizard.domain) return;
@@ -2207,11 +2238,13 @@ const app = createApp({
         this.siteWizard.loadingDnsPreview = false;
       }
     },
-    nextSiteWizardStep() {
+    async nextSiteWizardStep() {
       if (this.siteWizard.step === 2) {
         if (!this.siteWizard.domain) return;
+        const ok = await this.checkDomainDns();
+        if (!ok) return;
         if (this.siteWizard.type === 'blank') {
-          this.finishSiteWizard();
+          await this.finishSiteWizard();
           return;
         }
       }
@@ -2222,6 +2255,10 @@ const app = createApp({
     },
     async finishSiteWizard() {
       if (this.siteWizard.isSubmitting) return;
+      if (this.siteWizard.step === 2) {
+        const ok = await this.checkDomainDns();
+        if (!ok) return;
+      }
       this.siteWizard.isSubmitting = true;
       this.siteWizard.isBuilding = true;
       try {
@@ -2229,7 +2266,10 @@ const app = createApp({
         this.notify("Creating website...", "success");
         const sitePayload = await this.api("/api/client/websites", {
           method: "POST",
-          body: JSON.stringify({ domain: this.siteWizard.domain })
+          body: JSON.stringify({
+            domain: this.siteWizard.domain,
+            dns_action: this.siteWizard.dnsAction
+          })
         });
         const website = sitePayload.website;
         this.siteWizard.createdWebsite = website;

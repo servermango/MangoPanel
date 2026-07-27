@@ -1,13 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MangoPanel · Shared Hosting Control Plane</title>
-    <meta name="description" content="MangoPanel is a self-hosted shared hosting control panel for real account stacks, queued jobs, DNS, SSL, files, mailboxes, backups, and more.">
+    <meta name="description"
+        content="MangoPanel is a self-hosted shared hosting control panel for real account stacks, queued jobs, DNS, SSL, files, mailboxes, backups, and more.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap"
+        rel="stylesheet">
     <style>
         :root {
             /* Client Panel Color Palette (Default & Dark Themes) */
@@ -15,35 +19,35 @@
             --surface: #151d30;
             --surface-2: #1e2942;
             --surface-elevated: #263556;
-            
+
             --text: #f1f5f9;
             --text-secondary: #cbd5e1;
             --muted: #94a3b8;
             --line: #222f4c;
             --line-hover: #33446b;
-            
+
             --brand: #fdb528;
             --brand-strong: #e8a417;
             --brand-ink: #8a5800;
             --brand-tint: rgba(253, 181, 40, 0.12);
             --brand-glow: rgba(253, 181, 40, 0.22);
-            
+
             --accent: #2c3136;
             --accent-dark: #1e2528;
-            
+
             --success: #22c55e;
             --success-ink: #86efac;
             --success-tint: rgba(34, 197, 94, 0.12);
-            
+
             --warning: #f59e0b;
             --danger: #ef4444;
             --info: #3b82f6;
             --info-tint: rgba(59, 130, 246, 0.12);
-            
+
             --shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
             --shadow-premium: 0 20px 45px -10px rgba(0, 0, 0, 0.5);
             --transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-            
+
             --font-body: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         }
@@ -91,7 +95,7 @@
                 linear-gradient(90deg, var(--line) 1px, transparent 1px);
             background-size: 48px 48px;
             opacity: 0.18;
-            mask-image: radial-gradient(circle at 50% 30%, rgba(0,0,0,1), rgba(0,0,0,0.1) 85%);
+            mask-image: radial-gradient(circle at 50% 30%, rgba(0, 0, 0, 1), rgba(0, 0, 0, 0.1) 85%);
             pointer-events: none;
         }
 
@@ -108,7 +112,7 @@
             position: sticky;
             top: 0;
             z-index: 100;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
         }
 
         /* Client Panel Brand Mark */
@@ -276,9 +280,17 @@
         }
 
         @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
-            70% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+            0% {
+                box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4);
+            }
+
+            70% {
+                box-shadow: 0 0 0 8px rgba(34, 197, 94, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+            }
         }
 
         /* Hero Section */
@@ -422,9 +434,17 @@
             display: inline-block;
         }
 
-        .dot-red { background-color: #ff5f56; }
-        .dot-yellow { background-color: #ffbd2e; }
-        .dot-green { background-color: #27c93f; }
+        .dot-red {
+            background-color: #ff5f56;
+        }
+
+        .dot-yellow {
+            background-color: #ffbd2e;
+        }
+
+        .dot-green {
+            background-color: #27c93f;
+        }
 
         .address-bar {
             background: rgba(11, 15, 25, 0.6);
@@ -521,7 +541,7 @@
             background: var(--surface-2);
             color: var(--brand);
             border-color: var(--line-hover);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
         }
 
         .tab-btn.active .tab-icon {
@@ -589,7 +609,7 @@
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5);
             backdrop-filter: blur(8px);
         }
 
@@ -653,6 +673,7 @@
             .showcase-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
+
             .hero h1 {
                 font-size: 2.4rem;
             }
@@ -782,6 +803,7 @@
             .carousel-wrapper {
                 padding: 0 1rem;
             }
+
             .carousel-slide {
                 flex: 0 0 100%;
                 max-width: 100%;
@@ -864,7 +886,7 @@
             cursor: pointer;
             z-index: 10;
             transition: var(--transition);
-            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
         }
 
         .carousel-btn:hover {
@@ -874,8 +896,13 @@
             transform: translateY(-50%) scale(1.08);
         }
 
-        .carousel-btn-prev { left: 0; }
-        .carousel-btn-next { right: 0; }
+        .carousel-btn-prev {
+            left: 0;
+        }
+
+        .carousel-btn-next {
+            right: 0;
+        }
 
         /* Carousel Dots Pagination */
         .carousel-dots {
@@ -941,7 +968,7 @@
             max-width: 100%;
             max-height: 80vh;
             border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(253, 181, 40, 0.2);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 40px rgba(253, 181, 40, 0.2);
             border: 1px solid var(--line-hover);
             object-fit: contain;
         }
@@ -999,8 +1026,13 @@
             color: var(--accent-dark);
         }
 
-        .lightbox-prev { left: -60px; }
-        .lightbox-next { right: -60px; }
+        .lightbox-prev {
+            left: -60px;
+        }
+
+        .lightbox-next {
+            right: -60px;
+        }
 
         /* Hero Spec Cards Grid */
         .hero-meta {
@@ -1376,7 +1408,10 @@
         .maintainer-card::after {
             content: '';
             position: absolute;
-            top: 0; left: 0; right: 0; height: 3px;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
             background: linear-gradient(90deg, transparent, var(--brand), transparent);
         }
 
@@ -1514,29 +1549,109 @@
         }
     </style>
 </head>
+
 <body>
 
     <!-- SVG Icon Sprite -->
     <svg class="icon-sprite" aria-hidden="true" focusable="false" viewBox="0 0 24 24">
-        <symbol id="icon-layers" viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5Z"/><path d="M2 16l10 5 10-5"/><path d="M2 12l10 5 10-5"/></symbol>
-        <symbol id="icon-layout" viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="7" rx="1.5"/><rect x="3" y="15" width="7" height="5" rx="1.5"/><rect x="14" y="15" width="7" height="5" rx="1.5"/></symbol>
-        <symbol id="icon-architecture" viewBox="0 0 24 24"><path d="M4 20h16"/><path d="M4 4h6v16H4z"/><path d="M14 8h6v12h-6z"/><path d="M7 7v3"/><path d="M17 8v2"/></symbol>
-        <symbol id="icon-user" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/></symbol>
-        <symbol id="icon-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v10c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 10c0 1.7 3.6 3 8 3s8-1.3 8-3"/><path d="M4 15c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
-        <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 3 19 6v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6l7-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
-        <symbol id="icon-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c3 3 3 15 0 18"/><path d="M12 3c-3 3-3 15 0 18"/></symbol>
-        <symbol id="icon-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></symbol>
-        <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H3z"/><path d="M3 6a2 2 0 0 1 2-2h4l2 2"/></symbol>
-        <symbol id="icon-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></symbol>
-        <symbol id="icon-repeat" viewBox="0 0 24 24"><path d="M17 1 21 5 17 9"/><path d="M21 5H7a4 4 0 0 0-4 4v1"/><path d="M7 23 3 19l4-4"/><path d="M3 19h14a4 4 0 0 0 4-4v-1"/></symbol>
-        <symbol id="icon-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
-        <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
-        <symbol id="icon-server" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7h.01M8 16h.01M12 7h4M12 16h4"/></symbol>
-        <symbol id="icon-rocket" viewBox="0 0 24 24"><path d="M14 5c3 0 5 2 5 5-3 5-6 7-11 9 2-5 4-8 6-11 0-2 0-3 0-3Z"/><path d="M9 15 5 19c2 0 4-.4 5-1"/><path d="M10 10a2 2 0 1 0 4 0 2 2 0 0 0-4 0Z"/></symbol>
-        <symbol id="icon-chart" viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3-4 3 2 5-7"/><path d="M18 6h-3V3"/></symbol>
-        <symbol id="icon-cog" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/><path d="M3 12h2M19 12h2M12 3v2M12 19v2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M5.6 18.4 7 17"/></symbol>
-        <symbol id="icon-checklist" viewBox="0 0 24 24"><path d="M4 6h2"/><path d="M10 6h10"/><path d="M4 12h2"/><path d="M10 12h10"/><path d="M4 18h2"/><path d="M10 18h10"/><path d="m4 6 1 1 2-2"/><path d="m4 12 1 1 2-2"/><path d="m4 18 1 1 2-2"/></symbol>
-        <symbol id="icon-external" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></symbol>
+        <symbol id="icon-layers" viewBox="0 0 24 24">
+            <path d="M12 3 2 8l10 5 10-5-10-5Z" />
+            <path d="M2 16l10 5 10-5" />
+            <path d="M2 12l10 5 10-5" />
+        </symbol>
+        <symbol id="icon-layout" viewBox="0 0 24 24">
+            <rect x="3" y="4" width="7" height="7" rx="1.5" />
+            <rect x="14" y="4" width="7" height="7" rx="1.5" />
+            <rect x="3" y="15" width="7" height="5" rx="1.5" />
+            <rect x="14" y="15" width="7" height="5" rx="1.5" />
+        </symbol>
+        <symbol id="icon-architecture" viewBox="0 0 24 24">
+            <path d="M4 20h16" />
+            <path d="M4 4h6v16H4z" />
+            <path d="M14 8h6v12h-6z" />
+            <path d="M7 7v3" />
+            <path d="M17 8v2" />
+        </symbol>
+        <symbol id="icon-user" viewBox="0 0 24 24">
+            <path d="M20 21a8 8 0 0 0-16 0" />
+            <circle cx="12" cy="8" r="4" />
+        </symbol>
+        <symbol id="icon-database" viewBox="0 0 24 24">
+            <ellipse cx="12" cy="5" rx="8" ry="3" />
+            <path d="M4 5v10c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+            <path d="M4 10c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+            <path d="M4 15c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+        </symbol>
+        <symbol id="icon-shield" viewBox="0 0 24 24">
+            <path d="M12 3 19 6v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6l7-3Z" />
+            <path d="m9 12 2 2 4-4" />
+        </symbol>
+        <symbol id="icon-globe" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18" />
+            <path d="M12 3c3 3 3 15 0 18" />
+            <path d="M12 3c-3 3-3 15 0 18" />
+        </symbol>
+        <symbol id="icon-mail" viewBox="0 0 24 24">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <path d="m3 7 9 6 9-6" />
+        </symbol>
+        <symbol id="icon-folder" viewBox="0 0 24 24">
+            <path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H3z" />
+            <path d="M3 6a2 2 0 0 1 2-2h4l2 2" />
+        </symbol>
+        <symbol id="icon-bolt" viewBox="0 0 24 24">
+            <path d="M13 2 4 14h6l-1 8 9-12h-6z" />
+        </symbol>
+        <symbol id="icon-repeat" viewBox="0 0 24 24">
+            <path d="M17 1 21 5 17 9" />
+            <path d="M21 5H7a4 4 0 0 0-4 4v1" />
+            <path d="M7 23 3 19l4-4" />
+            <path d="M3 19h14a4 4 0 0 0 4-4v-1" />
+        </symbol>
+        <symbol id="icon-activity" viewBox="0 0 24 24">
+            <path d="M3 12h4l3-8 4 16 3-8h4" />
+        </symbol>
+        <symbol id="icon-lock" viewBox="0 0 24 24">
+            <rect x="5" y="11" width="14" height="10" rx="2" />
+            <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+        </symbol>
+        <symbol id="icon-server" viewBox="0 0 24 24">
+            <rect x="4" y="4" width="16" height="7" rx="2" />
+            <rect x="4" y="13" width="16" height="7" rx="2" />
+            <path d="M8 7h.01M8 16h.01M12 7h4M12 16h4" />
+        </symbol>
+        <symbol id="icon-rocket" viewBox="0 0 24 24">
+            <path d="M14 5c3 0 5 2 5 5-3 5-6 7-11 9 2-5 4-8 6-11 0-2 0-3 0-3Z" />
+            <path d="M9 15 5 19c2 0 4-.4 5-1" />
+            <path d="M10 10a2 2 0 1 0 4 0 2 2 0 0 0-4 0Z" />
+        </symbol>
+        <symbol id="icon-chart" viewBox="0 0 24 24">
+            <path d="M4 19V5" />
+            <path d="M4 19h16" />
+            <path d="M7 15l3-4 3 2 5-7" />
+            <path d="M18 6h-3V3" />
+        </symbol>
+        <symbol id="icon-cog" viewBox="0 0 24 24">
+            <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" />
+            <path d="M3 12h2M19 12h2M12 3v2M12 19v2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M5.6 18.4 7 17" />
+        </symbol>
+        <symbol id="icon-checklist" viewBox="0 0 24 24">
+            <path d="M4 6h2" />
+            <path d="M10 6h10" />
+            <path d="M4 12h2" />
+            <path d="M10 12h10" />
+            <path d="M4 18h2" />
+            <path d="M10 18h10" />
+            <path d="m4 6 1 1 2-2" />
+            <path d="m4 12 1 1 2-2" />
+            <path d="m4 18 1 1 2-2" />
+        </symbol>
+        <symbol id="icon-external" viewBox="0 0 24 24">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <polyline points="15 3 21 3 21 9" />
+            <line x1="10" y1="14" x2="21" y2="3" />
+        </symbol>
     </svg>
 
     <header>
@@ -1549,10 +1664,18 @@
         </a>
         <div class="topbar-actions">
             <nav class="top-nav">
-                <a href="#features" class="active"><svg class="nav-icon"><use href="#icon-layout"></use></svg><span>Platform</span></a>
-                <a href="#architecture"><svg class="nav-icon"><use href="#icon-architecture"></use></svg><span>Architecture</span></a>
-                <a href="#maintainer"><svg class="nav-icon"><use href="#icon-user"></use></svg><span>Maintainer</span></a>
-                <a href="docs.html" class="nav-docs-highlight"><svg class="nav-icon"><use href="#icon-checklist"></use></svg><span>Docs</span></a>
+                <a href="#features" class="active"><svg class="nav-icon">
+                        <use href="#icon-layout"></use>
+                    </svg><span>Platform</span></a>
+                <a href="#architecture"><svg class="nav-icon">
+                        <use href="#icon-architecture"></use>
+                    </svg><span>Architecture</span></a>
+                <a href="#maintainer"><svg class="nav-icon">
+                        <use href="#icon-user"></use>
+                    </svg><span>Maintainer</span></a>
+                <a href="docs.html" class="nav-docs-highlight"><svg class="nav-icon">
+                        <use href="#icon-checklist"></use>
+                    </svg><span>Docs</span></a>
             </nav>
             <div class="portal-links">
                 <div class="live-chip"><span class="pulse-dot"></span>Live Release</div>
@@ -1563,11 +1686,16 @@
     <section class="hero">
         <div class="badge-pill">● Shared Hosting Control Plane · Live Interface Showcase</div>
         <h1>Run shared hosting with a control plane <br><span class="highlight">built for real operations.</span></h1>
-        <p>MangoPanel powers isolated account stacks, audited jobs, live mail and database tooling, and total operational visibility — explore the real control plane interface below.</p>
-        
+        <p>MangoPanel powers isolated account stacks, audited jobs, live mail and database tooling, and total
+            operational visibility — explore the real control plane interface below.</p>
+
         <div class="btn-group">
-            <a href="#hero-showcase" class="btn btn-primary"><svg class="nav-icon" aria-hidden="true"><use href="#icon-layout"></use></svg><span>Explore Live Screenshots</span></a>
-            <a href="#architecture" class="btn btn-secondary"><svg class="nav-icon" aria-hidden="true"><use href="#icon-layers"></use></svg><span>Read the Architecture</span></a>
+            <a href="#hero-showcase" class="btn btn-primary"><svg class="nav-icon" aria-hidden="true">
+                    <use href="#icon-layout"></use>
+                </svg><span>Explore Live Screenshots</span></a>
+            <a href="#architecture" class="btn btn-secondary"><svg class="nav-icon" aria-hidden="true">
+                    <use href="#icon-layers"></use>
+                </svg><span>Read the Architecture</span></a>
         </div>
 
         <!-- Interactive Screenshots Showcase -->
@@ -1580,12 +1708,18 @@
                     <span class="window-dot dot-green"></span>
                 </div>
                 <div class="address-bar">
-                    <svg class="address-bar-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+                    <svg class="address-bar-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <rect x="5" y="11" width="14" height="10" rx="2" />
+                        <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+                    </svg>
                     <span id="showcase-url">https://demo.mangopanel.io/client/dashboard</span>
                 </div>
                 <div class="showcase-actions">
                     <button id="lightbox-trigger" class="showcase-expand-btn" title="View Fullscreen">
-                        <svg class="nav-icon" style="width:14px;height:14px;"><use href="#icon-external"></use></svg>
+                        <svg class="nav-icon" style="width:14px;height:14px;">
+                            <use href="#icon-external"></use>
+                        </svg>
                         <span>Fullscreen View</span>
                     </button>
                 </div>
@@ -1593,32 +1727,65 @@
 
             <!-- Tab Switcher Strip -->
             <div class="showcase-tabs-nav" id="showcase-tabs">
-                <button class="tab-btn active" data-index="0" data-img="public/assets/img/111.png" data-url="https://demo.mangopanel.io/client/dashboard" data-badge="Client Portal" data-title="Client Overview Dashboard" data-desc="Client portal home view displaying disk, inodes, CPU and memory usage along with quick tool cards for File Manager, SFTP, Databases, and Backups.">
-                    <svg class="tab-icon"><use href="#icon-layout"></use></svg><span>Client Dashboard</span>
+                <button class="tab-btn active" data-index="0" data-img="public/assets/img/111.png"
+                    data-url="https://demo.mangopanel.io/client/dashboard" data-badge="Client Portal"
+                    data-title="Client Overview Dashboard"
+                    data-desc="Client portal home view displaying disk, inodes, CPU and memory usage along with quick tool cards for File Manager, SFTP, Databases, and Backups.">
+                    <svg class="tab-icon">
+                        <use href="#icon-layout"></use>
+                    </svg><span>Client Dashboard</span>
                 </button>
-                <button class="tab-btn" data-index="1" data-img="public/assets/img/222.png" data-url="https://demo.mangopanel.io/admin/auth/2fa" data-badge="Security Auth" data-title="Admin 2FA Verification Console" data-desc="Enforced multi-factor authenticator gate with 6-digit TOTP verification protecting the super admin control plane.">
-                    <svg class="tab-icon"><use href="#icon-shield"></use></svg><span>Admin 2FA Auth</span>
+                <button class="tab-btn" data-index="1" data-img="public/assets/img/222.png"
+                    data-url="https://demo.mangopanel.io/admin/auth/2fa" data-badge="Security Auth"
+                    data-title="Admin 2FA Verification Console"
+                    data-desc="Enforced multi-factor authenticator gate with 6-digit TOTP verification protecting the super admin control plane.">
+                    <svg class="tab-icon">
+                        <use href="#icon-shield"></use>
+                    </svg><span>Admin 2FA Auth</span>
                 </button>
-                <button class="tab-btn" data-index="2" data-img="public/assets/img/333.png" data-url="https://demo.mangopanel.io/admin/overview" data-badge="Super Admin" data-title="Admin Console System Overview" data-desc="Super admin operations view tracking system accounts, hosted domains, active Docker stacks, live bandwidth, and disk capacity.">
-                    <svg class="tab-icon"><use href="#icon-server"></use></svg><span>Admin Console</span>
+                <button class="tab-btn" data-index="2" data-img="public/assets/img/333.png"
+                    data-url="https://demo.mangopanel.io/admin/overview" data-badge="Super Admin"
+                    data-title="Admin Console System Overview"
+                    data-desc="Super admin operations view tracking system accounts, hosted domains, active Docker stacks, live bandwidth, and disk capacity.">
+                    <svg class="tab-icon">
+                        <use href="#icon-server"></use>
+                    </svg><span>Admin Console</span>
                 </button>
-                <button class="tab-btn" data-index="3" data-img="public/assets/img/444.png" data-url="https://demo.mangopanel.io/admin/telemetry" data-badge="Live Metrics" data-title="Real-Time Telemetry &amp; Traffic Stream" data-desc="Server-Sent Events (SSE) streaming live inbound/outbound network speeds and real-time disk read/write throughput.">
-                    <svg class="tab-icon"><use href="#icon-activity"></use></svg><span>Live Telemetry</span>
+                <button class="tab-btn" data-index="3" data-img="public/assets/img/444.png"
+                    data-url="https://demo.mangopanel.io/admin/telemetry" data-badge="Live Metrics"
+                    data-title="Real-Time Telemetry &amp; Traffic Stream"
+                    data-desc="Server-Sent Events (SSE) streaming live inbound/outbound network speeds and real-time disk read/write throughput.">
+                    <svg class="tab-icon">
+                        <use href="#icon-activity"></use>
+                    </svg><span>Live Telemetry</span>
                 </button>
-                <button class="tab-btn" data-index="4" data-img="public/assets/img/555.png" data-url="https://demo.mangopanel.io/admin/storage" data-badge="Storage Diagnostics" data-title="Storage Capacity &amp; Container IOPS Breakdown" data-desc="Detailed storage breakdown with df -h capacity graph, Docker overlay inspection, and top disk I/O readers/writers per stack.">
-                    <svg class="tab-icon"><use href="#icon-database"></use></svg><span>Storage Analysis</span>
+                <button class="tab-btn" data-index="4" data-img="public/assets/img/555.png"
+                    data-url="https://demo.mangopanel.io/admin/storage" data-badge="Storage Diagnostics"
+                    data-title="Storage Capacity &amp; Container IOPS Breakdown"
+                    data-desc="Detailed storage breakdown with df -h capacity graph, Docker overlay inspection, and top disk I/O readers/writers per stack.">
+                    <svg class="tab-icon">
+                        <use href="#icon-database"></use>
+                    </svg><span>Storage Analysis</span>
                 </button>
-                <button class="tab-btn" data-index="5" data-img="public/assets/img/666.png" data-url="https://demo.mangopanel.io/client/login" data-badge="Client Portal" data-title="Client Sign-In &amp; System Status Gate" data-desc="Sleek split-screen sign-in portal presenting account login form alongside real-time virtual host and memory allocation status.">
-                    <svg class="tab-icon"><use href="#icon-user"></use></svg><span>Client Login</span>
+                <button class="tab-btn" data-index="5" data-img="public/assets/img/666.png"
+                    data-url="https://demo.mangopanel.io/client/login" data-badge="Client Portal"
+                    data-title="Client Sign-In &amp; System Status Gate"
+                    data-desc="Sleek split-screen sign-in portal presenting account login form alongside real-time virtual host and memory allocation status.">
+                    <svg class="tab-icon">
+                        <use href="#icon-user"></use>
+                    </svg><span>Client Login</span>
                 </button>
             </div>
 
             <!-- Main Viewport Window -->
             <div class="showcase-viewport" id="showcase-viewport">
-                <img id="showcase-img" src="public/assets/img/111.png" alt="MangoPanel Client Portal Overview Dashboard" loading="eager">
+                <img id="showcase-img" src="public/assets/img/111.png" alt="MangoPanel Client Portal Overview Dashboard"
+                    loading="eager">
                 <div class="viewport-overlay-hint">
                     <span class="zoom-badge">
-                        <svg class="nav-icon" style="width:16px;height:16px;"><use href="#icon-external"></use></svg>
+                        <svg class="nav-icon" style="width:16px;height:16px;">
+                            <use href="#icon-external"></use>
+                        </svg>
                         Click to Expand Fullscreen
                     </span>
                 </div>
@@ -1631,7 +1798,8 @@
                         <span id="showcase-badge" class="caption-badge">Client Portal</span>
                         <span id="showcase-title">Client Overview Dashboard</span>
                     </h4>
-                    <p id="showcase-desc">Client portal home view displaying disk, inodes, CPU and memory usage along with quick tool cards for File Manager, SFTP, Databases, and Backups.</p>
+                    <p id="showcase-desc">Client portal home view displaying disk, inodes, CPU and memory usage along
+                        with quick tool cards for File Manager, SFTP, Databases, and Backups.</p>
                 </div>
             </div>
         </div>
@@ -1639,7 +1807,8 @@
         <!-- 6-Card Interactive Selector Grid -->
         <div class="showcase-grid">
             <div class="grid-card active" data-index="0">
-                <div class="grid-card-thumb"><img src="public/assets/img/111.png" alt="Client Dashboard Thumbnail"></div>
+                <div class="grid-card-thumb"><img src="public/assets/img/111.png" alt="Client Dashboard Thumbnail">
+                </div>
                 <div class="grid-card-title">Client Dashboard</div>
                 <div class="grid-card-subtitle">Overview &amp; Account Tools</div>
             </div>
@@ -1659,7 +1828,8 @@
                 <div class="grid-card-subtitle">SSE Traffic &amp; IOPS</div>
             </div>
             <div class="grid-card" data-index="4">
-                <div class="grid-card-thumb"><img src="public/assets/img/555.png" alt="Storage Analysis Thumbnail"></div>
+                <div class="grid-card-thumb"><img src="public/assets/img/555.png" alt="Storage Analysis Thumbnail">
+                </div>
                 <div class="grid-card-title">Storage Analysis</div>
                 <div class="grid-card-subtitle">Disk Capacity &amp; Mounts</div>
             </div>
@@ -1672,12 +1842,18 @@
 
         <!-- Spec Highlights Cards -->
         <div class="hero-meta">
-            <div class="hero-meta-card reveal"><strong>hPanel-Inspired UX</strong><span>Sleek, modern client & admin UI replacing cluttered legacy panels.</span></div>
-            <div class="hero-meta-card reveal"><strong>Docker Account Isolation</strong><span>Dedicated Docker stack per account for true process & resource limits.</span></div>
-            <div class="hero-meta-card reveal"><strong>Ultra-Lightweight Core</strong><span>Pure Python stdlib + SQLite backend delivers 70% memory savings.</span></div>
-            <div class="hero-meta-card reveal"><strong>Instant 1-Folder Migration</strong><span>All DB, accounts, and config reside in user_files/ for 1-step rsync moves.</span></div>
-            <div class="hero-meta-card reveal"><strong>Zero Licensing Fees</strong><span>100% self-hosted & open-source with no per-user or per-domain tax.</span></div>
-            <div class="hero-meta-card reveal"><strong>Decoupled Node Agent</strong><span>Public API never touches root; state updates execute asynchronously via agent.</span></div>
+            <div class="hero-meta-card reveal"><strong>hPanel-Inspired UX</strong><span>Sleek, modern client & admin UI
+                    replacing cluttered legacy panels.</span></div>
+            <div class="hero-meta-card reveal"><strong>Docker Account Isolation</strong><span>Dedicated Docker stack per
+                    account for true process & resource limits.</span></div>
+            <div class="hero-meta-card reveal"><strong>Ultra-Lightweight Core</strong><span>Pure Python stdlib + SQLite
+                    backend delivers 70% memory savings.</span></div>
+            <div class="hero-meta-card reveal"><strong>Instant 1-Folder Migration</strong><span>All DB, accounts, and
+                    config reside in user_files/ for 1-step rsync moves.</span></div>
+            <div class="hero-meta-card reveal"><strong>Zero Licensing Fees</strong><span>100% self-hosted & open-source
+                    with no per-user or per-domain tax.</span></div>
+            <div class="hero-meta-card reveal"><strong>Decoupled Node Agent</strong><span>Public API never touches root;
+                    state updates execute asynchronously via agent.</span></div>
         </div>
     </section>
 
@@ -1696,103 +1872,125 @@
     <section id="platform-highlights" class="graphic-carousel-section container">
         <div class="section-header reveal">
             <h2>Platform Capabilities at a Glance</h2>
-            <p>Explore the architecture, zero-bloat efficiency, per-account isolation, and 5-step effortless migration that set MangoPanel apart.</p>
+            <p>Explore the architecture, zero-bloat efficiency, per-account isolation, and 5-step effortless migration
+                that set MangoPanel apart.</p>
         </div>
 
         <div class="carousel-wrapper reveal">
-            <button id="feat-carousel-prev" class="carousel-btn carousel-btn-prev" aria-label="Previous Slide">&#10094;</button>
-            <button id="feat-carousel-next" class="carousel-btn carousel-btn-next" aria-label="Next Slide">&#10095;</button>
-            
+            <button id="feat-carousel-prev" class="carousel-btn carousel-btn-prev"
+                aria-label="Previous Slide">&#10094;</button>
+            <button id="feat-carousel-next" class="carousel-btn carousel-btn-next"
+                aria-label="Next Slide">&#10095;</button>
+
             <div class="carousel-container">
                 <div id="feat-carousel-track" class="carousel-track">
                     <!-- Slide 1 -->
-                    <div class="carousel-slide" data-img="public/assets/img/1.png" data-title="Modern Control Panel" data-badge="Overview">
+                    <div class="carousel-slide" data-img="public/assets/img/1.png" data-title="Modern Control Panel"
+                        data-badge="Overview">
                         <div class="carousel-img-wrap">
                             <img src="public/assets/img/1.png" alt="MangoPanel Overview Graphic" loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">01 · Overview</span>
                         <div class="carousel-slide-title">Built for Performance &amp; Simplicity</div>
-                        <div class="carousel-slide-desc">Lightweight, fast, secure, and self-hosted with zero framework overhead.</div>
+                        <div class="carousel-slide-desc">Lightweight, fast, secure, and self-hosted with zero framework
+                            overhead.</div>
                     </div>
 
                     <!-- Slide 2 -->
-                    <div class="carousel-slide" data-img="public/assets/img/2.png" data-title="Essential Tools" data-badge="Essentials">
+                    <div class="carousel-slide" data-img="public/assets/img/2.png" data-title="Essential Tools"
+                        data-badge="Essentials">
                         <div class="carousel-img-wrap">
                             <img src="public/assets/img/2.png" alt="Everything You Need Graphic" loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">02 · Essentials</span>
                         <div class="carousel-slide-title">Everything You Need, Nothing You Don't</div>
-                        <div class="carousel-slide-desc">Websites, DBs, Email, Domains, Files, Backups, SSL, and 2FA built-in.</div>
+                        <div class="carousel-slide-desc">Websites, DBs, Email, Domains, Files, Backups, SSL, and 2FA
+                            built-in.</div>
                     </div>
 
                     <!-- Slide 3 -->
-                    <div class="carousel-slide" data-img="public/assets/img/3.png" data-title="Maximum Efficiency" data-badge="Performance">
+                    <div class="carousel-slide" data-img="public/assets/img/3.png" data-title="Maximum Efficiency"
+                        data-badge="Performance">
                         <div class="carousel-img-wrap">
                             <img src="public/assets/img/3.png" alt="Faster Lighter Efficiency Graphic" loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">03 · Performance</span>
                         <div class="carousel-slide-title">Faster, Lighter &amp; More Efficient</div>
-                        <div class="carousel-slide-desc">Engineered to use up to 70% fewer resources compared to traditional panels.</div>
+                        <div class="carousel-slide-desc">Engineered to use up to 70% fewer resources compared to
+                            traditional panels.</div>
                     </div>
 
                     <!-- Slide 4 -->
-                    <div class="carousel-slide" data-img="public/assets/img/4.png" data-title="Account Isolation" data-badge="Security">
+                    <div class="carousel-slide" data-img="public/assets/img/4.png" data-title="Account Isolation"
+                        data-badge="Security">
                         <div class="carousel-img-wrap">
                             <img src="public/assets/img/4.png" alt="True Account Isolation Graphic" loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">04 · Isolation</span>
                         <div class="carousel-slide-title">True Account Isolation</div>
-                        <div class="carousel-slide-desc">One isolated Docker Compose stack per customer for maximum security.</div>
+                        <div class="carousel-slide-desc">One isolated Docker Compose stack per customer for maximum
+                            security.</div>
                     </div>
 
                     <!-- Slide 5 -->
-                    <div class="carousel-slide" data-img="public/assets/img/5.png" data-title="Intuitive Experience" data-badge="UX Design">
+                    <div class="carousel-slide" data-img="public/assets/img/5.png" data-title="Intuitive Experience"
+                        data-badge="UX Design">
                         <div class="carousel-img-wrap">
-                            <img src="public/assets/img/5.png" alt="Easy for Admins &amp; Clients Graphic" loading="lazy">
+                            <img src="public/assets/img/5.png" alt="Easy for Admins &amp; Clients Graphic"
+                                loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">05 · UX Design</span>
                         <div class="carousel-slide-title">Easy for Admins, Effortless for Clients</div>
-                        <div class="carousel-slide-desc">Clean, intuitive interfaces for client self-service and super admin control.</div>
+                        <div class="carousel-slide-desc">Clean, intuitive interfaces for client self-service and super
+                            admin control.</div>
                     </div>
 
                     <!-- Slide 6 -->
-                    <div class="carousel-slide" data-img="public/assets/img/6.png" data-title="Self-Hosted Freedom" data-badge="Data Ownership">
+                    <div class="carousel-slide" data-img="public/assets/img/6.png" data-title="Self-Hosted Freedom"
+                        data-badge="Data Ownership">
                         <div class="carousel-img-wrap">
                             <img src="public/assets/img/6.png" alt="Own Your Data Graphic" loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">06 · Self-Hosted</span>
                         <div class="carousel-slide-title">Own Your Data, Host It Your Way</div>
-                        <div class="carousel-slide-desc">100% self-hosted platform with zero monthly per-account licensing fees.</div>
+                        <div class="carousel-slide-desc">100% self-hosted platform with zero monthly per-account
+                            licensing fees.</div>
                     </div>
 
                     <!-- Slide 7 -->
-                    <div class="carousel-slide" data-img="public/assets/img/7.png" data-title="Designed for Scale" data-badge="Scalability">
+                    <div class="carousel-slide" data-img="public/assets/img/7.png" data-title="Designed for Scale"
+                        data-badge="Scalability">
                         <div class="carousel-img-wrap">
                             <img src="public/assets/img/7.png" alt="Built for Growth Graphic" loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">07 · Scalability</span>
                         <div class="carousel-slide-title">Built for Growth &amp; Designed for Scale</div>
-                        <div class="carousel-slide-desc">Cloudflare, PowerDNS &amp; ACME integrations for hosting businesses and resellers.</div>
+                        <div class="carousel-slide-desc">Cloudflare, PowerDNS &amp; ACME integrations for hosting
+                            businesses and resellers.</div>
                     </div>
 
                     <!-- Slide 8 -->
-                    <div class="carousel-slide" data-img="public/assets/img/8.png" data-title="5-Step Migration" data-badge="Migration">
+                    <div class="carousel-slide" data-img="public/assets/img/8.png" data-title="5-Step Migration"
+                        data-badge="Migration">
                         <div class="carousel-img-wrap">
                             <img src="public/assets/img/8.png" alt="Migrate in 5 Simple Steps Graphic" loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">08 · Migration</span>
                         <div class="carousel-slide-title">Migrate in 5 Simple Steps</div>
-                        <div class="carousel-slide-desc">Zero complicated exports or hidden steps — move your platform headache-free.</div>
+                        <div class="carousel-slide-desc">Zero complicated exports or hidden steps — move your platform
+                            headache-free.</div>
                     </div>
 
                     <!-- Slide 9 -->
-                    <div class="carousel-slide" data-img="public/assets/img/9.png" data-title="More Power &amp; Control" data-badge="Get Started">
+                    <div class="carousel-slide" data-img="public/assets/img/9.png" data-title="More Power &amp; Control"
+                        data-badge="Get Started">
                         <div class="carousel-img-wrap">
                             <img src="public/assets/img/9.png" alt="More Power Control Profit Graphic" loading="lazy">
                         </div>
                         <span class="carousel-slide-badge">09 · Next Steps</span>
                         <div class="carousel-slide-title">More Power, Control &amp; Profit</div>
-                        <div class="carousel-slide-desc">Modern open-source hosting software putting you back in complete control.</div>
+                        <div class="carousel-slide-desc">Modern open-source hosting software putting you back in
+                            complete control.</div>
                     </div>
                 </div>
             </div>
@@ -1805,13 +2003,16 @@
     <section id="platform-status" class="section-padding container status-board">
         <div class="section-header reveal">
             <h2>Platform status at a glance</h2>
-            <p>These are the same kinds of feature states MangoPanel shows inside the client portal. The page is honest about what is live, read-only, or intentionally unavailable.</p>
+            <p>These are the same kinds of feature states MangoPanel shows inside the client portal. The page is honest
+                about what is live, read-only, or intentionally unavailable.</p>
         </div>
         <div class="status-grid">
             <div class="status-card reveal">
                 <div>
                     <div class="status-head">
-                        <div class="status-icon"><svg aria-hidden="true"><use href="#icon-folder"></use></svg></div>
+                        <div class="status-icon"><svg aria-hidden="true">
+                                <use href="#icon-folder"></use>
+                            </svg></div>
                         <div>
                             <h3>Files &amp; SFTP</h3>
                             <span class="status-pill functional">Functional</span>
@@ -1823,7 +2024,9 @@
             <div class="status-card reveal">
                 <div>
                     <div class="status-head">
-                        <div class="status-icon"><svg aria-hidden="true"><use href="#icon-database"></use></svg></div>
+                        <div class="status-icon"><svg aria-hidden="true">
+                                <use href="#icon-database"></use>
+                            </svg></div>
                         <div>
                             <h3>Databases</h3>
                             <span class="status-pill functional">Functional</span>
@@ -1835,7 +2038,9 @@
             <div class="status-card reveal">
                 <div>
                     <div class="status-head">
-                        <div class="status-icon"><svg aria-hidden="true"><use href="#icon-mail"></use></svg></div>
+                        <div class="status-icon"><svg aria-hidden="true">
+                                <use href="#icon-mail"></use>
+                            </svg></div>
                         <div>
                             <h3>Email</h3>
                             <span class="status-pill functional">Functional</span>
@@ -1847,7 +2052,9 @@
             <div class="status-card reveal">
                 <div>
                     <div class="status-head">
-                        <div class="status-icon"><svg aria-hidden="true"><use href="#icon-repeat"></use></svg></div>
+                        <div class="status-icon"><svg aria-hidden="true">
+                                <use href="#icon-repeat"></use>
+                            </svg></div>
                         <div>
                             <h3>Backups</h3>
                             <span class="status-pill functional">Functional</span>
@@ -1859,7 +2066,9 @@
             <div class="status-card reveal">
                 <div>
                     <div class="status-head">
-                        <div class="status-icon"><svg aria-hidden="true"><use href="#icon-globe"></use></svg></div>
+                        <div class="status-icon"><svg aria-hidden="true">
+                                <use href="#icon-globe"></use>
+                            </svg></div>
                         <div>
                             <h3>DNS &amp; SSL</h3>
                             <span class="status-pill functional">Functional</span>
@@ -1871,7 +2080,9 @@
             <div class="status-card reveal">
                 <div>
                     <div class="status-head">
-                        <div class="status-icon"><svg aria-hidden="true"><use href="#icon-chart"></use></svg></div>
+                        <div class="status-icon"><svg aria-hidden="true">
+                                <use href="#icon-chart"></use>
+                            </svg></div>
                         <div>
                             <h3>Metrics</h3>
                             <span class="status-pill readonly">Read only</span>
@@ -1883,7 +2094,9 @@
             <div class="status-card reveal">
                 <div>
                     <div class="status-head">
-                        <div class="status-icon"><svg aria-hidden="true"><use href="#icon-activity"></use></svg></div>
+                        <div class="status-icon"><svg aria-hidden="true">
+                                <use href="#icon-activity"></use>
+                            </svg></div>
                         <div>
                             <h3>Webalizer</h3>
                             <span class="status-pill disabled">Unavailable</span>
@@ -1895,7 +2108,9 @@
             <div class="status-card reveal">
                 <div>
                     <div class="status-head">
-                        <div class="status-icon"><svg aria-hidden="true"><use href="#icon-checklist"></use></svg></div>
+                        <div class="status-icon"><svg aria-hidden="true">
+                                <use href="#icon-checklist"></use>
+                            </svg></div>
                         <div>
                             <h3>Jobs &amp; Audit Trail</h3>
                             <span class="status-pill functional">Functional</span>
@@ -1910,64 +2125,89 @@
     <section id="features" class="section-padding container">
         <div class="section-header reveal">
             <h2>What MangoPanel is built to do</h2>
-            <p>The product spec is centered on real shared hosting operations: account provisioning, website management, mail, files, backups, DNS, and safe admin work.</p>
+            <p>The product spec is centered on real shared hosting operations: account provisioning, website management,
+                mail, files, backups, DNS, and safe admin work.</p>
         </div>
 
         <div class="micro-features-grid">
             <div class="micro-card reveal">
-                <div class="micro-icon"><svg aria-hidden="true"><use href="#icon-database"></use></svg></div>
+                <div class="micro-icon"><svg aria-hidden="true">
+                        <use href="#icon-database"></use>
+                    </svg></div>
                 <strong>Control plane</strong>
                 <h3>SQLite, migrations, and audit logs</h3>
-                <p>The hosting brain stays small and observable: WAL-mode SQLite, scheduled backups, integrity checks, and logged operations.</p>
+                <p>The hosting brain stays small and observable: WAL-mode SQLite, scheduled backups, integrity checks,
+                    and logged operations.</p>
                 <div class="feature-card-meta">Versioned state, auditable actions</div>
             </div>
             <div class="micro-card reveal">
-                <div class="micro-icon"><svg aria-hidden="true"><use href="#icon-layers"></use></svg></div>
+                <div class="micro-icon"><svg aria-hidden="true">
+                        <use href="#icon-layers"></use>
+                    </svg></div>
                 <strong>Hosting model</strong>
                 <h3>One stack per customer account</h3>
-                <p>Each customer gets isolated Docker services for the web stack, file manager, databases, mail relay, cron, SFTP, and tools.</p>
+                <p>Each customer gets isolated Docker services for the web stack, file manager, databases, mail relay,
+                    cron, SFTP, and tools.</p>
                 <div class="feature-card-meta">Isolation at the account boundary</div>
             </div>
             <div class="micro-card reveal">
-                <div class="micro-icon"><svg aria-hidden="true"><use href="#icon-globe"></use></svg></div>
+                <div class="micro-icon"><svg aria-hidden="true">
+                        <use href="#icon-globe"></use>
+                    </svg></div>
                 <strong>Site management</strong>
                 <h3>Domains, PHP versions, redirects, and SSL</h3>
-                <p>Clients can manage websites without SSH, including version switching, HTTPS, document roots, and redirect rules.</p>
+                <p>Clients can manage websites without SSH, including version switching, HTTPS, document roots, and
+                    redirect rules.</p>
                 <div class="feature-card-meta">Routing, certificates, and vhost control</div>
             </div>
             <div class="micro-card reveal">
-                <div class="micro-icon"><svg aria-hidden="true"><use href="#icon-database"></use></svg></div>
+                <div class="micro-icon"><svg aria-hidden="true">
+                        <use href="#icon-database"></use>
+                    </svg></div>
                 <strong>Databases</strong>
                 <h3>MySQL and PostgreSQL workflows</h3>
-                <p>Database creation, users, grants, remote allowlists, and browser access are built for ordinary hosting support work.</p>
+                <p>Database creation, users, grants, remote allowlists, and browser access are built for ordinary
+                    hosting support work.</p>
                 <div class="feature-card-meta">phpMyAdmin and browser tooling</div>
             </div>
             <div class="micro-card reveal">
-                <div class="micro-icon"><svg aria-hidden="true"><use href="#icon-chart"></use></svg></div>
+                <div class="micro-icon"><svg aria-hidden="true">
+                        <use href="#icon-chart"></use>
+                    </svg></div>
                 <strong>Operations</strong>
                 <h3>Backups, cron, Git, and app installs</h3>
-                <p>Routine maintenance is treated as first-class work: scheduled jobs, downloadable backups, deployments, and WordPress installs.</p>
+                <p>Routine maintenance is treated as first-class work: scheduled jobs, downloadable backups,
+                    deployments, and WordPress installs.</p>
                 <div class="feature-card-meta">Job-backed operations, not one-off clicks</div>
             </div>
             <div class="micro-card reveal">
-                <div class="micro-icon"><svg aria-hidden="true"><use href="#icon-shield"></use></svg></div>
+                <div class="micro-icon"><svg aria-hidden="true">
+                        <use href="#icon-shield"></use>
+                    </svg></div>
                 <strong>Security</strong>
                 <h3>JWT sessions, TOTP, and job-level checks</h3>
-                <p>The panel keeps the public surface tight and refuses to perform sensitive actions without the right account and auth context.</p>
+                <p>The panel keeps the public surface tight and refuses to perform sensitive actions without the right
+                    account and auth context.</p>
                 <div class="feature-card-meta">Short-lived launch tokens and RBAC</div>
             </div>
             <div class="micro-card reveal">
-                <div class="micro-icon"><svg aria-hidden="true"><use href="#icon-folder"></use></svg></div>
+                <div class="micro-icon"><svg aria-hidden="true">
+                        <use href="#icon-folder"></use>
+                    </svg></div>
                 <strong>Files</strong>
                 <h3>File manager, SFTP, and protected directories</h3>
-                <p>Day-to-day file operations stay inside the account boundary, with the same access model the client sees in the dashboard.</p>
+                <p>Day-to-day file operations stay inside the account boundary, with the same access model the client
+                    sees in the dashboard.</p>
                 <div class="feature-card-meta">Direct web tools and shell access</div>
             </div>
             <div class="micro-card reveal">
-                <div class="micro-icon"><svg aria-hidden="true"><use href="#icon-repeat"></use></svg></div>
+                <div class="micro-icon"><svg aria-hidden="true">
+                        <use href="#icon-repeat"></use>
+                    </svg></div>
                 <strong>Delivery</strong>
                 <h3>Queued agent jobs with visible sync history</h3>
-                <p>Nothing important vanishes into the void; state changes become jobs, and the panel shows what happened after the fact.</p>
+                <p>Nothing important vanishes into the void; state changes become jobs, and the panel shows what
+                    happened after the fact.</p>
                 <div class="feature-card-meta">Sync history and completion tracking</div>
             </div>
         </div>
@@ -1976,28 +2216,37 @@
     <section id="architecture" class="section-padding container">
         <div class="architecture-showcase">
             <div class="arch-text reveal">
-                <div class="section-kicker"><svg aria-hidden="true"><use href="#icon-architecture"></use></svg><span>Product map</span></div>
+                <div class="section-kicker"><svg aria-hidden="true">
+                        <use href="#icon-architecture"></use>
+                    </svg><span>Product map</span></div>
                 <h2>Built around the product spec,<br>not a generic dashboard.</h2>
                 <ul class="arch-list">
                     <li>
                         <h4>Shared hosting first</h4>
-                        <p>The current product is for shared hosting accounts on one server or a small group of servers. VPS/KVM stays a later module.</p>
+                        <p>The current product is for shared hosting accounts on one server or a small group of servers.
+                            VPS/KVM stays a later module.</p>
                     </li>
                     <li>
                         <h4>Desired state plus agent jobs</h4>
-                        <p>The API records desired state in SQLite, then a local node agent executes the privileged work and writes back results.</p>
+                        <p>The API records desired state in SQLite, then a local node agent executes the privileged work
+                            and writes back results.</p>
                     </li>
                     <li>
                         <h4>Auditable by design</h4>
-                        <p>Account provisioning, SSL issuance, mailboxes, backups, and site changes all leave a trace the operator can inspect later.</p>
+                        <p>Account provisioning, SSL issuance, mailboxes, backups, and site changes all leave a trace
+                            the operator can inspect later.</p>
                     </li>
                 </ul>
-                <p class="section-note">MangoPanel already acts like a real hosting product: clear limits, safe actions, and UI states that reflect the backend instead of pretending everything is instant.</p>
+                <p class="section-note">MangoPanel already acts like a real hosting product: clear limits, safe actions,
+                    and UI states that reflect the backend instead of pretending everything is instant.</p>
             </div>
-            
+
             <figure class="architecture-diagram reveal">
-                <img src="public/assets/img/MangoPanelArchitectureRedesigned.png" alt="MangoPanel system architecture diagram showing the client and admin panel, SQLite control plane, local agent, edge layer, per-account Docker stack, and persistent storage." loading="lazy">
-                <figcaption>Shared-hosting-first architecture with isolated account stacks, queued jobs, and live edge services.</figcaption>
+                <img src="public/assets/img/MangoPanelArchitectureRedesigned.png"
+                    alt="MangoPanel system architecture diagram showing the client and admin panel, SQLite control plane, local agent, edge layer, per-account Docker stack, and persistent storage."
+                    loading="lazy">
+                <figcaption>Shared-hosting-first architecture with isolated account stacks, queued jobs, and live edge
+                    services.</figcaption>
             </figure>
         </div>
     </section>
@@ -2005,11 +2254,15 @@
     <section id="maintainer" class="maintainer-section">
         <div class="container">
             <div class="maintainer-card reveal">
-                <div class="avatar"><svg aria-hidden="true"><use href="#icon-user"></use></svg></div>
+                <div class="avatar"><svg aria-hidden="true">
+                        <use href="#icon-user"></use>
+                    </svg></div>
                 <h3 class="maintainer-name">Tariq Abdullah</h3>
                 <span class="maintainer-title">Founder of ServerMango</span>
                 <p class="maintainer-bio">
-                    MangoPanel is shaped around the realities of shared hosting: small control plane, isolated account stacks, auditable jobs, short-lived tool launches, and UI states that tell the truth about what is live, read-only, or intentionally unavailable.
+                    MangoPanel is shaped around the realities of shared hosting: small control plane, isolated account
+                    stacks, auditable jobs, short-lived tool launches, and UI states that tell the truth about what is
+                    live, read-only, or intentionally unavailable.
                 </p>
             </div>
         </div>
@@ -2297,4 +2550,5 @@
         }
     </script>
 </body>
+
 </html>

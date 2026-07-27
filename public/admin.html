@@ -597,17 +597,38 @@
                       </select>
                     </td>
                     <td>
-                      <div v-for="account in client.accounts" :key="account.id" class="account-manage-row">
+                      <div v-for="account in client.accounts" :key="account.id" class="account-manage-row" style="margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid var(--border-color,#e5e7eb);">
                         <div>
                           <strong>{{ account.username }}</strong>
                           <span class="pill">{{ account.status }}</span>
                           <small>{{ account.website_count }} sites · {{ account.database_count }} DB · {{ account.backup_count }} backups</small>
+                          <div style="margin-top:0.2rem;">
+                            <span class="pill" style="font-size:0.75rem; background:var(--bg-accent,#e0f2fe); color:var(--text-accent,#0369a1);">DNS: {{ account.effective_dns_label || 'Local DNS (from global)' }}</span>
+                          </div>
                         </div>
-                        <select v-model.number="account.selected_plan_id">
-                          <option v-for="plan in plans" :key="plan.id" :value="plan.id">{{ plan.name }}</option>
-                        </select>
-                        <button @click="changeAccountPlan(client, account)" :disabled="Number(account.selected_plan_id) === Number(account.plan_id)">Update Plan</button>
-                        <button @click="toggleAccountStatus(client, account)">{{ account.status === "suspended" ? "Unsuspend" : "Suspend" }}</button>
+                        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.35rem;">
+                          <select v-model.number="account.selected_plan_id" style="width:auto;">
+                            <option v-for="plan in plans" :key="plan.id" :value="plan.id">{{ plan.name }}</option>
+                          </select>
+                          <button @click="changeAccountPlan(client, account)" :disabled="Number(account.selected_plan_id) === Number(account.plan_id)">Update Plan</button>
+                          <button @click="toggleAccountStatus(client, account)">{{ account.status === "suspended" ? "Unsuspend" : "Suspend" }}</button>
+                        </div>
+                        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.35rem; background:var(--bg-subtle,#f9fafb); padding:0.4rem 0.6rem; border-radius:4px;">
+                          <label style="font-size:0.8rem; margin:0; font-weight:500;">DNS Provider:
+                            <select v-model="account.selected_dns_provider" style="width:auto; font-size:0.8rem; padding:0.2rem 0.4rem;">
+                              <option value="">Default / Inherit (Use Plan / Global)</option>
+                              <option value="local_powerdns">Local DNS (PowerDNS)</option>
+                              <option value="cloudflare">Cloudflare</option>
+                            </select>
+                          </label>
+                          <label v-if="account.selected_dns_provider === 'cloudflare'" style="font-size:0.8rem; margin:0; font-weight:500;">CF Account:
+                            <select v-model="account.selected_dns_account_id" style="width:auto; font-size:0.8rem; padding:0.2rem 0.4rem;">
+                              <option value="">Auto Select Active</option>
+                              <option v-for="acct in cloudflareAccounts()" :key="acct.id" :value="acct.id">{{ acct.display_name }}</option>
+                            </select>
+                          </label>
+                          <button @click="updateAccountDnsProvider(client, account)" style="padding:0.2rem 0.5rem; font-size:0.78rem;">Save DNS</button>
+                        </div>
                       </div>
                     </td>
                     <td class="client-actions">
@@ -1459,6 +1480,7 @@
                   <tr>
                     <th>Cloudflare Account</th>
                     <th>Status</th>
+                    <th>Accounts / Zones</th>
                     <th>Secret</th>
                     <th>Actions</th>
                   </tr>
@@ -1467,6 +1489,7 @@
                   <tr v-for="account in cloudflareAccounts()" :key="account.id">
                     <td><strong>{{ account.display_name }}</strong><small>{{ account.account_name || account.external_account_id }}</small></td>
                     <td>{{ account.status }}</td>
+                    <td><span class="pill" style="font-size:0.78rem;">{{ account.hosting_account_count || 0 }} accounts / {{ account.zone_count || 0 }} zones</span></td>
                     <td>{{ account.has_secret ? account.secret_label : 'missing' }}</td>
                     <td class="actions">
                       <button @click="startEditCloudflareAccount(account)">Edit</button>

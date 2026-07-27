@@ -273,6 +273,21 @@ class PowerDNSProvider(DNSProvider):
         _, payload = _json_request("GET", self._url(path), self._headers(), timeout=self.timeout)
         return payload
 
+    def get_zone(self, zone_name):
+        zone = _zone_fqdn(zone_name)
+        try:
+            _, matches = _json_request(
+                "GET",
+                self._url(f"/servers/{quote(self.server_id, safe='')}/zones", {"zone": zone, "dnssec": "false"}),
+                self._headers(),
+                timeout=self.timeout,
+            )
+            if matches:
+                return matches[0]
+        except Exception:
+            pass
+        return None
+
     def ensure_zone(self, zone_name):
         zone = _zone_fqdn(zone_name)
         _, matches = _json_request(
@@ -476,6 +491,49 @@ class CloudflareDNSProvider(DNSProvider):
             raise DNSProviderError(f"Cloudflare API error: {detail}")
         return body.get("result") if isinstance(body, dict) else body
 
+    def get_zone(self, zone_name):
+        query = {"name": str(zone_name).rstrip(".")}
+        if self.account_id:
+            query["account.id"] = self.account_id
+        try:
+            zones = self._request("GET", "/zones", query=query) or []
+            if zones:
+                if zones[0].get("account", {}).get("id"):
+                    self.account_id = zones[0]["account"]["id"]
+                return zones[0]
+        except DNSProviderError:
+            if self.account_id:
+                zones = self._request("GET", "/zones", query={"name": str(zone_name).rstrip(".")}) or []
+                if zones:
+                    if zones[0].get("account", {}).get("id"):
+                        self.account_id = zones[0]["account"]["id"]
+                    return zones[0]
+        return None
+
+    def list_zones(self):
+        query = {"per_page": 500}
+        if self.account_id:
+            query["account.id"] = self.account_id
+        try:
+            zones = self._request("GET", "/zones", query=query) or []
+            if zones and zones[0].get("account", {}).get("id"):
+                self.account_id = zones[0]["account"]["id"]
+            return zones
+        except DNSProviderError as exc:
+            if self.account_id:
+                try:
+                    fallback_zones = self._request("GET", "/zones", query={"per_page": 500}) or []
+                    if fallback_zones:
+                        if fallback_zones[0].get("account", {}).get("id"):
+                            self.account_id = fallback_zones[0]["account"]["id"]
+                        return fallback_zones
+                except Exception:
+                    pass
+            raise exc
+
+    def get_dns_records(self, zone_id):
+        return self._request("GET", f"/zones/{zone_id}/dns_records", query={"per_page": 500}) or []
+
     def ensure_zone(self, zone_name):
         query = {"name": str(zone_name).rstrip(".")}
         if self.account_id:
@@ -508,6 +566,11 @@ class CloudflareDNSProvider(DNSProvider):
             key = f"{record.get('type')}:{record.get('name')}:{record.get('priority', '')}"
             current_by_key[key] = record
 
+        all_managed = dict(managed_records)
+        for key, record in current_by_key.items():
+            if key not in all_managed and record.get("id"):
+                all_managed[key] = record["id"]
+
         published = {}
         for key, cf_payload in desired_map.items():
             existing = current_by_key.get(key)
@@ -517,7 +580,7 @@ class CloudflareDNSProvider(DNSProvider):
                 result = self._request("POST", f"/zones/{zone_id}/dns_records", payload=cf_payload)
             published[key] = result.get("id") if isinstance(result, dict) else None
 
-        for key, record_id in managed_records.items():
+        for key, record_id in all_managed.items():
             if key not in desired_map and record_id:
                 self._request("DELETE", f"/zones/{zone_id}/dns_records/{record_id}")
 

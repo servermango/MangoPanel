@@ -104,6 +104,8 @@ class FakePowerDNSHandler(BaseHTTPRequestHandler):
 class FakeCloudflareHandler(BaseHTTPRequestHandler):
     created_zone = None
     created_records = []
+    zones = []
+    dns_records = {}
 
     def log_message(self, fmt, *args):
         return
@@ -136,9 +138,16 @@ class FakeCloudflareHandler(BaseHTTPRequestHandler):
                 }
             )
         if parsed.path == "/client/v4/zones":
-            return self.json_response({"success": True, "result": []})
-        if parsed.path == "/client/v4/zones/cf-zone-1/dns_records":
-            return self.json_response({"success": True, "result": []})
+            query = parse_qs(parsed.query)
+            name_q = (query.get("name") or [""])[0]
+            if name_q and FakeCloudflareHandler.zones:
+                matched = [z for z in FakeCloudflareHandler.zones if z["name"] == name_q]
+                return self.json_response({"success": True, "result": matched})
+            return self.json_response({"success": True, "result": FakeCloudflareHandler.zones or []})
+        if parsed.path.startswith("/client/v4/zones/") and parsed.path.endswith("/dns_records"):
+            zone_id = parsed.path.split("/")[4]
+            recs = FakeCloudflareHandler.dns_records.get(zone_id, [])
+            return self.json_response({"success": True, "result": recs})
         return self.json_response({"success": False, "errors": [{"message": "not_found"}]}, 404)
 
     def do_POST(self):
