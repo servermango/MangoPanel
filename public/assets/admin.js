@@ -571,6 +571,10 @@ createApp({
       const response = await fetch(path, { ...options, headers });
       const payload = await response.json();
       if (!response.ok) {
+        if (response.status === 503 && payload.error === "database_busy" && !options._dbRetry) {
+          await new Promise((r) => setTimeout(r, 500));
+          return this.api(path, { ...options, _dbRetry: true });
+        }
         const error = payload.error || "Request failed";
         if (["invalid_access_token", "expired_access_token", "invalid_token_subject", "wrong_actor_type"].includes(error)) {
           this.clearAdminSession("Please sign in again.");

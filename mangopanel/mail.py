@@ -88,8 +88,14 @@ def _within_base_path(path, base_path):
     if base_path is None:
         return True
     try:
-        Path(path).resolve().relative_to(Path(base_path).resolve())
-        return True
+        p = Path(path).absolute()
+        b = Path(base_path).absolute()
+        try:
+            p.relative_to(b)
+            return True
+        except ValueError:
+            p.resolve().relative_to(b.resolve())
+            return True
     except Exception:
         return False
 

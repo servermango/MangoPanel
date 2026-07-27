@@ -573,7 +573,28 @@ class MangoHandler(BaseHTTPRequestHandler):
             self.json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except ApiError as exc:
             self.json_response({"error": exc.message}, exc.status)
+        except sqlite3.OperationalError as exc:
+            err_msg = str(exc).lower()
+            if any(k in err_msg for k in ["locked", "busy", "unable to open"]):
+                print(f"[DB BUSY] {self.path} - {exc}")
+                self.json_response(
+                    {
+                        "error": "database_busy",
+                        "detail": "Database is currently busy. Please retry in a moment.",
+                        "retry_after": 1,
+                    },
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+            else:
+                import traceback
+                traceback.print_exc()
+                payload = {"error": "internal_error"}
+                if CONFIG.expose_internal_errors:
+                    payload["detail"] = str(exc)
+                self.json_response(payload, HTTPStatus.INTERNAL_SERVER_ERROR)
         except Exception as exc:
+            import traceback
+            traceback.print_exc()
             payload = {"error": "internal_error"}
             if CONFIG.expose_internal_errors:
                 payload["detail"] = str(exc)
@@ -667,7 +688,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             return self.serve_filebrowser_custom_js()
         if path in {"/files/api/extract", "/api/public/filebrowser/extract"} and method == "POST":
             return self.extract_file_archive()
-        if path.startswith("/api/public/filebrowser/proxy") and method == "GET":
+        if (path.startswith("/api/public/filebrowser/proxy") or path.startswith("/files/")) and method in {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}:
             return self.public_filebrowser_proxy(path)
         if path.startswith("/auth/") and method == "GET":
             return self.public_tool_launch(path)
@@ -1770,7 +1791,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 (email, hash_password(password), full_name, totp_secret),
             )
             user_id = cur.lastrowid
-            account_payload = create_initial_hosting_account(conn, user_id)
+            account_payload = create_initial_hosting_account(conn, user_id, request_headers=self.headers)
             log_audit(conn, "public", None, "customer_signup", "user", user_id, self.client_address[0], {"email": email})
             log_activity(conn, user_id, "customer_signup", {"email": email})
             return self.json_response(
@@ -2020,7 +2041,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         """
                         SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
                         FROM hosting_accounts ha
-                        JOIN plans p ON p.id = ha.plan_id
+                        LEFT JOIN plans p ON p.id = ha.plan_id
                         WHERE ha.id = ?
                         """,
                         (req_account_id,),
@@ -2030,7 +2051,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         """
                         SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
                         FROM hosting_accounts ha
-                        JOIN plans p ON p.id = ha.plan_id
+                        LEFT JOIN plans p ON p.id = ha.plan_id
                         ORDER BY ha.id LIMIT 1
                         """,
                     ).fetchone()
@@ -2039,7 +2060,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     """
                     SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
                     FROM hosting_accounts ha
-                    JOIN plans p ON p.id = ha.plan_id
+                    LEFT JOIN plans p ON p.id = ha.plan_id
                     WHERE ha.id = ? AND ha.user_id = ?
                     """,
                     (req_account_id, actor["id"]),
@@ -2051,7 +2072,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     """
                     SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
                     FROM hosting_accounts ha
-                    JOIN plans p ON p.id = ha.plan_id
+                    LEFT JOIN plans p ON p.id = ha.plan_id
                     WHERE ha.user_id = ?
                     ORDER BY ha.id LIMIT 1
                     """,
@@ -2061,7 +2082,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             path = path.rstrip("/")
             if path == "/api/client/home" and method == "GET":
                 user_id = account["user_id"] if account else actor["id"]
-                return self.json_response(client_home(conn, user_id))
+                active_account_id = account["id"] if account else None
+                return self.json_response(client_home(conn, user_id, active_account_id=active_account_id))
             if path == "/api/client/feature-status" and method == "GET":
                 return self.json_response({"features": FEATURE_STATUS})
             if path == "/api/client/sync-jobs" and method == "GET":
@@ -2106,11 +2128,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 collect_resource_usage_sample(conn, account, force=True)
                 log_activity(conn, actor["id"], "recalculate_usage", {"account_id": account["id"], "job_id": job_id})
                 user_id = account["user_id"] if account else actor["id"]
+                active_account_id = account["id"] if account else None
                 return self.json_response({
                     "ok": True,
                     "job_id": job_id,
                     "message": "Usage recalculation completed.",
-                    "resources": client_home(conn, user_id)["resources"],
+                    "resources": client_home(conn, user_id, active_account_id=active_account_id)["resources"],
                 })
             if path == "/api/client/php-info" and method == "GET":
                 require_account(account)
@@ -2132,17 +2155,30 @@ class MangoHandler(BaseHTTPRequestHandler):
                                 return True
                     except Exception:
                         return False
-                rows = conn.execute(
-                    """
-                    SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
-                    FROM websites w
-                    JOIN hosting_accounts ha ON ha.id = w.account_id
-                    LEFT JOIN domains d ON d.linked_website_id = w.id
-                    WHERE ha.user_id = ?
-                    ORDER BY w.id
-                    """,
-                    (actor["id"],),
-                ).fetchall()
+                if account:
+                    rows = conn.execute(
+                        """
+                        SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                        FROM websites w
+                        JOIN hosting_accounts ha ON ha.id = w.account_id
+                        LEFT JOIN domains d ON d.linked_website_id = w.id
+                        WHERE w.account_id = ?
+                        ORDER BY w.id
+                        """,
+                        (account["id"],),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                        FROM websites w
+                        JOIN hosting_accounts ha ON ha.id = w.account_id
+                        LEFT JOIN domains d ON d.linked_website_id = w.id
+                        WHERE ha.user_id = ?
+                        ORDER BY w.id
+                        """,
+                        (actor["id"],),
+                    ).fetchall()
                 websites = rows_to_dicts(rows)
                 for website in websites:
                     runtime = account_runtime(conn, website["account_id"])
@@ -2221,6 +2257,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
                 website_id = cur.lastrowid
                 dns_assignment = default_domain_dns_assignment(conn, account["id"])
+                if dns_check.get("exists") and dns_check.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE and dns_check.get("dns_provider_account_id"):
+                    dns_assignment["dns_provider_account_id"] = dns_check["dns_provider_account_id"]
                 if dns_assignment["dns_provider"] == DNS_PROVIDER_CLOUDFLARE:
                     provider_account_id = dns_assignment.get("dns_provider_account_id")
                     if provider_account_id:
@@ -2387,17 +2425,30 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_account(account)
                 return self.json_response({"php_versions": ["8.2", "8.3", "8.4"]})
             if path == "/api/client/domains" and method == "GET":
-                rows = conn.execute(
-                    """
-                    SELECT d.*, z.nameservers_json AS zone_nameservers_json
-                    FROM domains d
-                    JOIN hosting_accounts ha ON ha.id = d.account_id
-                    LEFT JOIN dns_zones z ON z.domain_id = d.id
-                    WHERE ha.user_id = ?
-                    ORDER BY d.name
-                    """,
-                    (actor["id"],),
-                ).fetchall()
+                if account:
+                    rows = conn.execute(
+                        """
+                        SELECT d.*, z.nameservers_json AS zone_nameservers_json
+                        FROM domains d
+                        JOIN hosting_accounts ha ON ha.id = d.account_id
+                        LEFT JOIN dns_zones z ON z.domain_id = d.id
+                        WHERE d.account_id = ?
+                        ORDER BY d.name
+                        """,
+                        (account["id"],),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT d.*, z.nameservers_json AS zone_nameservers_json
+                        FROM domains d
+                        JOIN hosting_accounts ha ON ha.id = d.account_id
+                        LEFT JOIN dns_zones z ON z.domain_id = d.id
+                        WHERE ha.user_id = ?
+                        ORDER BY d.name
+                        """,
+                        (actor["id"],),
+                    ).fetchall()
                 return self.json_response({"domains": [decorate_domain(row) for row in rows]})
             if path.startswith("/api/client/domains/") and path.endswith("/nameservers") and method == "POST":
                 require_account(account)
@@ -2949,11 +3000,11 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/pg-databases/users/grants" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
+                privileges = validate_db_privileges(body.get("privileges", "ALL"))
                 database_id = int(body.get("database_id", 0))
                 user_id = int(body.get("user_id", 0))
                 require_owned_pg_database(conn, account["id"], database_id)
                 require_owned_pg_user(conn, account["id"], user_id)
-                privileges = validate_db_privileges(body.get("privileges", "ALL"))
                 try:
                     cur = conn.execute("INSERT INTO pg_grants(database_id, user_id, privileges) VALUES (?, ?, ?)", (database_id, user_id, privileges))
                 except sqlite3.IntegrityError as exc:
@@ -4649,8 +4700,14 @@ class MangoHandler(BaseHTTPRequestHandler):
                 forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
                 scheme = forwarded_proto if forwarded_proto in {"http", "https"} else "http"
                 request_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip() or self.headers.get("Host", "")
-                hostname = request_host.split(":", 1)[0] or CONFIG.public_host
-                client_url = f"{scheme}://{hostname}:{CONFIG.client_port}/client#mp_impersonation_token={imp_token}"
+                if ":" in request_host:
+                    hostname_with_port = request_host
+                elif CONFIG.client_port not in (80, 443):
+                    hostname = request_host.split(":", 1)[0] or CONFIG.public_host
+                    hostname_with_port = f"{hostname}:{CONFIG.client_port}"
+                else:
+                    hostname_with_port = request_host or CONFIG.public_host
+                client_url = f"{scheme}://{hostname_with_port}/client#mp_impersonation_token={imp_token}"
                 return self.json_response({"client_url": client_url})
 
             if path.startswith("/api/admin/clients/"):
@@ -5567,7 +5624,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (user_id, plan_id, node_id, username, base_path, "provisioning"),
                 )
                 account_id = cur.lastrowid
-                domain = "{}.mango.test".format(username)
+                domain = get_provisioning_test_domain(username, request_headers=self.headers)
                 document_root = str(CONFIG.account_root / username / "domains" / domain / "public_html")
                 website_id = conn.execute(
                     """
@@ -5682,11 +5739,14 @@ class MangoHandler(BaseHTTPRequestHandler):
         self.record_access_log(status, len(body))
 
     def read_json(self):
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (ValueError, TypeError):
+            length = 0
         if length == 0:
             return {}
-        raw = self.rfile.read(length).decode("utf-8")
         try:
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
             return json.loads(raw)
         except json.JSONDecodeError:
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_json")
@@ -6301,8 +6361,35 @@ def check_domain_dns_provider(conn, account, domain_name):
     provider_key = dns_assignment["dns_provider"]
 
     if provider_key == DNS_PROVIDER_CLOUDFLARE:
-        cf, _ = get_cloudflare_provider_for_account(conn, account["id"])
-        if cf:
+        providers_to_check = []
+        eff_cf, _ = get_cloudflare_provider_for_account(conn, account["id"])
+        if eff_cf:
+            eff_acct_id = dns_assignment.get("dns_provider_account_id")
+            providers_to_check.append((eff_cf, eff_acct_id))
+
+        cf_rows = conn.execute(
+            """
+            SELECT a.*, c.encrypted_secret
+            FROM dns_provider_accounts a
+            JOIN dns_providers p ON p.id = a.provider_id
+            LEFT JOIN dns_provider_credentials c ON c.provider_account_id = a.id
+            WHERE p.key = ? AND a.status = 'active'
+            ORDER BY a.id ASC
+            """,
+            (DNS_PROVIDER_CLOUDFLARE,),
+        ).fetchall()
+
+        for row in cf_rows:
+            cred_secret = row["encrypted_secret"] if "encrypted_secret" in row.keys() and row["encrypted_secret"] else ""
+            if cred_secret:
+                token = decrypt_secret(cred_secret, CONFIG.jwt_secret)
+                if token:
+                    ext_id = row["external_account_id"] if "external_account_id" in row.keys() else None
+                    cf_inst = CloudflareDNSProvider(token, account_id=ext_id, api_base=CONFIG.cloudflare_api_base)
+                    if not any(p.api_token == cf_inst.api_token and p.account_id == cf_inst.account_id for p, _ in providers_to_check):
+                        providers_to_check.append((cf_inst, row["id"]))
+
+        for cf, acct_id in providers_to_check:
             try:
                 zone = cf.get_zone(domain)
                 if zone and isinstance(zone, dict) and zone.get("id"):
@@ -6310,6 +6397,7 @@ def check_domain_dns_provider(conn, account, domain_name):
                     return {
                         "exists": True,
                         "dns_provider": "cloudflare",
+                        "dns_provider_account_id": acct_id,
                         "alert_message": "This domain already exists in the DNS",
                         "zone_id": zone["id"],
                         "remote_records": remote_records,
@@ -6325,7 +6413,7 @@ def check_domain_dns_provider(conn, account, domain_name):
                         ]
                     }
             except Exception as exc:
-                logging.warning("Cloudflare zone check failed: %s", exc)
+                logging.warning("Cloudflare zone check failed for %s on account %s: %s", domain, acct_id, exc)
         return {
             "exists": False,
             "dns_provider": "cloudflare"
@@ -8347,7 +8435,7 @@ def client_mail_routing_payload(conn, account_id):
         """
         SELECT ha.id, p.daily_email_limit
         FROM hosting_accounts ha
-        JOIN plans p ON p.id = ha.plan_id
+        LEFT JOIN plans p ON p.id = ha.plan_id
         WHERE ha.id = ?
         """,
         (account_id,),
@@ -8898,7 +8986,35 @@ def otpauth_uri(issuer, email, secret):
     )
 
 
-def create_initial_hosting_account(conn, user_id):
+def resolve_panel_base_domain(request_headers=None):
+    host = ""
+    if request_headers:
+        if isinstance(request_headers, dict):
+            host = request_headers.get("Host") or request_headers.get("X-Forwarded-Host") or ""
+        elif hasattr(request_headers, "get"):
+            host = request_headers.get("Host", "") or request_headers.get("X-Forwarded-Host", "") or ""
+    if not host and hasattr(CONFIG, "public_host"):
+        host = CONFIG.public_host or ""
+
+    if ":" in host:
+        host = host.split(":")[0].strip()
+
+    host = host.strip().lower()
+    if host and host not in {"127.0.0.1", "0.0.0.0", "localhost"}:
+        parts = host.split(".")
+        is_ip = len(parts) == 4 and all(p.isdigit() for p in parts)
+        if not is_ip:
+            return host
+
+    return "mango.test"
+
+
+def get_provisioning_test_domain(username, request_headers=None):
+    base_domain = resolve_panel_base_domain(request_headers)
+    return "{}.{}".format(username, base_domain)
+
+
+def create_initial_hosting_account(conn, user_id, request_headers=None):
     plan = conn.execute("SELECT * FROM plans ORDER BY id LIMIT 1").fetchone()
     node = conn.execute("SELECT * FROM nodes ORDER BY id LIMIT 1").fetchone()
     if not plan or not node:
@@ -8914,7 +9030,7 @@ def create_initial_hosting_account(conn, user_id):
         (user_id, plan["id"], node["id"], username, base_path, "provisioning"),
     )
     account_id = cur.lastrowid
-    domain = "{}.mango.test".format(username)
+    domain = get_provisioning_test_domain(username, request_headers=request_headers)
     document_root = str(CONFIG.account_root / username / "domains" / domain / "public_html")
     website_id = conn.execute(
         """
@@ -9191,7 +9307,7 @@ def sql_placeholders(values):
     return ",".join("?" for _ in values)
 
 
-def client_home(conn, user_id):
+def client_home(conn, user_id, active_account_id=None):
     accounts = rows_to_dicts(
         conn.execute(
             """
@@ -9213,19 +9329,44 @@ def client_home(conn, user_id):
             (user_id,),
         ).fetchall()
     )
-    websites = rows_to_dicts(
-        conn.execute(
-            """
-            SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
-            FROM websites w
-            JOIN hosting_accounts ha ON ha.id = w.account_id
-            LEFT JOIN domains d ON d.linked_website_id = w.id
-            WHERE ha.user_id = ?
-            ORDER BY w.id
-            """,
-            (user_id,),
-        ).fetchall()
-    )
+    primary_account = None
+    if accounts:
+        if active_account_id:
+            for acc in accounts:
+                if str(acc["id"]) == str(active_account_id):
+                    primary_account = acc
+                    break
+        if not primary_account:
+            primary_account = accounts[0]
+
+    if primary_account:
+        websites = rows_to_dicts(
+            conn.execute(
+                """
+                SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                FROM websites w
+                JOIN hosting_accounts ha ON ha.id = w.account_id
+                LEFT JOIN domains d ON d.linked_website_id = w.id
+                WHERE w.account_id = ?
+                ORDER BY w.id
+                """,
+                (primary_account["id"],),
+            ).fetchall()
+        )
+    else:
+        websites = rows_to_dicts(
+            conn.execute(
+                """
+                SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                FROM websites w
+                JOIN hosting_accounts ha ON ha.id = w.account_id
+                LEFT JOIN domains d ON d.linked_website_id = w.id
+                WHERE ha.user_id = ?
+                ORDER BY w.id
+                """,
+                (user_id,),
+            ).fetchall()
+        )
     warnings = []
     for website in websites:
         if website["ssl_status"] == "missing":
@@ -9240,16 +9381,20 @@ def client_home(conn, user_id):
     user = conn.execute("SELECT totp_secret FROM users WHERE id = ?", (user_id,)).fetchone()
     has_2fa = bool(user and user["totp_secret"])
     
-    primary_account = accounts[0] if accounts else None
     disk_used_mb = 0
     disk_limit_mb = primary_account["storage_mb"] if primary_account and "storage_mb" in primary_account else 10240
     inodes_used = 0
     inodes_limit = primary_account["inode_limit"] if primary_account and "inode_limit" in primary_account else 100000
+    cpu_status = "low"
+    memory_status = "healthy"
+    cpu_pct = 20.0
+    memory_pct = 35.0
 
     if primary_account:
+        ensure_resource_usage_history(conn, primary_account)
         sample = conn.execute(
             """
-            SELECT storage_mb, storage_limit_mb, inodes_used, inodes_limit
+            SELECT storage_mb, storage_limit_mb, inodes_used, inodes_limit, cpu_percent, memory_mb, memory_limit_mb
             FROM resource_usage_samples
             WHERE account_id = ?
             ORDER BY sampled_at DESC LIMIT 1
@@ -9257,12 +9402,24 @@ def client_home(conn, user_id):
             (primary_account["id"],),
         ).fetchone()
         if sample:
-            disk_used_mb = round(sample["storage_mb"])
-            if sample["storage_limit_mb"]:
-                disk_limit_mb = round(sample["storage_limit_mb"])
-            inodes_used = sample["inodes_used"]
-            if sample["inodes_limit"]:
-                inodes_limit = sample["inodes_limit"]
+            s_dict = row_to_dict(sample)
+            disk_used_mb = round(s_dict["storage_mb"])
+            if s_dict.get("storage_limit_mb"):
+                disk_limit_mb = round(s_dict["storage_limit_mb"])
+            inodes_used = s_dict.get("inodes_used") or 0
+            if s_dict.get("inodes_limit"):
+                inodes_limit = s_dict["inodes_limit"]
+            cpu_pct = float(s_dict.get("cpu_percent") or 0)
+            if cpu_pct > 80:
+                cpu_status = "high"
+            elif cpu_pct > 30:
+                cpu_status = "moderate"
+            mem_used = float(s_dict.get("memory_mb") or 0)
+            mem_lim = float(s_dict.get("memory_limit_mb") or primary_account.get("memory_mb") or 1)
+            if mem_lim > 0:
+                memory_pct = round((mem_used / mem_lim) * 100, 1)
+            if memory_pct > 85:
+                memory_status = "elevated"
         else:
             inodes_used = int(primary_account.get("inodes_used") or 0)
             disk_used_mb = round(float(primary_account.get("storage_used_mb") or 0))
@@ -9278,8 +9435,10 @@ def client_home(conn, user_id):
             "disk_limit_mb": disk_limit_mb,
             "inodes_used": inodes_used,
             "inodes_limit": inodes_limit,
-            "cpu": "low",
-            "memory": "healthy",
+            "cpu": cpu_status,
+            "cpu_percent": cpu_pct,
+            "memory": memory_status,
+            "memory_percent": memory_pct,
         },
     }
 

@@ -264,14 +264,17 @@ code {
   color: #fff;
 }
 
+.account-switcher,
 .site-switcher {
   position: relative;
   display: grid;
   gap: 6px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   color: rgba(255, 255, 255, 0.72);
+  font-size: 0.8125rem;
 }
 
+.account-select-button,
 .site-select-button {
   display: flex;
   align-items: center;
@@ -283,21 +286,43 @@ code {
   border-color: rgba(255, 255, 255, 0.18);
   color: #fff;
   text-align: left;
+  border-radius: 8px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
+.account-select-button:hover,
+.site-select-button:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.account-select-menu,
 .site-select-menu {
   position: absolute;
-  z-index: 40;
+  z-index: 50;
   top: calc(100% + 8px);
   left: 0;
   right: 0;
   display: grid;
-  gap: 6px;
+  gap: 4px;
   padding: 8px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 8px;
-  background: #263638;
-  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.22);
+  background: #1e2b2d;
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.35);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.account-menu-header {
+  padding: 4px 8px 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .site-select-menu input {
@@ -311,20 +336,42 @@ code {
   color: rgba(255, 255, 255, 0.56);
 }
 
+.account-option,
 .site-option {
   display: grid;
   gap: 2px;
   justify-items: start;
   width: 100%;
   height: auto;
-  min-height: 48px;
+  min-height: 44px;
   border: 0;
   background: transparent;
   color: rgba(255, 255, 255, 0.78);
   padding: 8px 10px;
   text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
 }
 
+.account-option-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 6px;
+}
+
+.account-plan-tag {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(36, 150, 237, 0.2);
+  color: #60a5fa;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+}
+
+.account-option small,
 .site-option small {
   max-width: 100%;
   overflow: hidden;
@@ -333,10 +380,86 @@ code {
   white-space: nowrap;
 }
 
+.account-option.active,
+.account-option:hover,
 .site-option.active,
 .site-option:hover {
   background: rgba(255, 255, 255, 0.12);
   color: #fff;
+}
+
+.user-menu-section {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.user-menu-section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted, rgba(255, 255, 255, 0.5));
+}
+
+.user-menu-account-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--fg, #fff);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.user-menu-account-btn:hover,
+.user-menu-account-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.user-menu-account-meta {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.user-menu-account-meta strong {
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.user-menu-account-id {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+
+.user-menu-account-meta small {
+  font-size: 0.75rem;
+  color: var(--muted, rgba(255, 255, 255, 0.6));
+}
+
+.user-menu-check {
+  color: #10b981;
+  width: 16px;
+  height: 16px;
 }
 
 .main {

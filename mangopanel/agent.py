@@ -255,6 +255,7 @@ def read_cron_runtime_state(account, cron_job):
         "log_path": str(log_path),
         "state_path": str(paths["state_path"]),
         "last_output": last_output,
+        "next_run_at": cron_job.get("next_run_at") or (None if cron_job.get("status") != "enabled" else cron_next_run_at(cron_job.get("schedule"))),
     }
     if state.get("last_run_at"):
         merged["last_run_at"] = state["last_run_at"]
@@ -2305,17 +2306,19 @@ class Agent:
         if not backup:
             raise AgentError("backup_not_found")
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (backup["account_id"],)).fetchone()
-        plan = conn.execute("SELECT * FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+        plan = conn.execute("SELECT * FROM plans WHERE id = ?", (account["plan_id"],)).fetchone() if (account and account["plan_id"]) else None
         
         base_path = Path(account["base_path"])
         backup_dir = base_path / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         
         usage = path_usage(base_path)
-        if usage["bytes"] > int(plan["storage_mb"]) * 1024 * 1024:
+        storage_limit_bytes = (int(plan["storage_mb"]) if (plan and plan.get("storage_mb")) else 10000) * 1024 * 1024
+        inode_limit = int(plan["inode_limit"]) if (plan and plan.get("inode_limit")) else 500000
+        if usage["bytes"] > storage_limit_bytes:
             conn.execute("UPDATE backups SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (backup_id,))
             raise AgentError("storage_quota_exceeded")
-        if usage["inodes"] > int(plan["inode_limit"]):
+        if usage["inodes"] > inode_limit:
             conn.execute("UPDATE backups SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (backup_id,))
             raise AgentError("inode_quota_exceeded")
             

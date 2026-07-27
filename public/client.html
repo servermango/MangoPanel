@@ -36,6 +36,23 @@
             <small>Client portal</small>
           </div>
         </div>
+        <div v-if="token && home.accounts && home.accounts.length > 1" class="account-switcher">
+          <span>Account</span>
+          <button class="account-select-button" @click="toggleAccountSwitcher">
+            <span>{{ activeAccountLabel }}</span>
+            <app-icon name="chevron"></app-icon>
+          </button>
+          <div v-if="accountSwitcherOpen" class="account-select-menu">
+            <div class="account-menu-header">Provisioned Accounts</div>
+            <button v-for="acc in home.accounts" :key="acc.id" class="account-option" :class="{ active: activeAccount && String(acc.id) === String(activeAccount.id) }" @click="selectAccount(acc.id)">
+              <div class="account-option-title">
+                <strong>{{ acc.username }}</strong>
+                <span class="account-plan-tag">{{ acc.plan_name }}</span>
+              </div>
+              <small>{{ acc.node_name || acc.node_hostname || 'Node' }} · #{{ acc.id }}</small>
+            </button>
+          </div>
+        </div>
         <div v-if="token" class="site-switcher">
           <span>Site</span>
           <button class="site-select-button" @click="toggleSiteSwitcher">
@@ -124,7 +141,7 @@
               <span class="user-avatar-chip">{{ userInitial }}</span>
               <span class="user-trigger-meta">
                 <span class="user-trigger-name">{{ currentUserEmail }}</span>
-                <span class="user-trigger-role">Client account</span>
+                <span class="user-trigger-role">{{ activeAccount ? activeAccount.username + ' (ID #' + activeAccount.id + ')' : 'Client account' }}</span>
               </span>
               <app-icon name="chevron" class="user-chevron-icon"></app-icon>
             </button>
@@ -137,6 +154,17 @@
                   <strong>{{ currentUserEmail }}</strong>
                   <small>Client account</small>
                 </div>
+              </div>
+              <div v-if="home.accounts && home.accounts.length > 1" class="user-menu-section">
+                <span class="user-menu-section-label">Switch Account</span>
+                <button v-for="acc in home.accounts" :key="acc.id" class="user-menu-account-btn" :class="{ active: activeAccount && String(acc.id) === String(activeAccount.id) }" @click="selectAccount(acc.id)">
+                  <app-icon name="user"></app-icon>
+                  <div class="user-menu-account-meta">
+                    <strong>{{ acc.username }} <span class="user-menu-account-id">#{{ acc.id }}</span></strong>
+                    <small>{{ acc.plan_name }} · Hosting ID #{{ acc.id }}</small>
+                  </div>
+                  <app-icon v-if="activeAccount && String(acc.id) === String(activeAccount.id)" name="check" class="user-menu-check"></app-icon>
+                </button>
               </div>
               <div class="user-menu-divider"></div>
               <nav class="user-menu-nav">
@@ -207,7 +235,7 @@
                   <app-icon name="cpu"></app-icon>
                   <span>CPU</span>
                 </div>
-                <div class="resource-bar-wrap"><div class="resource-bar" style="--pct: 20%"></div></div>
+                <div class="resource-bar-wrap"><div class="resource-bar" :style="{ '--pct': cpuPercent + '%' }"></div></div>
                 <div class="resource-summary-nums">
                   <strong>{{ home.resources.cpu }}</strong>
                   <small>current trend</small>
@@ -218,7 +246,7 @@
                   <app-icon name="memory"></app-icon>
                   <span>Memory</span>
                 </div>
-                <div class="resource-bar-wrap"><div class="resource-bar" style="--pct: 35%"></div></div>
+                <div class="resource-bar-wrap"><div class="resource-bar" :style="{ '--pct': memoryPercent + '%' }"></div></div>
                 <div class="resource-summary-nums">
                   <strong>{{ home.resources.memory }}</strong>
                   <small>runtime health</small>
@@ -427,13 +455,13 @@
           <!-- ═══════════════════════════════════════════════════════════ HOSTING PLAN -->
           <section v-if="activePage === 'hosting-plan'" class="page-stack hosting-plan-page">
             
-            <div v-if="home.accounts.length" class="premium-plan-hero">
-              <div class="plan-badge"><app-icon name="plan"></app-icon> {{ home.accounts[0].plan_name }} Plan</div>
+            <div v-if="activeAccount" class="premium-plan-hero">
+              <div class="plan-badge"><app-icon name="plan"></app-icon> {{ activeAccount.plan_name }} Plan</div>
               <h2>Hosting Plan Details</h2>
               <p>Everything you need to know about your current server resources and configurations.</p>
             </div>
 
-            <div v-if="home.accounts.length" class="premium-cards-grid">
+            <div v-if="activeAccount" class="premium-cards-grid">
               
               <!-- Website Details -->
               <div class="premium-card">
@@ -453,15 +481,15 @@
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Website IP address</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].node_hostname || '127.0.0.1' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.node_hostname || '127.0.0.1' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Current nameserver 1</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].nameserver_1 || 'ns1.dns-parking.com' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.nameserver_1 || 'ns1.dns-parking.com' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Current nameserver 2</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].nameserver_2 || 'ns2.dns-parking.com' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.nameserver_2 || 'ns2.dns-parking.com' }}</strong>
                     </div>
                   </div>
                 </div>
@@ -515,15 +543,15 @@
                   <div class="premium-list">
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Server Name</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].node_name || 'server1874' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.node_name || 'server1874' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Server Location</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].node_location || 'Asia (India)' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.node_location || 'Asia (India)' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Backups location</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].backup_location || 'Singapore' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.backup_location || 'Singapore' }}</strong>
                     </div>
                   </div>
                 </div>
@@ -539,7 +567,7 @@
                   <div class="premium-list">
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">FTP IP</span>
-                      <strong class="premium-item-value">ftp://{{ home.accounts[0].node_hostname || '127.0.0.1' }}</strong>
+                      <strong class="premium-item-value">ftp://{{ activeAccount.node_hostname || '127.0.0.1' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">FTP Hostname</span>
@@ -547,7 +575,7 @@
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">FTP Username</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].username }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.username }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">File Upload Path</span>
@@ -567,19 +595,19 @@
                   <div class="premium-list grid-2">
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Supported frontend frameworks</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].frontend_frameworks || 'Angular, Astro, Next.js, Nuxt, Parcel, React, Vue.js, etc.' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.frontend_frameworks || 'Angular, Astro, Next.js, Nuxt, Parcel, React, Vue.js, etc.' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Supported backend frameworks</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].backend_frameworks || 'Express, Fastify, Hono, NestJS, Nuxt, React Router, SvelteKit' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.backend_frameworks || 'Express, Fastify, Hono, NestJS, Nuxt, React Router, SvelteKit' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Supported Node.js versions</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].nodejs_versions || '24.x, 22.x, 20.x and 18.x' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.nodejs_versions || '24.x, 22.x, 20.x and 18.x' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Supported package managers</span>
-                      <strong class="premium-item-value">{{ home.accounts[0].package_managers || 'npm (default), yarn and pnpm' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount.package_managers || 'npm (default), yarn and pnpm' }}</strong>
                     </div>
                   </div>
                 </div>
@@ -982,9 +1010,9 @@
                   <span class="pill">{{ mailRouting.daily_email_limit || 0 }} sends/day</span>
                 </div>
               </div>
-              <div class="info-box" style="margin-bottom: 1rem;" v-if="home.accounts.length && home.accounts[0].runtime">
+              <div class="info-box" style="margin-bottom: 1rem;" v-if="activeAccount && activeAccount.runtime">
                 <app-icon name="activity"></app-icon>
-                <p>MX target: <code>{{ home.accounts[0].runtime.mail_host }}</code>. Point your domain MX here to receive mail.</p>
+                <p>MX target: <code>{{ activeAccount.runtime.mail_host }}</code>. Point your domain MX here to receive mail.</p>
               </div>
               <div class="table-wrap">
                 <table>
@@ -2883,7 +2911,7 @@
                       <label class="sw-label">Domain Name</label>
                       <div class="sw-domain-input-wrap">
                         <svg class="sw-domain-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                        <input class="sw-domain-input" v-model="siteWizard.domain" @input="onWizardDomainChange" placeholder="example.com" autocomplete="off" spellcheck="false">
+                        <input class="sw-domain-input" v-model="siteWizard.domain" @input="onWizardDomainChange" @blur="checkDomainDns" placeholder="example.com" autocomplete="off" spellcheck="false">
                       </div>
                       <small class="sw-hint">Enter the bare domain — no http:// or www.</small>
                     </div>

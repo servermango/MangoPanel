@@ -762,13 +762,29 @@ CREATE TABLE IF NOT EXISTS system_settings (
 """
 
 
-def connect(db_path):
+def connect(db_path, timeout=60.0):
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 60000")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
+
+
+def with_db_retry(func, max_retries=5, initial_delay=0.05):
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if any(k in msg for k in ["locked", "busy", "unable to open"]):
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(initial_delay * (2 ** attempt))
+            else:
+                raise
 
 
 

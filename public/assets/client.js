@@ -224,6 +224,8 @@ const app = createApp({
         password: "",
         code: "",
       },
+      selectedAccountId: localStorage.getItem("mp_selected_account_id") || "",
+      accountSwitcherOpen: false,
       recalculatingUsage: false,
       home: {
         resources: { disk_used_mb: 0, disk_limit_mb: 0, inodes_used: 0, inodes_limit: 0, cpu: "unknown", memory: "unknown" },
@@ -469,6 +471,18 @@ const app = createApp({
     hasHostingAccount() {
       return Array.isArray(this.home.accounts) && this.home.accounts.length > 0;
     },
+    activeAccount() {
+      if (!this.home || !Array.isArray(this.home.accounts) || this.home.accounts.length === 0) return null;
+      if (this.selectedAccountId) {
+        const found = this.home.accounts.find(a => String(a.id) === String(this.selectedAccountId));
+        if (found) return found;
+      }
+      return this.home.accounts[0];
+    },
+    activeAccountLabel() {
+      if (!this.activeAccount) return "No account";
+      return `${this.activeAccount.username} (${this.activeAccount.plan_name || 'Account'})`;
+    },
     filteredSites() {
       const query = this.siteSearchQuery.trim().toLowerCase();
       if (!query) return this.websites;
@@ -483,6 +497,14 @@ const app = createApp({
       const used = Number(this.home.resources.inodes_used || 0);
       const limit = Number(this.home.resources.inodes_limit || 1);
       return Math.min(100, limit > 0 ? (used / limit) * 100 : 0).toFixed(1);
+    },
+    cpuPercent() {
+      const pct = Number(this.home.resources?.cpu_percent ?? 20);
+      return Math.min(100, Math.max(0, pct)).toFixed(1);
+    },
+    memoryPercent() {
+      const pct = Number(this.home.resources?.memory_percent ?? 35);
+      return Math.min(100, Math.max(0, pct)).toFixed(1);
     },
     sidebarSections() {
       if (!this.hasHostingAccount) {
@@ -604,7 +626,7 @@ const app = createApp({
       ];
     },
     hostingPlanMetrics() {
-      const account = this.home.accounts?.[0] || {};
+      const account = this.activeAccount || this.home.accounts?.[0] || {};
       const resources = this.home.resources || {};
       const latest = this.latestResourceUsage || {};
       const websitesUsed = this.websites.length;
@@ -768,7 +790,8 @@ const app = createApp({
       return groups;
     },
     sshInfo() {
-      const runtime = this.home.accounts[0]?.runtime || {};
+      const account = this.activeAccount || this.home.accounts?.[0] || {};
+      const runtime = account?.runtime || {};
       let host = window.location.hostname;
       if (!host || host === "127.0.0.1" || host === "localhost" || host === "0.0.0.0") {
         if (runtime.sftp_host && runtime.sftp_host !== "127.0.0.1" && runtime.sftp_host !== "0.0.0.0") {
@@ -781,8 +804,8 @@ const app = createApp({
         enabled: this.sshState ? this.sshState.enabled : false,
         host: host,
         port: runtime.sftp_port || 18104,
-        user: runtime.sftp_user || (this.home.accounts[0]?.username || "—"),
-        path: this.home.accounts[0]?.base_path || "/home/user",
+        user: runtime.sftp_user || (account?.username || "—"),
+        path: account?.base_path || "/home/user",
       };
     },
     selectedDomain() {
@@ -898,6 +921,7 @@ const app = createApp({
       this.userMenuOpen = false;
       this.notificationsOpen = false;
       this.siteSwitcherOpen = false;
+      this.accountSwitcherOpen = false;
       this.sessionExpired = true;
     },
     handleSessionExpired() {
@@ -968,11 +992,19 @@ const app = createApp({
     async api(path, options = {}) {
       const headers = { Accept: "application/json", ...(options.headers || {}) };
       if (this.token) headers.Authorization = `Bearer ${this.token}`;
+      const targetAccountId = this.selectedAccountId || (this.activeAccount && this.activeAccount.id);
+      if (targetAccountId && !headers["X-Hosting-Account-ID"]) {
+        headers["X-Hosting-Account-ID"] = String(targetAccountId);
+      }
       if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
       const body = options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body;
       const response = await fetch(path, { ...options, body, headers });
       const payload = await response.json();
       if (!response.ok) {
+        if (response.status === 503 && payload.error === "database_busy" && !options._dbRetry) {
+          await new Promise((r) => setTimeout(r, 500));
+          return this.api(path, { ...options, _dbRetry: true });
+        }
         const error = payload.error || "Request failed";
         if (error === "invalid_access_token") {
           this.handleSessionExpired();
@@ -2198,6 +2230,13 @@ const app = createApp({
     onWizardDomainChange() {
       this.siteWizard.dnsCheckResult = null;
       this.siteWizard.errorMessage = "";
+      this.siteWizard.hasReviewedDns = false;
+      if (this._domainCheckTimer) clearTimeout(this._domainCheckTimer);
+      if (this.siteWizard.domain && this.siteWizard.domain.includes(".")) {
+        this._domainCheckTimer = setTimeout(() => {
+          this.checkDomainDns();
+        }, 500);
+      }
     },
     async checkDomainDns() {
       if (!this.siteWizard.domain) return true;
@@ -2243,6 +2282,15 @@ const app = createApp({
         if (!this.siteWizard.domain) return;
         const ok = await this.checkDomainDns();
         if (!ok) return;
+        if (
+          this.siteWizard.dnsCheckResult &&
+          this.siteWizard.dnsCheckResult.exists &&
+          this.siteWizard.dnsCheckResult.dns_provider === 'cloudflare' &&
+          !this.siteWizard.hasReviewedDns
+        ) {
+          this.siteWizard.hasReviewedDns = true;
+          return;
+        }
         if (this.siteWizard.type === 'blank') {
           await this.finishSiteWizard();
           return;
@@ -3083,13 +3131,29 @@ const app = createApp({
       if (this.activePage === "analytics") this.loadAnalytics();
       if (this.activePage === "php-info") this.loadPhpInfo();
     },
+    toggleAccountSwitcher() {
+      this.accountSwitcherOpen = !this.accountSwitcherOpen;
+      if (this.accountSwitcherOpen) {
+        this.siteSwitcherOpen = false;
+        this.userMenuOpen = false;
+      }
+    },
+    async selectAccount(accountId) {
+      this.selectedAccountId = String(accountId);
+      localStorage.setItem("mp_selected_account_id", this.selectedAccountId);
+      this.accountSwitcherOpen = false;
+      this.userMenuOpen = false;
+      await this.load();
+    },
     toggleSiteSwitcher() {
       this.siteSwitcherOpen = !this.siteSwitcherOpen;
       this.userMenuOpen = false;
+      this.accountSwitcherOpen = false;
     },
     toggleUserMenu() {
       this.userMenuOpen = !this.userMenuOpen;
       this.siteSwitcherOpen = false;
+      this.accountSwitcherOpen = false;
     },
     openInstallerModal(script) {
       this.installer.selectedScript = script;
