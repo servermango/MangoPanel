@@ -598,6 +598,10 @@ createApp({
           return;
         }
         this.challengeToken = payload.challenge_token;
+        this.$nextTick(() => {
+          const el = document.querySelector(".totp-input") || document.querySelector("input[inputmode='numeric']");
+          if (el) el.focus();
+        });
       } catch (error) {
         if (this.token || ["invalid_access_token", "expired_access_token", "invalid_token_subject", "wrong_actor_type"].includes(error.message)) {
           this.clearAdminSession("Please sign in again.");

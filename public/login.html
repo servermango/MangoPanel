@@ -796,6 +796,10 @@
 
               if (payload.totp_required) {
                 this.challengeToken = payload.challenge_token;
+                this.$nextTick(() => {
+                  const el = document.getElementById("totp");
+                  if (el) el.focus();
+                });
               } else if (payload.access_token) {
                 localStorage.setItem("mp_client_token", payload.access_token);
                 window.location.href = "/";

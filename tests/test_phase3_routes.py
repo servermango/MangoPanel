@@ -198,6 +198,9 @@ class Phase3RouteTests(unittest.TestCase):
             with ClientApiServer(config) as server:
                 token = server.login()
                 home = server.request("GET", "/api/client/home", token=token)
+                self.assertEqual(home["email"], "owner@example.mango.test")
+                self.assertIsNotNone(home["user"])
+                self.assertEqual(home["user"]["email"], "owner@example.mango.test")
                 website_id = home["websites"][0]["id"]
                 payload = server.request(
                     "POST",

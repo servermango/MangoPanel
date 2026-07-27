@@ -2026,9 +2026,21 @@ class Agent:
         databases = conn.execute("SELECT id, name FROM databases WHERE account_id = ? AND status = 'active'", (account_id,)).fetchall()
         if not databases:
             return
+
+        db_users = conn.execute("SELECT id, username FROM database_users WHERE account_id = ? AND status = 'active'", (account_id,)).fetchall()
+        for db in databases:
+            for u in db_users:
+                conn.execute(
+                    "INSERT OR IGNORE INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')",
+                    (db["id"], u["id"]),
+                )
+
         sql = []
         for db in databases:
             sql.append(f"CREATE DATABASE IF NOT EXISTS `{db['name']}`;")
+
+        for u in db_users:
+            sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(u['username'])}@'%';")
 
         grants = conn.execute(
             """
@@ -2313,8 +2325,9 @@ class Agent:
         backup_dir.mkdir(parents=True, exist_ok=True)
         
         usage = path_usage(base_path)
-        storage_limit_bytes = (int(plan["storage_mb"]) if (plan and plan.get("storage_mb")) else 10000) * 1024 * 1024
-        inode_limit = int(plan["inode_limit"]) if (plan and plan.get("inode_limit")) else 500000
+        plan_dict = dict(plan) if plan else {}
+        storage_limit_bytes = (int(plan_dict.get("storage_mb")) if plan_dict.get("storage_mb") else 10000) * 1024 * 1024
+        inode_limit = int(plan_dict.get("inode_limit")) if plan_dict.get("inode_limit") else 500000
         if usage["bytes"] > storage_limit_bytes:
             conn.execute("UPDATE backups SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (backup_id,))
             raise AgentError("storage_quota_exceeded")

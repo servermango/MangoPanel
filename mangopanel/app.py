@@ -520,16 +520,10 @@ class MangoHandler(BaseHTTPRequestHandler):
 
         try:
             if method == "GET" and (path in {"/", "/client"} or path.startswith("/client/")):
-                if panel == "admin":
-                    raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
                 return self.serve_file(PUBLIC_DIR / "client.html")
             if path == "/signup":
-                if panel == "admin":
-                    raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
                 return self.serve_file(PUBLIC_DIR / "signup.html")
             if method == "GET" and (path in {"/login", "/login.html"}):
-                if panel == "admin":
-                    raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
                 return self.serve_file(PUBLIC_DIR / "login.html")
             if method == "GET" and (path in {"/webmail", "/webmail.html"} or path.startswith("/webmail/login")):
                 if panel == "admin":
@@ -4700,13 +4694,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                 forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
                 scheme = forwarded_proto if forwarded_proto in {"http", "https"} else "http"
                 request_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip() or self.headers.get("Host", "")
-                if ":" in request_host:
-                    hostname_with_port = request_host
-                elif CONFIG.client_port not in (80, 443):
-                    hostname = request_host.split(":", 1)[0] or CONFIG.public_host
-                    hostname_with_port = f"{hostname}:{CONFIG.client_port}"
+                hostname = request_host.split(":", 1)[0].strip() if request_host else ""
+                if not hostname or hostname in {"0.0.0.0", ""}:
+                    hostname = CONFIG.public_host or "127.0.0.1"
+                if CONFIG.client_port in (80, 443):
+                    hostname_with_port = hostname
                 else:
-                    hostname_with_port = request_host or CONFIG.public_host
+                    hostname_with_port = f"{hostname}:{CONFIG.client_port}"
                 client_url = f"{scheme}://{hostname_with_port}/client#mp_impersonation_token={imp_token}"
                 return self.json_response({"client_url": client_url})
 
@@ -9378,8 +9372,9 @@ def client_home(conn, user_id, active_account_id=None):
         website["dns_provider_label"] = "Cloudflare" if website.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE else "Local DNS"
     for account in accounts:
         account["runtime"] = account_runtime(conn, account["id"])
-    user = conn.execute("SELECT totp_secret FROM users WHERE id = ?", (user_id,)).fetchone()
+    user = conn.execute("SELECT id, email, full_name, totp_secret FROM users WHERE id = ?", (user_id,)).fetchone()
     has_2fa = bool(user and user["totp_secret"])
+    user_dict = {"id": user["id"], "email": user["email"], "full_name": user["full_name"]} if user else None
     
     disk_used_mb = 0
     disk_limit_mb = primary_account["storage_mb"] if primary_account and "storage_mb" in primary_account else 10240
@@ -9425,6 +9420,8 @@ def client_home(conn, user_id, active_account_id=None):
             disk_used_mb = round(float(primary_account.get("storage_used_mb") or 0))
 
     return {
+        "user": user_dict,
+        "email": user["email"] if user else None,
         "accounts": accounts,
         "websites": websites,
         "warnings": warnings,

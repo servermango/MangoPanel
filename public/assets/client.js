@@ -232,6 +232,8 @@ const app = createApp({
         warnings: [],
         accounts: [],
         websites: [],
+        user: null,
+        email: "",
       },
       featureStatuses: {},
       websites: [],
@@ -457,7 +459,7 @@ const app = createApp({
       if (this.home && this.home.user && this.home.user.email) return this.home.user.email;
       if (this.home && this.home.account && this.home.account.email) return this.home.account.email;
       if (this.home && this.home.email) return this.home.email;
-      return this.login.email || "client@mangopanel.local";
+      return this.login.email || "";
     },
     userInitial() {
       return ((this.currentUserEmail || "U").trim()[0] || "U").toUpperCase();
@@ -992,7 +994,7 @@ const app = createApp({
     async api(path, options = {}) {
       const headers = { Accept: "application/json", ...(options.headers || {}) };
       if (this.token) headers.Authorization = `Bearer ${this.token}`;
-      const targetAccountId = this.selectedAccountId || (this.activeAccount && this.activeAccount.id);
+      const targetAccountId = (this.activeAccount && this.activeAccount.id) || this.selectedAccountId;
       if (targetAccountId && !headers["X-Hosting-Account-ID"]) {
         headers["X-Hosting-Account-ID"] = String(targetAccountId);
       }
@@ -1021,6 +1023,10 @@ const app = createApp({
           body: JSON.stringify({ email: this.login.email, password: this.login.password }),
         });
         this.challengeToken = payload.challenge_token;
+        this.$nextTick(() => {
+          const el = document.getElementById("totp") || document.querySelector(".totp-input");
+          if (el) el.focus();
+        });
       } catch (error) {
         this.notify(error.message, "error");
       }
@@ -1045,6 +1051,13 @@ const app = createApp({
       try {
         this.featureStatuses = (await this.api("/api/client/feature-status")).features || {};
         this.home = await this.api("/api/client/home");
+        if (this.hasHostingAccount) {
+          const validAccount = this.home.accounts.find((a) => String(a.id) === String(this.selectedAccountId));
+          if (!validAccount) {
+            this.selectedAccountId = String(this.home.accounts[0].id);
+            localStorage.setItem("mp_selected_account_id", this.selectedAccountId);
+          }
+        }
         this.websites = (await this.api("/api/client/websites")).websites;
         this.domains = (await this.api("/api/client/domains")).domains;
         this.cacheStatus = { ...this.cacheStatus, ...((await this.api("/api/client/cache/status")).cache_status || {}) };
@@ -1077,7 +1090,11 @@ const app = createApp({
         if (this.activePage === "services") {
           await this.loadServicesStatus();
         }
-        if (this.selectedWebsiteId && !this.websites.some((site) => String(site.id) === String(this.selectedWebsiteId))) {
+        if (this.websites && this.websites.length > 0) {
+          if (!this.selectedWebsiteId || !this.websites.some((site) => String(site.id) === String(this.selectedWebsiteId))) {
+            this.selectedWebsiteId = String(this.websites[0].id);
+          }
+        } else {
           this.selectedWebsiteId = "";
         }
         if (!this.hasHostingAccount && !["dashboard", "domains", "dns-zone-editor"].includes(this.activePage)) {

@@ -128,6 +128,23 @@ class MultiAccountSwitcherTests(unittest.TestCase):
             self.assertEqual(result, "success")
             self.assertEqual(attempts, 3)
 
+    def test_single_account_client_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "mangopanel.sqlite3"
+            accounts_dir = Path(tmp) / "accounts"
+            seed_dev_data(db_path, accounts_dir)
+
+            with connect(db_path) as conn:
+                user = conn.execute("SELECT * FROM users LIMIT 1").fetchone()
+                user_id = user["id"]
+                accs = conn.execute("SELECT * FROM hosting_accounts WHERE user_id = ?", (user_id,)).fetchall()
+                self.assertGreaterEqual(len(accs), 1)
+
+                home = client_home(conn, user_id, active_account_id=accs[0]["id"])
+                self.assertIn("accounts", home)
+                self.assertEqual(home["accounts"][0]["id"], accs[0]["id"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

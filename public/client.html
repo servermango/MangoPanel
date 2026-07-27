@@ -36,23 +36,6 @@
             <small>Client portal</small>
           </div>
         </div>
-        <div v-if="token && home.accounts && home.accounts.length > 1" class="account-switcher">
-          <span>Account</span>
-          <button class="account-select-button" @click="toggleAccountSwitcher">
-            <span>{{ activeAccountLabel }}</span>
-            <app-icon name="chevron"></app-icon>
-          </button>
-          <div v-if="accountSwitcherOpen" class="account-select-menu">
-            <div class="account-menu-header">Provisioned Accounts</div>
-            <button v-for="acc in home.accounts" :key="acc.id" class="account-option" :class="{ active: activeAccount && String(acc.id) === String(activeAccount.id) }" @click="selectAccount(acc.id)">
-              <div class="account-option-title">
-                <strong>{{ acc.username }}</strong>
-                <span class="account-plan-tag">{{ acc.plan_name }}</span>
-              </div>
-              <small>{{ acc.node_name || acc.node_hostname || 'Node' }} · #{{ acc.id }}</small>
-            </button>
-          </div>
-        </div>
         <div v-if="token" class="site-switcher">
           <span>Site</span>
           <button class="site-select-button" @click="toggleSiteSwitcher">
@@ -155,16 +138,28 @@
                   <small>Client account</small>
                 </div>
               </div>
-              <div v-if="home.accounts && home.accounts.length > 1" class="user-menu-section">
-                <span class="user-menu-section-label">Switch Account</span>
-                <button v-for="acc in home.accounts" :key="acc.id" class="user-menu-account-btn" :class="{ active: activeAccount && String(acc.id) === String(activeAccount.id) }" @click="selectAccount(acc.id)">
-                  <app-icon name="user"></app-icon>
-                  <div class="user-menu-account-meta">
-                    <strong>{{ acc.username }} <span class="user-menu-account-id">#{{ acc.id }}</span></strong>
-                    <small>{{ acc.plan_name }} · Hosting ID #{{ acc.id }}</small>
-                  </div>
-                  <app-icon v-if="activeAccount && String(acc.id) === String(activeAccount.id)" name="check" class="user-menu-check"></app-icon>
-                </button>
+              <div v-if="home.accounts && home.accounts.length > 1" class="user-menu-section user-menu-accounts-section">
+                <div class="user-menu-section-header">
+                  <span class="user-menu-section-label">Switch Account</span>
+                  <span class="user-menu-account-count">{{ home.accounts.length }}</span>
+                </div>
+                <div class="user-menu-accounts-list">
+                  <button v-for="acc in home.accounts" :key="acc.id" class="user-menu-account-btn" :class="{ active: activeAccount && String(acc.id) === String(activeAccount.id) }" @click="selectAccount(acc.id)">
+                    <div class="user-menu-account-avatar">
+                      <app-icon name="user"></app-icon>
+                    </div>
+                    <div class="user-menu-account-meta">
+                      <div class="user-menu-account-title">
+                        <span class="user-menu-account-name">{{ acc.username }}</span>
+                        <span class="user-menu-account-id">#{{ acc.id }}</span>
+                      </div>
+                      <span class="user-menu-account-sub">{{ acc.plan_name || 'Hosting Account' }}</span>
+                    </div>
+                    <div v-if="activeAccount && String(acc.id) === String(activeAccount.id)" class="user-menu-account-active-badge">
+                      <app-icon name="check" class="user-menu-check"></app-icon>
+                    </div>
+                  </button>
+                </div>
               </div>
               <div class="user-menu-divider"></div>
               <nav class="user-menu-nav">
