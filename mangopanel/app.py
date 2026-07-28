@@ -4998,7 +4998,14 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/reseller/registrars" and method == "GET":
                 return self.json_response({"registrars": []})
 
-            raise ApiError(HTTPStatus.NOT_FOUND, "unknown_reseller_api_route")
+            # Automatic Admin API Fallback for reseller endpoints
+            try:
+                admin_path = path.replace("/api/reseller/", "/api/admin/")
+                return self.admin_api(method, admin_path, query, actor)
+            except ApiError as ae:
+                if ae.status_code == HTTPStatus.NOT_FOUND and ae.error == "unknown_api_route":
+                    raise ApiError(HTTPStatus.NOT_FOUND, "unknown_reseller_api_route")
+                raise
 
 
     def admin_api(self, method, path, query, actor):
