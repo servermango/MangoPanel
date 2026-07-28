@@ -662,8 +662,6 @@ class MangoHandler(BaseHTTPRequestHandler):
             return self.client_api(method, path, query, actor)
 
         if path.startswith("/api/reseller/"):
-            if panel == "client":
-                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
             actor = self.require_auth("reseller")
             return self.route_reseller_api(method, path, query, actor)
 

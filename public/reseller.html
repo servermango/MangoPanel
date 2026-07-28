@@ -6,6 +6,7 @@
   <title>MangoPanel — Reseller Hosting Panel</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
@@ -164,413 +165,478 @@
       font-weight: 600;
       margin-bottom: 1rem;
     }
+    .nav-item-icon {
+      font-size: 14px;
+      line-height: 1;
+      flex-shrink: 0;
+      opacity: 0.8;
+    }
   </style>
 </head>
-<body class="admin-body">
-  <div id="app" v-cloak>
-    <!-- LOGIN VIEW -->
-    <section v-if="!token" class="admin-login-wrapper">
-      <div class="admin-login-card">
-        <div class="admin-brand-header">
-          <div class="admin-brand-icon">💼</div>
-          <h1 class="admin-brand-title">MangoPanel Reseller</h1>
-          <p class="admin-brand-subtitle">Reseller Portal & Sub-Client Console</p>
+<body>
+  <div id="app" class="app-shell admin-shell" v-cloak>
+    <!-- SIDEBAR -->
+    <aside class="sidebar admin-sidebar" v-if="token">
+      <div class="brand">
+        <span class="brand-mark">💼</span>
+        <div>
+          <strong>MangoPanel</strong>
+          <small>Reseller portal</small>
         </div>
-
-        <form v-if="!totpChallengeToken" @submit.prevent="login">
-          <div class="admin-form-group">
-            <label for="email">Reseller Email</label>
-            <input id="email" class="admin-form-input" type="email" v-model="loginForm.email" placeholder="reseller@domain.com" required autocomplete="username" autofocus>
-          </div>
-
-          <div class="admin-form-group">
-            <label for="password">Password</label>
-            <input id="password" class="admin-form-input" type="password" v-model="loginForm.password" placeholder="••••••••••••" required autocomplete="current-password">
-          </div>
-
-          <div v-if="errorMessage" class="admin-alert-toast">
-            <p>{{ errorMessage }}</p>
-            <button type="button" class="admin-alert-dismiss" @click="errorMessage = ''">×</button>
-          </div>
-
-          <button type="submit" class="admin-submit-btn" :disabled="loggingIn">
-            <span v-if="loggingIn">Authenticating...</span>
-            <span v-else>Sign In to Reseller Panel →</span>
-          </button>
-        </form>
-
-        <form v-else @submit.prevent="verifyTotp">
-          <div style="text-align: center;">
-            <span class="totp-badge">🔒 2FA Verification Required</span>
-          </div>
-          <div class="admin-form-group">
-            <label for="totp">Security Code</label>
-            <input id="totp" class="admin-form-input totp-input" type="text" v-model="totpCode" placeholder="000000" maxlength="6" pattern="[0-9]{6}" required autocomplete="one-time-code" autofocus>
-          </div>
-          <div v-if="errorMessage" class="admin-alert-toast">
-            <p>{{ errorMessage }}</p>
-            <button type="button" class="admin-alert-dismiss" @click="errorMessage = ''">×</button>
-          </div>
-          <button type="submit" class="admin-submit-btn verify-btn" :disabled="loggingIn">Verify 2FA Code →</button>
-          <button type="button" class="ghost-button" style="width: 100%; margin-top: 0.75rem;" @click="totpChallengeToken = null">← Back to Login</button>
-        </form>
       </div>
-    </section>
-
-    <!-- MAIN RESELLER DASHBOARD SHELL -->
-    <div v-else class="admin-layout">
-      <!-- SIDEBAR -->
-      <aside class="sidebar">
-        <div class="sidebar-header">
-          <div class="logo">
-            <span class="logo-icon">🥭</span>
-            <span class="logo-text">MangoPanel</span>
-          </div>
-          <span class="pill pill-warning" style="font-size: 0.65rem; padding: 2px 6px;">RESELLER</span>
+      <nav class="nav-list">
+        <div class="nav-section">
+          <span class="nav-group">Reseller Management</span>
+          <button :class="{ active: activePage === 'dashboard' }" @click="activePage = 'dashboard'">
+            <span class="nav-item-icon">📊</span>
+            <span>Overview</span>
+          </button>
+          <button :class="{ active: activePage === 'clients' }" @click="activePage = 'clients'">
+            <span class="nav-item-icon">👥</span>
+            <span>Sub-Clients</span>
+          </button>
+          <button :class="{ active: activePage === 'plans' }" @click="activePage = 'plans'">
+            <span class="nav-item-icon">📦</span>
+            <span>Custom Plans</span>
+          </button>
+          <button :class="{ active: activePage === 'hosting-accounts' }" @click="activePage = 'hosting-accounts'">
+            <span class="nav-item-icon">🖥️</span>
+            <span>Hosting Stacks</span>
+          </button>
+          <button :class="{ active: activePage === 'storage' }" @click="activePage = 'storage'">
+            <span class="nav-item-icon">💾</span>
+            <span>Quotas & Usage</span>
+          </button>
+          <button :class="{ active: activePage === 'api-tokens' }" @click="activePage = 'api-tokens'">
+            <span class="nav-item-icon">🔑</span>
+            <span>Reseller APIs</span>
+          </button>
         </div>
 
-        <nav class="sidebar-nav">
-          <a href="#dashboard" :class="{ active: activePage === 'dashboard' }" @click="activePage = 'dashboard'">
-            <span class="nav-icon">📊</span> Overview
+        <div class="nav-section">
+          <span class="nav-group">Quick Switch</span>
+          <a :href="clientPanelUrl" style="display: flex; align-items: center; gap: 0.5rem; color: var(--brand, #fdb528); text-decoration: none; font-weight: 600; font-size: 0.85rem; padding: 0.5rem 0.75rem; background: rgba(253, 181, 40, 0.08); border: 1px solid rgba(253, 181, 40, 0.25); border-radius: 6px;">
+            <span>🖥️ Client Control Panel</span>
+            <span style="margin-left: auto;">↗</span>
           </a>
-          <a href="#clients" :class="{ active: activePage === 'clients' }" @click="activePage = 'clients'">
-            <span class="nav-icon">👥</span> Sub-Clients
-          </a>
-          <a href="#plans" :class="{ active: activePage === 'plans' }" @click="activePage = 'plans'">
-            <span class="nav-icon">📦</span> Custom Plans
-          </a>
-          <a href="#hosting-accounts" :class="{ active: activePage === 'hosting-accounts' }" @click="activePage = 'hosting-accounts'">
-            <span class="nav-icon">🖥️</span> Hosting Accounts
-          </a>
-          <a href="#storage" :class="{ active: activePage === 'storage' }" @click="activePage = 'storage'">
-            <span class="nav-icon">💾</span> Quotas & Usage
-          </a>
-          <a href="#api-tokens" :class="{ active: activePage === 'api-tokens' }" @click="activePage = 'api-tokens'">
-            <span class="nav-icon">🔑</span> Reseller APIs
-          </a>
-
-          <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.08);">
-            <a :href="clientPanelUrl" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.65rem 0.8rem; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; color: #fff; font-weight: 600; font-size: 0.85rem; text-decoration: none; transition: all 0.2s ease;">
-              <span>🖥️ Client Panel</span>
-              <span style="margin-left: auto; font-size: 0.85rem; opacity: 0.7;">↗</span>
-            </a>
-          </div>
-        </nav>
-
-        <div class="sidebar-footer">
-          <div class="user-info">
-            <div class="user-avatar">{{ resellerInfo ? resellerInfo.full_name.charAt(0) : 'R' }}</div>
-            <div class="user-details">
-              <span class="user-name">{{ resellerInfo ? resellerInfo.full_name : 'Reseller' }}</span>
-              <span class="user-role">{{ resellerInfo ? resellerInfo.email : '' }}</span>
-            </div>
-          </div>
-          <button class="ghost-button" @click="logout" title="Sign Out">🚪</button>
         </div>
-      </aside>
+      </nav>
+    </aside>
 
-      <!-- MAIN CONTENT AREA -->
-      <main class="main-content">
-        <header class="top-bar">
-          <div class="breadcrumbs">
-            <span>Reseller Panel</span> / <strong style="text-transform: capitalize;">{{ activePage }}</strong>
+    <!-- MAIN CONTENT SHELL -->
+    <main class="main admin-main" :class="{ 'admin-main-auth': !token }">
+      <header v-if="token" class="topbar">
+        <div class="topbar-context">
+          <div class="topbar-page-icon admin-page-glyph">
+            {{ {dashboard:'📊',clients:'👥',plans:'📦','hosting-accounts':'🖥️',storage:'💾','api-tokens':'🔑'}[activePage] || '💼' }}
           </div>
-          <div class="top-bar-actions">
-            <span class="pill pill-success">Reseller Active</span>
-            <button class="secondary-button" @click="loadData">🔄 Refresh</button>
+          <div class="topbar-page-meta">
+            <span class="topbar-page-title-row">
+              <span class="topbar-page-title" style="text-transform: capitalize;">{{ activePage.replace('-', ' ') }}</span>
+              <span class="feature-status-badge feature-status-functional">Reseller</span>
+            </span>
+            <span class="topbar-page-desc">Reseller portal sub-client onboarding and stack management</span>
           </div>
-        </header>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost-button" @click="loadData">🔄 Refresh</button>
+          <button class="ghost-button" @click="logout">Sign out →</button>
+        </div>
+      </header>
 
-        <div class="content-container">
-          <div v-if="message" class="alert alert-info" style="margin-bottom: 1rem;">{{ message }}</div>
+      <!-- LOGIN VIEW -->
+      <section v-if="!token" class="admin-login-wrapper">
+        <div class="admin-login-card">
+          <div class="admin-brand-header">
+            <div class="admin-brand-icon">💼</div>
+            <h1 class="admin-brand-title">MangoPanel Reseller</h1>
+            <p class="admin-brand-subtitle">Reseller Portal & Sub-Client Console</p>
+          </div>
 
-          <!-- DASHBOARD OVERVIEW -->
-          <section v-if="activePage === 'dashboard'" class="panel">
-            <div class="section-head">
-              <div>
-                <h2>Reseller Overview</h2>
-                <p>Monitor client allocations, storage enforcement limits, and sub-plan metrics.</p>
+          <form v-if="!totpChallengeToken" @submit.prevent="login">
+            <div class="admin-form-group">
+              <label for="email">Reseller Email</label>
+              <input id="email" class="admin-form-input" type="email" v-model="loginForm.email" placeholder="reseller@domain.com" required autocomplete="username" autofocus>
+            </div>
+
+            <div class="admin-form-group">
+              <label for="password">Password</label>
+              <input id="password" class="admin-form-input" type="password" v-model="loginForm.password" placeholder="••••••••••••" required autocomplete="current-password">
+            </div>
+
+            <div v-if="errorMessage" class="admin-alert-toast">
+              <p>{{ errorMessage }}</p>
+              <button type="button" class="admin-alert-dismiss" @click="errorMessage = ''">×</button>
+            </div>
+
+            <button type="submit" class="admin-submit-btn" :disabled="loggingIn">
+              <span v-if="loggingIn">Authenticating...</span>
+              <span v-else>Sign In to Reseller Panel →</span>
+            </button>
+          </form>
+
+          <form v-else @submit.prevent="verifyTotp">
+            <div style="text-align: center;">
+              <span class="totp-badge">🔒 2FA Verification Required</span>
+            </div>
+            <div class="admin-form-group">
+              <label for="totp">Security Code</label>
+              <input id="totp" class="admin-form-input totp-input" type="text" v-model="totpCode" placeholder="000000" maxlength="6" pattern="[0-9]{6}" required autocomplete="one-time-code" autofocus>
+            </div>
+            <div v-if="errorMessage" class="admin-alert-toast">
+              <p>{{ errorMessage }}</p>
+              <button type="button" class="admin-alert-dismiss" @click="errorMessage = ''">×</button>
+            </div>
+            <button type="submit" class="admin-submit-btn verify-btn" :disabled="loggingIn">Verify 2FA Code →</button>
+            <button type="button" class="ghost-button" style="width: 100%; margin-top: 0.75rem;" @click="totpChallengeToken = null">← Back to Login</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- AUTHENTICATED RESELLER DASHBOARD -->
+      <template v-else>
+        <div class="client-main-content admin-main-content">
+          <div v-if="message" class="admin-alert-toast" style="background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;">
+            <p>{{ message }}</p>
+            <button class="admin-alert-dismiss" type="button" style="color: #38bdf8;" @click="message = ''">×</button>
+          </div>
+
+          <!-- OVERVIEW PAGE -->
+          <section v-if="activePage === 'dashboard'" class="page-stack">
+            <div class="metric-grid">
+              <div class="metric">
+                <span>Allocated Storage</span>
+                <strong>{{ dashboardStats ? (dashboardStats.allocated_storage_mb / 1024).toFixed(1) : 0 }} GB</strong>
+                <small>Master Limit: {{ dashboardStats ? (dashboardStats.master_storage_mb / 1024).toFixed(1) : 0 }} GB</small>
+              </div>
+
+              <div class="metric">
+                <span>Sub-Clients</span>
+                <strong>{{ dashboardStats ? dashboardStats.sub_clients_count : 0 }}</strong>
+                <small>Limit: {{ dashboardStats && dashboardStats.max_clients_limit > 0 ? dashboardStats.max_clients_limit : 'Unlimited' }}</small>
+              </div>
+
+              <div class="metric">
+                <span>Active Accounts</span>
+                <strong>{{ dashboardStats ? dashboardStats.sub_accounts_count : 0 }}</strong>
+                <small>Provisioned stacks</small>
+              </div>
+
+              <div class="metric">
+                <span>Custom Sub-Plans</span>
+                <strong>{{ dashboardStats ? dashboardStats.sub_plans_count : 0 }}</strong>
+                <small>Limit: {{ dashboardStats && dashboardStats.max_subplans_limit > 0 ? dashboardStats.max_subplans_limit : 'Unlimited' }}</small>
               </div>
             </div>
 
-            <div class="metrics-grid">
-              <div class="metric-card">
-                <div class="metric-head">
-                  <span class="metric-title">Allocated Storage</span>
-                  <span class="metric-icon">💾</span>
-                </div>
-                <div class="metric-value">{{ dashboardStats ? (dashboardStats.allocated_storage_mb / 1024).toFixed(1) : 0 }} GB</div>
-                <div class="metric-sub">Master limit: {{ dashboardStats ? (dashboardStats.master_storage_mb / 1024).toFixed(1) : 0 }} GB</div>
+            <div v-if="dashboardStats && dashboardStats.master_plan" class="panel">
+              <div class="panel-header">
+                <h2>Master Package Limits</h2>
+                <p>Your custom sub-plans and client allocations automatically enforce these upper boundaries.</p>
               </div>
-
-              <div class="metric-card">
-                <div class="metric-head">
-                  <span class="metric-title">Sub-Clients</span>
-                  <span class="metric-icon">👥</span>
+              <div class="panel-body">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                  <div><strong>Package Name:</strong> <span>{{ dashboardStats.master_plan.name }}</span></div>
+                  <div><strong>Max Storage:</strong> <span>{{ dashboardStats.master_plan.storage_mb }} MB</span></div>
+                  <div><strong>Max RAM:</strong> <span>{{ dashboardStats.master_plan.memory_mb }} MB</span></div>
+                  <div><strong>Max Websites:</strong> <span>{{ dashboardStats.master_plan.max_websites }}</span></div>
+                  <div><strong>Max Databases:</strong> <span>{{ dashboardStats.master_plan.max_databases }}</span></div>
                 </div>
-                <div class="metric-value">{{ dashboardStats ? dashboardStats.sub_clients_count : 0 }}</div>
-                <div class="metric-sub">Limit: {{ dashboardStats && dashboardStats.max_clients_limit > 0 ? dashboardStats.max_clients_limit : 'Unlimited' }}</div>
-              </div>
-
-              <div class="metric-card">
-                <div class="metric-head">
-                  <span class="metric-title">Active Accounts</span>
-                  <span class="metric-icon">🖥️</span>
-                </div>
-                <div class="metric-value">{{ dashboardStats ? dashboardStats.sub_accounts_count : 0 }}</div>
-                <div class="metric-sub">Provisioned stacks</div>
-              </div>
-
-              <div class="metric-card">
-                <div class="metric-head">
-                  <span class="metric-title">Custom Sub-Plans</span>
-                  <span class="metric-icon">📦</span>
-                </div>
-                <div class="metric-value">{{ dashboardStats ? dashboardStats.sub_plans_count : 0 }}</div>
-                <div class="metric-sub">Sub-plan limit: {{ dashboardStats && dashboardStats.max_subplans_limit > 0 ? dashboardStats.max_subplans_limit : 'Unlimited' }}</div>
-              </div>
-            </div>
-
-            <div v-if="dashboardStats && dashboardStats.master_plan" style="margin-top: 1.5rem; padding: 1.25rem; background: var(--bg-card, rgba(255,255,255,0.03)); border: 1px solid var(--border, rgba(255,255,255,0.08)); border-radius: 12px;">
-              <h3 style="margin-bottom: 0.5rem; color: var(--brand, #fdb528);">Master Package Limits</h3>
-              <p style="color: var(--text-muted, #8c979e); font-size: 0.9rem; margin-bottom: 1rem;">Your custom sub-plans and client allocations will automatically enforce these upper boundaries.</p>
-              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
-                <div><strong>Package Name:</strong> <span>{{ dashboardStats.master_plan.name }}</span></div>
-                <div><strong>Max Storage:</strong> <span>{{ dashboardStats.master_plan.storage_mb }} MB</span></div>
-                <div><strong>Max RAM:</strong> <span>{{ dashboardStats.master_plan.memory_mb }} MB</span></div>
-                <div><strong>Max Websites:</strong> <span>{{ dashboardStats.master_plan.max_websites }}</span></div>
-                <div><strong>Max Databases:</strong> <span>{{ dashboardStats.master_plan.max_databases }}</span></div>
               </div>
             </div>
           </section>
 
           <!-- SUB-CLIENTS PAGE -->
-          <section v-if="activePage === 'clients'" class="panel">
-            <div class="section-head">
-              <div>
-                <h2>Client Management</h2>
-                <p>Create and manage user accounts under your reseller profile.</p>
+          <section v-if="activePage === 'clients'" class="page-stack">
+            <div class="panel">
+              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <h2>Client Management</h2>
+                  <p>Create and manage user accounts under your reseller profile.</p>
+                </div>
+                <button class="primary-button" @click="showClientModal = true">+ Create Sub-Client</button>
               </div>
-              <button class="primary-button" @click="showClientModal = true">+ Create Sub-Client</button>
-            </div>
-
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Client Name</th>
-                    <th>Email</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="client in clients" :key="client.id">
-                    <td>#{{ client.id }}</td>
-                    <td><strong>{{ client.full_name }}</strong></td>
-                    <td>{{ client.email }}</td>
-                    <td><span :class="['pill', client.status === 'active' ? 'pill-success' : 'pill-danger']">{{ client.status }}</span></td>
-                    <td>{{ new Date(client.created_at).toLocaleDateString() }}</td>
-                    <td class="actions">
-                      <button class="secondary-button" @click="toggleClientStatus(client)">
-                        {{ client.status === 'active' ? 'Suspend' : 'Activate' }}
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <div class="table-wrapper">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Client Name</th>
+                      <th>Email</th>
+                      <th>Status</th>
+                      <th>Created</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="client in clients" :key="client.id">
+                      <td>#{{ client.id }}</td>
+                      <td><strong>{{ client.full_name }}</strong></td>
+                      <td>{{ client.email }}</td>
+                      <td><span :class="['feature-status-badge', client.status === 'active' ? 'feature-status-functional' : 'feature-status-disabled']">{{ client.status }}</span></td>
+                      <td>{{ new Date(client.created_at).toLocaleDateString() }}</td>
+                      <td>
+                        <button class="ghost-button" @click="toggleClientStatus(client)">
+                          {{ client.status === 'active' ? 'Suspend' : 'Activate' }}
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 
-          <!-- SUB-PLANS PAGE -->
-          <section v-if="activePage === 'plans'" class="panel">
-            <div class="section-head">
-              <div>
-                <h2>Reseller Sub-Plans</h2>
-                <p>Create tailored hosting packages for your clients within your master quota limits.</p>
+          <!-- CUSTOM SUB-PLANS PAGE -->
+          <section v-if="activePage === 'plans'" class="page-stack">
+            <div class="panel">
+              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <h2>Reseller Sub-Plans</h2>
+                  <p>Create tailored hosting packages for your clients within your master quota limits.</p>
+                </div>
+                <button class="primary-button" @click="showPlanModal = true">+ Create Sub-Plan</button>
               </div>
-              <button class="primary-button" @click="showPlanModal = true">+ Create Sub-Plan</button>
-            </div>
-
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Plan Name</th>
-                    <th>RAM</th>
-                    <th>Storage</th>
-                    <th>Websites</th>
-                    <th>Databases</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="plan in plans" :key="plan.id">
-                    <td><strong>{{ plan.name }}</strong></td>
-                    <td>{{ plan.memory_mb }} MB</td>
-                    <td>{{ plan.storage_mb }} MB</td>
-                    <td>{{ plan.max_websites }}</td>
-                    <td>{{ plan.max_databases }}</td>
-                    <td class="actions">
-                      <span class="pill pill-success">Enforced</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <div class="table-wrapper">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Plan Name</th>
+                      <th>RAM</th>
+                      <th>Storage</th>
+                      <th>Websites</th>
+                      <th>Databases</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="plan in plans" :key="plan.id">
+                      <td><strong>{{ plan.name }}</strong></td>
+                      <td>{{ plan.memory_mb }} MB</td>
+                      <td>{{ plan.storage_mb }} MB</td>
+                      <td>{{ plan.max_websites }}</td>
+                      <td>{{ plan.max_databases }}</td>
+                      <td><span class="feature-status-badge feature-status-functional">Enforced</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 
           <!-- HOSTING ACCOUNTS PAGE -->
-          <section v-if="activePage === 'hosting-accounts'" class="panel">
-            <div class="section-head">
-              <div>
-                <h2>Provision Hosting Stacks</h2>
-                <p>Assign custom sub-plans to your clients and provision isolated stack environments.</p>
+          <section v-if="activePage === 'hosting-accounts'" class="page-stack">
+            <div class="panel">
+              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <h2>Provision Hosting Stacks</h2>
+                  <p>Assign custom sub-plans to your clients and provision isolated stack environments.</p>
+                </div>
+                <button class="primary-button" @click="showAccountModal = true">+ Provision Account</button>
               </div>
-              <button class="primary-button" @click="showAccountModal = true">+ Provision Account</button>
+              <div class="table-wrapper">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Username</th>
+                      <th>Client Email</th>
+                      <th>Plan</th>
+                      <th>Status</th>
+                      <th>Base Path</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="account in accounts" :key="account.id">
+                      <td><strong>{{ account.username }}</strong></td>
+                      <td>{{ account.email }}</td>
+                      <td>{{ account.plan_name }}</td>
+                      <td><span class="feature-status-badge feature-status-functional">{{ account.status }}</span></td>
+                      <td><code>{{ account.base_path }}</code></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
+          </section>
 
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Username</th>
-                    <th>Client Email</th>
-                    <th>Plan</th>
-                    <th>Status</th>
-                    <th>Base Path</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="account in accounts" :key="account.id">
-                    <td><strong>{{ account.username }}</strong></td>
-                    <td>{{ account.email }}</td>
-                    <td>{{ account.plan_name }}</td>
-                    <td><span class="pill pill-success">{{ account.status }}</span></td>
-                    <td><code>{{ account.base_path }}</code></td>
-                  </tr>
-                </tbody>
-              </table>
+          <!-- QUOTAS & USAGE PAGE -->
+          <section v-if="activePage === 'storage'" class="page-stack">
+            <div class="panel">
+              <div class="panel-header">
+                <h2>Storage Quotas & Usage</h2>
+                <p>View storage and inode resource allocations for all sub-client accounts.</p>
+              </div>
+              <div class="table-wrapper">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Account</th>
+                      <th>Owner</th>
+                      <th>Storage Used</th>
+                      <th>Inodes Used</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="account in accounts" :key="account.id">
+                      <td><strong>{{ account.username }}</strong></td>
+                      <td>{{ account.email }}</td>
+                      <td>{{ account.storage_used_mb || 0 }} MB</td>
+                      <td>{{ account.inodes_used || 0 }}</td>
+                      <td><span class="feature-status-badge feature-status-functional">{{ account.status }}</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 
           <!-- API TOKENS PAGE -->
-          <section v-if="activePage === 'api-tokens'" class="panel">
-            <div class="section-head">
-              <div>
-                <h2>Reseller API Tokens</h2>
-                <p>Generate API keys for automating client onboarding and stack provisioning.</p>
+          <section v-if="activePage === 'api-tokens'" class="page-stack">
+            <div class="panel">
+              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <h2>Reseller API Tokens</h2>
+                  <p>Generate API keys for automating client onboarding and stack provisioning.</p>
+                </div>
+                <button class="primary-button" @click="showTokenModal = true">+ Create API Token</button>
               </div>
-              <button class="primary-button" @click="showTokenModal = true">+ Create API Token</button>
-            </div>
 
-            <div v-if="newGeneratedToken" class="alert alert-warning" style="margin-bottom: 1rem;">
-              <strong>Save your Reseller Token now! It will not be shown again:</strong>
-              <div style="font-family: var(--font-mono); font-size: 1.1rem; padding: 0.5rem; background: #000; color: #fdb528; border-radius: 6px; margin-top: 0.5rem; user-select: all;">
-                {{ newGeneratedToken }}
+              <div v-if="newGeneratedToken" class="admin-alert-toast" style="background: rgba(253, 181, 40, 0.15); border-color: rgba(253, 181, 40, 0.4); color: #fdb528; display: block;">
+                <strong>Save your Reseller Token now! It will not be shown again:</strong>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 1rem; padding: 0.5rem; background: #000; color: #fdb528; border-radius: 6px; margin-top: 0.5rem; user-select: all;">
+                  {{ newGeneratedToken }}
+                </div>
               </div>
-            </div>
 
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Permissions</th>
-                    <th>Last Used</th>
-                    <th>Expires</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="token in apiTokens" :key="token.id">
-                    <td><strong>{{ token.name }}</strong></td>
-                    <td><code>{{ token.permissions.join(', ') }}</code></td>
-                    <td>{{ token.last_used_at ? new Date(token.last_used_at).toLocaleString() : 'Never' }}</td>
-                    <td>{{ new Date(token.expires_at * 1000).toLocaleDateString() }}</td>
-                    <td class="actions">
-                      <button class="danger-button" @click="deleteToken(token.id)">Revoke</button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <div class="table-wrapper">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Permissions</th>
+                      <th>Last Used</th>
+                      <th>Expires</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="t in apiTokens" :key="t.id">
+                      <td><strong>{{ t.name }}</strong></td>
+                      <td><code>{{ t.permissions ? t.permissions.join(', ') : '*' }}</code></td>
+                      <td>{{ t.last_used_at ? new Date(t.last_used_at).toLocaleString() : 'Never' }}</td>
+                      <td>{{ new Date(t.expires_at * 1000).toLocaleDateString() }}</td>
+                      <td>
+                        <button class="ghost-button" style="color: #ff6b6b;" @click="deleteToken(t.id)">Revoke</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
         </div>
-      </main>
-    </div>
+      </template>
+    </main>
 
     <!-- MODAL: CREATE CLIENT -->
-    <div v-if="showClientModal" class="modal-overlay" @click.self="showClientModal = false">
-      <div class="modal-panel">
-        <div class="modal-header">
-          <h2>Create New Sub-Client</h2>
-          <button class="close-button" @click="showClientModal = false">×</button>
+    <div v-if="showClientModal" class="modal-backdrop" @click.self="showClientModal = false">
+      <div class="modal-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h3>Create New Sub-Client</h3>
+          <button class="ghost-button" @click="showClientModal = false">×</button>
         </div>
-        <form @submit.prevent="createClient" class="plan-form" style="padding: 1.5rem;">
-          <label>Client Full Name <input v-model="clientForm.full_name" placeholder="John Doe" required></label>
-          <label>Email Address <input type="email" v-model="clientForm.email" placeholder="client@company.test" required></label>
-          <label>Initial Password <input type="password" v-model="clientForm.password" placeholder="Minimum 8 characters" required></label>
-          <button type="submit" class="primary-button" style="grid-column: 1 / -1; margin-top: 1rem;">Create Sub-Client</button>
+        <form @submit.prevent="createClient">
+          <div class="admin-form-group">
+            <label>Client Full Name</label>
+            <input class="admin-form-input" v-model="clientForm.full_name" placeholder="John Doe" required>
+          </div>
+          <div class="admin-form-group">
+            <label>Email Address</label>
+            <input class="admin-form-input" type="email" v-model="clientForm.email" placeholder="client@company.test" required>
+          </div>
+          <div class="admin-form-group">
+            <label>Initial Password</label>
+            <input class="admin-form-input" type="password" v-model="clientForm.password" placeholder="Minimum 8 characters" required>
+          </div>
+          <button type="submit" class="admin-submit-btn" style="margin-top: 1rem;">Create Sub-Client</button>
         </form>
       </div>
     </div>
 
     <!-- MODAL: CREATE SUB-PLAN -->
-    <div v-if="showPlanModal" class="modal-overlay" @click.self="showPlanModal = false">
-      <div class="modal-panel">
-        <div class="modal-header">
-          <h2>Create Custom Sub-Plan</h2>
-          <button class="close-button" @click="showPlanModal = false">×</button>
+    <div v-if="showPlanModal" class="modal-backdrop" @click.self="showPlanModal = false">
+      <div class="modal-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h3>Create Custom Sub-Plan</h3>
+          <button class="ghost-button" @click="showPlanModal = false">×</button>
         </div>
-        <form @submit.prevent="createPlan" class="plan-form" style="padding: 1.5rem;">
-          <label>Plan Name <input v-model="planForm.name" placeholder="Client Starter Package" required></label>
-          <label>RAM (MB) <input type="number" v-model.number="planForm.memory_mb" min="128" required></label>
-          <label>Storage (MB) <input type="number" v-model.number="planForm.storage_mb" min="100" required></label>
-          <label>Max Websites <input type="number" v-model.number="planForm.max_websites" min="1" required></label>
-          <label>Max Databases <input type="number" v-model.number="planForm.max_databases" min="0" required></label>
-          <button type="submit" class="primary-button" style="grid-column: 1 / -1; margin-top: 1rem;">Create Sub-Plan</button>
+        <form @submit.prevent="createPlan">
+          <div class="admin-form-group">
+            <label>Plan Name</label>
+            <input class="admin-form-input" v-model="planForm.name" placeholder="Client Starter Package" required>
+          </div>
+          <div class="admin-form-group">
+            <label>RAM (MB)</label>
+            <input class="admin-form-input" type="number" v-model.number="planForm.memory_mb" min="128" required>
+          </div>
+          <div class="admin-form-group">
+            <label>Storage (MB)</label>
+            <input class="admin-form-input" type="number" v-model.number="planForm.storage_mb" min="100" required>
+          </div>
+          <div class="admin-form-group">
+            <label>Max Websites</label>
+            <input class="admin-form-input" type="number" v-model.number="planForm.max_websites" min="1" required>
+          </div>
+          <div class="admin-form-group">
+            <label>Max Databases</label>
+            <input class="admin-form-input" type="number" v-model.number="planForm.max_databases" min="0" required>
+          </div>
+          <button type="submit" class="admin-submit-btn" style="margin-top: 1rem;">Create Sub-Plan</button>
         </form>
       </div>
     </div>
 
     <!-- MODAL: PROVISION ACCOUNT -->
-    <div v-if="showAccountModal" class="modal-overlay" @click.self="showAccountModal = false">
-      <div class="modal-panel">
-        <div class="modal-header">
-          <h2>Provision Hosting Account</h2>
-          <button class="close-button" @click="showAccountModal = false">×</button>
+    <div v-if="showAccountModal" class="modal-backdrop" @click.self="showAccountModal = false">
+      <div class="modal-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h3>Provision Hosting Account</h3>
+          <button class="ghost-button" @click="showAccountModal = false">×</button>
         </div>
-        <form @submit.prevent="provisionAccount" class="plan-form" style="padding: 1.5rem;">
-          <label>Select Sub-Client
-            <select v-model="accountForm.user_id" required>
+        <form @submit.prevent="provisionAccount">
+          <div class="admin-form-group">
+            <label>Select Sub-Client</label>
+            <select class="admin-form-input" v-model="accountForm.user_id" required>
               <option value="">-- Choose Client --</option>
               <option v-for="c in clients" :key="c.id" :value="c.id">{{ c.full_name }} ({{ c.email }})</option>
             </select>
-          </label>
-          <label>Select Sub-Plan
-            <select v-model="accountForm.plan_id" required>
+          </div>
+          <div class="admin-form-group">
+            <label>Select Sub-Plan</label>
+            <select class="admin-form-input" v-model="accountForm.plan_id" required>
               <option value="">-- Choose Plan --</option>
               <option v-for="p in plans" :key="p.id" :value="p.id">{{ p.name }} ({{ p.storage_mb }} MB)</option>
             </select>
-          </label>
-          <button type="submit" class="primary-button" style="grid-column: 1 / -1; margin-top: 1rem;">Provision Stack</button>
+          </div>
+          <button type="submit" class="admin-submit-btn" style="margin-top: 1rem;">Provision Stack</button>
         </form>
       </div>
     </div>
 
     <!-- MODAL: CREATE API TOKEN -->
-    <div v-if="showTokenModal" class="modal-overlay" @click.self="showTokenModal = false">
-      <div class="modal-panel">
-        <div class="modal-header">
-          <h2>Create Reseller API Token</h2>
-          <button class="close-button" @click="showTokenModal = false">×</button>
+    <div v-if="showTokenModal" class="modal-backdrop" @click.self="showTokenModal = false">
+      <div class="modal-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h3>Create Reseller API Token</h3>
+          <button class="ghost-button" @click="showTokenModal = false">×</button>
         </div>
-        <form @submit.prevent="createToken" class="plan-form" style="padding: 1.5rem;">
-          <label>Token Name <input v-model="tokenForm.name" placeholder="e.g. WHMCS Integration" required></label>
-          <button type="submit" class="primary-button" style="grid-column: 1 / -1; margin-top: 1rem;">Generate Token</button>
+        <form @submit.prevent="createToken">
+          <div class="admin-form-group">
+            <label>Token Name</label>
+            <input class="admin-form-input" v-model="tokenForm.name" placeholder="e.g. WHMCS Integration" required>
+          </div>
+          <button type="submit" class="admin-submit-btn" style="margin-top: 1rem;">Generate Token</button>
         </form>
       </div>
     </div>
