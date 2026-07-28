@@ -1689,6 +1689,88 @@
             </div>
           </section>
 
+          <!-- ═══════════════════════════════════════════════════════════ ADMIN API TOKENS -->
+          <section v-if="activePage === 'api-tokens'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Admin API Tokens</h2>
+                <p>Create and manage Admin API keys with granular permission scopes.</p>
+              </div>
+            </div>
+
+            <div class="plan-form" style="margin-bottom: 2rem; max-width: 650px; background: rgba(255,255,255,0.03); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--line,#2d3748);">
+              <h3 style="margin-top:0; margin-bottom: 1rem; font-size: 1.1rem; color: var(--text);">Generate New Admin Token</h3>
+              
+              <label style="margin-bottom: 1rem;">Token Description / Label
+                <input v-model="newAdminTokenName" placeholder="e.g. Monitoring Automation Bot">
+              </label>
+
+              <label style="margin-bottom: 0.5rem; font-weight: 600;">Granular Permission Scopes</label>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 1.25rem;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="*" v-model="newAdminTokenPermissions"> Full Admin Control (*)
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="clients.manage" v-model="newAdminTokenPermissions"> Clients &amp; Accounts
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="hosting.manage" v-model="newAdminTokenPermissions"> Hosting Plans Setup
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="dns.manage" v-model="newAdminTokenPermissions"> DNS Settings &amp; Domains
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="system.manage" v-model="newAdminTokenPermissions"> System Health &amp; Storage
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="admins.manage" v-model="newAdminTokenPermissions"> Admin Users &amp; Tokens
+                </label>
+              </div>
+
+              <button class="primary-button" @click="createAdminApiToken" :disabled="!newAdminTokenName">Generate Admin Token</button>
+            </div>
+
+            <div v-if="newAdminTokenRaw" class="callout callout-success" style="margin-bottom: 2rem; padding: 1.25rem; border-left: 4px solid #10b981; background: rgba(16, 185, 129, 0.1); border-radius: 8px;">
+              <h3 style="margin:0 0 0.5rem 0; color:#10b981;">New Admin Token Generated!</h3>
+              <p style="margin:0 0 0.5rem 0; font-size:0.9rem;">Copy your API token now. It will not be shown again!</p>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <code style="flex:1; padding:0.75rem; font-size:1rem; background:#0f172a; border-radius:6px; color:#34d399; user-select:all;">{{ newAdminTokenRaw }}</code>
+              </div>
+            </div>
+
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Token Name</th>
+                    <th>Granular Permissions</th>
+                    <th>Created</th>
+                    <th>Last Used</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="t in adminApiTokens" :key="t.id">
+                    <td><strong>{{ t.name }}</strong></td>
+                    <td>
+                      <span v-for="perm in t.permissions" :key="perm" class="pill" style="margin-right: 0.3rem; font-size: 0.75rem; background: rgba(99,102,241,0.2); color: #818cf8; border: 1px solid rgba(99,102,241,0.4);">
+                        {{ perm }}
+                      </span>
+                    </td>
+                    <td>{{ new Date(t.created_at).toLocaleString() }}</td>
+                    <td>{{ t.last_used_at ? new Date(t.last_used_at).toLocaleString() : 'Never' }}</td>
+                    <td>
+                      <button class="ghost-button danger-button" @click="deleteAdminApiToken(t.id)">Revoke</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!adminApiTokens.length">
+                    <td colspan="5" style="text-align: center; color: var(--text-muted);">No Admin API tokens created yet.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <section v-if="activePage === 'security'" class="panel">
             <div class="section-head">
               <div>

@@ -217,7 +217,18 @@ def clear_auth_attempts(conn, handler, actor_type):
 
 
 def require_admin_permission(actor, permission):
-    role = actor.get("role", "support_admin") if isinstance(actor, dict) else "support_admin"
+    if not isinstance(actor, dict):
+        raise ApiError(HTTPStatus.FORBIDDEN, "insufficient_admin_permissions")
+    if "permissions" in actor and isinstance(actor["permissions"], list):
+        perms = set(actor["permissions"])
+        if "*" in perms or "all" in perms or permission in perms:
+            return True
+        parent_scope = permission.split(".")[0] + ".*" if "." in permission else ""
+        if parent_scope and parent_scope in perms:
+            return True
+        raise ApiError(HTTPStatus.FORBIDDEN, "insufficient_admin_permissions")
+
+    role = actor.get("role", "support_admin")
     if role == "super_admin":
         return True
     permissions_by_role = {
@@ -1954,8 +1965,37 @@ class MangoHandler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "missing_bearer_token")
         raw_token = auth.removeprefix("Bearer ").strip()
 
+        # Check if this is an Admin Panel API token (starts with "mp_admin_")
+        if raw_token.startswith("mp_admin_") and "admin" in allowed_actor_types:
+            token_hex = raw_token.removeprefix("mp_admin_")
+            token_hash = hashlib.sha256(token_hex.encode("utf-8")).hexdigest()
+            now = int(time.time())
+            with connect(CONFIG.db_path) as conn:
+                row = conn.execute(
+                    """
+                    SELECT t.id AS token_id, t.admin_id, t.permissions_json, t.expires_at, a.*
+                    FROM admin_api_tokens t
+                    JOIN admins a ON a.id = t.admin_id
+                    WHERE t.token_hash = ? AND a.status = 'active'
+                    """,
+                    (token_hash,),
+                ).fetchone()
+                if not row:
+                    raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_admin_api_token")
+                if row["expires_at"] and int(row["expires_at"]) < now:
+                    raise ApiError(HTTPStatus.UNAUTHORIZED, "admin_api_token_expired")
+
+                try:
+                    conn.execute("UPDATE admin_api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?", (row["token_id"],))
+                except Exception:
+                    pass
+                admin_dict = row_to_dict(row)
+                admin_dict["actor_type"] = "admin"
+                admin_dict["permissions"] = parse_json_field(row["permissions_json"] if "permissions_json" in row.keys() else None, ["*"])
+                return admin_dict
+
         # Check if this is a Client Panel API token (starts with "mp_")
-        if raw_token.startswith("mp_") and "user" in allowed_actor_types:
+        if raw_token.startswith("mp_") and not raw_token.startswith("mp_admin_") and "user" in allowed_actor_types:
             token_hex = raw_token.removeprefix("mp_")
             token_hash = hashlib.sha256(token_hex.encode("utf-8")).hexdigest()
             now = int(time.time())
@@ -4686,9 +4726,63 @@ class MangoHandler(BaseHTTPRequestHandler):
                     )
                 body = self.read_json()
                 password = validate_password(body.get("password", ""))
-                conn.execute("UPDATE admins SET password_hash = ? WHERE id = ?", (hash_password(password), admin_id))
                 log_audit(conn, "admin", actor["id"], "reset_admin_password", "admin", admin_id, metadata={"email": target["email"]})
                 return self.json_response({"admin": {"id": admin_id, "email": target["email"], "status": target["status"]}})
+
+            if path == "/api/admin/api-tokens" and method == "GET":
+                rows = conn.execute(
+                    "SELECT id, name, permissions_json, expires_at, last_used_at, created_at FROM admin_api_tokens WHERE admin_id = ? ORDER BY id DESC",
+                    (actor["id"],),
+                ).fetchall()
+                tokens = []
+                for r in rows:
+                    td = row_to_dict(r)
+                    td["permissions"] = parse_json_field(r["permissions_json"], ["*"])
+                    tokens.append(td)
+                return self.json_response({"api_tokens": tokens})
+
+            if path == "/api/admin/api-tokens" and method == "POST":
+                require_admin_permission(actor, "admins.manage")
+                body = self.read_json()
+                name = body.get("name", "").strip()
+                if not name:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "name_required")
+                raw_perms = body.get("permissions", ["*"])
+                if isinstance(raw_perms, str):
+                    perms = [p.strip() for p in raw_perms.split(",") if p.strip()]
+                elif isinstance(raw_perms, list):
+                    perms = [str(p).strip() for p in raw_perms if str(p).strip()]
+                else:
+                    perms = ["*"]
+                if not perms:
+                    perms = ["*"]
+
+                raw_token = secrets.token_hex(32)
+                token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+                cursor = conn.execute(
+                    "INSERT INTO admin_api_tokens (admin_id, name, token_hash, permissions_json) VALUES (?, ?, ?, ?)",
+                    (actor["id"], name, token_hash, json.dumps(perms)),
+                )
+                log_audit(conn, "admin", actor["id"], "create_admin_api_token", "admin_api_token", cursor.lastrowid, metadata={"name": name})
+                return self.json_response({
+                    "id": cursor.lastrowid,
+                    "name": name,
+                    "token": f"mp_admin_{raw_token}",
+                    "permissions": perms,
+                }, HTTPStatus.CREATED)
+
+            match_admin_token = re.match(r"^/api/admin/api-tokens/(\d+)$", path)
+            if match_admin_token and method == "DELETE":
+                require_admin_permission(actor, "admins.manage")
+                token_id = int(match_admin_token.group(1))
+                r = conn.execute("SELECT * FROM admin_api_tokens WHERE id = ? AND admin_id = ?", (token_id, actor["id"])).fetchone()
+                if not r:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "token_not_found")
+                conn.execute("DELETE FROM admin_api_tokens WHERE id = ?", (token_id,))
+                log_audit(conn, "admin", actor["id"], "delete_admin_api_token", "admin_api_token", token_id)
+                return self.json_response({"deleted": True})
+
             if path == "/api/admin/clients" and method == "GET":
                 return self.json_response({"clients": admin_clients_payload(conn)})
             if path == "/api/admin/clients" and method == "POST":

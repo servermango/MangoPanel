@@ -494,6 +494,10 @@ const app = createApp({
       }
       return false;
     },
+    isApiAccessAllowed() {
+      if (!this.activeAccount) return false;
+      return Boolean(this.activeAccount.allow_api_access);
+    },
     filteredSites() {
       const query = this.siteSearchQuery.trim().toLowerCase();
       if (!query) return this.websites;

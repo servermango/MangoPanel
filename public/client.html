@@ -2525,35 +2525,46 @@
               </div>
             </div>
 
-            <div class="form-grid" style="margin-bottom: 2rem; max-width: 600px;">
-              <label>Token Name
-                <input v-model="newApiTokenName" placeholder="e.g. CI/CD Deployment Script">
-              </label>
-              <button class="primary-button" @click="createApiToken" :disabled="!newApiTokenName" style="margin-top: 1.5rem; width: fit-content;">Generate Token</button>
+            <div v-if="!isApiAccessAllowed" class="callout callout-warning" style="margin-top: 1rem; padding: 1.25rem; border-left: 4px solid var(--color-warning, #f59e0b); background: rgba(245, 158, 11, 0.1); border-radius: 8px;">
+              <h3 style="margin: 0 0 0.5rem 0; color: var(--color-warning, #f59e0b); display: flex; align-items: center; gap: 0.5rem;">
+                <app-icon name="alert-triangle"></app-icon> API Access Disabled
+              </h3>
+              <p style="margin: 0; font-size: 0.95rem; color: var(--text);">
+                API access is disabled for your hosting plan. Please contact your administrator or upgrade your plan to access the API.
+              </p>
             </div>
 
-            <div v-if="newApiTokenRaw" class="info-box" style="margin-bottom: 2rem; border-color: var(--primary);">
-              <h3 style="margin-bottom: 0.5rem; color: var(--primary);">Token Generated!</h3>
-              <p>Please copy your new API token now. You won't be able to see it again!</p>
-              <div style="display:flex; align-items:center; gap:0.5rem; margin-top:1rem;">
-                <code style="flex:1; padding:1rem; font-size:1.1rem; user-select:all;">{{ newApiTokenRaw }}</code>
+            <div v-else>
+              <div class="form-grid" style="margin-bottom: 2rem; max-width: 600px;">
+                <label>Token Name
+                  <input v-model="newApiTokenName" placeholder="e.g. CI/CD Deployment Script">
+                </label>
+                <button class="primary-button" @click="createApiToken" :disabled="!newApiTokenName" style="margin-top: 1.5rem; width: fit-content;">Generate Token</button>
               </div>
-            </div>
 
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Name</th><th>Created</th><th>Actions</th></tr></thead>
-                <tbody>
-                  <tr v-for="t in apiTokens" :key="t.id">
-                    <td><strong>{{ t.name }}</strong></td>
-                    <td>{{ new Date(t.created_at).toLocaleString() }}</td>
-                    <td class="actions">
-                      <button class="danger-button" @click="deleteApiToken(t.id)"><app-icon name="trash"></app-icon> Revoke</button>
-                    </td>
-                  </tr>
-                  <tr v-if="!apiTokens.length"><td colspan="3" class="empty-row">No API tokens configured.</td></tr>
-                </tbody>
-              </table>
+              <div v-if="newApiTokenRaw" class="info-box" style="margin-bottom: 2rem; border-color: var(--primary);">
+                <h3 style="margin-bottom: 0.5rem; color: var(--primary);">Token Generated!</h3>
+                <p>Please copy your new API token now. You won't be able to see it again!</p>
+                <div style="display:flex; align-items:center; gap:0.5rem; margin-top:1rem;">
+                  <code style="flex:1; padding:1rem; font-size:1.1rem; user-select:all;">{{ newApiTokenRaw }}</code>
+                </div>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Name</th><th>Created</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    <tr v-for="t in apiTokens" :key="t.id">
+                      <td><strong>{{ t.name }}</strong></td>
+                      <td>{{ new Date(t.created_at).toLocaleString() }}</td>
+                      <td class="actions">
+                        <button class="danger-button" @click="deleteApiToken(t.id)"><app-icon name="trash"></app-icon> Revoke</button>
+                      </td>
+                    </tr>
+                    <tr v-if="!apiTokens.length"><td colspan="3" class="empty-row">No API tokens configured.</td></tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 

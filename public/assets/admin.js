@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 
 const ADMIN_ROUTE_PREFIX = "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "storage", "networking", "dns", "registrars", "dns-domains", "system", "admins", "status", "security", "default-page"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "storage", "networking", "dns", "registrars", "dns-domains", "system", "admins", "api-tokens", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
   let hash = window.location.hash.replace(/^#/, "");
@@ -51,6 +51,10 @@ createApp({
       newAdminTotpCode: "",
       newAdminTotpMessage: "",
       adminPasswordModal: { open: false, admin: null, password: "", confirm: "" },
+      adminApiTokens: [],
+      newAdminTokenName: "",
+      newAdminTokenRaw: "",
+      newAdminTokenPermissions: ["*"],
       storageDf: { filesystems: [], root_capacity_pct: 0, total_main_size_bytes: 0, total_main_used_bytes: 0, updated_at: "" },
       storageLive: { capacity_total_bytes: 0, capacity_used_bytes: 0, capacity_free_bytes: 0, capacity_used_pct: 0, read_rate_kbs: 0, write_rate_kbs: 0, read_rate_mbs: 0, write_rate_mbs: 0, top_writers: [], sample_interval_sec: 0.3 },
       storageLiveActive: true,
@@ -225,6 +229,7 @@ createApp({
             { label: "Security Checklist", target: "security", description: "Server security audit, SSH hardening, firewall, SSL, and WAF status." },
             { label: "Stack & Jobs", target: "system", description: "Generated stacks, agent runs, recent jobs, and events." },
             { label: "Admins", target: "admins", description: "Admin users, TOTP secrets, nodes, and PHP availability." },
+            { label: "API Tokens", target: "api-tokens", description: "Manage Admin API keys and granular permissions." },
             { label: "Status", target: "status", description: "Publish incidents and review public component status." },
           ],
         },
@@ -673,6 +678,7 @@ createApp({
         await this.loadDefaultPage();
         await this.loadStorage();
         await this.loadNetworking();
+        await this.fetchAdminApiTokens();
         this.jobEvents = (await this.api("/api/admin/job-events")).job_events;
       } catch (error) {
         this.message = error.message;
@@ -1095,6 +1101,42 @@ createApp({
     },
     clearCloudflareAccountForm() {
       this.cloudflareAccount = { id: null, display_name: "", account_name: "", external_account_id: "", api_token: "", status: "active" };
+    },
+    async fetchAdminApiTokens() {
+      try {
+        const res = await this.api("/api/admin/api-tokens");
+        this.adminApiTokens = res.api_tokens || [];
+      } catch (err) {
+        this.message = err.message;
+      }
+    },
+    async createAdminApiToken() {
+      if (!this.newAdminTokenName.trim()) return;
+      this.message = "";
+      try {
+        const res = await this.api("/api/admin/api-tokens", {
+          method: "POST",
+          body: JSON.stringify({
+            name: this.newAdminTokenName.trim(),
+            permissions: this.newAdminTokenPermissions
+          })
+        });
+        this.newAdminTokenRaw = res.token;
+        this.newAdminTokenName = "";
+        this.fetchAdminApiTokens();
+      } catch (err) {
+        this.message = err.message;
+      }
+    },
+    async deleteAdminApiToken(id) {
+      if (!confirm("Revoke this Admin API Token?")) return;
+      this.message = "";
+      try {
+        await this.api(`/api/admin/api-tokens/${id}`, { method: "DELETE" });
+        this.fetchAdminApiTokens();
+      } catch (err) {
+        this.message = err.message;
+      }
     },
     async saveDnsSettings() {
       this.message = "";

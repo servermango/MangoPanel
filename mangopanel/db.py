@@ -1129,6 +1129,20 @@ def ensure_schema(conn):
     ensure_table_columns(conn, "users", {"totp_secret": "TEXT"})
     ensure_table_columns(conn, "admins", {"totp_secret": "TEXT"})
     ensure_table_columns(conn, "plans", {"allow_api_access": "INTEGER NOT NULL DEFAULT 0"})
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS admin_api_tokens (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          admin_id INTEGER NOT NULL REFERENCES admins(id),
+          name TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          permissions_json TEXT NOT NULL DEFAULT '["*"]',
+          expires_at TEXT,
+          last_used_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     ensure_table_columns(
         conn,
         "mailboxes",
