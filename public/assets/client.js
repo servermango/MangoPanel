@@ -433,6 +433,17 @@ const app = createApp({
   },
   mounted() {
     document.body.classList.add('app-loaded');
+    const hash = window.location.hash.replace("#", "?");
+    const searchParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(hash);
+    const urlSsoToken = searchParams.get("sso_token") || searchParams.get("token") || hashParams.get("sso_token") || hashParams.get("token");
+    if (urlSsoToken) {
+      this.token = urlSsoToken;
+      localStorage.setItem("mp_client_token", urlSsoToken);
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", "/#overview");
+      }
+    }
     if (!this.token) {
       this.token = localStorage.getItem("mp_client_token") || localStorage.getItem("mp_reseller_token") || localStorage.getItem("token") || "";
     }
@@ -454,7 +465,9 @@ const app = createApp({
     },
     resellerPortalUrl() {
       const port = (this.home && this.home.reseller_port) || "8002";
-      return `${window.location.protocol}//${window.location.hostname}:${port}/reseller`;
+      const host = window.location.hostname;
+      const currentToken = this.token || localStorage.getItem("mp_client_token") || localStorage.getItem("token") || "";
+      return `${window.location.protocol}//${host}:${port}/reseller#sso_token=${encodeURIComponent(currentToken)}`;
     },
     serverIp() {
       return (this.home && this.home.server_ip) || "157.15.203.66";

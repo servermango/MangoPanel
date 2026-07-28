@@ -39,12 +39,25 @@ createApp({
   computed: {
     clientPanelUrl() {
       const port = window.location.port === "8002" ? "8000" : window.location.port;
-      return `${window.location.protocol}//${window.location.hostname}:${port}/`;
+      const host = window.location.hostname;
+      const currentToken = this.token || localStorage.getItem("mp_reseller_token") || "";
+      return `${window.location.protocol}//${host}:${port}/#sso_token=${encodeURIComponent(currentToken)}`;
     },
   },
   mounted() {
+    const hash = window.location.hash.replace("#", "?");
+    const searchParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(hash);
+    const urlSsoToken = searchParams.get("sso_token") || searchParams.get("token") || hashParams.get("sso_token") || hashParams.get("token");
+    if (urlSsoToken) {
+      this.token = urlSsoToken;
+      localStorage.setItem("mp_reseller_token", urlSsoToken);
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", "/reseller#dashboard");
+      }
+    }
     if (!this.token) {
-      this.token = localStorage.getItem("mp_client_token") || localStorage.getItem("token") || "";
+      this.token = localStorage.getItem("mp_reseller_token") || localStorage.getItem("mp_client_token") || localStorage.getItem("token") || "";
     }
     if (this.token) {
       this.loadData();
