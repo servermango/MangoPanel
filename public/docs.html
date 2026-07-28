@@ -474,6 +474,7 @@
             <ul class="nav-menu">
                 <li><a href="#client-api">Client Area API</a></li>
                 <li><a href="#admin-api">Admin Area API</a></li>
+                <li><a href="#reseller-api">Reseller Area API</a></li>
             </ul>
         </aside>
 
@@ -1653,6 +1654,131 @@ print(res.json())</code></pre>
                             <tr>
                                 <td><code>POST /api/admin/system/default-page/reset</code></td>
                                 <td>Reset default page HTML to system default template.<br><small style="color: var(--brand);">Scope: system.manage</small></td>
+                                <td><em>None</em></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- RESELLER AREA API -->
+            <section id="reseller-api" class="docs-section">
+                <span class="badge-pill">Reseller API</span>
+                <h1>Reseller Area API Documentation</h1>
+                <p>The Reseller Area API provides full programmatic control over sub-client accounts, custom sub-plan creation, hosting stack provisioning, storage quota monitoring, and API key management on Port <code>8002</code>.</p>
+
+                <div class="callout callout-info">
+                    <div class="callout-title">Authentication &amp; Reseller Key Scope</div>
+                    <p>Authenticate requests by passing a Reseller API Token or Reseller Session JWT in the <code>Authorization</code> header:<br>
+                    <code>Authorization: Bearer mp_reseller_1a2b3c4d...</code><br><br>
+                    Reseller API endpoints are served on Port <code>8002</code> and automatically enforce the reseller's master package limits. Sub-plan limits and aggregate storage allocations are validated in real time against master plan caps.</p>
+                </div>
+
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Enforcement Rule</th>
+                                <th>System Behavior</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>Package Limit Capping</code></td>
+                                <td>When creating a custom sub-plan (<code>POST /api/reseller/plans</code>), RAM, storage, max websites, and max databases cannot exceed the master reseller plan's package limits.</td>
+                            </tr>
+                            <tr>
+                                <td><code>Aggregate Storage Cap</code></td>
+                                <td>When provisioning hosting stacks for sub-clients (<code>POST /api/reseller/hosting-accounts</code>), the total allocated storage across all sub-accounts cannot exceed the master reseller plan's total storage capacity.</td>
+                            </tr>
+                            <tr>
+                                <td><code>Max Sub-Clients &amp; Sub-Plans</code></td>
+                                <td>Sub-client creation and sub-plan creation enforce <code>max_clients</code> and <code>max_reseller_subplans</code> boundaries specified by the administrator on the master reseller plan.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h3>Reseller API Endpoint Reference</h3>
+
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Endpoint Route</th>
+                                <th>Description</th>
+                                <th>Required Payload / Parameters</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>POST /api/reseller/auth/login</code></td>
+                                <td>Authenticate reseller user credentials and verify reseller status.</td>
+                                <td><code>email</code>, <code>password</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/reseller/auth/totp/verify</code></td>
+                                <td>Verify 2FA TOTP challenge code for reseller login.</td>
+                                <td><code>challenge_token</code>, <code>code</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/reseller/dashboard</code></td>
+                                <td>Fetch reseller metrics, master plan limits, and allocated storage usage.</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/reseller/clients</code></td>
+                                <td>List all sub-client accounts created under this reseller profile.</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/reseller/clients</code></td>
+                                <td>Create a new sub-client user under this reseller profile.</td>
+                                <td><code>email</code>, <code>password</code>, <code>full_name</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>PATCH /api/reseller/clients/{id}</code></td>
+                                <td>Update sub-client details or toggle status (<code>active</code> / <code>suspended</code>).</td>
+                                <td><code>status</code>, <code>full_name</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/reseller/clients/{id}</code></td>
+                                <td>Delete a sub-client user owned by this reseller.</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/reseller/plans</code></td>
+                                <td>List all custom sub-plans created by this reseller.</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/reseller/plans</code></td>
+                                <td>Create a custom sub-plan package for sub-clients.</td>
+                                <td><code>name</code>, <code>memory_mb</code>, <code>storage_mb</code>, <code>max_websites</code>, <code>max_databases</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/reseller/hosting-accounts</code></td>
+                                <td>Provision an isolated containerized hosting stack for a sub-client.</td>
+                                <td><code>user_id</code>, <code>plan_id</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/reseller/storage/quotas</code></td>
+                                <td>View storage and inode quota breakdown for all sub-client accounts.</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/reseller/api-tokens</code></td>
+                                <td>List active Reseller API Tokens (<code>mp_reseller_...</code>).</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/reseller/api-tokens</code></td>
+                                <td>Generate a new Reseller API Token for automated management.</td>
+                                <td><code>name</code>, <code>permissions</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/reseller/api-tokens/{id}</code></td>
+                                <td>Revoke an active Reseller API Token.</td>
                                 <td><em>None</em></td>
                             </tr>
                         </tbody>
