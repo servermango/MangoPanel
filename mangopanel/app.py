@@ -4656,26 +4656,37 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/reseller/dashboard" and method == "GET":
                 sub_clients = conn.execute("SELECT COUNT(*) AS count FROM users WHERE reseller_id = ?", (reseller_id,)).fetchone()["count"]
                 sub_accounts = conn.execute(
-                    """
-                    SELECT COUNT(*) AS count FROM hosting_accounts ha
-                    JOIN users u ON u.id = ha.user_id
-                    WHERE u.reseller_id = ?
-                    """,
+                    "SELECT COUNT(*) AS count FROM hosting_accounts ha JOIN users u ON u.id = ha.user_id WHERE u.reseller_id = ?",
+                    (reseller_id,),
+                ).fetchone()["count"]
+                sub_websites = conn.execute(
+                    "SELECT COUNT(*) AS count FROM websites w JOIN hosting_accounts ha ON ha.id = w.account_id JOIN users u ON u.id = ha.user_id WHERE u.reseller_id = ?",
                     (reseller_id,),
                 ).fetchone()["count"]
                 sub_plans = conn.execute("SELECT COUNT(*) AS count FROM plans WHERE reseller_id = ?", (reseller_id,)).fetchone()["count"]
                 allocated_storage_mb = conn.execute(
-                    """
-                    SELECT COALESCE(SUM(p.storage_mb), 0) AS total
-                    FROM hosting_accounts ha
-                    JOIN users u ON u.id = ha.user_id
-                    JOIN plans p ON p.id = ha.plan_id
-                    WHERE u.reseller_id = ?
-                    """,
+                    "SELECT COALESCE(SUM(p.storage_mb), 0) AS total FROM hosting_accounts ha JOIN users u ON u.id = ha.user_id JOIN plans p ON p.id = ha.plan_id WHERE u.reseller_id = ?",
                     (reseller_id,),
                 ).fetchone()["total"]
 
+                nodes = rows_to_dicts(conn.execute("SELECT * FROM nodes ORDER BY id").fetchall())
+                jobs = rows_to_dicts(conn.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 10").fetchall())
+                status = build_status_payload(conn)
+
+                counts = {
+                    "users": sub_clients,
+                    "hosting_accounts": sub_accounts,
+                    "websites": sub_websites,
+                    "account_stacks": sub_accounts,
+                    "jobs": len(jobs),
+                    "open_incidents": len(status.get("active_incidents", [])),
+                }
+
                 return self.json_response({
+                    "counts": counts,
+                    "nodes": nodes,
+                    "recent_jobs": jobs,
+                    "status": status,
                     "dashboard": {
                         "sub_clients_count": sub_clients,
                         "sub_accounts_count": sub_accounts,
@@ -4687,6 +4698,29 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "max_subplans_limit": master_plan["max_reseller_subplans"],
                     }
                 })
+
+            if path == "/api/reseller/users" and method == "GET":
+                return self.json_response({"users": rows_to_dicts(conn.execute("SELECT id, email, full_name, status, created_at FROM users WHERE reseller_id = ? ORDER BY id", (reseller_id,)).fetchall())})
+
+            if path == "/api/reseller/account-stacks" and method == "GET":
+                stacks = rows_to_dicts(
+                    conn.execute(
+                        """
+                        SELECT ha.*, u.email AS user_email, u.full_name AS user_full_name, p.name AS plan_name
+                        FROM hosting_accounts ha
+                        JOIN users u ON u.id = ha.user_id
+                        JOIN plans p ON p.id = ha.plan_id
+                        WHERE u.reseller_id = ?
+                        ORDER BY ha.id DESC
+                        """,
+                        (reseller_id,),
+                    ).fetchall()
+                )
+                return self.json_response({"stacks": stacks})
+
+            if path == "/api/reseller/job-events" and method == "GET":
+                events = rows_to_dicts(conn.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 50").fetchall())
+                return self.json_response({"events": events})
 
             # 2. Reseller Sub-Clients
             if path == "/api/reseller/clients" and method == "GET":
@@ -4919,10 +4953,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"ips": ips})
 
             # DNS Settings & Domains
-            if path in {"/api/reseller/dns/settings", "/api/reseller/dns-settings"} and method == "GET":
-                return self.admin_dns_settings(conn)
+            if path in {"/api/reseller/dns-settings", "/api/reseller/dns/settings"} and method == "GET":
+                return self.json_response({"dns_settings": dns_settings_payload(conn)})
 
-            if path in {"/api/reseller/dns/domains", "/api/reseller/dns-domains"} and method == "GET":
+            if path in {"/api/reseller/domains", "/api/reseller/dns-domains", "/api/reseller/dns/domains"} and method == "GET":
                 domains = rows_to_dicts(
                     conn.execute(
                         """
@@ -4938,9 +4972,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
                 return self.json_response({"domains": domains})
 
+            if path == "/api/reseller/dns-providers/cloudflare/accounts" and method == "GET":
+                return self.json_response({"accounts": []})
+
             # Security Audit
             if path in {"/api/reseller/security/audit", "/api/reseller/security"} and method == "GET":
-                return self.json_response(run_security_audit(conn))
+                return self.json_response({"security": run_server_security_audit(conn)})
 
             # Admins & Reseller Profile
             if path == "/api/reseller/admins" and method == "GET":
@@ -4951,11 +4988,11 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             # System Status & Incidents
             if path in {"/api/reseller/status", "/api/reseller/system"} and method == "GET":
-                return self.admin_system_status(conn)
+                return self.json_response(build_status_payload(conn))
 
             # Default Page
             if path == "/api/reseller/default-page" and method == "GET":
-                return self.admin_get_default_page(conn)
+                return self.json_response({"default_page_content": DEFAULT_PAGE_CONTENT, "is_customized": False})
 
             # Domain Registrars
             if path == "/api/reseller/registrars" and method == "GET":
