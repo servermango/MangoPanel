@@ -9,11 +9,31 @@ function adminPageFromLocation() {
   return ADMIN_PAGE_TARGETS.has(hash) ? hash : "overview";
 }
 
+function getInitialToken() {
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashStr = window.location.hash.replace(/^#/, "");
+  const hashParams = new URLSearchParams(hashStr);
+  const urlSsoToken = searchParams.get("sso_token") || searchParams.get("token") || hashParams.get("sso_token") || hashParams.get("token");
+  
+  if (urlSsoToken) {
+    const storageKey = IS_RESELLER ? "mp_reseller_token" : "mp_admin_token";
+    localStorage.setItem(storageKey, urlSsoToken);
+    if (window.history && window.history.replaceState) {
+      const cleanHash = window.location.hash.startsWith("#sso_token=") ? "" : window.location.hash;
+      window.history.replaceState(null, "", window.location.pathname + cleanHash);
+    }
+    return urlSsoToken;
+  }
+
+  const storageKey = IS_RESELLER ? "mp_reseller_token" : "mp_admin_token";
+  return localStorage.getItem(storageKey) || (IS_RESELLER ? (localStorage.getItem("mp_client_token") || localStorage.getItem("token")) : "") || "";
+}
+
 createApp({
   data() {
     return {
       isResellerMode: IS_RESELLER,
-      token: localStorage.getItem(IS_RESELLER ? "mp_reseller_token" : "mp_admin_token") || (IS_RESELLER ? (localStorage.getItem("mp_client_token") || localStorage.getItem("token")) : "") || "",
+      token: getInitialToken(),
       activePage: adminPageFromLocation(),
       challengeToken: "",
       message: "",
