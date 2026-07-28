@@ -83,6 +83,13 @@
           <a href="#api-tokens" :class="{ active: activePage === 'api-tokens' }" @click="activePage = 'api-tokens'">
             <span class="nav-icon">🔑</span> Reseller APIs
           </a>
+
+          <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.08);">
+            <a :href="clientPanelUrl" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.65rem 0.8rem; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; color: #fff; font-weight: 600; font-size: 0.85rem; text-decoration: none; transition: all 0.2s ease;">
+              <span>🖥️ Client Panel</span>
+              <span style="margin-left: auto; font-size: 0.85rem; opacity: 0.7;">↗</span>
+            </a>
+          </div>
         </nav>
 
         <div class="sidebar-footer">

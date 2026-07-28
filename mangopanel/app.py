@@ -2099,8 +2099,23 @@ class MangoHandler(BaseHTTPRequestHandler):
                         return user_dict
 
         token_actor_type = payload.get("actor_type")
-        if payload.get("purpose") != "access" or token_actor_type not in allowed_actor_types:
+        if payload.get("purpose") != "access":
             raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_access_token")
+
+        if "reseller" in allowed_actor_types and token_actor_type in {"user", "reseller"}:
+            with connect(CONFIG.db_path) as conn:
+                actor = conn.execute("SELECT * FROM users WHERE id = ? AND status = 'active'", (payload["sub"],)).fetchone()
+                if not actor:
+                    raise ApiError(HTTPStatus.UNAUTHORIZED, "actor_not_found")
+                if not is_user_reseller(conn, actor["id"]):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "reseller_plan_required")
+                actor_dict = row_to_dict(actor)
+                actor_dict["actor_type"] = "reseller"
+                return actor_dict
+
+        if token_actor_type not in allowed_actor_types:
+            raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_access_token")
+
         table = "admins" if token_actor_type == "admin" else "users"
         with connect(CONFIG.db_path) as conn:
             actor = conn.execute(f"SELECT * FROM {table} WHERE id = ? AND status = 'active'", (payload["sub"],)).fetchone()
@@ -9968,8 +9983,11 @@ def client_home(conn, user_id, active_account_id=None):
             inodes_used = int(primary_account.get("inodes_used") or 0)
             disk_used_mb = round(float(primary_account.get("storage_used_mb") or 0))
 
+    user_is_reseller = is_user_reseller(conn, user_id)
     return {
         "user": user_dict,
+        "is_reseller": user_is_reseller,
+        "reseller_port": CONFIG.reseller_port,
         "email": user["email"] if user else None,
         "accounts": accounts,
         "websites": websites,

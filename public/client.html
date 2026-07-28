@@ -59,6 +59,12 @@
           </div>
         </div>
         <nav class="nav-list">
+          <div v-if="userIsReseller" style="margin-bottom: 0.75rem; padding: 0 0.5rem;">
+            <a :href="resellerPortalUrl" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.65rem 0.8rem; background: rgba(253, 181, 40, 0.12); border: 1px solid rgba(253, 181, 40, 0.35); border-radius: 8px; color: var(--brand, #fdb528); font-weight: 700; font-size: 0.85rem; text-decoration: none; transition: all 0.2s ease;">
+              <span>💼 Reseller Portal</span>
+              <span style="margin-left: auto; font-size: 0.85rem; opacity: 0.8;">↗</span>
+            </a>
+          </div>
           <div v-for="section in sidebarSections" :key="section.label" class="nav-section">
             <span class="nav-group">{{ section.label }}</span>
             <button v-for="item in section.items" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">

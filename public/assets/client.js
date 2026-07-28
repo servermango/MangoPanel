@@ -434,6 +434,9 @@ const app = createApp({
   mounted() {
     document.body.classList.add('app-loaded');
     if (!this.token) {
+      this.token = localStorage.getItem("mp_client_token") || localStorage.getItem("mp_reseller_token") || localStorage.getItem("token") || "";
+    }
+    if (!this.token) {
       window.location.href = "/login";
       return;
     }
@@ -446,6 +449,13 @@ const app = createApp({
     if (this.resourcePoll) window.clearInterval(this.resourcePoll);
   },
   computed: {
+    userIsReseller() {
+      return Boolean(this.home && this.home.is_reseller);
+    },
+    resellerPortalUrl() {
+      const port = (this.home && this.home.reseller_port) || "8002";
+      return `${window.location.protocol}//${window.location.hostname}:${port}/reseller`;
+    },
     serverIp() {
       return (this.home && this.home.server_ip) || "157.15.203.66";
     },

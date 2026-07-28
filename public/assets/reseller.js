@@ -3,7 +3,7 @@ const { createApp } = Vue;
 createApp({
   data() {
     return {
-      token: localStorage.getItem("mp_reseller_token") || "",
+      token: localStorage.getItem("mp_reseller_token") || localStorage.getItem("mp_client_token") || "",
       resellerInfo: JSON.parse(localStorage.getItem("mp_reseller_info") || "null"),
       activePage: location.hash.replace("#", "") || "dashboard",
       loginForm: {
@@ -36,7 +36,16 @@ createApp({
       newGeneratedToken: null,
     };
   },
+  computed: {
+    clientPanelUrl() {
+      const port = window.location.port === "8002" ? "8000" : window.location.port;
+      return `${window.location.protocol}//${window.location.hostname}:${port}/`;
+    },
+  },
   mounted() {
+    if (!this.token) {
+      this.token = localStorage.getItem("mp_client_token") || localStorage.getItem("token") || "";
+    }
     if (this.token) {
       this.loadData();
     }
