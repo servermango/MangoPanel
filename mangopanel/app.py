@@ -4886,6 +4886,81 @@ class MangoHandler(BaseHTTPRequestHandler):
                 conn.commit()
                 return self.json_response({"deleted": True})
 
+            # Live Storage & Disk IO
+            if path == "/api/reseller/storage/df" and method == "GET":
+                return self.json_response(get_df_storage())
+
+            if path in {"/api/reseller/storage/live", "/api/reseller/storage/live/stream"} and method == "GET":
+                return self.json_response(get_live_disk_io(conn, reseller_id=reseller_id))
+
+            if path == "/api/reseller/storage/paths" and method == "GET":
+                return self.json_response(get_path_size_breakdown())
+
+            if path == "/api/reseller/storage/cleanup" and method == "POST":
+                body = self.read_json() if self.headers.get("Content-Length") else {}
+                return self.json_response(run_storage_cleanup(
+                    clean_docker=body.get("clean_docker", True),
+                    clean_logs=body.get("clean_logs", True),
+                    clean_tmp=body.get("clean_tmp", True),
+                ))
+
+            if path == "/api/reseller/storage/alerts" and method == "GET":
+                return self.json_response(get_storage_alert_settings(conn))
+
+            # Live Networking & Bandwidth
+            if path == "/api/reseller/network/overview" and method == "GET":
+                return self.json_response(get_network_overview(conn))
+
+            if path in {"/api/reseller/network/live", "/api/reseller/network/live/stream"} and method == "GET":
+                return self.json_response(get_live_network_io(conn, reseller_id=reseller_id))
+
+            if path == "/api/reseller/network/ips" and method == "GET":
+                ips = rows_to_dicts(conn.execute("SELECT * FROM server_ips ORDER BY id").fetchall())
+                return self.json_response({"ips": ips})
+
+            # DNS Settings & Domains
+            if path in {"/api/reseller/dns/settings", "/api/reseller/dns-settings"} and method == "GET":
+                return self.admin_dns_settings(conn)
+
+            if path in {"/api/reseller/dns/domains", "/api/reseller/dns-domains"} and method == "GET":
+                domains = rows_to_dicts(
+                    conn.execute(
+                        """
+                        SELECT d.*, u.email AS owner_email, ha.username AS account_username
+                        FROM domains d
+                        JOIN hosting_accounts ha ON ha.id = d.account_id
+                        JOIN users u ON u.id = ha.user_id
+                        WHERE u.reseller_id = ?
+                        ORDER BY d.id DESC
+                        """,
+                        (reseller_id,),
+                    ).fetchall()
+                )
+                return self.json_response({"domains": domains})
+
+            # Security Audit
+            if path in {"/api/reseller/security/audit", "/api/reseller/security"} and method == "GET":
+                return self.json_response(run_security_audit(conn))
+
+            # Admins & Reseller Profile
+            if path == "/api/reseller/admins" and method == "GET":
+                reseller_user = row_to_dict(conn.execute("SELECT id, email, full_name, created_at FROM users WHERE id = ?", (reseller_id,)).fetchone())
+                reseller_user["role"] = "reseller"
+                tokens = rows_to_dicts(conn.execute("SELECT id, name, permissions_json, expires_at, last_used_at, created_at FROM reseller_api_tokens WHERE reseller_user_id = ? ORDER BY id DESC", (reseller_id,)).fetchall())
+                return self.json_response({"admins": [reseller_user], "api_tokens": tokens})
+
+            # System Status & Incidents
+            if path in {"/api/reseller/status", "/api/reseller/system"} and method == "GET":
+                return self.admin_system_status(conn)
+
+            # Default Page
+            if path == "/api/reseller/default-page" and method == "GET":
+                return self.admin_get_default_page(conn)
+
+            # Domain Registrars
+            if path == "/api/reseller/registrars" and method == "GET":
+                return self.json_response({"registrars": []})
+
             raise ApiError(HTTPStatus.NOT_FOUND, "unknown_reseller_api_route")
 
 

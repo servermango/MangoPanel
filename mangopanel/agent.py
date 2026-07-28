@@ -3322,10 +3322,10 @@ def _parse_block_io_bytes(size_str):
     return int(val * units.get(unit, 1))
 
 
-def get_live_disk_io(conn=None):
+def get_live_disk_io(conn=None, reseller_id=None):
     global _LAST_DISK_IO_SNAPSHOT
     now = time.time()
-    if "result" in _LAST_DISK_IO_SNAPSHOT and (now - _LAST_DISK_IO_SNAPSHOT.get("time", 0.0)) < 0.5:
+    if "result" in _LAST_DISK_IO_SNAPSHOT and (now - _LAST_DISK_IO_SNAPSHOT.get("time", 0.0)) < 0.5 and not reseller_id:
         return _LAST_DISK_IO_SNAPSHOT["result"]
 
     dt = now - _LAST_DISK_IO_SNAPSHOT.get("time", 0.0)
@@ -3472,10 +3472,10 @@ _LAST_NET_IO_SNAPSHOT = {
 }
 
 
-def get_live_network_io(conn=None):
+def get_live_network_io(conn=None, reseller_id=None):
     global _LAST_NET_IO_SNAPSHOT
     now = time.time()
-    if "result" in _LAST_NET_IO_SNAPSHOT and (now - _LAST_NET_IO_SNAPSHOT.get("time", 0.0)) < 0.5:
+    if "result" in _LAST_NET_IO_SNAPSHOT and (now - _LAST_NET_IO_SNAPSHOT.get("time", 0.0)) < 0.5 and not reseller_id:
         return _LAST_NET_IO_SNAPSHOT["result"]
 
     dt = now - _LAST_NET_IO_SNAPSHOT.get("time", 0.0)

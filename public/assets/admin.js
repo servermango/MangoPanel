@@ -1,6 +1,6 @@
 const { createApp } = Vue;
-
-const ADMIN_ROUTE_PREFIX = "/admin";
+const IS_RESELLER = Boolean(window.IS_RESELLER_PANEL);
+const ADMIN_ROUTE_PREFIX = IS_RESELLER ? "/reseller" : "/admin";
 const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "storage", "networking", "dns", "registrars", "dns-domains", "system", "admins", "api-tokens", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
@@ -12,7 +12,8 @@ function adminPageFromLocation() {
 createApp({
   data() {
     return {
-      token: localStorage.getItem("mp_admin_token") || "",
+      isResellerMode: IS_RESELLER,
+      token: localStorage.getItem(IS_RESELLER ? "mp_reseller_token" : "mp_admin_token") || (IS_RESELLER ? (localStorage.getItem("mp_client_token") || localStorage.getItem("token")) : "") || "",
       activePage: adminPageFromLocation(),
       challengeToken: "",
       message: "",
@@ -579,7 +580,7 @@ createApp({
       }
     },
     clearAdminSession(message = "") {
-      localStorage.removeItem("mp_admin_token");
+      localStorage.removeItem(IS_RESELLER ? "mp_reseller_token" : "mp_admin_token");
       this.token = "";
       this.challengeToken = "";
       this.activePage = "overview";
@@ -592,6 +593,9 @@ createApp({
       return String(value || "unknown").replaceAll("_", " ");
     },
     async api(path, options = {}) {
+      if (IS_RESELLER && path.startsWith("/api/admin/")) {
+        path = path.replace("/api/admin/", "/api/reseller/");
+      }
       const headers = { Accept: "application/json", ...(options.headers || {}) };
       if (this.token) headers.Authorization = `Bearer ${this.token}`;
       if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
@@ -619,7 +623,7 @@ createApp({
         });
         if (payload.access_token) {
           this.token = payload.access_token;
-          localStorage.setItem("mp_admin_token", this.token);
+          localStorage.setItem(IS_RESELLER ? "mp_reseller_token" : "mp_admin_token", this.token);
           this.challengeToken = "";
           await this.load();
           return;
@@ -645,7 +649,7 @@ createApp({
           body: JSON.stringify({ challenge_token: this.challengeToken, code: this.login.code }),
         });
         this.token = payload.access_token;
-        localStorage.setItem("mp_admin_token", this.token);
+        localStorage.setItem(IS_RESELLER ? "mp_reseller_token" : "mp_admin_token", this.token);
         this.challengeToken = "";
         await this.load();
       } catch (error) {
@@ -1476,7 +1480,7 @@ createApp({
       } catch (err) {
         console.error("API logout failed:", err);
       }
-      localStorage.removeItem("mp_admin_token");
+      localStorage.removeItem(IS_RESELLER ? "mp_reseller_token" : "mp_admin_token");
       const host = window.location.hostname;
       const cookieNames = ["mp_client_token", "jwt"];
       cookieNames.forEach(name => {

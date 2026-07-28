@@ -1,384 +1,2054 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MangoPanel — Reseller Hosting Panel</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
-  <link rel="stylesheet" href="/assets/app.css">
-  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-  <style>
-    .admin-login-wrapper {
-      width: 100%;
-      max-width: 440px;
-      margin: 80px auto;
-    }
-    .admin-login-card {
-      background: rgba(20, 25, 28, 0.95);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 16px;
-      padding: 2.5rem 2rem;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 35px rgba(253, 181, 40, 0.06);
-      backdrop-filter: blur(16px);
-      position: relative;
-      overflow: hidden;
-    }
-    .admin-login-card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 3px;
-      background: linear-gradient(90deg, #fdb528, #e8a417, #72e128);
-    }
-    .admin-brand-header {
-      text-align: center;
-      margin-bottom: 2rem;
-    }
-    .admin-brand-icon {
-      width: 56px;
-      height: 56px;
-      border-radius: 14px;
-      background: rgba(253, 181, 40, 0.12);
-      border: 1px solid rgba(253, 181, 40, 0.3);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.8rem;
-      margin: 0 auto 1rem;
-      box-shadow: 0 0 20px rgba(253, 181, 40, 0.15);
-    }
-    .admin-brand-title {
-      font-family: 'Space Grotesk', sans-serif;
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: #f7f7f9;
-      margin: 0 0 0.3rem 0;
-      letter-spacing: -0.02em;
-    }
-    .admin-brand-subtitle {
-      font-size: 0.85rem;
-      color: #8c979e;
-      margin: 0;
-    }
-    .admin-form-group {
-      margin-bottom: 1.25rem;
-    }
-    .admin-form-group label {
-      display: block;
-      font-size: 0.78rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #c5cbd0;
-      margin-bottom: 0.4rem;
-    }
-    .admin-form-input {
-      width: 100%;
-      background: #ffffff;
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
-      padding: 0.75rem 1rem;
-      color: #111827;
-      font-size: 0.95rem;
-      box-sizing: border-box;
-      transition: all 0.25s ease;
-      font-family: 'Inter', sans-serif;
-    }
-    .admin-form-input:focus {
-      outline: none;
-      border-color: #fdb528;
-      box-shadow: 0 0 0 3px rgba(253, 181, 40, 0.2);
-      background: #ffffff;
-    }
-    .admin-form-input.totp-input {
-      font-family: 'JetBrains Mono', monospace;
-      letter-spacing: 0.3em;
-      text-align: center;
-      font-size: 1.25rem;
-      font-weight: 700;
-    }
-    .admin-submit-btn {
-      width: 100%;
-      background: #fdb528;
-      color: #000;
-      font-weight: 700;
-      font-size: 0.95rem;
-      border: none;
-      border-radius: 8px;
-      padding: 0.85rem 1.5rem;
-      cursor: pointer;
-      transition: all 0.25s ease;
-      margin-top: 0.5rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      font-family: 'Inter', sans-serif;
-    }
-    .admin-submit-btn:hover {
-      background: #e8a417;
-      box-shadow: 0 0 20px rgba(253, 181, 40, 0.3);
-      transform: translateY(-1px);
-    }
-    .admin-submit-btn.verify-btn {
-      background: #72e128;
-    }
-    .admin-alert-toast {
-      background: rgba(179, 38, 30, 0.15);
-      border: 1px solid rgba(179, 38, 30, 0.4);
-      color: #ff6b6b;
-      padding: 0.75rem 1rem;
-      border-radius: 8px;
-      font-size: 0.85rem;
-      margin-bottom: 1.25rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .admin-alert-toast p {
-      margin: 0;
-    }
-    .admin-alert-dismiss {
-      background: transparent;
-      border: none;
-      color: #ff6b6b;
-      font-size: 1.2rem;
-      cursor: pointer;
-      padding: 0 0.2rem;
-      line-height: 1;
-    }
-    .totp-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      background: rgba(114, 225, 40, 0.12);
-      color: #72e128;
-      border: 1px solid rgba(114, 225, 40, 0.25);
-      border-radius: 20px;
-      padding: 0.25rem 0.75rem;
-      font-size: 0.75rem;
-      font-weight: 600;
-      margin-bottom: 1rem;
-    }
-    .nav-item-icon {
-      font-size: 14px;
-      line-height: 1;
-      flex-shrink: 0;
-      opacity: 0.8;
-    }
-  </style>
-</head>
-<body>
-  <div id="app" class="app-shell admin-shell" v-cloak>
-    <!-- SIDEBAR -->
-    <aside class="sidebar admin-sidebar" v-if="token">
-      <div class="brand">
-        <span class="brand-mark">💼</span>
-        <div>
-          <strong>MangoPanel</strong>
-          <small>Reseller portal</small>
-        </div>
-      </div>
-      <nav class="nav-list">
-        <div class="nav-section">
-          <span class="nav-group">Reseller Management</span>
-          <button :class="{ active: activePage === 'dashboard' }" @click="activePage = 'dashboard'">
-            <span class="nav-item-icon">📊</span>
-            <span>Overview</span>
-          </button>
-          <button :class="{ active: activePage === 'clients' }" @click="activePage = 'clients'">
-            <span class="nav-item-icon">👥</span>
-            <span>Sub-Clients</span>
-          </button>
-          <button :class="{ active: activePage === 'plans' }" @click="activePage = 'plans'">
-            <span class="nav-item-icon">📦</span>
-            <span>Custom Plans</span>
-          </button>
-          <button :class="{ active: activePage === 'hosting-accounts' }" @click="activePage = 'hosting-accounts'">
-            <span class="nav-item-icon">🖥️</span>
-            <span>Hosting Stacks</span>
-          </button>
-          <button :class="{ active: activePage === 'storage' }" @click="activePage = 'storage'">
-            <span class="nav-item-icon">💾</span>
-            <span>Quotas & Usage</span>
-          </button>
-          <button :class="{ active: activePage === 'api-tokens' }" @click="activePage = 'api-tokens'">
-            <span class="nav-item-icon">🔑</span>
-            <span>Reseller APIs</span>
-          </button>
-        </div>
-
-        <div class="nav-section">
-          <span class="nav-group">Quick Switch</span>
-          <a :href="clientPanelUrl" style="display: flex; align-items: center; gap: 0.5rem; color: var(--brand, #fdb528); text-decoration: none; font-weight: 600; font-size: 0.85rem; padding: 0.5rem 0.75rem; background: rgba(253, 181, 40, 0.08); border: 1px solid rgba(253, 181, 40, 0.25); border-radius: 6px;">
-            <span>🖥️ Client Control Panel</span>
-            <span style="margin-left: auto;">↗</span>
-          </a>
-        </div>
-      </nav>
-    </aside>
-
-    <!-- MAIN CONTENT SHELL -->
-    <main class="main admin-main" :class="{ 'admin-main-auth': !token }">
-      <header v-if="token" class="topbar">
-        <div class="topbar-context">
-          <div class="topbar-page-icon admin-page-glyph">
-            {{ {dashboard:'📊',clients:'👥',plans:'📦','hosting-accounts':'🖥️',storage:'💾','api-tokens':'🔑'}[activePage] || '💼' }}
-          </div>
-          <div class="topbar-page-meta">
-            <span class="topbar-page-title-row">
-              <span class="topbar-page-title" style="text-transform: capitalize;">{{ activePage.replace('-', ' ') }}</span>
-              <span class="feature-status-badge feature-status-functional">Reseller</span>
-            </span>
-            <span class="topbar-page-desc">Reseller portal sub-client onboarding and stack management</span>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MangoPanel Reseller</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon-admin.svg">
+    <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
+    <link rel="stylesheet" href="/assets/app.css">
+    <style>
+      .admin-main-auth {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        background: radial-gradient(circle at 50% 30%, #1a2228 0%, #0a0d0f 75%);
+        padding: 1.5rem;
+      }
+      .admin-login-wrapper {
+        width: 100%;
+        max-width: 440px;
+        margin: auto;
+      }
+      .admin-login-card {
+        background: rgba(20, 25, 28, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 2.5rem 2rem;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 35px rgba(253, 181, 40, 0.06);
+        backdrop-filter: blur(16px);
+        position: relative;
+        overflow: hidden;
+      }
+      .admin-login-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #fdb528, #e8a417, #72e128);
+      }
+      .admin-brand-header {
+        text-align: center;
+        margin-bottom: 2rem;
+      }
+      .admin-brand-icon {
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+        background: rgba(253, 181, 40, 0.12);
+        border: 1px solid rgba(253, 181, 40, 0.3);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.8rem;
+        margin: 0 auto 1rem;
+        box-shadow: 0 0 20px rgba(253, 181, 40, 0.15);
+      }
+      .admin-brand-title {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #f7f7f9;
+        margin: 0 0 0.3rem 0;
+        letter-spacing: -0.02em;
+      }
+      .admin-brand-subtitle {
+        font-size: 0.85rem;
+        color: #8c979e;
+        margin: 0;
+      }
+      .admin-form-group {
+        margin-bottom: 1.25rem;
+      }
+      .admin-form-group label {
+        display: block;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #c5cbd0;
+        margin-bottom: 0.4rem;
+      }
+      .admin-form-input {
+        width: 100%;
+        background: #ffffff;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        color: #111827;
+        font-size: 0.95rem;
+        box-sizing: border-box;
+        transition: all 0.25s ease;
+        font-family: 'Inter', sans-serif;
+      }
+      .admin-form-input:focus {
+        outline: none;
+        border-color: #fdb528;
+        box-shadow: 0 0 0 3px rgba(253, 181, 40, 0.2);
+        background: #ffffff;
+      }
+      .path-badge {
+        display: inline-block;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.1);
+        border: 1px solid rgba(56, 189, 248, 0.25);
+        border-radius: 5px;
+        padding: 2px 7px;
+        word-break: break-all;
+        overflow-wrap: anywhere;
+      }
+      .admin-form-input.totp-input {
+        font-family: 'JetBrains Mono', monospace;
+        letter-spacing: 0.3em;
+        text-align: center;
+        font-size: 1.25rem;
+        font-weight: 700;
+      }
+      .admin-submit-btn {
+        width: 100%;
+        background: #fdb528;
+        color: #000;
+        font-weight: 700;
+        font-size: 0.95rem;
+        border: none;
+        border-radius: 8px;
+        padding: 0.85rem 1.5rem;
+        cursor: pointer;
+        transition: all 0.25s ease;
+        margin-top: 0.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        font-family: 'Inter', sans-serif;
+      }
+      .admin-submit-btn:hover {
+        background: #e8a417;
+        box-shadow: 0 0 20px rgba(253, 181, 40, 0.3);
+        transform: translateY(-1px);
+      }
+      .admin-submit-btn.verify-btn {
+        background: #72e128;
+      }
+      .admin-submit-btn.verify-btn:hover {
+        background: #60c420;
+        box-shadow: 0 0 20px rgba(114, 225, 40, 0.3);
+      }
+      .admin-auth-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 1.5rem;
+        padding-top: 1.25rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        font-size: 0.82rem;
+      }
+      .admin-auth-link {
+        color: #8c979e;
+        text-decoration: none;
+        transition: color 0.2s ease;
+      }
+      .admin-auth-link:hover {
+        color: #fdb528;
+      }
+      .admin-alert-toast {
+        background: rgba(179, 38, 30, 0.15);
+        border: 1px solid rgba(179, 38, 30, 0.4);
+        color: #ff6b6b;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        margin-top: 1.25rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .admin-alert-toast p {
+        margin: 0;
+      }
+      .admin-alert-dismiss {
+        background: transparent;
+        border: none;
+        color: #ff6b6b;
+        font-size: 1.2rem;
+        cursor: pointer;
+        padding: 0 0.2rem;
+        line-height: 1;
+      }
+      .totp-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        background: rgba(114, 225, 40, 0.12);
+        color: #72e128;
+        border: 1px solid rgba(114, 225, 40, 0.25);
+        border-radius: 20px;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-bottom: 1rem;
+      }
+      .nav-item-icon {
+        font-size: 14px;
+        line-height: 1;
+        flex-shrink: 0;
+        opacity: 0.8;
+        transition: opacity 0.15s;
+      }
+      .admin-shell .nav-list button.active .nav-item-icon,
+      .admin-shell .nav-list button:hover .nav-item-icon {
+        opacity: 1;
+      }
+    </style>
+    <script>
+      (function() {
+        var t = localStorage.getItem("mp_theme") || "Default";
+        document.getElementById("theme-style").setAttribute("href", "/assets/" + t + ".css");
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="admin-app" class="app-shell admin-shell" v-cloak>
+      <aside class="sidebar admin-sidebar" v-if="token">
+        <div class="brand">
+          <span class="brand-mark">💼</span>
+          <div>
+            <strong>MangoPanel</strong>
+            <small>Reseller portal</small>
           </div>
         </div>
-        <div class="topbar-actions">
-          <button class="ghost-button" @click="loadData">🔄 Refresh</button>
-          <button class="ghost-button" @click="logout">Sign out →</button>
-        </div>
-      </header>
-
-      <!-- LOGIN VIEW -->
-      <section v-if="!token" class="admin-login-wrapper">
-        <div class="admin-login-card">
-          <div class="admin-brand-header">
-            <div class="admin-brand-icon">💼</div>
-            <h1 class="admin-brand-title">MangoPanel Reseller</h1>
-            <p class="admin-brand-subtitle">Reseller Portal & Sub-Client Console</p>
-          </div>
-
-          <form v-if="!totpChallengeToken" @submit.prevent="login">
-            <div class="admin-form-group">
-              <label for="email">Reseller Email</label>
-              <input id="email" class="admin-form-input" type="email" v-model="loginForm.email" placeholder="reseller@domain.com" required autocomplete="username" autofocus>
-            </div>
-
-            <div class="admin-form-group">
-              <label for="password">Password</label>
-              <input id="password" class="admin-form-input" type="password" v-model="loginForm.password" placeholder="••••••••••••" required autocomplete="current-password">
-            </div>
-
-            <div v-if="errorMessage" class="admin-alert-toast">
-              <p>{{ errorMessage }}</p>
-              <button type="button" class="admin-alert-dismiss" @click="errorMessage = ''">×</button>
-            </div>
-
-            <button type="submit" class="admin-submit-btn" :disabled="loggingIn">
-              <span v-if="loggingIn">Authenticating...</span>
-              <span v-else>Sign In to Reseller Panel →</span>
+        <nav class="nav-list">
+          <div v-for="section in sidebarSections" :key="section.label" class="nav-section">
+            <span class="nav-group">{{ section.label }}</span>
+            <button v-for="item in section.items" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
+              <span class="nav-item-icon">{{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[item.target] || '•' }}</span>
+              <span>{{ item.label }}</span>
             </button>
-          </form>
-
-          <form v-else @submit.prevent="verifyTotp">
-            <div style="text-align: center;">
-              <span class="totp-badge">🔒 2FA Verification Required</span>
-            </div>
-            <div class="admin-form-group">
-              <label for="totp">Security Code</label>
-              <input id="totp" class="admin-form-input totp-input" type="text" v-model="totpCode" placeholder="000000" maxlength="6" pattern="[0-9]{6}" required autocomplete="one-time-code" autofocus>
-            </div>
-            <div v-if="errorMessage" class="admin-alert-toast">
-              <p>{{ errorMessage }}</p>
-              <button type="button" class="admin-alert-dismiss" @click="errorMessage = ''">×</button>
-            </div>
-            <button type="submit" class="admin-submit-btn verify-btn" :disabled="loggingIn">Verify 2FA Code →</button>
-            <button type="button" class="ghost-button" style="width: 100%; margin-top: 0.75rem;" @click="totpChallengeToken = null">← Back to Login</button>
-          </form>
-        </div>
-      </section>
-
-      <!-- AUTHENTICATED RESELLER DASHBOARD -->
-      <template v-else>
-        <div class="client-main-content admin-main-content">
-          <div v-if="message" class="admin-alert-toast" style="background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;">
-            <p>{{ message }}</p>
-            <button class="admin-alert-dismiss" type="button" style="color: #38bdf8;" @click="message = ''">×</button>
           </div>
+          <div class="nav-section">
+            <span class="nav-group">Quick Links</span>
+            <a :href="clientPanelUrl">🖥️ Client Control Panel ↗</a>
+            <a href="/status">📡 Public Status</a>
+          </div>
+        </nav>
+      </aside>
 
-          <!-- OVERVIEW PAGE -->
-          <section v-if="activePage === 'dashboard'" class="page-stack">
+      <main class="main admin-main" :class="{ 'admin-main-auth': !token }">
+        <header v-if="token" class="topbar">
+          <div class="topbar-context">
+            <div class="topbar-page-icon admin-page-glyph">
+              {{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[activePage] || activeMenuItem.label.slice(0, 1) }}
+            </div>
+            <div class="topbar-page-meta">
+              <span class="topbar-page-title-row">
+                <span class="topbar-page-title">{{ activeMenuItem.label }}</span>
+                <span class="feature-status-badge feature-status-functional">Reseller</span>
+              </span>
+              <span class="topbar-page-desc">{{ activeMenuItem.description }}</span>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-button" @click="logout">Sign out →</button>
+          </div>
+        </header>
+
+        <section v-if="!token" class="admin-login-wrapper">
+          <div class="admin-login-card">
+            <div class="admin-brand-header">
+              <div class="admin-brand-icon">💼</div>
+              <h1 class="admin-brand-title">MangoPanel Reseller</h1>
+              <p class="admin-brand-subtitle">Reseller Portal & Sub-Client Console</p>
+            </div>
+
+            <!-- Step 1: Email & Password -->
+            <form v-if="!challengeToken" @submit.prevent="startLogin">
+              <div class="admin-form-group">
+                <label>Reseller Email</label>
+                <input class="admin-form-input" v-model="login.email" type="email" placeholder="admin@domain.com" autocomplete="username" required autofocus>
+              </div>
+              <div class="admin-form-group">
+                <label>Password</label>
+                <input class="admin-form-input" v-model="login.password" type="password" placeholder="••••••••••••" autocomplete="current-password" required>
+              </div>
+              <button class="admin-submit-btn" type="submit">
+                Sign In to Console →
+              </button>
+            </form>
+
+            <!-- Step 2: 2FA Code Verification -->
+            <form v-else @submit.prevent="finishLogin">
+              <div style="text-align: center;">
+                <span class="totp-badge">🔒 2FA Verification Required</span>
+              </div>
+              <div class="admin-form-group">
+                <label style="text-align: center;">6-Digit Authenticator Code</label>
+                <input class="admin-form-input totp-input" v-model="login.code" inputmode="numeric" placeholder="123456" autocomplete="one-time-code" maxlength="6" autofocus required>
+              </div>
+              <button class="admin-submit-btn verify-btn" type="submit">
+                Verify & Launch Dashboard →
+              </button>
+              <div style="text-align: center; margin-top: 1rem;">
+                <a href="#" class="admin-auth-link" @click.prevent="resetChallenge">← Back to Sign In</a>
+              </div>
+            </form>
+
+            <div v-if="message" class="admin-alert-toast" role="alert">
+              <p>{{ message }}</p>
+              <button class="admin-alert-dismiss" type="button" aria-label="Dismiss alert" @click="dismissMessage">×</button>
+            </div>
+
+            <div class="admin-auth-footer">
+              <a href="/admin/setup" class="admin-auth-link">First Admin Setup</a>
+              <a href="/status" class="admin-auth-link">Public System Status</a>
+            </div>
+          </div>
+        </section>
+
+        <template v-else>
+          <div class="client-main-content admin-main-content">
+            <section v-if="activePage === 'overview'" class="page-stack">
+              <!-- Linked Dashboard Metric Cards -->
+              <div class="metric-grid">
+                <div class="metric metric-clickable" @click="goTo('clients')" title="View Clients & Accounts">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Users</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">👥 Clients →</span>
+                  </div>
+                  <strong>{{ dashboard.counts.users }}</strong>
+                  <small>customer records</small>
+                </div>
+
+                <div class="metric metric-clickable" @click="goTo('clients')" title="View Hosting Accounts">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Accounts</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">📋 Accounts →</span>
+                  </div>
+                  <strong>{{ dashboard.counts.hosting_accounts }}</strong>
+                  <small>hosting stacks</small>
+                </div>
+
+                <div class="metric metric-clickable" @click="goTo('dns-domains')" title="View Domains & Websites">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Websites</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">🌐 Domains →</span>
+                  </div>
+                  <strong>{{ dashboard.counts.websites }}</strong>
+                  <small>routed domains</small>
+                </div>
+
+                <div class="metric metric-clickable" @click="goTo('system')" title="View Compose Stacks">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Stacks</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">⚙ System →</span>
+                  </div>
+                  <strong>{{ dashboard.counts.account_stacks }}</strong>
+                  <small>generated account compose files</small>
+                </div>
+
+                <div class="metric metric-clickable" @click="goTo('storage')" title="View Storage Breakdown">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Disk Capacity</span>
+                    <span style="font-size:0.75rem; color:#72e128;">💾 Storage →</span>
+                  </div>
+                  <strong style="color:#72e128;">{{ storagePieChart.used_pct }}%</strong>
+                  <small>{{ storagePieChart.used_gb }} GB / {{ storagePieChart.total_gb }} GB used</small>
+                </div>
+
+                <div class="metric metric-clickable" @click="goTo('status')" title="View Public Status & Incidents">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Incidents</span>
+                    <span style="font-size:0.75rem; color:#8c979e;">📢 Status →</span>
+                  </div>
+                  <strong :style="{ color: dashboard.counts.open_incidents > 0 ? '#ef4444' : '#10b981' }">{{ dashboard.counts.open_incidents }}</strong>
+                  <small>currently open</small>
+                </div>
+              </div>
+
+              <!-- Live Real-Time Dashboard Cards (SSE Push Stream) -->
+              <div class="two-column">
+                <!-- Live Network Traffic Card (In / Out) -->
+                <div class="panel metric-clickable" @click="goTo('networking')" title="Click to view detailed Networking tab">
+                  <div class="section-head">
+                    <div>
+                      <h2 style="display:flex; align-items:center; gap:0.5rem;">
+                        <span>🌐 Live Network Traffic</span>
+                        <span class="pill pill-success" style="font-size:0.7rem; padding:2px 6px;">● SSE Live</span>
+                      </h2>
+                      <p>Real-time inbound (Rx) download and outbound (Tx) upload bandwidth</p>
+                    </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_live_network')" :title="isPanelCollapsed('panel_live_network') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_live_network') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
+                  </div>
+
+                  <div v-show="!isPanelCollapsed('panel_live_network')">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem; margin-bottom: 0.75rem;">
+                      <!-- Traffic Inbound (Download / Rx) -->
+                      <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 0.85rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:0.72rem; text-transform:uppercase; font-weight:700; color:#38bdf8; letter-spacing:0.05em;">Inbound (Rx)</span>
+                          <span style="font-size:0.75rem; color:#38bdf8;">⬇ Download</span>
+                        </div>
+                        <strong style="font-size:1.4rem; color:#38bdf8; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
+                          {{ networkLive.rx_rate_mbs > 1 ? networkLive.rx_rate_mbs + ' MB/s' : networkLive.rx_rate_kbs + ' KB/s' }}
+                        </strong>
+                        <small style="font-size:0.73rem; color:#8c979e;">Total: {{ networkLive.total_rx_human || '0 MB' }}</small>
+                      </div>
+
+                      <!-- Traffic Outbound (Upload / Tx) -->
+                      <div style="background: rgba(253, 181, 40, 0.08); border: 1px solid rgba(253, 181, 40, 0.25); border-radius: 8px; padding: 0.85rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:0.72rem; text-transform:uppercase; font-weight:700; color:#fdb528; letter-spacing:0.05em;">Outbound (Tx)</span>
+                          <span style="font-size:0.75rem; color:#fdb528;">⬆ Upload</span>
+                        </div>
+                        <strong style="font-size:1.4rem; color:#fdb528; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
+                          {{ networkLive.tx_rate_mbs > 1 ? networkLive.tx_rate_mbs + ' MB/s' : networkLive.tx_rate_kbs + ' KB/s' }}
+                        </strong>
+                        <small style="font-size:0.73rem; color:#8c979e;">Total: {{ networkLive.total_tx_human || '0 MB' }}</small>
+                      </div>
+                    </div>
+
+                    <div v-if="networkLive.top_network_users && networkLive.top_network_users.length > 0" style="font-size:0.78rem; color:#8c979e; display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+                      <span>Top Network User:</span>
+                      <strong style="color:#f7f7f9; font-family:'JetBrains Mono', monospace;">{{ networkLive.top_network_users[0].name }} ({{ networkLive.top_network_users[0].tx_kbs + networkLive.top_network_users[0].rx_kbs }} KB/s)</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Live Disk I/O Card (Read / Write) -->
+                <div class="panel metric-clickable" @click="goTo('storage')" title="Click to view detailed Storage tab">
+                  <div class="section-head">
+                    <div>
+                      <h2 style="display:flex; align-items:center; gap:0.5rem;">
+                        <span>⚡ Live Disk I/O Speed</span>
+                        <span class="pill pill-success" style="font-size:0.7rem; padding:2px 6px;">● SSE Live</span>
+                      </h2>
+                      <p>Real-time disk read throughput and write activity</p>
+                    </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_live_disk')" :title="isPanelCollapsed('panel_live_disk') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_live_disk') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
+                  </div>
+
+                  <div v-show="!isPanelCollapsed('panel_live_disk')">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem; margin-bottom: 0.75rem;">
+                      <!-- Disk Read Rate -->
+                      <div style="background: rgba(114, 225, 40, 0.08); border: 1px solid rgba(114, 225, 40, 0.25); border-radius: 8px; padding: 0.85rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:0.72rem; text-transform:uppercase; font-weight:700; color:#72e128; letter-spacing:0.05em;">Disk Read</span>
+                          <span style="font-size:0.75rem; color:#72e128;">📖 Read</span>
+                        </div>
+                        <strong style="font-size:1.4rem; color:#72e128; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
+                          {{ storageLive.read_rate_mbs > 1 ? storageLive.read_rate_mbs + ' MB/s' : storageLive.read_rate_kbs + ' KB/s' }}
+                        </strong>
+                        <small style="font-size:0.73rem; color:#8c979e;">Read IOPS active</small>
+                      </div>
+
+                      <!-- Disk Write Rate -->
+                      <div style="background: rgba(236, 72, 153, 0.08); border: 1px solid rgba(236, 72, 153, 0.25); border-radius: 8px; padding: 0.85rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                          <span style="font-size:0.72rem; text-transform:uppercase; font-weight:700; color:#ec4899; letter-spacing:0.05em;">Disk Write</span>
+                          <span style="font-size:0.75rem; color:#ec4899;">✏️ Write</span>
+                        </div>
+                        <strong style="font-size:1.4rem; color:#ec4899; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
+                          {{ storageLive.write_rate_mbs > 1 ? storageLive.write_rate_mbs + ' MB/s' : storageLive.write_rate_kbs + ' KB/s' }}
+                        </strong>
+                        <small style="font-size:0.73rem; color:#8c979e;">Write IOPS active</small>
+                      </div>
+                    </div>
+
+                    <div v-if="storageLive.top_writers && storageLive.top_writers.length > 0" style="font-size:0.78rem; color:#8c979e; display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+                      <span>Top Disk Writer:</span>
+                      <strong style="color:#f7f7f9; font-family:'JetBrains Mono', monospace;">{{ storageLive.top_writers[0].name }} ({{ storageLive.top_writers[0].write_kbs }} KB/s)</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Storage Component Breakdown Pie Chart Card & Node Health -->
+              <div class="two-column">
+                <!-- Storage Breakdown Pie Chart Card (Linked to Storage Tab) -->
+                <div class="panel metric-clickable" @click="goTo('storage')" title="Click to view detailed Storage tab">
+                  <div class="section-head">
+                    <div>
+                      <h2>System Storage Breakdown</h2>
+                      <p>Disk space utilization across system components (Click for Storage tab)</p>
+                    </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_storage_pie')" :title="isPanelCollapsed('panel_storage_pie') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_storage_pie') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
+                  </div>
+
+                  <div v-show="!isPanelCollapsed('panel_storage_pie')">
+                    <div style="display:flex; align-items:center; justify-content:space-around; flex-wrap:wrap; gap:1.5rem; padding:0.5rem 0;">
+                      <!-- SVG Donut Chart -->
+                      <div style="position:relative; width:140px; height:140px; display:flex; align-items:center; justify-content:center;">
+                        <svg viewBox="0 0 100 100" style="transform: rotate(-90deg); width:100%; height:100%;">
+                          <circle cx="50" cy="50" r="45" fill="transparent" stroke="rgba(255,255,255,0.08)" stroke-width="10"></circle>
+                          <circle v-for="slice in storagePieChart.slices" :key="slice.name" cx="50" cy="50" r="45" fill="transparent"
+                                  :stroke="slice.color" stroke-width="10"
+                                  :stroke-dasharray="slice.dashArray"
+                                  :stroke-dashoffset="slice.dashOffset"
+                                  style="transition: stroke-dasharray 0.5s ease;"></circle>
+                        </svg>
+                        <div style="position:absolute; text-align:center;">
+                          <strong style="font-size:1.3rem; color:#72e128; display:block;">{{ storagePieChart.used_pct }}%</strong>
+                          <span style="font-size:0.7rem; color:#8c979e;">Used</span>
+                        </div>
+                      </div>
+
+                      <!-- Legend Pills -->
+                      <div style="flex:1; min-width:180px;">
+                        <div v-for="slice in storagePieChart.slices" :key="'leg-' + slice.name" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem; font-size:0.82rem;">
+                          <div style="display:flex; align-items:center; gap:0.4rem;">
+                            <span :style="{ background: slice.color }" style="display:inline-block; width:10px; height:10px; border-radius:50%;"></span>
+                            <span>{{ slice.name }}</span>
+                          </div>
+                          <strong style="font-family:'JetBrains Mono', monospace; font-size:0.8rem;">{{ slice.pct }}% ({{ slice.size_mb }} MB)</strong>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Node Agent Health -->
+                <div class="panel">
+                  <div class="section-head">
+                    <div>
+                      <h2>Nodes & Agent Health</h2>
+                      <p>Host node status and quota backends</p>
+                    </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_nodes')" :title="isPanelCollapsed('panel_nodes') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_nodes') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
+                  </div>
+                  <div v-show="!isPanelCollapsed('panel_nodes')">
+                    <ul class="clean-list">
+                      <li v-for="node in dashboard.nodes" :key="node.id">
+                        <strong>{{ node.name }}</strong>
+                        <span class="pill pill-success">{{ node.status }}</span>
+                        <small>{{ node.hostname }} · {{ node.quota_backend }}</small>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+          <section v-if="activePage === 'clients'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Clients</h2>
+                <p>Manage customer access, hosting account status, and assigned plans.</p>
+              </div>
+              <button class="primary-button" @click="openClientModal">Create Client</button>
+            </div>
+            <div class="client-selector">
+              <label>Find client
+                <select v-model="selectedClientId" aria-label="Select client to manage">
+                  <option value="">All clients</option>
+                  <option v-for="client in clients" :key="client.id" :value="client.id">
+                    {{ client.full_name || client.email }} — {{ client.email }} (#{{ client.id }})
+                  </option>
+                </select>
+              </label>
+              <small class="muted">Click the dropdown and type to search by name or email.</small>
+            </div>
+            <div class="table-wrap">
+              <table class="client-table">
+                <thead>
+                  <tr>
+                    <th>Client</th>
+                    <th>Status</th>
+                    <th>Hosting Accounts</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="client in managedClients" :key="client.id">
+                    <td>
+                      <div class="client-edit">
+                        <input v-model="client.edit.full_name" placeholder="Full name">
+                        <input v-model="client.edit.email" placeholder="client@example.com">
+                      </div>
+                      <small>#{{ client.id }} · {{ client.created_at }}</small>
+                    </td>
+                    <td>
+                      <select v-model="client.edit.status">
+                        <option value="active">Active</option>
+                        <option value="suspended">Suspended</option>
+                      </select>
+                    </td>
+                    <td>
+                      <div v-for="account in client.accounts" :key="account.id" class="account-manage-row" style="margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid var(--border-color,#e5e7eb);">
+                        <div>
+                          <strong>{{ account.username }}</strong>
+                          <span class="pill">{{ account.status }}</span>
+                          <small>{{ account.website_count }} sites · {{ account.database_count }} DB · {{ account.backup_count }} backups</small>
+                          <div style="margin-top:0.2rem;">
+                            <span class="pill" style="font-size:0.75rem; background:var(--bg-accent,#e0f2fe); color:var(--text-accent,#0369a1);">DNS: {{ account.effective_dns_label || 'Local DNS (from global)' }}</span>
+                          </div>
+                        </div>
+                        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.35rem;">
+                          <select v-model.number="account.selected_plan_id" style="width:auto;">
+                            <option v-for="plan in plans" :key="plan.id" :value="plan.id">{{ plan.name }}</option>
+                          </select>
+                          <button @click="changeAccountPlan(client, account)" :disabled="Number(account.selected_plan_id) === Number(account.plan_id)">Update Plan</button>
+                          <button @click="toggleAccountStatus(client, account)">{{ account.status === "suspended" ? "Unsuspend" : "Suspend" }}</button>
+                        </div>
+                        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.35rem; background:var(--bg-subtle,#f9fafb); padding:0.4rem 0.6rem; border-radius:4px;">
+                          <label style="font-size:0.8rem; margin:0; font-weight:500;">DNS Provider:
+                            <select v-model="account.selected_dns_provider" style="width:auto; font-size:0.8rem; padding:0.2rem 0.4rem;">
+                              <option value="">Default / Inherit (Use Plan / Global)</option>
+                              <option value="local_powerdns">Local DNS (PowerDNS)</option>
+                              <option value="cloudflare">Cloudflare</option>
+                            </select>
+                          </label>
+                          <label v-if="account.selected_dns_provider === 'cloudflare'" style="font-size:0.8rem; margin:0; font-weight:500;">CF Account:
+                            <select v-model="account.selected_dns_account_id" style="width:auto; font-size:0.8rem; padding:0.2rem 0.4rem;">
+                              <option value="">Auto Select Active</option>
+                              <option v-for="acct in cloudflareAccounts()" :key="acct.id" :value="acct.id">{{ acct.display_name }}</option>
+                            </select>
+                          </label>
+                          <button @click="updateAccountDnsProvider(client, account)" style="padding:0.2rem 0.5rem; font-size:0.78rem;">Save DNS</button>
+                        </div>
+                      </div>
+                    </td>
+                    <td class="client-actions">
+                      <button class="primary-button" @click="updateClient(client)">Save</button>
+                      <button @click="loginAsClient(client)" :disabled="client.status !== 'active'">Login as Client</button>
+                      <button class="danger-button" @click="deleteClient(client)">Delete</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'storage'" class="page-stack">
+            <div class="section-head" style="margin-bottom: 1rem;">
+              <div>
+                <h2>Storage Engine &amp; Quotas</h2>
+                <p>Monitor filesystem capacity, live disk I/O streams, WHM quota breakdowns, and path utilization.</p>
+              </div>
+              <div class="actions" style="display: flex; gap: 0.5rem; align-items: center;">
+                <button class="primary-button" :disabled="loadingStorage" @click="loadStorage">
+                  <span v-if="loadingStorage" class="btn-spinner"></span>
+                  <app-icon v-else name="refresh"></app-icon>
+                  <span>{{ loadingStorage ? 'Scanning Storage...' : 'Refresh Storage Data' }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Loading Indicator -->
+            <div v-if="loadingStorage && !storageDf.filesystems.length" style="padding: 3rem; text-align: center; color: var(--muted, #94a3b8);">
+              <span class="btn-spinner" style="display: inline-block; width: 32px; height: 32px; border-width: 3px; margin-bottom: 1rem;"></span>
+              <p style="font-size: 1rem; font-weight: 600; color: var(--text);">Scanning Storage Capacity &amp; Path Breakdowns...</p>
+            </div>
+
+            <!-- Top Live Metrics Banner -->
             <div class="metric-grid">
               <div class="metric">
-                <span>Allocated Storage</span>
-                <strong>{{ dashboardStats ? (dashboardStats.allocated_storage_mb / 1024).toFixed(1) : 0 }} GB</strong>
-                <small>Master Limit: {{ dashboardStats ? (dashboardStats.master_storage_mb / 1024).toFixed(1) : 0 }} GB</small>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Root Capacity</span>
+                  <span class="pill" :class="storageLive.capacity_used_pct >= 90 ? 'pill-danger' : (storageLive.capacity_used_pct >= 85 ? 'pill-warning' : 'pill-success')">
+                    {{ storageLive.capacity_used_pct }}%
+                  </span>
+                </div>
+                <strong>{{ (storageLive.capacity_used_bytes / (1024*1024*1024)).toFixed(1) }} GB</strong>
+                <small>of {{ (storageLive.capacity_total_bytes / (1024*1024*1024)).toFixed(1) }} GB total</small>
               </div>
-
               <div class="metric">
-                <span>Sub-Clients</span>
-                <strong>{{ dashboardStats ? dashboardStats.sub_clients_count : 0 }}</strong>
-                <small>Limit: {{ dashboardStats && dashboardStats.max_clients_limit > 0 ? dashboardStats.max_clients_limit : 'Unlimited' }}</small>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Live Read Rate</span>
+                  <small style="color: #72e128; font-weight:600;">SSE Stream</small>
+                </div>
+                <strong>{{ storageLive.read_rate_mbs }} MB/s</strong>
+                <small>{{ storageLive.read_rate_kbs }} KB/sec</small>
               </div>
-
               <div class="metric">
-                <span>Active Accounts</span>
-                <strong>{{ dashboardStats ? dashboardStats.sub_accounts_count : 0 }}</strong>
-                <small>Provisioned stacks</small>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Live Write Rate</span>
+                  <small style="color: #fdb528; font-weight:600;">SSE Stream</small>
+                </div>
+                <strong>{{ storageLive.write_rate_mbs }} MB/s</strong>
+                <small>{{ storageLive.write_rate_kbs }} KB/sec</small>
               </div>
-
               <div class="metric">
-                <span>Custom Sub-Plans</span>
-                <strong>{{ dashboardStats ? dashboardStats.sub_plans_count : 0 }}</strong>
-                <small>Limit: {{ dashboardStats && dashboardStats.max_subplans_limit > 0 ? dashboardStats.max_subplans_limit : 'Unlimited' }}</small>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Live Push Stream</span>
+                  <button class="ghost-button" style="padding:2px 8px; font-size:0.75rem;" @click="toggleStorageLive">
+                    {{ storageLiveActive ? '⏸ Pause' : '▶ Resume' }}
+                  </button>
+                </div>
+                <strong style="font-size:1.1rem; display:flex; align-items:center; gap:0.4rem; color: #72e128;" v-if="storageLiveActive">
+                  <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#72e128; box-shadow: 0 0 8px #72e128;"></span>
+                  SSE Streaming
+                </strong>
+                <strong style="font-size:1.1rem; color: #8c979e;" v-else>Paused</strong>
+                <small>Updated: {{ storageLive.timestamp ? storageLive.timestamp.split('T')[1].slice(0,8) : 'N/A' }}</small>
               </div>
             </div>
 
-            <div v-if="dashboardStats && dashboardStats.master_plan" class="panel">
-              <div class="panel-header">
-                <h2>Master Package Limits</h2>
-                <p>Your custom sub-plans and client allocations automatically enforce these upper boundaries.</p>
+            <!-- df -h Storage Filesystems Graph -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Filesystem Storage Breakdown (df -h)</h2>
+                  <p>Storage capacity and utilization across mounted host filesystems & volumes.</p>
+                </div>
+                <div style="display:flex; gap:0.4rem; align-items:center;">
+                  <button :class="storageFilter === 'all' ? 'primary-button' : 'secondary-button'" @click="storageFilter = 'all'">All Mounts</button>
+                  <button :class="storageFilter === 'main' ? 'primary-button' : 'secondary-button'" @click="storageFilter = 'main'">Main System</button>
+                  <button :class="storageFilter === 'docker' ? 'primary-button' : 'secondary-button'" @click="storageFilter = 'docker'">Docker Overlay</button>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_df_storage')" :title="isPanelCollapsed('panel_df_storage') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_df_storage') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
               </div>
-              <div class="panel-body">
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
-                  <div><strong>Package Name:</strong> <span>{{ dashboardStats.master_plan.name }}</span></div>
-                  <div><strong>Max Storage:</strong> <span>{{ dashboardStats.master_plan.storage_mb }} MB</span></div>
-                  <div><strong>Max RAM:</strong> <span>{{ dashboardStats.master_plan.memory_mb }} MB</span></div>
-                  <div><strong>Max Websites:</strong> <span>{{ dashboardStats.master_plan.max_websites }}</span></div>
-                  <div><strong>Max Databases:</strong> <span>{{ dashboardStats.master_plan.max_databases }}</span></div>
+
+              <div v-show="!isPanelCollapsed('panel_df_storage')">
+                <!-- Storage Bar Chart Cards -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                  <div v-for="fs in filteredFilesystems" :key="fs.mounted_on" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 1rem; min-width: 0;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem; margin-bottom:0.5rem;">
+                      <div>
+                        <span class="path-badge" :title="fs.mounted_on">{{ formatMountPath(fs.mounted_on) }}</span>
+                      </div>
+                      <span class="pill" style="flex-shrink:0;" :style="{ background: fs.use_percent >= 85 ? 'rgba(239, 68, 68, 0.2)' : (fs.use_percent >= 70 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)'), color: fs.use_percent >= 85 ? '#ef4444' : (fs.use_percent >= 70 ? '#f59e0b' : '#10b981') }">
+                        {{ fs.use_percent }}% used
+                      </span>
+                    </div>
+
+                    <!-- Progress Bar -->
+                    <div style="background: rgba(255,255,255,0.1); height: 10px; border-radius: 5px; overflow: hidden; margin-bottom: 0.5rem;">
+                      <div :style="{ width: fs.use_percent + '%', height: '100%', transition: 'width 0.4s ease', background: fs.use_percent >= 85 ? 'linear-gradient(90deg, #f59e0b, #ef4444)' : (fs.use_percent >= 70 ? 'linear-gradient(90deg, #10b981, #f59e0b)' : 'linear-gradient(90deg, #72e128, #10b981)') }"></div>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; font-size:0.78rem; color:#8c979e;">
+                      <span>Used: {{ fs.used }} ({{ fs.size }} Total)</span>
+                      <span>Free: {{ fs.avail }}</span>
+                    </div>
+                    <div style="font-size:0.72rem; color:#8c979e; margin-top:0.4rem;" :title="fs.filesystem">
+                      Device: <span class="path-badge" style="font-size:0.75rem; padding:1px 5px; opacity:0.9;">{{ formatMountPath(fs.filesystem) }}</span> {{ fs.is_overlay ? '(Overlay/Virtual)' : '' }}
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Detailed Filesystem Table -->
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'mounted_on')">Mount Point {{ getSortIcon('storage_df', 'mounted_on') }}</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'filesystem')">Filesystem / Device {{ getSortIcon('storage_df', 'filesystem') }}</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'size_bytes')">Size {{ getSortIcon('storage_df', 'size_bytes') }}</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'used_bytes')">Used {{ getSortIcon('storage_df', 'used_bytes') }}</th>
+                        <th>Available</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'use_percent')">Utilization {{ getSortIcon('storage_df', 'use_percent') }}</th>
+                        <th class="sortable-th" @click="sortBy('storage_df', 'is_overlay')">Type {{ getSortIcon('storage_df', 'is_overlay') }}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="fs in filteredFilesystems" :key="'tbl-' + fs.mounted_on">
+                        <td style="max-width:240px;">
+                          <span class="path-badge" :title="fs.mounted_on">{{ formatMountPath(fs.mounted_on) }}</span>
+                        </td>
+                        <td style="max-width:200px;">
+                          <span class="path-badge" style="font-size:0.75rem; padding:1px 5px; opacity:0.9;" :title="fs.filesystem">{{ formatMountPath(fs.filesystem) }}</span>
+                        </td>
+                        <td>{{ fs.size }}</td>
+                        <td>{{ fs.used }}</td>
+                        <td>{{ fs.avail }}</td>
+                        <td>
+                          <div style="display:flex; align-items:center; gap:0.5rem;">
+                            <div style="flex:1; background:rgba(255,255,255,0.1); height:6px; border-radius:3px; overflow:hidden; min-width:60px;">
+                              <div :style="{ width: fs.use_percent + '%', height: '100%', background: fs.use_percent >= 85 ? '#ef4444' : (fs.use_percent >= 70 ? '#f59e0b' : '#72e128') }"></div>
+                            </div>
+                            <span style="font-size:0.8rem; font-weight:600;">{{ fs.use_percent }}%</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span class="pill" :class="fs.is_overlay ? '' : 'pill-success'">{{ fs.is_overlay ? 'Docker Overlay' : 'Physical System' }}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Live Disk I/O Activity & Top Disk Writers -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Top Disk I/O Writers & Readers (Live SSE Stream)</h2>
+                  <p>Real-time disk write and read speeds broken down by Docker containers, hosting account stacks, and active websites.</p>
+                </div>
+                <div style="display:flex; gap:0.4rem; align-items:center;">
+                  <span class="pill pill-success" v-if="storageLiveActive">● SSE Live Feed</span>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_disk_writers')" :title="isPanelCollapsed('panel_disk_writers') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_disk_writers') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-show="!isPanelCollapsed('panel_disk_writers')">
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'name')">Container / Stack {{ getSortIcon('disk_writers', 'name') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'stack_type')">Service / Stack Type {{ getSortIcon('disk_writers', 'stack_type') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'associated_domain')">Primary Domain {{ getSortIcon('disk_writers', 'associated_domain') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'owner')">Account Owner {{ getSortIcon('disk_writers', 'owner') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'read_kbs')">Read Speed {{ getSortIcon('disk_writers', 'read_kbs') }}</th>
+                        <th class="sortable-th" @click="sortBy('disk_writers', 'write_kbs')">Write Speed (Live) {{ getSortIcon('disk_writers', 'write_kbs') }}</th>
+                        <th>Total Block I/O</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="writer in getSortedList(storageLive.top_writers, 'disk_writers', sortState.colKey, ['read_kbs', 'write_kbs', 'read_bytes_total', 'write_bytes_total'].includes(sortState.colKey))" :key="writer.name">
+                        <td style="max-width:200px; word-break:break-all; overflow-wrap:anywhere;">
+                          <strong style="font-family:'JetBrains Mono', monospace;" :title="writer.name">{{ writer.name }}</strong>
+                        </td>
+                        <td><span class="pill">{{ writer.stack_type }}</span></td>
+                        <td>{{ writer.associated_domain }}</td>
+                        <td><small>{{ writer.owner }}</small></td>
+                        <td :style="{ color: writer.read_kbs > 0 ? '#72e128' : '#8c979e', fontWeight: writer.read_kbs > 0 ? '600' : '400' }">
+                          {{ writer.read_kbs > 1024 ? (writer.read_kbs/1024).toFixed(2) + ' MB/s' : writer.read_kbs + ' KB/s' }}
+                        </td>
+                        <td :style="{ color: writer.write_kbs > 0 ? '#fdb528' : '#8c979e', fontWeight: writer.write_kbs > 0 ? '600' : '400' }">
+                          <span v-if="writer.write_kbs > 0" style="background:rgba(253,181,40,0.15); padding:2px 6px; border-radius:4px; border:1px solid rgba(253,181,40,0.3);">
+                            ⚡ {{ writer.write_kbs > 1024 ? (writer.write_kbs/1024).toFixed(2) + ' MB/s' : writer.write_kbs + ' KB/s' }}
+                          </span>
+                          <span v-else>0 KB/s</span>
+                        </td>
+                        <td>
+                          <small>R: {{ writer.read_human }} | W: {{ writer.write_human }}</small>
+                        </td>
+                      </tr>
+                      <tr v-if="!storageLive.top_writers || storageLive.top_writers.length === 0">
+                        <td colspan="7" style="text-align:center; color:#8c979e; padding:2rem;">No active container disk writing activity detected.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- WHM Hosting Control Plane Backend Suite -->
+            <div class="two-column">
+              <!-- Account Disk Quotas -->
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Hosting Account Storage Quotas</h2>
+                    <p>Client disk space and inode consumption against assigned plan limits.</p>
+                  </div>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_storage_quotas')" :title="isPanelCollapsed('panel_storage_quotas') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_storage_quotas') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+                <div v-show="!isPanelCollapsed('panel_storage_quotas')">
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'username')">Account {{ getSortIcon('storage_quotas', 'username') }}</th>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'user_name')">User {{ getSortIcon('storage_quotas', 'user_name') }}</th>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'plan_name')">Plan {{ getSortIcon('storage_quotas', 'plan_name') }}</th>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'storage_pct')">Disk Used / Limit {{ getSortIcon('storage_quotas', 'storage_pct') }}</th>
+                          <th class="sortable-th" @click="sortBy('storage_quotas', 'inode_pct')">Inodes Used {{ getSortIcon('storage_quotas', 'inode_pct') }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="acct in getSortedList(storageQuotas, 'storage_quotas', sortState.colKey, ['used_storage_mb', 'storage_pct', 'used_inodes', 'inode_pct'].includes(sortState.colKey))" :key="acct.id">
+                          <td><strong>{{ acct.username }}</strong><br><small>#{{ acct.id }} · {{ acct.website_count }} sites</small></td>
+                          <td><small>{{ acct.user_name }}</small></td>
+                          <td><span class="pill">{{ acct.plan_name || 'Default' }}</span></td>
+                          <td>
+                            <div><strong>{{ acct.used_storage_mb }} MB</strong> / {{ acct.limit_storage_mb }} MB</div>
+                            <div style="background:rgba(255,255,255,0.1); height:4px; border-radius:2px; overflow:hidden; margin-top:4px;">
+                              <div :style="{ width: Math.min(100, acct.storage_pct) + '%', height:'100%', background: acct.storage_pct >= 90 ? '#ef4444' : (acct.storage_pct >= 80 ? '#f59e0b' : '#72e128') }"></div>
+                            </div>
+                            <small :style="{ color: acct.storage_pct >= 80 ? '#f59e0b' : '#8c979e' }">{{ acct.storage_pct }}% of quota</small>
+                          </td>
+                          <td>
+                            <div>{{ acct.used_inodes.toLocaleString() }} / {{ acct.limit_inodes.toLocaleString() }}</div>
+                            <small :style="{ color: acct.inode_pct >= 80 ? '#f59e0b' : '#8c979e' }">{{ acct.inode_pct }}%</small>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Directory Path Analyzer & Cleanup -->
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>System Directory Size Analyzer & Cleaner</h2>
+                    <p>Disk footprint of system components and 1-click WHM storage maintenance tools.</p>
+                  </div>
+                </div>
+
+                <ul class="clean-list" style="margin-bottom: 1.5rem;">
+                  <li v-for="p in storagePaths.paths" :key="p.path">
+                    <div>
+                      <strong>{{ p.name }}</strong>
+                      <div><span class="path-badge" style="margin-top:0.2rem; font-size:0.75rem;">{{ p.path }}</span></div>
+                    </div>
+                    <div style="text-align:right;">
+                      <strong>{{ p.size_mb }} MB</strong>
+                      <div><small>{{ p.share_pct }}% of scanned</small></div>
+                    </div>
+                  </li>
+                </ul>
+
+                <h3 style="font-size:1rem; margin-bottom:0.5rem; color:#f7f7f9;">WHM Storage Maintenance & Cleanup</h3>
+                <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem;">
+                  <button class="secondary-button" @click="runStorageCleanup('docker')" :disabled="storageCleanupRunning">
+                    🧹 Prune Docker Cache
+                  </button>
+                  <button class="secondary-button" @click="runStorageCleanup('logs')" :disabled="storageCleanupRunning">
+                    🗑 Clean Compressed Logs (.gz)
+                  </button>
+                  <button class="secondary-button" @click="runStorageCleanup('tmp')" :disabled="storageCleanupRunning">
+                    ⚡ Purge Temp Files (/tmp)
+                  </button>
+                  <button class="primary-button" @click="runStorageCleanup('all')" :disabled="storageCleanupRunning">
+                    {{ storageCleanupRunning ? 'Cleaning...' : '✨ Full System Cleanup' }}
+                  </button>
+                </div>
+
+                <div v-if="storageCleanupResult" style="background:rgba(114, 225, 40, 0.1); border:1px solid rgba(114, 225, 40, 0.3); border-radius:8px; padding:0.75rem; color:#72e128; font-size:0.85rem;">
+                  <strong>Cleanup Finished! Reclaimed {{ storageCleanupResult.reclaimed_human }}</strong>
+                  <ul style="margin:0.5rem 0 0 1rem; padding:0;">
+                    <li v-for="act in storageCleanupResult.actions" :key="act.item">
+                      {{ act.item }}: {{ act.details }}
+                    </li>
+                  </ul>
+                </div>
+
+                <div style="margin-top:1.5rem; border-top:1px solid rgba(255,255,255,0.08); padding-top:1rem;">
+                  <h3 style="font-size:1rem; margin-bottom:0.5rem; color:#f7f7f9;">Storage Alert Thresholds</h3>
+                  <form @submit.prevent="saveStorageAlerts">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-bottom:0.75rem;">
+                      <div>
+                        <label style="font-size:0.78rem; font-weight:600; color:#c5cbd0; display:block; margin-bottom:0.3rem;">Warning Threshold (%)</label>
+                        <input class="admin-form-input" type="number" v-model.number="storageAlerts.warning_threshold_pct" min="50" max="99" required>
+                      </div>
+                      <div>
+                        <label style="font-size:0.78rem; font-weight:600; color:#c5cbd0; display:block; margin-bottom:0.3rem;">Critical Threshold (%)</label>
+                        <input class="admin-form-input" type="number" v-model.number="storageAlerts.critical_threshold_pct" min="60" max="100" required>
+                      </div>
+                    </div>
+                    <div style="margin-bottom:0.75rem;">
+                      <label style="font-size:0.78rem; font-weight:600; color:#c5cbd0; display:block; margin-bottom:0.3rem;">Notification Email</label>
+                      <input class="admin-form-input" type="email" v-model="storageAlerts.notify_email" placeholder="admin@domain.com" required>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <button class="primary-button" type="submit" :disabled="storageAlertsSaving">
+                        {{ storageAlertsSaving ? 'Saving...' : 'Save Alert Thresholds' }}
+                      </button>
+                      <span v-if="storageAlertsMsg" style="color:#72e128; font-size:0.82rem;">{{ storageAlertsMsg }}</span>
+                    </div>
+                  </form>
                 </div>
               </div>
             </div>
           </section>
 
-          <!-- SUB-CLIENTS PAGE -->
-          <section v-if="activePage === 'clients'" class="page-stack">
-            <div class="panel">
-              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                  <h2>Client Management</h2>
-                  <p>Create and manage user accounts under your reseller profile.</p>
+          <section v-if="activePage === 'networking'" class="page-stack">
+            <!-- Top Network Metrics & Architecture Banner -->
+            <div class="metric-grid">
+              <div class="metric">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Primary Public IP</span>
+                  <span class="pill pill-success">Active</span>
                 </div>
-                <button class="primary-button" @click="showClientModal = true">+ Create Sub-Client</button>
+                <strong style="font-family:'JetBrains Mono', monospace; font-size:1.15rem; color:#72e128;">
+                  {{ networkOverview.primary_ip ? networkOverview.primary_ip.ip_address : '157.15.203.66' }}
+                </strong>
+                <small>{{ networkOverview.primary_ip ? networkOverview.primary_ip.label : 'Main Server IP' }} ({{ networkOverview.primary_ip ? networkOverview.primary_ip.interface : 'ens160' }})</small>
               </div>
-              <div class="table-wrapper">
-                <table class="data-table">
+              <div class="metric">
+                <span>Registered IPs</span>
+                <strong>{{ networkOverview.total_registered_ips || 1 }}</strong>
+                <small>server pool total</small>
+              </div>
+              <div class="metric">
+                <span>Shared Pool IPs</span>
+                <strong>{{ networkOverview.shared_ips_count || 1 }}</strong>
+                <small>available for accounts</small>
+              </div>
+              <div class="metric">
+                <span>Dedicated IPs</span>
+                <strong style="color: #fdb528;">{{ networkOverview.dedicated_ips_count || 0 }}</strong>
+                <small>assigned to clients</small>
+              </div>
+            </div>
+
+            <!-- Live Network Bandwidth & Container Activity Banner -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Live Network Bandwidth Usage by Stacks & Accounts (SSE Live Feed)</h2>
+                  <p>Real-time inbound (Rx) download and outbound (Tx) upload bandwidth consumption per container stack and client account.</p>
+                </div>
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                  <button class="ghost-button" style="padding:4px 10px; font-size:0.8rem;" @click="toggleNetworkLive">
+                    {{ networkLiveActive ? '⏸ Pause Live Stream' : '▶ Resume Live Stream' }}
+                  </button>
+                  <span class="pill pill-success" v-if="networkLiveActive">● SSE Live Stream</span>
+                  <span class="pill" v-else>Paused</span>
+                </div>
+              </div>
+
+              <!-- Top Live Rates Grid -->
+              <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:1rem; margin-bottom:1.5rem;">
+                <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:1rem;">
+                  <span style="font-size:0.78rem; color:#8c979e;">Inbound Rate (Download / Rx)</span>
+                  <div style="font-size:1.25rem; font-weight:700; color:#38bdf8; font-family:'JetBrains Mono', monospace; margin-top:0.2rem;">
+                    {{ networkLive.rx_rate_mbs > 1 ? networkLive.rx_rate_mbs + ' MB/s' : networkLive.rx_rate_kbs + ' KB/s' }}
+                  </div>
+                  <small style="color:#606a70;">Total: {{ networkLive.total_rx_human || '0 MB' }}</small>
+                </div>
+
+                <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:1rem;">
+                  <span style="font-size:0.78rem; color:#8c979e;">Outbound Rate (Upload / Tx)</span>
+                  <div style="font-size:1.25rem; font-weight:700; color:#fdb528; font-family:'JetBrains Mono', monospace; margin-top:0.2rem;">
+                    {{ networkLive.tx_rate_mbs > 1 ? networkLive.tx_rate_mbs + ' MB/s' : networkLive.tx_rate_kbs + ' KB/s' }}
+                  </div>
+                  <small style="color:#606a70;">Total: {{ networkLive.total_tx_human || '0 MB' }}</small>
+                </div>
+              </div>
+
+              <!-- Top Network Writers / Consumers Table -->
+              <div class="table-wrap">
+                <table>
                   <thead>
                     <tr>
-                      <th>ID</th>
-                      <th>Client Name</th>
-                      <th>Email</th>
-                      <th>Status</th>
-                      <th>Created</th>
-                      <th>Actions</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'name')">Container / Stack {{ getSortIcon('net_writers', 'name') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'stack_type')">Stack Type {{ getSortIcon('net_writers', 'stack_type') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'associated_domain')">Primary Domain {{ getSortIcon('net_writers', 'associated_domain') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'owner')">Account Owner {{ getSortIcon('net_writers', 'owner') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'rx_kbs')">Rx Speed (Inbound) {{ getSortIcon('net_writers', 'rx_kbs') }}</th>
+                      <th class="sortable-th" @click="sortBy('net_writers', 'tx_kbs')">Tx Speed (Outbound Live) {{ getSortIcon('net_writers', 'tx_kbs') }}</th>
+                      <th>Total Transferred</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="client in clients" :key="client.id">
-                      <td>#{{ client.id }}</td>
-                      <td><strong>{{ client.full_name }}</strong></td>
-                      <td>{{ client.email }}</td>
-                      <td><span :class="['feature-status-badge', client.status === 'active' ? 'feature-status-functional' : 'feature-status-disabled']">{{ client.status }}</span></td>
-                      <td>{{ new Date(client.created_at).toLocaleDateString() }}</td>
+                    <tr v-for="nu in getSortedList(networkLive.top_network_users, 'net_writers', sortState.colKey, ['rx_kbs', 'tx_kbs', 'rx_bytes_total', 'tx_bytes_total'].includes(sortState.colKey))" :key="'net-' + nu.name">
+                      <td style="max-width:200px; word-break:break-all; overflow-wrap:anywhere;">
+                        <strong style="font-family:'JetBrains Mono', monospace;" :title="nu.name">{{ nu.name }}</strong>
+                      </td>
+                      <td><span class="pill">{{ nu.stack_type }}</span></td>
+                      <td>{{ nu.associated_domain }}</td>
+                      <td><small>{{ nu.owner }}</small></td>
+                      <td :style="{ color: nu.rx_kbs > 0 ? '#38bdf8' : '#8c979e', fontWeight: nu.rx_kbs > 0 ? '600' : '400' }">
+                        {{ nu.rx_kbs > 1024 ? (nu.rx_kbs/1024).toFixed(2) + ' MB/s' : nu.rx_kbs + ' KB/s' }}
+                      </td>
+                      <td :style="{ color: nu.tx_kbs > 0 ? '#fdb528' : '#8c979e', fontWeight: nu.tx_kbs > 0 ? '600' : '400' }">
+                        <span v-if="nu.tx_kbs > 0" style="background:rgba(253,181,40,0.15); padding:2px 6px; border-radius:4px; border:1px solid rgba(253,181,40,0.3);">
+                          ⚡ {{ nu.tx_kbs > 1024 ? (nu.tx_kbs/1024).toFixed(2) + ' MB/s' : nu.tx_kbs + ' KB/s' }}
+                        </span>
+                        <span v-else>0 KB/s</span>
+                      </td>
                       <td>
-                        <button class="ghost-button" @click="toggleClientStatus(client)">
-                          {{ client.status === 'active' ? 'Suspend' : 'Activate' }}
-                        </button>
+                        <small>Rx: {{ nu.rx_human }} | Tx: {{ nu.tx_human }}</small>
+                      </td>
+                    </tr>
+                    <tr v-if="!networkLive.top_network_users || networkLive.top_network_users.length === 0">
+                      <td colspan="7" style="text-align:center; color:#8c979e; padding:2rem;">No active container network traffic detected.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Network Topology & Core Listening Ports -->
+            <div class="two-column">
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Server Network Interfaces</h2>
+                    <p>Detected host hardware, virtual bridges, and IP bindings.</p>
+                  </div>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_interfaces')" :title="isPanelCollapsed('panel_interfaces') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_interfaces') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+                <div v-show="!isPanelCollapsed('panel_interfaces')">
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Interface</th>
+                          <th>State</th>
+                          <th>MAC Address</th>
+                          <th>Assigned IP Addresses</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="iface in networkOverview.interfaces" :key="iface.name">
+                          <td>
+                            <strong style="font-family:'JetBrains Mono', monospace;">{{ iface.name }}</strong>
+                            <span v-if="iface.is_virtual" class="pill" style="margin-left:0.3rem;">Virtual</span>
+                          </td>
+                          <td>
+                            <span class="pill" :class="iface.operstate === 'UP' ? 'pill-success' : ''">{{ iface.operstate }}</span>
+                          </td>
+                          <td><small style="font-family:'JetBrains Mono', monospace;">{{ iface.mac || 'N/A' }}</small></td>
+                          <td>
+                            <div v-for="addr in iface.addresses" :key="addr.ip" style="font-size:0.82rem; margin-bottom:2px;">
+                              <strong style="font-family:'JetBrains Mono', monospace;">{{ addr.ip }}/{{ addr.prefixlen }}</strong>
+                              <span class="pill" style="font-size:0.7rem; padding:1px 5px; margin-left:4px;">{{ addr.type }}</span>
+                            </div>
+                            <span v-if="!iface.addresses || iface.addresses.length === 0" style="color:#8c979e; font-size:0.8rem;">None</span>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Core Network Services & Listening Ports</h2>
+                    <p>Standard control plane and edge proxy service port bindings.</p>
+                  </div>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_services')" :title="isPanelCollapsed('panel_services') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_services') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+                <div v-show="!isPanelCollapsed('panel_services')">
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Service / Daemon</th>
+                          <th>Ports</th>
+                          <th>Proto</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="sp in networkOverview.service_ports" :key="sp.service">
+                          <td><strong>{{ sp.service }}</strong></td>
+                          <td><span style="font-family:'JetBrains Mono', monospace; font-weight:600; color:#f7f7f9;">{{ sp.ports }}</span></td>
+                          <td><small>{{ sp.protocol }}</small></td>
+                          <td><span class="pill pill-success">● {{ sp.status }}</span></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Server IP Address Pool & Dedicated IP Assignments -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Server IP Address Pool</h2>
+                  <p>Manage server IPv4/IPv6 addresses, set netmasks/labels, and assign dedicated IPs to customer hosting accounts.</p>
+                </div>
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                  <button class="secondary-button" @click="openAssignIpModal()">🔌 Assign IP to Client</button>
+                  <button class="primary-button" @click="openAddIpModal()">+ Add IP Address</button>
+                  <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_server_ips')" :title="isPanelCollapsed('panel_server_ips') ? 'Expand Panel' : 'Minimize Panel'">
+                    {{ isPanelCollapsed('panel_server_ips') ? '＋ Expand' : '－ Minimize' }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-show="!isPanelCollapsed('panel_server_ips')">
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'ip_address')">IP Address {{ getSortIcon('server_ips', 'ip_address') }}</th>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'ip_type')">Type & Subnet {{ getSortIcon('server_ips', 'ip_type') }}</th>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'interface')">Interface {{ getSortIcon('server_ips', 'interface') }}</th>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'label')">Label / Description {{ getSortIcon('server_ips', 'label') }}</th>
+                        <th class="sortable-th" @click="sortBy('server_ips', 'is_primary')">Primary {{ getSortIcon('server_ips', 'is_primary') }}</th>
+                        <th>Assigned Account</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="ip in getSortedList(serverIps, 'server_ips', sortState.colKey, ['is_primary', 'id'].includes(sortState.colKey))" :key="ip.id">
+                        <td>
+                          <strong style="font-family:'JetBrains Mono', monospace; font-size:0.95rem;">{{ ip.ip_address }}</strong>
+                        </td>
+                      <td>
+                        <span class="pill">{{ ip.ip_type.toUpperCase() }}</span>
+                        <small style="margin-left:0.3rem;">{{ ip.netmask_cidr }}</small>
+                      </td>
+                      <td><small style="font-family:'JetBrains Mono', monospace;">{{ ip.interface }}</small></td>
+                      <td><strong>{{ ip.label }}</strong></td>
+                      <td>
+                        <span v-if="ip.is_primary" class="pill pill-success">★ Primary Server IP</span>
+                        <button v-else class="ghost-button" style="font-size:0.75rem; padding:2px 6px;" @click="setPrimaryIp(ip)">Set Primary</button>
+                      </td>
+                      <td>
+                        <div v-if="ip.assigned_account_id">
+                          <strong style="color:#fdb528;">Account {{ ip.account_username }}</strong>
+                          <div><small>{{ ip.account_owner_name }} ({{ ip.account_website_count }} sites)</small></div>
+                        </div>
+                        <span v-else style="color:#8c979e; font-size:0.82rem;">Shared IP Pool</span>
+                      </td>
+                      <td>
+                        <div style="display:flex; gap:0.3rem;">
+                          <button class="secondary-button" style="font-size:0.78rem; padding:3px 8px;" @click="editServerIp(ip)">Edit</button>
+                          <button class="secondary-button" style="font-size:0.78rem; padding:3px 8px;" @click="openAssignIpModal(ip)">
+                            {{ ip.assigned_account_id ? 'Reassign' : 'Assign' }}
+                          </button>
+                          <button class="danger-button" style="font-size:0.78rem; padding:3px 8px;" @click="deleteServerIp(ip)" :disabled="ip.is_primary || Boolean(ip.assigned_account_id)">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+            <!-- Modal: Add / Edit IP Address -->
+            <div v-if="showAddIpModal" class="modal-backdrop" @click.self="showAddIpModal = false">
+              <div class="modal-card" style="max-width:480px;">
+                <div class="modal-header">
+                  <h3>{{ ipForm.id ? 'Edit IP Address' : 'Add IP Address to Server Pool' }}</h3>
+                  <button class="ghost-button" @click="showAddIpModal = false">×</button>
+                </div>
+                <form @submit.prevent="saveServerIp" style="padding:1rem;">
+                  <div class="admin-form-group">
+                    <label>IP Address</label>
+                    <input class="admin-form-input" v-model="ipForm.ip_address" placeholder="e.g. 157.15.203.67" required :disabled="Boolean(ipForm.id)">
+                  </div>
+                  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem;">
+                    <div class="admin-form-group">
+                      <label>IP Type</label>
+                      <select class="admin-form-input" v-model="ipForm.ip_type">
+                        <option value="ipv4">IPv4</option>
+                        <option value="ipv6">IPv6</option>
+                      </select>
+                    </div>
+                    <div class="admin-form-group">
+                      <label>Subnet Mask / CIDR</label>
+                      <input class="admin-form-input" v-model="ipForm.netmask_cidr" placeholder="/24" required>
+                    </div>
+                  </div>
+                  <div class="admin-form-group">
+                    <label>Network Interface</label>
+                    <input class="admin-form-input" v-model="ipForm.interface" placeholder="ens160" required>
+                  </div>
+                  <div class="admin-form-group">
+                    <label>Label / Purpose</label>
+                    <input class="admin-form-input" v-model="ipForm.label" placeholder="e.g. Dedicated IP Pool" required>
+                  </div>
+                  <div class="admin-form-group" style="display:flex; align-items:center; gap:0.5rem;">
+                    <input type="checkbox" id="chk_is_primary" v-model="ipForm.is_primary">
+                    <label for="chk_is_primary" style="margin:0; text-transform:none;">Set as Primary Public Server IP</label>
+                  </div>
+                  <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+                    <button class="secondary-button" type="button" @click="showAddIpModal = false">Cancel</button>
+                    <button class="primary-button" type="submit" :disabled="savingIp">
+                      {{ savingIp ? 'Saving...' : (ipForm.id ? 'Save Changes' : 'Add IP Address') }}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <!-- Modal: Assign Dedicated IP to Client -->
+            <div v-if="showAssignIpModal" class="modal-backdrop" @click.self="showAssignIpModal = false">
+              <div class="modal-card" style="max-width:500px;">
+                <div class="modal-header">
+                  <h3>Assign Dedicated IP to Hosting Account</h3>
+                  <button class="ghost-button" @click="showAssignIpModal = false">×</button>
+                </div>
+                <form @submit.prevent="submitAssignAccountIp" style="padding:1rem;">
+                  <p style="font-size:0.85rem; color:#8c979e; margin-bottom:1rem;">
+                    Assigning a dedicated IP to a hosting account updates its websites' DNS A records and stack routing to use the selected IP address.
+                  </p>
+                  <div class="admin-form-group">
+                    <label>Client Hosting Account</label>
+                    <select class="admin-form-input" v-model="assignIpForm.account_id" required>
+                      <option value="">Select Hosting Account...</option>
+                      <option v-for="client in clients" :key="'opt-c-' + client.id" v-for="account in client.accounts" :key="'opt-a-' + account.id" :value="account.id">
+                        Account {{ account.username }} ({{ client.full_name || client.email }})
+                      </option>
+                    </select>
+                  </div>
+                  <div class="admin-form-group">
+                    <label>IP Address</label>
+                    <select class="admin-form-input" v-model="assignIpForm.ip_id">
+                      <option value="">(None - Use Primary Shared Server IP)</option>
+                      <option v-for="ip in serverIps" :key="'opt-ip-' + ip.id" :value="ip.id">
+                        {{ ip.ip_address }} ({{ ip.label }} - {{ ip.interface }})
+                      </option>
+                    </select>
+                  </div>
+                  <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
+                    <button class="secondary-button" type="button" @click="showAssignIpModal = false">Cancel</button>
+                    <button class="primary-button" type="submit" :disabled="assigningIp">
+                      {{ assigningIp ? 'Assigning...' : 'Confirm Assignment' }}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'plans'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Hosting Plans</h2>
+                <p>Create account plans for Docker resource limits, quotas, and backup retention.</p>
+              </div>
+              <div style="display:flex; gap:0.5rem; align-items:center;">
+                <button class="secondary-button" type="button" @click="recalculateUsage" :disabled="recalculatingUsage">
+                  {{ recalculatingUsage ? 'Scheduling Job...' : 'Recalculate Usage' }}
+                </button>
+                <button class="primary-button" @click="openPlanModal">Create Plan</button>
+              </div>
+            </div>
+            <div class="table-wrap plan-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Compute</th>
+                    <th>Storage</th>
+                    <th>Objects</th>
+                    <th>Email</th>
+                    <th>Backups</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="plan in plans" :key="plan.id">
+                    <td>
+                      <strong>{{ plan.name }}</strong>
+                      <span v-if="plan.is_reseller" class="pill pill-warning" style="font-size: 0.7rem; margin-left: 0.4rem; padding: 1px 6px;">Reseller Plan</span>
+                      <small>#{{ plan.id }}</small>
+                    </td>
+                    <td>{{ plan.cpu_limit }} CPU<small>{{ plan.memory_mb }} MB RAM</small></td>
+                    <td>{{ plan.storage_mb }} MB<small>{{ plan.inode_limit }} inodes</small></td>
+                    <td>{{ plan.max_websites }} sites<small>{{ plan.max_databases }} DB · {{ plan.max_mailboxes }} mail · {{ plan.max_cron_jobs }} cron</small></td>
+                    <td>{{ plan.daily_email_limit }}/day</td>
+                    <td>{{ plan.backup_retention_days }} days</td>
+                    <td class="actions">
+                      <button type="button" @click="editPlan(plan)">Edit</button>
+                      <button type="button" class="secondary-button" @click="recalculatePlanUsage(plan)">Recalculate Usage</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <div v-if="showPlanModal" class="modal-overlay" @click.self="closePlanModal">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2>{{ editingPlanId ? 'Edit Hosting Plan' : 'Create Hosting Plan' }}</h2>
+                <button class="close-button" type="button" aria-label="Close plan modal" @click="closePlanModal">×</button>
+              </div>
+              <div class="modal-body">
+                <div class="plan-form">
+                  <div style="grid-column: 1 / -1; margin-bottom: 0.5rem; padding: 0.75rem 1rem; background: rgba(253, 181, 40, 0.05); border: 1px solid rgba(253, 181, 40, 0.2); border-radius: 8px;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: var(--brand, #fdb528); cursor: pointer; margin: 0;">
+                      <input type="checkbox" v-model="newPlan.is_reseller" style="width: auto;">
+                      Designate as Reseller Plan (Grants Reseller Access on Port 8002)
+                    </label>
+                    <div v-if="newPlan.is_reseller" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 0.75rem;">
+                      <label>Max Sub-Clients <input type="number" v-model.number="newPlan.max_clients" placeholder="0 for unlimited"></label>
+                      <label>Max Sub-Plans <input type="number" v-model.number="newPlan.max_reseller_subplans" placeholder="0 for unlimited"></label>
+                    </div>
+                  </div>
+                  <label>Plan name <input v-model="newPlan.name" placeholder="Starter 10 GB"></label>
+                  <label>CPU cores <input v-model="newPlan.cpu_limit" inputmode="decimal" placeholder="1"></label>
+                  <label>Memory MB <input v-model.number="newPlan.memory_mb" type="number" min="128"></label>
+                  <label>Storage MB <input v-model.number="newPlan.storage_mb" type="number" min="100"></label>
+                  <label>Inode limit <input v-model.number="newPlan.inode_limit" type="number" min="1000"></label>
+                  <label>Websites <input v-model.number="newPlan.max_websites" type="number" min="1"></label>
+                  <label>Databases <input v-model.number="newPlan.max_databases" type="number" min="0"></label>
+                  <label>Mailboxes <input v-model.number="newPlan.max_mailboxes" type="number" min="0"></label>
+                  <label>Cron jobs <input v-model.number="newPlan.max_cron_jobs" type="number" min="0"></label>
+                  <label>Daily emails <input v-model.number="newPlan.daily_email_limit" type="number" min="0"></label>
+                  <label>Backup retention days <input v-model.number="newPlan.backup_retention_days" type="number" min="1"></label>
+                  <label>Max processes <input v-model.number="newPlan.max_processes" type="number" min="0"></label>
+                  <label>PHP workers <input v-model.number="newPlan.php_workers" type="number" min="0"></label>
+                  <label>Bandwidth MB (0 = unlimited) <input v-model.number="newPlan.bandwidth_mb" type="number" min="0"></label>
+                  <label>Nameserver 1 <input v-model="newPlan.nameserver_1"></label>
+                  <label>Nameserver 2 <input v-model="newPlan.nameserver_2"></label>
+                  <label>Backup location <input v-model="newPlan.backup_location"></label>
+                  <label>Frontend frameworks <input v-model="newPlan.frontend_frameworks"></label>
+                  <label>Backend frameworks <input v-model="newPlan.backend_frameworks"></label>
+                  <label>Node.js versions <input v-model="newPlan.nodejs_versions"></label>
+                  <label>Package managers <input v-model="newPlan.package_managers"></label>
+                  <label>DNS provider
+                    <select v-model="newPlan.dns_default_provider">
+                      <option value="local_powerdns">Local DNS</option>
+                      <option value="cloudflare">Cloudflare</option>
+                    </select>
+                  </label>
+                  <label v-if="newPlan.dns_default_provider === 'cloudflare'">
+                    Cloudflare account
+                    <select v-model.number="newPlan.dns_default_provider_account_id">
+                      <option value="">— select account —</option>
+                      <option v-for="acct in cloudflareAccounts()" :key="acct.id" :value="acct.id">
+                        {{ acct.display_name }} ({{ acct.account_name || acct.external_account_id || 'no ID' }})
+                      </option>
+                    </select>
+                    <small v-if="!cloudflareAccounts().length" style="color:var(--color-warning,#f59e0b)">No Cloudflare accounts configured — add one in DNS Settings first.</small>
+                  </label>
+                  <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
+                  <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
+                  <label class="plan-account-update" style="margin-top:0.5rem;"><input v-model="newPlan.allow_api_access" type="checkbox"> Allow Client API Access (API Keys)</label>
+                  <label v-if="editingPlanId" class="plan-account-update" style="margin-top:0.5rem;"><input v-model="applyPlanToExistingAccounts" type="checkbox"> Update existing accounts under this plan (re-sync)</label>
+                  <label v-if="editingPlanId" class="plan-account-update" style="margin-top:0.5rem;"><input v-model="migratePlanDomains" type="checkbox"> Migrate all existing domains on this plan to {{ providerLabel(newPlan.dns_default_provider) }}</label>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button class="ghost-button" type="button" @click="closePlanModal">Cancel</button>
+                <button class="primary-button plan-submit" type="button" @click="editingPlanId ? updatePlan() : createPlan()">{{ editingPlanId ? 'Save Changes' : 'Create Plan' }}</button>
+              </div>
+            </div>
+          </div>
+
+          <section v-if="activePage === 'dns'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>DNS Settings</h2>
+                <p>Choose the default authoritative DNS provider and store provider credentials.</p>
+              </div>
+            </div>
+            <div class="plan-form">
+              <label>Global DNS mode
+                <select v-model="dnsSettings.global_mode">
+                  <option value="local_powerdns">Local DNS</option>
+                  <option value="cloudflare">Cloudflare</option>
+                </select>
+              </label>
+              <label>Nameserver 1 <input v-model="dnsSettings.local.nameservers[0]" placeholder="ns1.mango.test"></label>
+              <label>Nameserver 2 <input v-model="dnsSettings.local.nameservers[1]" placeholder="ns2.mango.test"></label>
+              <label>Public IPv4 <input v-model="dnsSettings.local.public_ipv4" placeholder="203.0.113.10"></label>
+              <label>Public IPv6 <input v-model="dnsSettings.local.public_ipv6" placeholder="2001:db8::10"></label>
+              <label>SOA email <input v-model="dnsSettings.local.soa_email" placeholder="hostmaster.example.com"></label>
+              <label>Default TTL <input v-model.number="dnsSettings.local.default_ttl" type="number" min="60"></label>
+              <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-top:1rem;">
+                <button class="primary-button plan-submit" @click="saveDnsSettings">Save DNS Settings</button>
+                <button type="button" class="secondary-button" @click="bulkMigrateAllToGlobalMode">Migrate All Domains to {{ providerLabel(dnsSettings.global_mode) }}</button>
+              </div>
+            </div>
+
+            <div class="section-head" style="margin-top: 1.5rem;">
+              <div>
+                <h3>Cloudflare Accounts</h3>
+                <p>Tokens are encrypted before storage and only used by agent/provider jobs.</p>
+              </div>
+            </div>
+            <div class="plan-form">
+              <label>Display name <input v-model="cloudflareAccount.display_name" placeholder="Main Cloudflare"></label>
+              <label>Account name <input v-model="cloudflareAccount.account_name" placeholder="Acme Hosting"></label>
+              <label>Account ID <input v-model="cloudflareAccount.external_account_id" placeholder="Cloudflare account ID">
+                <small style="color:var(--color-muted,#888)">Find this in Cloudflare Dashboard → bottom-right of the right sidebar. Required to create and manage zones in the selected account.</small>
+              </label>
+              <label>API token <input v-model="cloudflareAccount.api_token" type="password" placeholder="Cloudflare API token">
+                <small style="color:var(--color-muted,#888)">Token needs Zone:Zone:Edit and Zone:DNS:Edit permissions.</small>
+              </label>
+              <button class="primary-button plan-submit" @click="createCloudflareDnsAccount">{{ cloudflareAccount.id ? 'Save Cloudflare Account' : 'Add Cloudflare Account' }}</button>
+              <button v-if="cloudflareAccount.id" class="ghost-button plan-submit" @click="clearCloudflareAccountForm">Cancel Edit</button>
+            </div>
+
+            <div class="table-wrap plan-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Status</th>
+                    <th>Capabilities</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="provider in dnsSettings.providers" :key="provider.id">
+                    <td><strong>{{ provider.display_name }}</strong><small>{{ provider.key }}</small></td>
+                    <td>{{ provider.status }}</td>
+                    <td>
+                      {{ (provider.capabilities.record_types || []).join(', ') }}
+                      <small v-if="provider.capabilities.supports_proxy">Cloudflare proxy available</small>
+                    </td>
+                    <td><button @click="testDnsProvider(provider)">Test</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="table-wrap plan-table" v-if="cloudflareAccounts().length">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Cloudflare Account</th>
+                    <th>Status</th>
+                    <th>Accounts / Zones</th>
+                    <th>Secret</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="account in cloudflareAccounts()" :key="account.id">
+                    <td><strong>{{ account.display_name }}</strong><small>{{ account.account_name || account.external_account_id }}</small></td>
+                    <td>{{ account.status }}</td>
+                    <td><span class="pill" style="font-size:0.78rem;">{{ account.hosting_account_count || 0 }} accounts / {{ account.zone_count || 0 }} zones</span></td>
+                    <td>{{ account.has_secret ? account.secret_label : 'missing' }}</td>
+                    <td class="actions">
+                      <button @click="startEditCloudflareAccount(account)">Edit</button>
+                      <button @click="toggleCloudflareDnsAccount(account)">{{ account.status === 'active' ? 'Deactivate' : 'Activate' }}</button>
+                      <button @click="testDnsProvider(dnsSettings.providers.find(p => p.key === 'cloudflare'), account)">Test</button>
+                      <button @click="migrateCloudflareAccountToLocal(account)">Migrate to Local</button>
+                      <button class="danger-button" @click="deleteCloudflareDnsAccount(account)">Delete</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="section-head" style="margin-top: 1.5rem;">
+              <div>
+                <h3>Managed DNS Domains</h3>
+                <p>Rebuild zones, verify delegation, export records, and migrate providers on the <a href="#dns-domains" @click.prevent="goTo('dns-domains')">Managed DNS Domains</a> tab.</p>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'registrars'" class="panel">
+            <div class="section-head"><div><h2>Registration Providers</h2><p>Configure the registrar that receives domain registration and nameserver changes.</p></div></div>
+            <div class="form-grid">
+              <label>Provider
+                <select v-model="registrarForm.key"><option value="resellerclub">ResellerClub / PDR</option><option value="domainnameapi">DomainNameAPI</option><option value="cloudflare">Cloudflare</option></select>
+              </label>
+              <label v-if="registrarForm.key === 'resellerclub'">Reseller ID <input v-model.trim="registrarForm.reseller_id" placeholder="ResellerClub user ID"></label>
+              <label>API base URL <input v-model.trim="registrarForm.api_base" placeholder="Leave blank for provider default"></label>
+              <label>API key / token <input v-model="registrarForm.api_key" type="password" placeholder="Leave blank to keep saved credential"></label>
+              <button class="primary-button" @click="saveRegistrar">Save Provider</button>
+            </div>
+            <ul class="clean-list" style="margin-top:1rem"><li v-for="provider in registrars" :key="provider.key"><strong>{{ provider.display_name }}</strong><span class="pill">{{ provider.status }}</span><small>{{ provider.secret_configured ? 'Credential saved' : 'Credential not configured' }}</small></li></ul>
+            <hr style="margin:1.5rem 0"><h3>Add domain for client</h3>
+            <div class="form-grid">
+              <label>Client <select v-model="domainForm.user_id"><option value="" disabled>Select client</option><option v-for="client in clients" :value="client.id" :key="client.id">{{ client.email }}</option></select></label>
+              <label>Domain <input v-model.trim="domainForm.domain" placeholder="example.com"></label>
+              <label>Registrar <select v-model="domainForm.registrar_provider_id"><option value="">No registrar API</option><option v-for="provider in registrars" :key="provider.id" :value="provider.id">{{ provider.display_name }}</option></select></label>
+              <label><input type="checkbox" v-model="domainForm.register"> Register through registrar</label>
+              <label v-if="domainForm.register">Nameserver 1 <input v-model.trim="domainForm.nameservers[0]" placeholder="ns1.example.com"></label>
+              <label v-if="domainForm.register">Nameserver 2 <input v-model.trim="domainForm.nameservers[1]" placeholder="ns2.example.com"></label>
+              <button class="primary-button" @click="addClientDomain">Add domain</button>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'dns-domains'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Managed DNS Domains</h2>
+                <p>Rebuild zones, verify delegation, export records, and migrate providers.</p>
+              </div>
+              <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                <button class="secondary-button" @click="bulkMigrateDomains('cloudflare')">Bulk Migrate All to Cloudflare</button>
+                <button class="secondary-button" @click="bulkMigrateDomains('local_powerdns')">Bulk Migrate All to Local</button>
+              </div>
+            </div>
+            <div class="table-wrap plan-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Domain</th>
+                    <th>Provider</th>
+                    <th>Status</th>
+                    <th>Nameservers</th>
+                    <th>Sync</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="domain in dnsDomains" :key="domain.id">
+                    <td><strong>{{ domain.name }}</strong><small>{{ domain.owner_email }} · {{ domain.username }}</small></td>
+                    <td>{{ providerLabel(domain.dns_provider) }}</td>
+                    <td>
+                      <span class="pill" :class="domain.dns_status">{{ domain.dns_status }}</span>
+                      <small v-if="domain.dns_warnings && domain.dns_warnings.length">{{ domain.dns_warnings[0].message }}</small>
+                    </td>
+                    <td><small>{{ (domain.nameservers || []).join(', ') || 'pending provider sync' }}</small></td>
+                    <td>
+                      <span v-if="domain.latest_dns_job">#{{ domain.latest_dns_job.id }} {{ domain.latest_dns_job.status }}</span>
+                      <span v-else>none</span>
+                    </td>
+                    <td class="actions">
+                      <button @click="rebuildDnsDomain(domain)">Rebuild</button>
+                      <button @click="verifyDnsDomain(domain)">Verify</button>
+                      <button @click="exportDnsDomain(domain)">Export</button>
+                      <button v-if="domain.dns_provider !== 'cloudflare'" @click="migrateDnsDomain(domain, 'cloudflare')">To Cloudflare</button>
+                      <button v-if="domain.dns_provider !== 'local_powerdns'" @click="migrateDnsDomain(domain, 'local_powerdns')">To Local</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!dnsDomains.length"><td colspan="6" class="empty-row">No managed domains yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'admins'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>PHP Versions</h2>
+                <p>Global PHP versions allowed for client websites.</p>
+              </div>
+            </div>
+            <div class="php-versions-grid">
+              <span class="php-version-badge legacy">PHP 7.4</span>
+              <span class="php-version-badge supported">PHP 8.0</span>
+              <span class="php-version-badge supported">PHP 8.1</span>
+              <span class="php-version-badge supported">PHP 8.2</span>
+              <span class="php-version-badge supported">PHP 8.3</span>
+              <span class="php-version-badge supported">PHP 8.4</span>
+            </div>
+            <p class="muted" style="margin-top: 1rem; font-size: 13px;">Clients can select their desired version from their dashboard per website. The default for new websites is 8.3.</p>
+          </section>
+
+          <section v-if="activePage === 'admins'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Admins</h2>
+                <p>Create additional admin accounts and manage password or TOTP recovery actions.</p>
+              </div>
+            </div>
+            <div class="incident-form admin-create-form">
+              <input v-model="newAdmin.full_name" placeholder="Full name">
+              <input v-model="newAdmin.email" placeholder="admin@example.com">
+              <select v-model="newAdmin.role">
+                <option value="support_admin">Support admin</option>
+                <option value="system_admin">System admin</option>
+                <option value="super_admin">Super admin</option>
+              </select>
+              <input v-model="newAdmin.password" type="password" placeholder="Temporary password">
+              <button class="primary-button" @click="createAdmin">Add Admin</button>
+            </div>
+            <div v-if="newAdminSecret" class="secret-box">
+              <span>New admin TOTP secret</span>
+              <strong>{{ newAdminSecret }}</strong>
+            </div>
+            <div v-if="newAdminUri" class="secret-box">
+              <span>QR setup URL</span>
+              <strong style="word-break: break-all;">{{ newAdminUri }}</strong>
+            </div>
+            <div v-if="newAdminUri" class="secret-box" style="display:flex; flex-direction:column; gap:1rem; align-items:flex-start;">
+              <span>Scan this QR code</span>
+              <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(newAdminUri)" alt="Admin TOTP QR code" style="width: 220px; height: 220px;">
+            </div>
+            <div v-if="newAdminSecret" class="form-grid" style="margin-top: 1rem;">
+              <label>Verify admin TOTP code
+                <input v-model="newAdminTotpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+              </label>
+              <button class="primary-button" @click="checkNewAdminTotp">Check code</button>
+            </div>
+            <p v-if="newAdminTotpMessage" class="message">{{ newAdminTotpMessage }}</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Name</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="admin in admins" :key="admin.id">
+                    <td>{{ admin.email }}</td>
+                    <td>{{ admin.full_name }}</td>
+                    <td><span class="pill">{{ admin.role }}</span></td>
+                    <td><span class="pill">{{ admin.status }}</span></td>
+                    <td class="client-actions">
+                      <button @click="openAdminPasswordModal(admin)">Change Password</button>
+                      <button v-if="admin.totp_enabled" @click="disableAdminTotp(admin)">Disable TOTP</button>
+                      <button v-else @click="enableAdminTotp(admin)">Enable TOTP</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section v-if="adminPasswordModal.open" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Change Admin Password</h2>
+                <p>{{ adminPasswordModal.admin.email }}</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label>New password
+                <input v-model="adminPasswordModal.password" type="password" autocomplete="new-password">
+              </label>
+              <label>Confirm password
+                <input v-model="adminPasswordModal.confirm" type="password" autocomplete="new-password">
+              </label>
+              <button class="primary-button" @click="saveAdminPassword">Save Password</button>
+              <button class="ghost-button" @click="closeAdminPasswordModal">Cancel</button>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ ADMIN API TOKENS -->
+          <section v-if="activePage === 'api-tokens'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Admin API Tokens</h2>
+                <p>Create and manage Admin API keys with granular permission scopes.</p>
+              </div>
+            </div>
+
+            <div class="plan-form" style="margin-bottom: 2rem; max-width: 650px; background: rgba(255,255,255,0.03); padding: 1.5rem; border-radius: 8px; border: 1px solid var(--line,#2d3748);">
+              <h3 style="margin-top:0; margin-bottom: 1rem; font-size: 1.1rem; color: var(--text);">Generate New Admin Token</h3>
+              
+              <label style="margin-bottom: 1rem;">Token Description / Label
+                <input v-model="newAdminTokenName" placeholder="e.g. Monitoring Automation Bot">
+              </label>
+
+              <label style="margin-bottom: 0.5rem; font-weight: 600;">Granular Permission Scopes</label>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 1.25rem;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="*" v-model="newAdminTokenPermissions"> Full Admin Control (*)
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="clients.manage" v-model="newAdminTokenPermissions"> Clients &amp; Accounts
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="hosting.manage" v-model="newAdminTokenPermissions"> Hosting Plans Setup
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="dns.manage" v-model="newAdminTokenPermissions"> DNS Settings &amp; Domains
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="system.manage" v-model="newAdminTokenPermissions"> System Health &amp; Storage
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal;">
+                  <input type="checkbox" value="admins.manage" v-model="newAdminTokenPermissions"> Admin Users &amp; Tokens
+                </label>
+              </div>
+
+              <button class="primary-button" @click="createAdminApiToken" :disabled="!newAdminTokenName">Generate Admin Token</button>
+            </div>
+
+            <div v-if="newAdminTokenRaw" class="callout callout-success" style="margin-bottom: 2rem; padding: 1.25rem; border-left: 4px solid #10b981; background: rgba(16, 185, 129, 0.1); border-radius: 8px;">
+              <h3 style="margin:0 0 0.5rem 0; color:#10b981;">New Admin Token Generated!</h3>
+              <p style="margin:0 0 0.5rem 0; font-size:0.9rem;">Copy your API token now. It will not be shown again!</p>
+              <div style="display:flex; align-items:center; gap:0.5rem;">
+                <code style="flex:1; padding:0.75rem; font-size:1rem; background:#0f172a; border-radius:6px; color:#34d399; user-select:all;">{{ newAdminTokenRaw }}</code>
+              </div>
+            </div>
+
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Token Name</th>
+                    <th>Granular Permissions</th>
+                    <th>Created</th>
+                    <th>Last Used</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="t in adminApiTokens" :key="t.id">
+                    <td><strong>{{ t.name }}</strong></td>
+                    <td>
+                      <span v-for="perm in t.permissions" :key="perm" class="pill" style="margin-right: 0.3rem; font-size: 0.75rem; background: rgba(99,102,241,0.2); color: #818cf8; border: 1px solid rgba(99,102,241,0.4);">
+                        {{ perm }}
+                      </span>
+                    </td>
+                    <td>{{ new Date(t.created_at).toLocaleString() }}</td>
+                    <td>{{ t.last_used_at ? new Date(t.last_used_at).toLocaleString() : 'Never' }}</td>
+                    <td>
+                      <button class="ghost-button danger-button" @click="deleteAdminApiToken(t.id)">Revoke</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!adminApiTokens.length">
+                    <td colspan="5" style="text-align: center; color: var(--text-muted);">No Admin API tokens created yet.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'security'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Server Security Checklist</h2>
+                <p>Security audit scores, SSH configuration hardening, firewall, SSL, and administrative access checks.</p>
+              </div>
+              <div class="actions">
+                <button class="primary-button" :disabled="securityAudit.loading" @click="loadSecurityAudit">
+                  <span v-if="securityAudit.loading" class="btn-spinner"></span>
+                  <app-icon v-else name="refresh"></app-icon>
+                  <span>{{ securityAudit.loading ? 'Scanning...' : 'Re-scan Security Audit' }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Score Summary Cards -->
+            <div class="dashboard-grid" style="margin-bottom: 1.5rem;">
+              <div class="metric-card">
+                <div class="card-icon" style="background: rgba(34, 197, 94, 0.1); color: #22c55e;">
+                  <strong style="font-size: 1.5rem;">{{ securityAudit.score }}%</strong>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 1.1rem;">Security Health Score</h3>
+                  <p style="margin: 0.25rem 0 0; color: var(--muted, #64748b);">{{ securityAudit.score_label }} ({{ securityAudit.pass_count }}/{{ securityAudit.total_checks }} passed)</p>
+                </div>
+              </div>
+              <div class="metric-card">
+                <div class="card-icon" style="background: rgba(234, 179, 8, 0.1); color: #eab308;">
+                  <strong style="font-size: 1.5rem;">{{ securityAudit.warning_count }}</strong>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 1.1rem;">Warnings</h3>
+                  <p style="margin: 0.25rem 0 0; color: var(--muted, #64748b);">Hardening recommendations</p>
+                </div>
+              </div>
+              <div class="metric-card">
+                <div class="card-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+                  <strong style="font-size: 1.5rem;">{{ securityAudit.fail_count }}</strong>
+                </div>
+                <div>
+                  <h3 style="margin: 0; font-size: 1.1rem;">Critical Failures</h3>
+                  <p style="margin: 0.25rem 0 0; color: var(--muted, #64748b);">Requires immediate action</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Security Checklist Table -->
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Check Item</th>
+                    <th>Category</th>
+                    <th>Current Value</th>
+                    <th>Impact</th>
+                    <th>Status</th>
+                    <th>Recommendation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(item, idx) in securityAudit.items" :key="idx">
+                    <td><strong>{{ item.title }}</strong></td>
+                    <td><small>{{ item.category }}</small></td>
+                    <td><code>{{ item.value }}</code></td>
+                    <td><span class="pill" :class="item.impact.toLowerCase()">{{ item.impact }}</span></td>
+                    <td>
+                      <span class="pill" :class="{
+                        active: item.status === 'PASS',
+                        warning: item.status === 'WARNING',
+                        danger: item.status === 'FAIL',
+                        info: item.status === 'INFO'
+                      }">
+                        {{ item.status }}
+                      </span>
+                    </td>
+                    <td><small>{{ item.recommendation }}</small></td>
+                  </tr>
+                  <tr v-if="!securityAudit.items || !securityAudit.items.length">
+                    <td colspan="6" class="empty-row">No security checks performed yet. Click 'Re-scan Security Audit' above.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <small v-if="securityAudit.scanned_at" style="display:block; margin-top: 1rem; color: var(--muted,#64748b);">
+              Last scanned at: {{ securityAudit.scanned_at }}
+            </small>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ PLATFORM STATUS & INCIDENTS -->
+          <section v-if="activePage === 'status'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Platform Status &amp; Incident Management</h2>
+                <p>Publish incidents, post live progress updates, manage component health, and schedule platform maintenance.</p>
+              </div>
+              <div class="actions" style="display: flex; gap: 0.5rem; align-items: center;">
+                <button class="primary-button" :disabled="loadingStatus" @click="loadStatusData">
+                  <span v-if="loadingStatus" class="btn-spinner"></span>
+                  <app-icon v-else name="refresh"></app-icon>
+                  <span>{{ loadingStatus ? 'Refreshing...' : 'Refresh Status Data' }}</span>
+                </button>
+                <a class="ghost-button" href="/status" target="_blank">🌐 View Public Status Page</a>
+              </div>
+            </div>
+
+            <!-- Loading Indicator -->
+            <div v-if="loadingStatus && !adminComponents.length" style="padding: 3rem; text-align: center; color: var(--muted, #94a3b8);">
+              <span class="btn-spinner" style="display: inline-block; width: 32px; height: 32px; border-width: 3px; margin-bottom: 1rem;"></span>
+              <p style="font-size: 1rem; font-weight: 600; color: var(--text);">Loading Platform Status &amp; Incident Feed...</p>
+            </div>
+
+            <!-- Publish New Incident Card -->
+            <div class="plan-form" style="margin-bottom: 2rem; background: rgba(255,255,255,0.02); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--line,#2d3748);">
+              <h3 style="margin-top: 0; margin-bottom: 1rem; font-size: 1.1rem; color: var(--text);">📢 Publish New Incident Report</h3>
+              
+              <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                <label>Incident Title
+                  <input v-model="incident.title" placeholder="e.g. Investigating database response latency">
+                </label>
+                <label>Severity Level
+                  <select v-model="incident.severity">
+                    <option value="minor">Minor Degradation</option>
+                    <option value="major">Major Outage</option>
+                    <option value="critical">Critical System Failure</option>
+                  </select>
+                </label>
+              </div>
+
+              <label style="margin-bottom: 1rem;">Initial Update Message
+                <textarea v-model="incident.message" rows="3" placeholder="Detail the issue being investigated and affected services..." style="width:100%; background: #0b0f19; color: #f3f4f6; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 0.75rem; font-family: inherit; font-size: 0.9rem;"></textarea>
+              </label>
+
+              <button class="primary-button" @click="createIncident" :disabled="!incident.title || !incident.message">Publish Incident</button>
+            </div>
+
+            <!-- Active & Past Incidents List -->
+            <div style="margin-bottom: 2.5rem;">
+              <h3 style="margin-bottom: 1rem; font-size: 1.2rem; display: flex; align-items: center; justify-content: space-between;">
+                <span>📋 Incidents &amp; Live Updates Feed</span>
+                <span class="pill" style="font-size: 0.8rem; background: rgba(99,102,241,0.2); color: #818cf8;">{{ adminIncidents.length }} Total Incidents</span>
+              </h3>
+
+              <div v-if="adminIncidents.length" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                <div v-for="inc in adminIncidents" :key="inc.id" style="background: rgba(255,255,255,0.03); border: 1px solid var(--line,#2d3748); border-radius: 12px; padding: 1.25rem;">
+                  
+                  <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 0.75rem;">
+                    <div>
+                      <div style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.25rem;">
+                        <strong style="font-size: 1.1rem; color: var(--text);">#{{ inc.id }} - {{ inc.title }}</strong>
+                        <span class="pill" :class="inc.severity === 'critical' || inc.severity === 'major' ? 'danger' : 'warning'" style="font-size: 0.75rem;">
+                          {{ inc.severity.toUpperCase() }}
+                        </span>
+                        <span class="pill" :class="inc.state === 'resolved' ? 'healthy' : 'warning'" style="font-size: 0.75rem;">
+                          {{ inc.state.toUpperCase() }}
+                        </span>
+                      </div>
+                      <div style="font-size: 0.82rem; color: #94a3b8; font-family: monospace;">
+                        Opened: {{ new Date(inc.created_at).toLocaleString() }}
+                        <span v-if="inc.resolved_at"> · Resolved: {{ new Date(inc.resolved_at).toLocaleString() }}</span>
+                      </div>
+                    </div>
+
+                    <button class="ghost-button danger-button" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;" @click="deleteIncident(inc.id)">
+                      Delete Incident
+                    </button>
+                  </div>
+
+                  <!-- Timeline Updates List -->
+                  <div v-if="inc.updates && inc.updates.length" style="margin: 1rem 0; padding-left: 1rem; border-left: 3px solid rgba(99,102,241,0.4); display: flex; flex-direction: column; gap: 0.6rem;">
+                    <div v-for="upd in inc.updates" :key="upd.id" style="font-size: 0.88rem; background: rgba(0,0,0,0.2); padding: 0.6rem 0.85rem; border-radius: 6px;">
+                      <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem; font-size: 0.78rem; color: #94a3b8;">
+                        <span><strong style="color: #cbd5e1; text-transform: uppercase;">{{ upd.state }}</strong></span>
+                        <span style="font-family: monospace;">{{ new Date(upd.created_at).toLocaleString() }}</span>
+                      </div>
+                      <div style="color: #e2e8f0; line-height: 1.4;">{{ upd.message }}</div>
+                    </div>
+                  </div>
+
+                  <!-- Post Update Form -->
+                  <div style="margin-top: 1rem; background: rgba(0,0,0,0.25); padding: 1rem; border-radius: 8px; border: 1px dashed rgba(255,255,255,0.1);">
+                    <h4 style="margin: 0 0 0.75rem 0; font-size: 0.92rem; color: #94a3b8;">➕ Post Progress Update or Change Incident Status</h4>
+                    
+                    <div v-if="!updateIncidentForm[inc.id]">
+                      {{ (updateIncidentForm[inc.id] = { state: inc.state === 'resolved' ? 'resolved' : 'identified', message: '' }) && '' }}
+                    </div>
+
+                    <div style="display: flex; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
+                      <label style="flex: 1; min-width: 180px; font-size: 0.8rem;">Update State
+                        <select v-model="updateIncidentForm[inc.id].state" style="width: 100%; margin-top: 0.25rem;">
+                          <option value="investigating">Investigating</option>
+                          <option value="identified">Identified</option>
+                          <option value="monitoring">Monitoring Fix</option>
+                          <option value="resolved">Resolved</option>
+                        </select>
+                      </label>
+                      
+                      <label style="flex: 3; min-width: 250px; font-size: 0.8rem;">Update Message / Progress Note
+                        <input v-model="updateIncidentForm[inc.id].message" placeholder="e.g. Root cause identified. Deploying patch..." style="width: 100%; margin-top: 0.25rem;">
+                      </label>
+                    </div>
+
+                    <button class="primary-button" style="padding: 0.45rem 1rem; font-size: 0.85rem;" @click="postIncidentUpdate(inc.id)" :disabled="!updateIncidentForm[inc.id] || !updateIncidentForm[inc.id].message">
+                      Post Progress Update
+                    </button>
+                  </div>
+
+                </div>
+              </div>
+
+              <div v-else style="text-align: center; padding: 2.5rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px dashed rgba(255,255,255,0.1); color: #94a3b8;">
+                No incidents posted yet. Use the form above to publish an incident.
+              </div>
+            </div>
+
+            <!-- Services & Components Health Status Overrides -->
+            <div>
+              <h3 style="margin-bottom: 1rem; font-size: 1.2rem;">🖥️ Component Health Status Overrides</h3>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Component Name</th>
+                      <th>Group</th>
+                      <th>Current Status</th>
+                      <th>Set Live Status Override</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="comp in adminComponents" :key="comp.id">
+                      <td><strong>{{ comp.name }}</strong></td>
+                      <td><span class="pill" style="font-size: 0.75rem; background: rgba(255,255,255,0.05);">{{ comp.group_name }}</span></td>
+                      <td>
+                        <span class="pill" :class="comp.status === 'operational' ? 'healthy' : (comp.status === 'major_outage' ? 'danger' : 'warning')">
+                          {{ comp.status.toUpperCase() }}
+                        </span>
+                      </td>
+                      <td>
+                        <select :value="comp.status" @change="updateComponentStatus(comp.id, $event.target.value)" style="padding: 0.35rem 0.6rem; border-radius: 6px; background: #0f172a; color: #f8fafc; border: 1px solid rgba(255,255,255,0.15);">
+                          <option value="operational">Operational</option>
+                          <option value="degraded">Degraded Performance</option>
+                          <option value="partial_outage">Partial Outage</option>
+                          <option value="major_outage">Major Outage</option>
+                          <option value="maintenance">Maintenance</option>
+                        </select>
                       </td>
                     </tr>
                   </tbody>
@@ -387,261 +2057,234 @@
             </div>
           </section>
 
-          <!-- CUSTOM SUB-PLANS PAGE -->
-          <section v-if="activePage === 'plans'" class="page-stack">
-            <div class="panel">
-              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                  <h2>Reseller Sub-Plans</h2>
-                  <p>Create tailored hosting packages for your clients within your master quota limits.</p>
-                </div>
-                <button class="primary-button" @click="showPlanModal = true">+ Create Sub-Plan</button>
+          <section v-if="activePage === 'default-page'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Default Page Content</h2>
+                <p>Customize the template used to generate index.php whenever a new website is created.</p>
               </div>
-              <div class="table-wrapper">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>Plan Name</th>
-                      <th>RAM</th>
-                      <th>Storage</th>
-                      <th>Websites</th>
-                      <th>Databases</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="plan in plans" :key="plan.id">
-                      <td><strong>{{ plan.name }}</strong></td>
-                      <td>{{ plan.memory_mb }} MB</td>
-                      <td>{{ plan.storage_mb }} MB</td>
-                      <td>{{ plan.max_websites }}</td>
-                      <td>{{ plan.max_databases }}</td>
-                      <td><span class="feature-status-badge feature-status-functional">Enforced</span></td>
-                    </tr>
-                  </tbody>
-                </table>
+              <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <span class="pill" :class="defaultPageIsCustomized ? 'warning' : 'healthy'">
+                  {{ defaultPageIsCustomized ? 'Custom Template' : 'System Default' }}
+                </span>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem;">
+              <div style="font-size: 0.85rem; color: #9ca3af; background: rgba(255,255,255,0.03); padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                💡 <strong>Tip:</strong> Use <code>{domain}</code> as a placeholder in your template. It will be automatically replaced with the website domain name (e.g. <code>example.com</code>) when the site is created.
+              </div>
+
+              <label style="display: flex; flex-direction: column; gap: 0.5rem; font-weight: 500;">
+                Default page content (HTML/PHP)
+                <textarea
+                  v-model="defaultPageContent"
+                  rows="20"
+                  style="font-family: monospace, Consolas, Monaco; font-size: 0.88rem; line-height: 1.45; background: #0b0f19; color: #f3f4f6; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 1rem; width: 100%; resize: vertical;"
+                  placeholder="<!DOCTYPE html>..."
+                ></textarea>
+              </label>
+
+              <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-top: 0.5rem;">
+                <button class="primary-button" @click="saveDefaultPage" :disabled="savingDefaultPage">
+                  {{ savingDefaultPage ? 'Saving...' : 'Save Default Page' }}
+                </button>
+                <button type="button" class="ghost-button" @click="showDefaultPagePreviewModal = true">
+                  Live Preview
+                </button>
+                <button v-if="defaultPageIsCustomized" type="button" style="background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer;" @click="resetDefaultPage">
+                  Reset to Default
+                </button>
               </div>
             </div>
           </section>
 
-          <!-- HOSTING ACCOUNTS PAGE -->
-          <section v-if="activePage === 'hosting-accounts'" class="page-stack">
-            <div class="panel">
-              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                  <h2>Provision Hosting Stacks</h2>
-                  <p>Assign custom sub-plans to your clients and provision isolated stack environments.</p>
-                </div>
-                <button class="primary-button" @click="showAccountModal = true">+ Provision Account</button>
+          <section v-if="activePage === 'system'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Account Stacks</h2>
+                <p>Generated node-agent stack state.</p>
               </div>
-              <div class="table-wrapper">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>Username</th>
-                      <th>Client Email</th>
-                      <th>Plan</th>
-                      <th>Status</th>
-                      <th>Base Path</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="account in accounts" :key="account.id">
-                      <td><strong>{{ account.username }}</strong></td>
-                      <td>{{ account.email }}</td>
-                      <td>{{ account.plan_name }}</td>
-                      <td><span class="feature-status-badge feature-status-functional">{{ account.status }}</span></td>
-                      <td><code>{{ account.base_path }}</code></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              <span class="pill" :class="dashboard.status.components.find(c => c.id === 'queue-worker')?.status || 'unknown'">
+                Queue Worker: {{ dashboard.status.components.find(c => c.id === 'queue-worker')?.status || 'unknown' }}
+              </span>
+              <button @click="runAgent">Run Agent</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Status</th>
+                    <th>Mode</th>
+                    <th>Compose</th>
+                    <th>Services</th>
+                    <th>Generated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="stack in stacks" :key="stack.id">
+                    <td><strong>{{ stack.username }}</strong><small>{{ stack.account_status }}</small></td>
+                    <td><span class="pill">{{ stack.status }}</span></td>
+                    <td>{{ stack.mode }}</td>
+                    <td><small>{{ stack.compose_path }}</small></td>
+                    <td>
+                      <div class="service-links">
+                        <a :href="stack.runtime.web_url" target="_blank" rel="noreferrer">web</a>
+                        <a :href="stack.runtime.filebrowser_url" target="_blank" rel="noreferrer">files</a>
+                        <a :href="stack.runtime.phpmyadmin_url" target="_blank" rel="noreferrer">db</a>
+                        <a :href="`http://${stack.runtime.mail_host}`" target="_blank" rel="noreferrer">mail</a>
+                      </div>
+                    </td>
+                    <td>{{ stack.generated_at }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </section>
 
-          <!-- QUOTAS & USAGE PAGE -->
-          <section v-if="activePage === 'storage'" class="page-stack">
-            <div class="panel">
-              <div class="panel-header">
-                <h2>Storage Quotas & Usage</h2>
-                <p>View storage and inode resource allocations for all sub-client accounts.</p>
-              </div>
-              <div class="table-wrapper">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>Account</th>
-                      <th>Owner</th>
-                      <th>Storage Used</th>
-                      <th>Inodes Used</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="account in accounts" :key="account.id">
-                      <td><strong>{{ account.username }}</strong></td>
-                      <td>{{ account.email }}</td>
-                      <td>{{ account.storage_used_mb || 0 }} MB</td>
-                      <td>{{ account.inodes_used || 0 }}</td>
-                      <td><span class="feature-status-badge feature-status-functional">{{ account.status }}</span></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+          <section v-if="activePage === 'system'" class="panel">
+            <h2>Recent Jobs</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Target</th>
+                    <th>Updated</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="job in dashboard.recent_jobs" :key="job.id">
+                    <td>{{ job.id }}</td>
+                    <td>{{ job.type }}</td>
+                    <td><span class="pill">{{ job.status }}</span></td>
+                    <td>{{ job.target_type }} #{{ job.target_id }}</td>
+                    <td>{{ job.updated_at }}</td>
+                    <td>
+                      <button v-if="['failed','queued'].includes(job.status)" @click="retryJob(job)">Retry</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </section>
 
-          <!-- API TOKENS PAGE -->
-          <section v-if="activePage === 'api-tokens'" class="page-stack">
-            <div class="panel">
-              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                  <h2>Reseller API Tokens</h2>
-                  <p>Generate API keys for automating client onboarding and stack provisioning.</p>
-                </div>
-                <button class="primary-button" @click="showTokenModal = true">+ Create API Token</button>
-              </div>
-
-              <div v-if="newGeneratedToken" class="admin-alert-toast" style="background: rgba(253, 181, 40, 0.15); border-color: rgba(253, 181, 40, 0.4); color: #fdb528; display: block;">
-                <strong>Save your Reseller Token now! It will not be shown again:</strong>
-                <div style="font-family: 'JetBrains Mono', monospace; font-size: 1rem; padding: 0.5rem; background: #000; color: #fdb528; border-radius: 6px; margin-top: 0.5rem; user-select: all;">
-                  {{ newGeneratedToken }}
-                </div>
-              </div>
-
-              <div class="table-wrapper">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Permissions</th>
-                      <th>Last Used</th>
-                      <th>Expires</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="t in apiTokens" :key="t.id">
-                      <td><strong>{{ t.name }}</strong></td>
-                      <td><code>{{ t.permissions ? t.permissions.join(', ') : '*' }}</code></td>
-                      <td>{{ t.last_used_at ? new Date(t.last_used_at).toLocaleString() : 'Never' }}</td>
-                      <td>{{ new Date(t.expires_at * 1000).toLocaleDateString() }}</td>
-                      <td>
-                        <button class="ghost-button" style="color: #ff6b6b;" @click="deleteToken(t.id)">Revoke</button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+          <section v-if="activePage === 'clients'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Create Hosting Account</h2>
+                <p>Provision a new account for an existing client.</p>
               </div>
             </div>
+            <div class="plan-form">
+              <label>Client
+                <select v-model.number="newAccount.user_id">
+                  <option value="" disabled>Select client</option>
+                  <option v-for="client in clients" :key="client.id" :value="client.id">{{ client.full_name || client.email }} (#{{ client.id }})</option>
+                </select>
+              </label>
+              <label>Plan
+                <select v-model.number="newAccount.plan_id">
+                  <option value="" disabled>Select plan</option>
+                  <option v-for="plan in plans" :key="plan.id" :value="plan.id">{{ plan.name }}</option>
+                </select>
+              </label>
+              <label>Node
+                <select v-model.number="newAccount.node_id">
+                  <option value="" disabled>Select node</option>
+                  <option v-for="node in dashboard.nodes" :key="node.id" :value="node.id">{{ node.name }}</option>
+                </select>
+              </label>
+              <button class="primary-button plan-submit" @click="createHostingAccount" :disabled="!newAccount.user_id || !newAccount.plan_id || !newAccount.node_id">Provision Account</button>
+            </div>
           </section>
-        </div>
-      </template>
-    </main>
 
-    <!-- MODAL: CREATE CLIENT -->
-    <div v-if="showClientModal" class="modal-backdrop" @click.self="showClientModal = false">
-      <div class="modal-card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-          <h3>Create New Sub-Client</h3>
-          <button class="ghost-button" @click="showClientModal = false">×</button>
-        </div>
-        <form @submit.prevent="createClient">
-          <div class="admin-form-group">
-            <label>Client Full Name</label>
-            <input class="admin-form-input" v-model="clientForm.full_name" placeholder="John Doe" required>
+          <section v-if="activePage === 'admins'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Register Node</h2>
+                <p>Add a new hosting node to the cluster.</p>
+              </div>
+            </div>
+            <div class="incident-form admin-create-form">
+              <input v-model="newNode.name" placeholder="node-01">
+              <input v-model="newNode.hostname" placeholder="node01.example.com">
+              <select v-model="newNode.quota_backend">
+                <option value="dev-simulator">dev-simulator (macOS)</option>
+                <option value="xfs">XFS (Linux)</option>
+                <option value="zfs">ZFS (Linux)</option>
+                <option value="btrfs">Btrfs (Linux)</option>
+              </select>
+              <button class="primary-button" @click="registerNode">Register Node</button>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'system'" class="panel">
+            <h2>Agent Events</h2>
+            <ul class="clean-list">
+              <li v-for="event in jobEvents.slice(0, 8)" :key="event.id">
+                <strong>#{{ event.job_id }} {{ event.message }}</strong>
+                <span class="pill">{{ event.level }}</span>
+                <small>{{ event.created_at }}</small>
+              </li>
+            </ul>
+          </section>
+
+          <div v-if="message" class="admin-alert" role="alert">
+            <p class="message">{{ message }}</p>
+            <button class="alert-dismiss" type="button" aria-label="Dismiss alert" @click="dismissMessage">×</button>
           </div>
-          <div class="admin-form-group">
-            <label>Email Address</label>
-            <input class="admin-form-input" type="email" v-model="clientForm.email" placeholder="client@company.test" required>
+
+          <div v-if="showClientModal" class="modal-overlay" @click.self="closeClientModal">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2>Create Client</h2>
+                <button class="close-button" type="button" aria-label="Close client modal" @click="closeClientModal">×</button>
+              </div>
+              <div class="modal-body">
+                <form class="form-grid" @submit.prevent="createClient">
+                  <label>Full name<input v-model="newClient.full_name" autocomplete="name" required></label>
+                  <label>Email<input v-model="newClient.email" type="email" autocomplete="email" required></label>
+                  <label>Temporary password<input v-model="newClient.password" type="password" autocomplete="new-password" required></label>
+                  <div class="modal-footer">
+                    <button type="button" @click="closeClientModal">Cancel</button>
+                    <button class="primary-button" type="submit">Create Client</button>
+                  </div>
+                </form>
+                <div v-if="newClientSecret" class="secret-box">
+                  <span>Client TOTP secret — share securely</span>
+                  <strong>{{ newClientSecret }}</strong>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="admin-form-group">
-            <label>Initial Password</label>
-            <input class="admin-form-input" type="password" v-model="clientForm.password" placeholder="Minimum 8 characters" required>
+          <div v-if="showDefaultPagePreviewModal" class="modal-overlay" @click.self="showDefaultPagePreviewModal = false">
+            <div class="modal-panel" style="max-width: 960px; width: 90%;">
+              <div class="modal-header">
+                <h2>Default Page Live Preview</h2>
+                <button class="close-button" type="button" aria-label="Close modal" @click="showDefaultPagePreviewModal = false">×</button>
+              </div>
+              <div class="modal-body" style="padding: 0;">
+                <iframe
+                  :srcdoc="defaultPageContent.replace(/\{domain\}/g, 'demo-website.com')"
+                  style="width: 100%; height: 500px; border: none; border-radius: 0 0 8px 8px; background: #0b0f19;"
+                ></iframe>
+              </div>
+            </div>
           </div>
-          <button type="submit" class="admin-submit-btn" style="margin-top: 1rem;">Create Sub-Client</button>
-        </form>
-      </div>
+          </div>
+        </template>
+      </main>
     </div>
 
-    <!-- MODAL: CREATE SUB-PLAN -->
-    <div v-if="showPlanModal" class="modal-backdrop" @click.self="showPlanModal = false">
-      <div class="modal-card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-          <h3>Create Custom Sub-Plan</h3>
-          <button class="ghost-button" @click="showPlanModal = false">×</button>
-        </div>
-        <form @submit.prevent="createPlan">
-          <div class="admin-form-group">
-            <label>Plan Name</label>
-            <input class="admin-form-input" v-model="planForm.name" placeholder="Client Starter Package" required>
-          </div>
-          <div class="admin-form-group">
-            <label>RAM (MB)</label>
-            <input class="admin-form-input" type="number" v-model.number="planForm.memory_mb" min="128" required>
-          </div>
-          <div class="admin-form-group">
-            <label>Storage (MB)</label>
-            <input class="admin-form-input" type="number" v-model.number="planForm.storage_mb" min="100" required>
-          </div>
-          <div class="admin-form-group">
-            <label>Max Websites</label>
-            <input class="admin-form-input" type="number" v-model.number="planForm.max_websites" min="1" required>
-          </div>
-          <div class="admin-form-group">
-            <label>Max Databases</label>
-            <input class="admin-form-input" type="number" v-model.number="planForm.max_databases" min="0" required>
-          </div>
-          <button type="submit" class="admin-submit-btn" style="margin-top: 1rem;">Create Sub-Plan</button>
-        </form>
-      </div>
-    </div>
-
-    <!-- MODAL: PROVISION ACCOUNT -->
-    <div v-if="showAccountModal" class="modal-backdrop" @click.self="showAccountModal = false">
-      <div class="modal-card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-          <h3>Provision Hosting Account</h3>
-          <button class="ghost-button" @click="showAccountModal = false">×</button>
-        </div>
-        <form @submit.prevent="provisionAccount">
-          <div class="admin-form-group">
-            <label>Select Sub-Client</label>
-            <select class="admin-form-input" v-model="accountForm.user_id" required>
-              <option value="">-- Choose Client --</option>
-              <option v-for="c in clients" :key="c.id" :value="c.id">{{ c.full_name }} ({{ c.email }})</option>
-            </select>
-          </div>
-          <div class="admin-form-group">
-            <label>Select Sub-Plan</label>
-            <select class="admin-form-input" v-model="accountForm.plan_id" required>
-              <option value="">-- Choose Plan --</option>
-              <option v-for="p in plans" :key="p.id" :value="p.id">{{ p.name }} ({{ p.storage_mb }} MB)</option>
-            </select>
-          </div>
-          <button type="submit" class="admin-submit-btn" style="margin-top: 1rem;">Provision Stack</button>
-        </form>
-      </div>
-    </div>
-
-    <!-- MODAL: CREATE API TOKEN -->
-    <div v-if="showTokenModal" class="modal-backdrop" @click.self="showTokenModal = false">
-      <div class="modal-card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-          <h3>Create Reseller API Token</h3>
-          <button class="ghost-button" @click="showTokenModal = false">×</button>
-        </div>
-        <form @submit.prevent="createToken">
-          <div class="admin-form-group">
-            <label>Token Name</label>
-            <input class="admin-form-input" v-model="tokenForm.name" placeholder="e.g. WHMCS Integration" required>
-          </div>
-          <button type="submit" class="admin-submit-btn" style="margin-top: 1rem;">Generate Token</button>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <script src="/assets/reseller.js"></script>
-</body>
+    <script src="/assets/vue.global.prod.js"></script>
+    <script>
+      window.IS_RESELLER_PANEL = true;
+    </script>
+    <script src="/assets/admin.js"></script>
+  </body>
 </html>
