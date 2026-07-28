@@ -32,6 +32,7 @@ class APITokenAuthTests(unittest.TestCase):
 
     def test_api_token_authentication_flow(self):
         with connect(self.db_path) as conn:
+            conn.execute("UPDATE plans SET allow_api_access = 1")
             user = conn.execute("SELECT * FROM users LIMIT 1").fetchone()
             user_id = user["id"]
 

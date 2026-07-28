@@ -3167,20 +3167,53 @@ def run_agent_all(config=None, limit=25):
     return Agent(config).run_all(limit=limit)
 
 
+_PATH_USAGE_CACHE = {}
+
+
 def path_usage(root):
+    root_str = str(root)
+    now = time.time()
+    if root_str in _PATH_USAGE_CACHE:
+        cached_ts, cached_val = _PATH_USAGE_CACHE[root_str]
+        if now - cached_ts < 30:
+            return cached_val
+
     total_bytes = 0
     inodes = 0
     if not root.exists():
         return {"bytes": 0, "inodes": 0}
-    for path in root.rglob("*"):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        inodes += 1
-        if path.is_file():
-            total_bytes += stat.st_size
-    return {"bytes": total_bytes, "inodes": inodes}
+
+    try:
+        proc = subprocess.run(["du", "-sb", str(root)], capture_output=True, text=True, timeout=1.5)
+        if proc.returncode == 0 and proc.stdout:
+            lines = proc.stdout.strip().splitlines()
+            if lines:
+                parts = lines[0].split()
+                if len(parts) >= 1 and parts[0].isdigit():
+                    total_bytes = int(parts[0])
+                    inodes = len(lines)
+                    res = {"bytes": total_bytes, "inodes": inodes}
+                    _PATH_USAGE_CACHE[root_str] = (now, res)
+                    return res
+    except Exception:
+        pass
+
+    try:
+        for entry in os.walk(str(root), followlinks=False):
+            dirpath, dirnames, filenames = entry
+            inodes += len(dirnames) + len(filenames)
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                try:
+                    total_bytes += os.path.getsize(fp)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+    res = {"bytes": total_bytes, "inodes": inodes}
+    _PATH_USAGE_CACHE[root_str] = (now, res)
+    return res
 
 
 def get_df_storage():

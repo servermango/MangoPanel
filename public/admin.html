@@ -644,6 +644,26 @@
           </section>
 
           <section v-if="activePage === 'storage'" class="page-stack">
+            <div class="section-head" style="margin-bottom: 1rem;">
+              <div>
+                <h2>Storage Engine &amp; Quotas</h2>
+                <p>Monitor filesystem capacity, live disk I/O streams, WHM quota breakdowns, and path utilization.</p>
+              </div>
+              <div class="actions" style="display: flex; gap: 0.5rem; align-items: center;">
+                <button class="primary-button" :disabled="loadingStorage" @click="loadStorage">
+                  <span v-if="loadingStorage" class="btn-spinner"></span>
+                  <app-icon v-else name="refresh"></app-icon>
+                  <span>{{ loadingStorage ? 'Scanning Storage...' : 'Refresh Storage Data' }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Loading Indicator -->
+            <div v-if="loadingStorage && !storageDf.filesystems.length" style="padding: 3rem; text-align: center; color: var(--muted, #94a3b8);">
+              <span class="btn-spinner" style="display: inline-block; width: 32px; height: 32px; border-width: 3px; margin-bottom: 1rem;"></span>
+              <p style="font-size: 1rem; font-weight: 600; color: var(--text);">Scanning Storage Capacity &amp; Path Breakdowns...</p>
+            </div>
+
             <!-- Top Live Metrics Banner -->
             <div class="metric-grid">
               <div class="metric">
@@ -1859,22 +1879,167 @@
             </small>
           </section>
 
+          <!-- ═══════════════════════════════════════════════════════════ PLATFORM STATUS & INCIDENTS -->
           <section v-if="activePage === 'status'" class="panel">
             <div class="section-head">
               <div>
-                <h2>Status Incident</h2>
-                <p>Publish an incident to the public status page.</p>
+                <h2>Platform Status &amp; Incident Management</h2>
+                <p>Publish incidents, post live progress updates, manage component health, and schedule platform maintenance.</p>
+              </div>
+              <div class="actions" style="display: flex; gap: 0.5rem; align-items: center;">
+                <button class="primary-button" :disabled="loadingStatus" @click="loadStatusData">
+                  <span v-if="loadingStatus" class="btn-spinner"></span>
+                  <app-icon v-else name="refresh"></app-icon>
+                  <span>{{ loadingStatus ? 'Refreshing...' : 'Refresh Status Data' }}</span>
+                </button>
+                <a class="ghost-button" href="/status" target="_blank">🌐 View Public Status Page</a>
               </div>
             </div>
-            <div class="incident-form">
-              <input v-model="incident.title" placeholder="Incident title">
-              <select v-model="incident.severity">
-                <option value="minor">Minor</option>
-                <option value="major">Major</option>
-                <option value="critical">Critical</option>
-              </select>
-              <input v-model="incident.message" placeholder="Initial update">
-              <button class="primary-button" @click="createIncident">Publish</button>
+
+            <!-- Loading Indicator -->
+            <div v-if="loadingStatus && !adminComponents.length" style="padding: 3rem; text-align: center; color: var(--muted, #94a3b8);">
+              <span class="btn-spinner" style="display: inline-block; width: 32px; height: 32px; border-width: 3px; margin-bottom: 1rem;"></span>
+              <p style="font-size: 1rem; font-weight: 600; color: var(--text);">Loading Platform Status &amp; Incident Feed...</p>
+            </div>
+
+            <!-- Publish New Incident Card -->
+            <div class="plan-form" style="margin-bottom: 2rem; background: rgba(255,255,255,0.02); padding: 1.5rem; border-radius: 12px; border: 1px solid var(--line,#2d3748);">
+              <h3 style="margin-top: 0; margin-bottom: 1rem; font-size: 1.1rem; color: var(--text);">📢 Publish New Incident Report</h3>
+              
+              <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                <label>Incident Title
+                  <input v-model="incident.title" placeholder="e.g. Investigating database response latency">
+                </label>
+                <label>Severity Level
+                  <select v-model="incident.severity">
+                    <option value="minor">Minor Degradation</option>
+                    <option value="major">Major Outage</option>
+                    <option value="critical">Critical System Failure</option>
+                  </select>
+                </label>
+              </div>
+
+              <label style="margin-bottom: 1rem;">Initial Update Message
+                <textarea v-model="incident.message" rows="3" placeholder="Detail the issue being investigated and affected services..." style="width:100%; background: #0b0f19; color: #f3f4f6; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 0.75rem; font-family: inherit; font-size: 0.9rem;"></textarea>
+              </label>
+
+              <button class="primary-button" @click="createIncident" :disabled="!incident.title || !incident.message">Publish Incident</button>
+            </div>
+
+            <!-- Active & Past Incidents List -->
+            <div style="margin-bottom: 2.5rem;">
+              <h3 style="margin-bottom: 1rem; font-size: 1.2rem; display: flex; align-items: center; justify-content: space-between;">
+                <span>📋 Incidents &amp; Live Updates Feed</span>
+                <span class="pill" style="font-size: 0.8rem; background: rgba(99,102,241,0.2); color: #818cf8;">{{ adminIncidents.length }} Total Incidents</span>
+              </h3>
+
+              <div v-if="adminIncidents.length" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                <div v-for="inc in adminIncidents" :key="inc.id" style="background: rgba(255,255,255,0.03); border: 1px solid var(--line,#2d3748); border-radius: 12px; padding: 1.25rem;">
+                  
+                  <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 0.75rem;">
+                    <div>
+                      <div style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.25rem;">
+                        <strong style="font-size: 1.1rem; color: var(--text);">#{{ inc.id }} - {{ inc.title }}</strong>
+                        <span class="pill" :class="inc.severity === 'critical' || inc.severity === 'major' ? 'danger' : 'warning'" style="font-size: 0.75rem;">
+                          {{ inc.severity.toUpperCase() }}
+                        </span>
+                        <span class="pill" :class="inc.state === 'resolved' ? 'healthy' : 'warning'" style="font-size: 0.75rem;">
+                          {{ inc.state.toUpperCase() }}
+                        </span>
+                      </div>
+                      <div style="font-size: 0.82rem; color: #94a3b8; font-family: monospace;">
+                        Opened: {{ new Date(inc.created_at).toLocaleString() }}
+                        <span v-if="inc.resolved_at"> · Resolved: {{ new Date(inc.resolved_at).toLocaleString() }}</span>
+                      </div>
+                    </div>
+
+                    <button class="ghost-button danger-button" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;" @click="deleteIncident(inc.id)">
+                      Delete Incident
+                    </button>
+                  </div>
+
+                  <!-- Timeline Updates List -->
+                  <div v-if="inc.updates && inc.updates.length" style="margin: 1rem 0; padding-left: 1rem; border-left: 3px solid rgba(99,102,241,0.4); display: flex; flex-direction: column; gap: 0.6rem;">
+                    <div v-for="upd in inc.updates" :key="upd.id" style="font-size: 0.88rem; background: rgba(0,0,0,0.2); padding: 0.6rem 0.85rem; border-radius: 6px;">
+                      <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem; font-size: 0.78rem; color: #94a3b8;">
+                        <span><strong style="color: #cbd5e1; text-transform: uppercase;">{{ upd.state }}</strong></span>
+                        <span style="font-family: monospace;">{{ new Date(upd.created_at).toLocaleString() }}</span>
+                      </div>
+                      <div style="color: #e2e8f0; line-height: 1.4;">{{ upd.message }}</div>
+                    </div>
+                  </div>
+
+                  <!-- Post Update Form -->
+                  <div style="margin-top: 1rem; background: rgba(0,0,0,0.25); padding: 1rem; border-radius: 8px; border: 1px dashed rgba(255,255,255,0.1);">
+                    <h4 style="margin: 0 0 0.75rem 0; font-size: 0.92rem; color: #94a3b8;">➕ Post Progress Update or Change Incident Status</h4>
+                    
+                    <div v-if="!updateIncidentForm[inc.id]">
+                      {{ (updateIncidentForm[inc.id] = { state: inc.state === 'resolved' ? 'resolved' : 'identified', message: '' }) && '' }}
+                    </div>
+
+                    <div style="display: flex; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
+                      <label style="flex: 1; min-width: 180px; font-size: 0.8rem;">Update State
+                        <select v-model="updateIncidentForm[inc.id].state" style="width: 100%; margin-top: 0.25rem;">
+                          <option value="investigating">Investigating</option>
+                          <option value="identified">Identified</option>
+                          <option value="monitoring">Monitoring Fix</option>
+                          <option value="resolved">Resolved</option>
+                        </select>
+                      </label>
+                      
+                      <label style="flex: 3; min-width: 250px; font-size: 0.8rem;">Update Message / Progress Note
+                        <input v-model="updateIncidentForm[inc.id].message" placeholder="e.g. Root cause identified. Deploying patch..." style="width: 100%; margin-top: 0.25rem;">
+                      </label>
+                    </div>
+
+                    <button class="primary-button" style="padding: 0.45rem 1rem; font-size: 0.85rem;" @click="postIncidentUpdate(inc.id)" :disabled="!updateIncidentForm[inc.id] || !updateIncidentForm[inc.id].message">
+                      Post Progress Update
+                    </button>
+                  </div>
+
+                </div>
+              </div>
+
+              <div v-else style="text-align: center; padding: 2.5rem; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px dashed rgba(255,255,255,0.1); color: #94a3b8;">
+                No incidents posted yet. Use the form above to publish an incident.
+              </div>
+            </div>
+
+            <!-- Services & Components Health Status Overrides -->
+            <div>
+              <h3 style="margin-bottom: 1rem; font-size: 1.2rem;">🖥️ Component Health Status Overrides</h3>
+              <div class="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Component Name</th>
+                      <th>Group</th>
+                      <th>Current Status</th>
+                      <th>Set Live Status Override</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="comp in adminComponents" :key="comp.id">
+                      <td><strong>{{ comp.name }}</strong></td>
+                      <td><span class="pill" style="font-size: 0.75rem; background: rgba(255,255,255,0.05);">{{ comp.group_name }}</span></td>
+                      <td>
+                        <span class="pill" :class="comp.status === 'operational' ? 'healthy' : (comp.status === 'major_outage' ? 'danger' : 'warning')">
+                          {{ comp.status.toUpperCase() }}
+                        </span>
+                      </td>
+                      <td>
+                        <select :value="comp.status" @change="updateComponentStatus(comp.id, $event.target.value)" style="padding: 0.35rem 0.6rem; border-radius: 6px; background: #0f172a; color: #f8fafc; border: 1px solid rgba(255,255,255,0.15);">
+                          <option value="operational">Operational</option>
+                          <option value="degraded">Degraded Performance</option>
+                          <option value="partial_outage">Partial Outage</option>
+                          <option value="major_outage">Major Outage</option>
+                          <option value="maintenance">Maintenance</option>
+                        </select>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 

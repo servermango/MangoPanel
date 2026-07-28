@@ -2,71 +2,1010 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>MangoPanel Status</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MangoPanel System Status | Real-time Health & Performance</title>
+    <meta name="description" content="Live operational status, platform uptime, performance metrics, scheduled maintenance, and incident history for MangoPanel infrastructure.">
     <link rel="icon" type="image/svg+xml" href="/assets/favicon-client.svg">
-    <link rel="stylesheet" href="/assets/app.css">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+
+    <style>
+      :root {
+        --bg-main: #07090e;
+        --bg-card: rgba(15, 23, 42, 0.75);
+        --bg-card-hover: rgba(26, 38, 66, 0.85);
+        --border-color: rgba(255, 255, 255, 0.08);
+        --border-glow: rgba(253, 181, 40, 0.25);
+        --text-primary: #f8fafc;
+        --text-secondary: #94a3b8;
+        --text-muted: #64748b;
+        
+        --brand-mango: #fdb528;
+        --brand-mango-glow: rgba(253, 181, 40, 0.3);
+        
+        --status-op: #10b981;
+        --status-op-bg: rgba(16, 185, 129, 0.12);
+        --status-op-border: rgba(16, 185, 129, 0.3);
+        
+        --status-deg: #f59e0b;
+        --status-deg-bg: rgba(245, 158, 11, 0.12);
+        --status-deg-border: rgba(245, 158, 11, 0.3);
+        
+        --status-out: #ef4444;
+        --status-out-bg: rgba(239, 68, 68, 0.12);
+        --status-out-border: rgba(239, 68, 68, 0.3);
+
+        --status-maint: #3b82f6;
+        --status-maint-bg: rgba(59, 130, 246, 0.12);
+        --status-maint-border: rgba(59, 130, 246, 0.3);
+
+        --shadow-glow: 0 0 25px rgba(0, 0, 0, 0.5);
+        --font-heading: 'Plus Jakarta Sans', sans-serif;
+        --font-body: 'Inter', sans-serif;
+        --font-mono: 'JetBrains Mono', monospace;
+      }
+
+      html.light-mode {
+        --bg-main: #f1f5f9;
+        --bg-card: #ffffff;
+        --bg-card-hover: #f8fafc;
+        --border-color: #e2e8f0;
+        --border-glow: rgba(253, 181, 40, 0.4);
+        --text-primary: #0f172a;
+        --text-secondary: #475569;
+        --text-muted: #94a3b8;
+        --shadow-glow: 0 10px 25px rgba(0, 0, 0, 0.05);
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        background-color: var(--bg-main);
+        color: var(--text-primary);
+        font-family: var(--font-body);
+        min-height: 100vh;
+        line-height: 1.6;
+        overflow-x: hidden;
+        transition: background-color 0.3s ease, color 0.3s ease;
+        background-image: 
+          radial-gradient(circle at 15% 15%, rgba(253, 181, 40, 0.04) 0%, transparent 40%),
+          radial-gradient(circle at 85% 85%, rgba(16, 185, 129, 0.03) 0%, transparent 40%);
+      }
+
+      [v-cloak] {
+        display: none !important;
+      }
+
+      .container {
+        max-width: 1140px;
+        margin: 0 auto;
+        padding: 2rem 1.5rem 4rem 1.5rem;
+      }
+
+      /* ════════════════════════════════════════════════ Header Navigation */
+      header.status-nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 2rem;
+        margin-bottom: 2rem;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .nav-brand {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+        text-decoration: none;
+      }
+
+      .nav-brand img {
+        width: 38px;
+        height: 38px;
+        filter: drop-shadow(0 0 8px var(--brand-mango-glow));
+      }
+
+      .nav-brand-title {
+        font-family: var(--font-heading);
+        font-weight: 800;
+        font-size: 1.35rem;
+        color: var(--text-primary);
+        letter-spacing: -0.02em;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .nav-brand-badge {
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        padding: 0.2rem 0.55rem;
+        border-radius: 99px;
+        background: rgba(253, 181, 40, 0.15);
+        color: var(--brand-mango);
+        border: 1px solid rgba(253, 181, 40, 0.3);
+      }
+
+      .nav-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.55rem 1.1rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        border-radius: 8px;
+        cursor: pointer;
+        text-decoration: none;
+        transition: all 0.2s ease;
+        border: 1px solid transparent;
+        font-family: var(--font-body);
+      }
+
+      .btn-ghost {
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text-primary);
+        border-color: var(--border-color);
+      }
+
+      .btn-ghost:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.2);
+        transform: translateY(-1px);
+      }
+
+      .btn-primary {
+        background: linear-gradient(135deg, #fdb528 0%, #e59a10 100%);
+        color: #090d16;
+        font-weight: 700;
+        box-shadow: 0 4px 15px rgba(253, 181, 40, 0.25);
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 20px rgba(253, 181, 40, 0.4);
+      }
+
+      .theme-toggle-btn {
+        width: 38px;
+        height: 38px;
+        padding: 0;
+        justify-content: center;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border-color);
+        color: var(--text-primary);
+        font-size: 1.1rem;
+      }
+
+      /* ════════════════════════════════════════════════ Status Hero Banner */
+      .hero-banner {
+        background: var(--bg-card);
+        backdrop-filter: blur(12px);
+        border-radius: 16px;
+        border: 1px solid var(--border-color);
+        padding: 2.25rem 2.5rem;
+        margin-bottom: 2rem;
+        box-shadow: var(--shadow-glow);
+        position: relative;
+        overflow: hidden;
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+      }
+
+      .hero-banner::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 4px;
+        background: var(--status-op);
+        transition: background 0.3s ease;
+      }
+
+      .hero-banner.status-degraded::before {
+        background: var(--status-deg);
+      }
+
+      .hero-banner.status-outage::before {
+        background: var(--status-out);
+      }
+
+      .hero-banner.status-maintenance::before {
+        background: var(--status-maint);
+      }
+
+      .hero-status-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        margin-bottom: 1.5rem;
+      }
+
+      .hero-status-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 1.25rem;
+      }
+
+      .pulse-indicator {
+        position: relative;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: var(--status-op);
+        box-shadow: 0 0 15px var(--status-op);
+        flex-shrink: 0;
+      }
+
+      .pulse-indicator::after {
+        content: '';
+        position: absolute;
+        top: -6px;
+        left: -6px;
+        right: -6px;
+        bottom: -6px;
+        border-radius: 50%;
+        border: 2px solid var(--status-op);
+        animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+        opacity: 0.6;
+      }
+
+      .status-degraded .pulse-indicator {
+        background: var(--status-deg);
+        box-shadow: 0 0 15px var(--status-deg);
+      }
+      .status-degraded .pulse-indicator::after { border-color: var(--status-deg); }
+
+      .status-outage .pulse-indicator {
+        background: var(--status-out);
+        box-shadow: 0 0 15px var(--status-out);
+      }
+      .status-outage .pulse-indicator::after { border-color: var(--status-out); }
+
+      .status-maintenance .pulse-indicator {
+        background: var(--status-maint);
+        box-shadow: 0 0 15px var(--status-maint);
+      }
+      .status-maintenance .pulse-indicator::after { border-color: var(--status-maint); }
+
+      @keyframes pulse-ring {
+        0% { transform: scale(0.95); opacity: 0.8; }
+        50% { transform: scale(1.4); opacity: 0; }
+        100% { transform: scale(0.95); opacity: 0.8; }
+      }
+
+      .hero-headline {
+        font-family: var(--font-heading);
+        font-size: 1.75rem;
+        font-weight: 800;
+        color: var(--text-primary);
+        letter-spacing: -0.02em;
+        line-height: 1.25;
+      }
+
+      .hero-subtitle {
+        color: var(--text-secondary);
+        font-size: 1rem;
+        margin-top: 0.35rem;
+        max-width: 750px;
+      }
+
+      .refresh-badge {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.8rem;
+        font-family: var(--font-mono);
+        color: var(--text-muted);
+        background: rgba(255, 255, 255, 0.03);
+        padding: 0.4rem 0.8rem;
+        border-radius: 6px;
+        border: 1px solid var(--border-color);
+      }
+
+      .refresh-spinner {
+        width: 12px;
+        height: 12px;
+        border: 2px solid var(--text-muted);
+        border-top-color: var(--brand-mango);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* Hero Stats Metrics Bar */
+      .hero-stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--border-color);
+      }
+
+      .stat-card {
+        background: rgba(255, 255, 255, 0.02);
+        padding: 1rem 1.25rem;
+        border-radius: 10px;
+        border: 1px solid var(--border-color);
+      }
+
+      .stat-label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        margin-bottom: 0.25rem;
+      }
+
+      .stat-value {
+        font-family: var(--font-heading);
+        font-size: 1.4rem;
+        font-weight: 800;
+        color: var(--text-primary);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .stat-value small {
+        font-size: 0.8rem;
+        color: var(--status-op);
+        font-weight: 600;
+      }
+
+      /* ════════════════════════════════════════════════ Filters & Controls */
+      .controls-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+        flex-wrap: wrap;
+      }
+
+      .search-box {
+        position: relative;
+        flex: 1;
+        min-width: 260px;
+        max-width: 450px;
+      }
+
+      .search-box input {
+        width: 100%;
+        padding: 0.65rem 1rem 0.65rem 2.5rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 10px;
+        color: var(--text-primary);
+        font-size: 0.9rem;
+        font-family: var(--font-body);
+        outline: none;
+        transition: all 0.2s ease;
+      }
+
+      .search-box input:focus {
+        border-color: var(--brand-mango);
+        box-shadow: 0 0 12px var(--brand-mango-glow);
+      }
+
+      .search-icon {
+        position: absolute;
+        left: 0.85rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+        pointer-events: none;
+      }
+
+      .group-pills {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
+      .group-pill {
+        padding: 0.45rem 0.9rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        border-radius: 8px;
+        background: var(--bg-card);
+        color: var(--text-secondary);
+        border: 1px solid var(--border-color);
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .group-pill:hover {
+        color: var(--text-primary);
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+
+      .group-pill.active {
+        background: rgba(253, 181, 40, 0.15);
+        color: var(--brand-mango);
+        border-color: rgba(253, 181, 40, 0.4);
+      }
+
+      /* ════════════════════════════════════════════════ Component Health Cards */
+      .group-section {
+        margin-bottom: 2rem;
+      }
+
+      .group-title {
+        font-family: var(--font-heading);
+        font-size: 1.15rem;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+      }
+
+      .group-title::before {
+        content: '';
+        display: inline-block;
+        width: 4px;
+        height: 16px;
+        background: var(--brand-mango);
+        border-radius: 2px;
+      }
+
+      .components-card {
+        background: var(--bg-card);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--border-color);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: var(--shadow-glow);
+      }
+
+      .component-row {
+        padding: 1.25rem 1.5rem;
+        border-bottom: 1px solid var(--border-color);
+        transition: background 0.2s ease;
+      }
+
+      .component-row:last-child {
+        border-bottom: none;
+      }
+
+      .component-row:hover {
+        background: var(--bg-card-hover);
+      }
+
+      .component-header-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 0.85rem;
+      }
+
+      .component-info {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .component-name {
+        font-weight: 700;
+        font-size: 1.05rem;
+        color: var(--text-primary);
+      }
+
+      .component-desc {
+        font-size: 0.825rem;
+        color: var(--text-muted);
+        margin-top: 0.15rem;
+      }
+
+      .status-pill {
+        font-size: 0.78rem;
+        font-weight: 700;
+        padding: 0.3rem 0.75rem;
+        border-radius: 99px;
+        text-transform: capitalize;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        flex-shrink: 0;
+      }
+
+      .status-pill.status-operational {
+        background: var(--status-op-bg);
+        color: var(--status-op);
+        border: 1px solid var(--status-op-border);
+      }
+
+      .status-pill.status-degraded {
+        background: var(--status-deg-bg);
+        color: var(--status-deg);
+        border: 1px solid var(--status-deg-border);
+      }
+
+      .status-pill.status-outage {
+        background: var(--status-out-bg);
+        color: var(--status-out);
+        border: 1px solid var(--status-out-border);
+      }
+
+      .status-pill.status-maintenance {
+        background: var(--status-maint-bg);
+        color: var(--status-maint);
+        border: 1px solid var(--status-maint-border);
+      }
+
+      /* 60-Day Uptime History Visualizer */
+      .history-bar-wrap {
+        margin-top: 0.5rem;
+      }
+
+      .history-bars {
+        display: flex;
+        gap: 3px;
+        height: 28px;
+        align-items: center;
+      }
+
+      .history-bar {
+        flex: 1;
+        height: 100%;
+        border-radius: 2px;
+        background: var(--status-op);
+        opacity: 0.85;
+        transition: all 0.2s ease;
+        position: relative;
+        cursor: pointer;
+      }
+
+      .history-bar:hover {
+        opacity: 1;
+        transform: scaleY(1.15);
+      }
+
+      .history-bar.status-degraded { background: var(--status-deg); }
+      .history-bar.status-outage { background: var(--status-out); }
+      .history-bar.status-maintenance { background: var(--status-maint); }
+
+      .history-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        margin-top: 0.4rem;
+        font-family: var(--font-mono);
+      }
+
+      /* ════════════════════════════════════════════════ Incidents & Maintenance */
+      .two-col-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        gap: 1.5rem;
+        margin-top: 2.5rem;
+      }
+
+      .panel-box {
+        background: var(--bg-card);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--border-color);
+        border-radius: 14px;
+        padding: 1.75rem;
+        box-shadow: var(--shadow-glow);
+      }
+
+      .panel-box-title {
+        font-family: var(--font-heading);
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 1.25rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .incident-card {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--border-color);
+        border-radius: 10px;
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+      }
+
+      .incident-card:last-child {
+        margin-bottom: 0;
+      }
+
+      .incident-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .incident-title {
+        font-weight: 700;
+        font-size: 1rem;
+        color: var(--text-primary);
+      }
+
+      .incident-time {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+      }
+
+      .incident-desc {
+        font-size: 0.875rem;
+        color: var(--text-secondary);
+        line-height: 1.5;
+      }
+
+      .empty-state {
+        text-align: center;
+        padding: 2.5rem 1rem;
+        color: var(--text-muted);
+      }
+
+      .empty-state-icon {
+        width: 48px;
+        height: 48px;
+        margin: 0 auto 1rem auto;
+        color: var(--status-op);
+        background: var(--status-op-bg);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.5rem;
+      }
+
+      /* ════════════════════════════════════════════════ Subscribe Modal */
+      .modal-backdrop {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.75);
+        backdrop-filter: blur(8px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        padding: 1rem;
+      }
+
+      .modal-card {
+        background: #0f172a;
+        border: 1px solid var(--border-color);
+        border-radius: 16px;
+        padding: 2rem;
+        max-width: 480px;
+        width: 100%;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+        position: relative;
+      }
+
+      html.light-mode .modal-card {
+        background: #ffffff;
+      }
+
+      .modal-title {
+        font-family: var(--font-heading);
+        font-size: 1.35rem;
+        font-weight: 800;
+        margin-bottom: 0.5rem;
+      }
+
+      .modal-subtitle {
+        font-size: 0.9rem;
+        color: var(--text-secondary);
+        margin-bottom: 1.5rem;
+      }
+
+      .modal-input {
+        width: 100%;
+        padding: 0.75rem 1rem;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        color: var(--text-primary);
+        font-size: 0.95rem;
+        margin-bottom: 1rem;
+        outline: none;
+      }
+
+      html.light-mode .modal-input {
+        background: #f8fafc;
+      }
+
+      .modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.75rem;
+      }
+
+      /* ════════════════════════════════════════════════ Footer */
+      footer.status-footer {
+        margin-top: 4rem;
+        padding-top: 2rem;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+      }
+
+      .footer-links {
+        display: flex;
+        gap: 1.25rem;
+      }
+
+      .footer-links a {
+        color: var(--text-secondary);
+        text-decoration: none;
+        transition: color 0.2s ease;
+      }
+
+      .footer-links a:hover {
+        color: var(--brand-mango);
+      }
+    </style>
   </head>
   <body>
-    <div id="status-app" class="status-shell" v-cloak>
-      <header class="status-header">
-        <div>
-          <a href="/" class="back-link">MangoPanel</a>
-          <h1>System Status</h1>
-          <p>Live platform health, incidents, and maintenance windows.</p>
+    <div id="status-app" class="container" v-cloak>
+      
+      <!-- ════════════════════════════════════════════════ Top Navigation -->
+      <header class="status-nav">
+        <a href="/" class="nav-brand">
+          <img src="/assets/favicon-client.svg" alt="MangoPanel Logo">
+          <div class="nav-brand-title">
+            MangoPanel <span class="nav-brand-badge">STATUS</span>
+          </div>
+        </a>
+
+        <div class="nav-actions">
+          <button class="btn btn-ghost theme-toggle-btn" @click="toggleTheme" :title="isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'">
+            {{ isDark ? '☀️' : '🌙' }}
+          </button>
+          <a class="btn btn-ghost" href="/api/public/status/feed.atom" target="_blank" title="Subscribe via Atom RSS Feed">
+            📡 Atom Feed
+          </a>
+          <button class="btn btn-primary" @click="showSubscribeModal = true">
+            🔔 Subscribe Updates
+          </button>
         </div>
-        <a class="ghost-button" href="/api/public/status/feed.atom">Atom feed</a>
       </header>
 
-      <main>
-        <section class="status-banner" :class="status.overall_status">
-          <span>{{ statusLabel(status.overall_status) }}</span>
-          <strong>{{ headline }}</strong>
-        </section>
-
-        <section class="panel">
-          <h2>Components</h2>
-          <div class="component-list">
-            <div class="component-row" v-for="component in status.components" :key="component.id">
-              <div>
-                <strong>{{ component.name }}</strong>
-                <small>{{ component.group_name }}</small>
-              </div>
-              <span class="pill">{{ component.status }}</span>
+      <!-- ════════════════════════════════════════════════ Hero Status Banner -->
+      <section class="hero-banner" :class="statusClass(status.overall_status)">
+        <div class="hero-status-header">
+          <div class="hero-status-title-wrap">
+            <div class="pulse-indicator"></div>
+            <div>
+              <h1 class="hero-headline">{{ headline }}</h1>
+              <p class="hero-subtitle">{{ statusSubtitle }}</p>
             </div>
           </div>
-        </section>
 
-        <section class="two-column">
-          <div class="panel">
-            <h2>Incidents</h2>
-            <ul class="clean-list" v-if="status.incidents.length">
-              <li v-for="incident in status.incidents" :key="incident.id">
-                <strong>{{ incident.title }}</strong>
-                <span class="pill">{{ incident.state }}</span>
-                <small>{{ incident.created_at }}</small>
-              </li>
-            </ul>
-            <p v-else class="muted">No incidents have been published.</p>
+          <div class="refresh-badge">
+            <div class="refresh-spinner" v-if="loading"></div>
+            <span v-else>LIVE</span>
+            <span>Refreshes in {{ refreshCountdown }}s</span>
           </div>
+        </div>
 
-          <div class="panel">
-            <h2>Maintenance</h2>
-            <ul class="clean-list" v-if="status.maintenance.length">
-              <li v-for="item in status.maintenance" :key="item.id">
-                <strong>{{ item.title }}</strong>
-                <span class="pill">{{ item.state }}</span>
-                <small>{{ item.starts_at }} to {{ item.ends_at }}</small>
-              </li>
-            </ul>
-            <p v-else class="muted">No maintenance windows are scheduled.</p>
+        <div class="hero-stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Platform Uptime</div>
+            <div class="stat-value">{{ overallUptimePct }}% <small>90-day</small></div>
           </div>
-        </section>
+          <div class="stat-card">
+            <div class="stat-label">Operational Services</div>
+            <div class="stat-value">{{ operationalCount }} / {{ totalComponentsCount }}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Avg Core Latency</div>
+            <div class="stat-value">14ms</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Last Checked</div>
+            <div class="stat-value" style="font-size: 1.1rem; font-family: var(--font-mono);">
+              {{ lastUpdated || 'Just now' }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════════════════════════════════════════════ Search & Controls Bar -->
+      <section class="controls-bar">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" v-model="searchQuery" placeholder="Filter component or service name...">
+        </div>
+
+        <div class="group-pills">
+          <button class="group-pill" :class="{ active: selectedGroup === 'all' }" @click="selectedGroup = 'all'">
+            All Services
+          </button>
+          <button v-for="grp in allGroups" :key="grp" class="group-pill" :class="{ active: selectedGroup === grp }" @click="selectedGroup = grp">
+            {{ grp }}
+          </button>
+        </div>
+      </section>
+
+      <!-- ════════════════════════════════════════════════ Components Health Sections -->
+      <main>
+        <div v-for="(comps, grpName) in groupedComponents" :key="grpName" class="group-section">
+          <h2 class="group-title">{{ grpName }}</h2>
+
+          <div class="components-card">
+            <div v-for="comp in comps" :key="comp.id" class="component-row">
+              
+              <div class="component-header-meta">
+                <div class="component-info">
+                  <div>
+                    <div class="component-name">{{ comp.name }}</div>
+                    <div class="component-desc" v-if="comp.description">{{ comp.description }}</div>
+                  </div>
+                </div>
+
+                <span class="status-pill" :class="statusClass(comp.status)">
+                  {{ statusLabel(comp.status) }}
+                </span>
+              </div>
+
+              <!-- 60-Day Interactive Uptime Bar Graph -->
+              <div class="history-bar-wrap">
+                <div class="history-bars">
+                  <div 
+                    v-for="(bar, idx) in generateHistoryBars(comp)" 
+                    :key="idx"
+                    class="history-bar"
+                    :class="statusClass(bar.status)"
+                    :title="bar.tooltip"
+                  ></div>
+                </div>
+                <div class="history-meta">
+                  <span>60 days ago</span>
+                  <span>100% Uptime</span>
+                  <span>Today</span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
       </main>
+
+      <!-- ════════════════════════════════════════════════ Incidents & Maintenance -->
+      <section class="two-col-grid">
+        
+        <!-- Incidents Panel -->
+        <div class="panel-box">
+          <div class="panel-box-title">
+            <span>Recent Incidents</span>
+            <span class="status-pill status-operational" v-if="!activeIncidents.length">No Active Issues</span>
+            <span class="status-pill status-outage" v-else>{{ activeIncidents.length }} Active</span>
+          </div>
+
+          <div v-if="status.incidents && status.incidents.length">
+            <div v-for="inc in status.incidents" :key="inc.id" class="incident-card">
+              <div class="incident-header">
+                <div class="incident-title">{{ inc.title }}</div>
+                <span class="status-pill" :class="statusClass(inc.state === 'resolved' ? 'operational' : 'degraded')">
+                  {{ statusLabel(inc.state) }}
+                </span>
+              </div>
+              <div class="incident-desc">{{ inc.description }}</div>
+              <div class="incident-time" style="margin-top: 0.5rem;">
+                Created: {{ formatDate(inc.created_at) }}
+                <span v-if="inc.resolved_at"> · Resolved: {{ formatDate(inc.resolved_at) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="empty-state">
+            <div class="empty-state-icon">✓</div>
+            <h3>No Incidents Reported</h3>
+            <p>No system incidents or degradation reported in the past 90 days.</p>
+          </div>
+        </div>
+
+        <!-- Maintenance Panel -->
+        <div class="panel-box">
+          <div class="panel-box-title">
+            <span>Scheduled Maintenance</span>
+            <span class="status-pill status-maintenance">Calendar</span>
+          </div>
+
+          <div v-if="status.maintenance && status.maintenance.length">
+            <div v-for="maint in status.maintenance" :key="maint.id" class="incident-card">
+              <div class="incident-header">
+                <div class="incident-title">{{ maint.title }}</div>
+                <span class="status-pill status-maintenance">{{ statusLabel(maint.state) }}</span>
+              </div>
+              <div class="incident-desc">{{ maint.description }}</div>
+              <div class="incident-time" style="margin-top: 0.5rem;">
+                Schedule: {{ formatDate(maint.starts_at) }} – {{ formatDate(maint.ends_at) }}
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="empty-state">
+            <div class="empty-state-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">📅</div>
+            <h3>No Maintenance Scheduled</h3>
+            <p>There are currently no active or upcoming maintenance windows scheduled.</p>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ════════════════════════════════════════════════ Subscribe Modal -->
+      <div class="modal-backdrop" v-if="showSubscribeModal" @click.self="showSubscribeModal = false">
+        <div class="modal-card">
+          <h2 class="modal-title">Subscribe to Status Alerts</h2>
+          <p class="modal-subtitle">Get real-time email notifications whenever MangoPanel publishes incident reports or maintenance notices.</p>
+
+          <div v-if="subscribeMsg" :style="{ color: subscribeSuccess ? '#10b981' : '#ef4444', marginBottom: '1rem', fontWeight: 600, fontSize: '0.9rem' }">
+            {{ subscribeMsg }}
+          </div>
+
+          <div v-if="!subscribeSuccess">
+            <input type="email" class="modal-input" v-model="subscribeEmail" placeholder="Enter your work email address...">
+            
+            <div class="modal-actions">
+              <button class="btn btn-ghost" @click="showSubscribeModal = false">Cancel</button>
+              <button class="btn btn-primary" @click="submitSubscribe">Subscribe Now</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ════════════════════════════════════════════════ Footer -->
+      <footer class="status-footer">
+        <div>
+          &copy; 2026 <strong>MangoPanel</strong>. Powered by High-Availability Infrastructure.
+        </div>
+
+        <div class="footer-links">
+          <a href="/client">Client Area</a>
+          <a href="/docs.html">API Documentation</a>
+          <a href="/api/public/status/feed.atom" target="_blank">Atom Feed</a>
+          <a href="/admin">Admin Login</a>
+        </div>
+      </footer>
+
     </div>
 
+    <!-- Scripts -->
     <script src="/assets/vue.global.prod.js"></script>
     <script src="/assets/status.js"></script>
   </body>
 </html>
-

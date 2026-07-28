@@ -563,8 +563,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 target = "default-page" if "default" in path else "plans"
                 return self.redirect_response(f"/admin#{target}")
             if path in {"/docs", "/docs.html", "/docs/"}:
-                docs_file = ROOT_DIR / "docs.html" if (ROOT_DIR / "docs.html").exists() else PUBLIC_DIR / "docs.html"
-                return self.serve_file(docs_file)
+                return self.serve_file(PUBLIC_DIR / "docs.html")
             if path == "/status":
                 return self.serve_file(PUBLIC_DIR / "status.html")
             if path.startswith("/assets/"):
@@ -5640,6 +5639,48 @@ class MangoHandler(BaseHTTPRequestHandler):
                 else:
                     conn.execute("UPDATE status_incidents SET state = ? WHERE id = ?", (state, incident_id))
                 return self.json_response({"status": "updated"})
+
+            if path == "/api/admin/status/incidents" and method == "GET":
+                incidents = rows_to_dicts(
+                    conn.execute("SELECT * FROM status_incidents ORDER BY id DESC").fetchall()
+                )
+                for inc in incidents:
+                    updates = rows_to_dicts(
+                        conn.execute("SELECT * FROM status_incident_updates WHERE incident_id = ? ORDER BY id ASC", (inc["id"],)).fetchall()
+                    )
+                    inc["updates"] = updates
+                return self.json_response({"incidents": incidents})
+
+            match_inc_del = re.match(r"^/api/admin/status/incidents/(\d+)$", path)
+            if match_inc_del and method == "DELETE":
+                inc_id = int(match_inc_del.group(1))
+                conn.execute("DELETE FROM status_incident_updates WHERE incident_id = ?", (inc_id,))
+                conn.execute("DELETE FROM status_incidents WHERE id = ?", (inc_id,))
+                log_audit(conn, "admin", actor["id"], "delete_status_incident", "status_incident", inc_id)
+                return self.json_response({"deleted": True})
+
+            match_inc_patch = re.match(r"^/api/admin/status/incidents/(\d+)$", path)
+            if match_inc_patch and method == "PATCH":
+                inc_id = int(match_inc_patch.group(1))
+                body = self.read_json()
+                inc = conn.execute("SELECT * FROM status_incidents WHERE id = ?", (inc_id,)).fetchone()
+                if not inc:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "incident_not_found")
+                title = body.get("title", inc["title"])
+                severity = body.get("severity", inc["severity"])
+                state = body.get("state", inc["state"])
+                published = 1 if body.get("published", inc["published"]) else 0
+                
+                resolved_at = inc["resolved_at"]
+                if state == "resolved" and inc["state"] != "resolved":
+                    resolved_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+                
+                conn.execute(
+                    "UPDATE status_incidents SET title = ?, severity = ?, state = ?, published = ?, resolved_at = ? WHERE id = ?",
+                    (title, severity, state, published, resolved_at, inc_id)
+                )
+                log_audit(conn, "admin", actor["id"], "update_status_incident", "status_incident", inc_id)
+                return self.json_response({"updated": True})
             if path == "/api/admin/status/maintenance" and method == "POST":
                 body = self.read_json()
                 cur = conn.execute(
@@ -5697,15 +5738,29 @@ class MangoHandler(BaseHTTPRequestHandler):
                 created = conn.execute("SELECT * FROM status_components WHERE id = ?", (cur.lastrowid,)).fetchone()
                 return self.json_response({"component": row_to_dict(created)}, HTTPStatus.CREATED)
             if path.startswith("/api/admin/status/components/") and method == "PATCH":
-                component_id = int(path.split("/")[-1])
+                component_id_raw = path.split("/")[-1]
                 body = self.read_json()
+                valid_statuses = {"operational", "degraded", "partial_outage", "major_outage", "maintenance", "unknown"}
+                new_status = body.get("status")
+                if not new_status or new_status not in valid_statuses:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_component_status")
+
+                if component_id_raw == "queue-worker":
+                    conn.execute(
+                        "INSERT INTO system_settings(key, value) VALUES ('status_override_queue_worker', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (new_status,),
+                    )
+                    log_audit(conn, "admin", actor["id"], "update_status_component", "status_component", 0, metadata={"component_id": "queue-worker", "status": new_status})
+                    return self.json_response({"component": {"id": "queue-worker", "name": "Queue Worker", "group_name": "Operations", "status": new_status}})
+
+                try:
+                    component_id = int(component_id_raw)
+                except ValueError:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_component_id")
+
                 component = conn.execute("SELECT * FROM status_components WHERE id = ?", (component_id,)).fetchone()
                 if not component:
                     raise ApiError(HTTPStatus.NOT_FOUND, "status_component_not_found")
-                valid_statuses = {"operational", "degraded", "partial_outage", "major_outage", "maintenance", "unknown"}
-                new_status = body.get("status", component["status"])
-                if new_status not in valid_statuses:
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_component_status")
                 conn.execute(
                     "UPDATE status_components SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (new_status, component_id),
@@ -9650,7 +9705,7 @@ def admin_dashboard(conn):
 
 def build_status_payload(conn):
     components = rows_to_dicts(conn.execute("SELECT * FROM status_components ORDER BY sort_order, name").fetchall())
-    queue_worker = service_worker_health()
+    queue_worker = service_worker_health(conn)
     components.append(
         {
             "id": "queue-worker",
@@ -9685,7 +9740,19 @@ def build_status_payload(conn):
     }
 
 
-def service_worker_health():
+def service_worker_health(conn=None):
+    if conn:
+        try:
+            override = conn.execute("SELECT value FROM system_settings WHERE key = 'status_override_queue_worker'").fetchone()
+            if override and override["value"]:
+                return {
+                    "status": override["value"],
+                    "description": f"Queue worker status set to {override['value']}.",
+                    "updated_at": None,
+                }
+        except Exception:
+            pass
+
     pid_file = SERVICE_VAR_DIR / "mangopanel-worker.pid"
     log_file = SERVICE_VAR_DIR / "mangopanel-worker.log"
     if pid_file.exists():
@@ -9753,6 +9820,31 @@ def start_resource_usage_collector(config):
     return thread
 
 
+def start_worker_daemon(config):
+    def loop():
+        pid = os.getpid()
+        pid_file = SERVICE_VAR_DIR / "mangopanel-worker.pid"
+        log_file = SERVICE_VAR_DIR / "mangopanel-worker.log"
+        SERVICE_VAR_DIR.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(pid), encoding="utf-8")
+
+        agent = Agent(config)
+        while True:
+            try:
+                agent.run_all()
+            except Exception as exc:
+                try:
+                    with open(log_file, "a", encoding="utf-8") as f:
+                        f.write(f"[{datetime.datetime.now(datetime.UTC)}] worker error: {exc}\n")
+                except Exception:
+                    pass
+            time.sleep(15)
+
+    thread = threading.Thread(target=loop, name="mangopanel-worker", daemon=True)
+    thread.start()
+    return thread
+
+
 def run():
     CONFIG.data_dir.mkdir(parents=True, exist_ok=True)
     CONFIG.account_root.mkdir(parents=True, exist_ok=True)
@@ -9782,6 +9874,7 @@ def run():
         # whole system up: files in simulate mode, containers in docker mode.
         agent.apply_all_accounts()
     start_resource_usage_collector(CONFIG)
+    start_worker_daemon(CONFIG)
     if CONFIG.client_port == CONFIG.admin_port:
         raise RuntimeError("MP_CLIENT_PORT and MP_ADMIN_PORT must be different so client and admin panels stay separate.")
 

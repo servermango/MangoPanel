@@ -59,6 +59,7 @@ createApp({
       storageLive: { capacity_total_bytes: 0, capacity_used_bytes: 0, capacity_free_bytes: 0, capacity_used_pct: 0, read_rate_kbs: 0, write_rate_kbs: 0, read_rate_mbs: 0, write_rate_mbs: 0, top_writers: [], sample_interval_sec: 0.3 },
       storageLiveActive: true,
       storageLiveTimer: null,
+      loadingStorage: false,
       storageQuotas: [],
       storagePaths: { paths: [], total_scanned_mb: 0 },
       storageAlerts: { warning_threshold_pct: 85, critical_threshold_pct: 95, inode_warning_pct: 80, notify_email: "admin@domain.com", enabled: true },
@@ -128,10 +129,14 @@ createApp({
       },
       newClientSecret: "",
       incident: {
-        title: "Investigating degraded service",
+        title: "",
         severity: "minor",
-        message: "We are investigating reports from the local development environment.",
+        message: "",
       },
+      adminIncidents: [],
+      adminComponents: [],
+      updateIncidentForm: {},
+      loadingStatus: false,
       newAccount: {
         user_id: "",
         plan_id: "",
@@ -259,6 +264,10 @@ createApp({
       } else if (target === "overview") {
         this.loadStorage();
         this.loadNetworking();
+      } else if (target === "status") {
+        this.stopStorageLiveStream();
+        this.stopNetworkLiveStream();
+        this.loadStatusData();
       } else {
         this.stopStorageLiveStream();
         this.stopNetworkLiveStream();
@@ -451,14 +460,23 @@ createApp({
       }
     },
     async loadStorage() {
+      this.loadingStorage = true;
       try {
-        this.storageDf = await this.api("/api/admin/storage/df");
-        this.storageQuotas = (await this.api("/api/admin/storage/quotas")).accounts || [];
-        this.storagePaths = await this.api("/api/admin/storage/paths");
-        this.storageAlerts = await this.api("/api/admin/storage/alerts");
+        const [dfRes, quotasRes, pathsRes, alertsRes] = await Promise.all([
+          this.api("/api/admin/storage/df"),
+          this.api("/api/admin/storage/quotas"),
+          this.api("/api/admin/storage/paths"),
+          this.api("/api/admin/storage/alerts")
+        ]);
+        this.storageDf = dfRes;
+        this.storageQuotas = quotasRes.accounts || [];
+        this.storagePaths = pathsRes;
+        this.storageAlerts = alertsRes;
         this.startStorageLiveStream();
       } catch (error) {
         console.error("Storage load error:", error);
+      } finally {
+        this.loadingStorage = false;
       }
     },
     startStorageLiveStream() {
@@ -669,17 +687,26 @@ createApp({
             account.selected_dns_account_id = account.dns_provider_account_id || "";
           }
         }
-        this.plans = (await this.api("/api/admin/plans")).plans;
-        this.dnsSettings = (await this.api("/api/admin/dns-settings")).dns_settings;
-        this.dnsDomains = (await this.api("/api/admin/domains")).domains || [];
-        this.registrars = (await this.api("/api/admin/registrars")).registrars || [];
-        this.stacks = (await this.api("/api/admin/account-stacks")).account_stacks;
-        await this.loadSecurityAudit();
-        await this.loadDefaultPage();
-        await this.loadStorage();
-        await this.loadNetworking();
-        await this.fetchAdminApiTokens();
-        this.jobEvents = (await this.api("/api/admin/job-events")).job_events;
+        const [plansRes, dnsRes, domsRes, regsRes, stacksRes, jobsRes] = await Promise.all([
+          this.api("/api/admin/plans"),
+          this.api("/api/admin/dns-settings"),
+          this.api("/api/admin/domains"),
+          this.api("/api/admin/registrars"),
+          this.api("/api/admin/account-stacks"),
+          this.api("/api/admin/job-events"),
+        ]);
+        this.plans = plansRes.plans;
+        this.dnsSettings = dnsRes.dns_settings;
+        this.dnsDomains = domsRes.domains || [];
+        this.registrars = regsRes.registrars || [];
+        this.stacks = stacksRes.account_stacks;
+        this.jobEvents = jobsRes.job_events;
+
+        Promise.all([
+          this.loadDefaultPage(),
+          this.fetchAdminApiTokens(),
+          this.loadStatusData(),
+        ]).catch(() => {});
       } catch (error) {
         this.message = error.message;
       }
@@ -755,22 +782,79 @@ createApp({
         await this.load();
       } catch (error) { this.message = error.message; }
     },
+    async loadStatusData() {
+      this.loadingStatus = true;
+      try {
+        const [incRes, statusRes] = await Promise.all([
+          this.api("/api/admin/status/incidents"),
+          this.api("/api/admin/status")
+        ]);
+        this.adminIncidents = incRes.incidents || [];
+        this.adminComponents = statusRes.components || [];
+      } catch (err) {
+        this.message = err.message;
+      } finally {
+        this.loadingStatus = false;
+      }
+    },
     async createIncident() {
+      if (!this.incident.title.trim()) return;
       try {
         const payload = await this.api("/api/admin/status/incidents", {
           method: "POST",
           body: JSON.stringify({
-            title: this.incident.title,
+            title: this.incident.title.trim(),
             severity: this.incident.severity,
             state: "investigating",
-            message: this.incident.message,
+            message: this.incident.message.trim(),
             published: true,
           }),
         });
-        this.message = `Incident #${payload.incident_id} published`;
-        await this.load();
+        this.message = `Incident #${payload.incident_id} published successfully`;
+        this.incident.title = "";
+        this.incident.message = "";
+        await this.loadStatusData();
       } catch (error) {
         this.message = error.message;
+      }
+    },
+    async postIncidentUpdate(incidentId) {
+      if (!this.updateIncidentForm[incidentId]) return;
+      const msg = (this.updateIncidentForm[incidentId].message || "").trim();
+      const state = this.updateIncidentForm[incidentId].state || "identified";
+      if (!msg) return;
+      try {
+        await this.api(`/api/admin/status/incidents/${incidentId}/updates`, {
+          method: "POST",
+          body: JSON.stringify({ state, message: msg }),
+        });
+        this.message = `Incident #${incidentId} updated to ${state}`;
+        this.updateIncidentForm[incidentId].message = "";
+        await this.loadStatusData();
+      } catch (err) {
+        this.message = err.message;
+      }
+    },
+    async deleteIncident(incidentId) {
+      if (!confirm(`Delete incident #${incidentId}?`)) return;
+      try {
+        await this.api(`/api/admin/status/incidents/${incidentId}`, { method: "DELETE" });
+        this.message = `Incident #${incidentId} deleted`;
+        await this.loadStatusData();
+      } catch (err) {
+        this.message = err.message;
+      }
+    },
+    async updateComponentStatus(componentId, newStatus) {
+      try {
+        await this.api(`/api/admin/status/components/${componentId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: newStatus }),
+        });
+        this.message = `Component status updated to ${newStatus}`;
+        await this.loadStatusData();
+      } catch (err) {
+        this.message = err.message;
       }
     },
     async createAdmin() {

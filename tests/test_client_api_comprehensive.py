@@ -27,6 +27,7 @@ class ComprehensiveClientAPISecurityTests(unittest.TestCase):
 
         # Create two distinct users for tenant isolation testing
         with connect(self.db_path) as conn:
+            conn.execute("UPDATE plans SET allow_api_access = 1")
             user1 = conn.execute("SELECT * FROM users ORDER BY id LIMIT 1").fetchone()
             self.user1_id = user1["id"]
             self.user1_acc = conn.execute("SELECT * FROM hosting_accounts WHERE user_id = ? LIMIT 1", (self.user1_id,)).fetchone()
