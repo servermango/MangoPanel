@@ -1943,12 +1943,47 @@ class MangoHandler(BaseHTTPRequestHandler):
     def require_auth(self, *allowed_actor_types):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
-            token_q = (self.query_params.get("token") or [""])[0].strip()
+            token_q = (self.query_params.get("token") or self.query_params.get("api_key") or [""])[0].strip()
             if token_q:
                 auth = f"Bearer {token_q}"
         if not auth.startswith("Bearer "):
+            api_key_hdr = self.headers.get("X-API-Key", "").strip()
+            if api_key_hdr:
+                auth = f"Bearer {api_key_hdr}"
+        if not auth.startswith("Bearer "):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "missing_bearer_token")
         raw_token = auth.removeprefix("Bearer ").strip()
+
+        # Check if this is a Client Panel API token (starts with "mp_")
+        if raw_token.startswith("mp_") and "user" in allowed_actor_types:
+            token_hex = raw_token.removeprefix("mp_")
+            token_hash = hashlib.sha256(token_hex.encode("utf-8")).hexdigest()
+            now = int(time.time())
+            with connect(CONFIG.db_path) as conn:
+                row = conn.execute(
+                    """
+                    SELECT t.id AS token_id, t.account_id, t.expires_at, ha.user_id, u.*
+                    FROM api_tokens t
+                    JOIN hosting_accounts ha ON ha.id = t.account_id
+                    JOIN users u ON u.id = ha.user_id
+                    WHERE t.token_hash = ? AND u.status = 'active'
+                    """,
+                    (token_hash,),
+                ).fetchone()
+                if not row:
+                    raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_api_token")
+                if row["expires_at"] and int(row["expires_at"]) < now:
+                    raise ApiError(HTTPStatus.UNAUTHORIZED, "api_token_expired")
+
+                try:
+                    conn.execute("UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?", (row["token_id"],))
+                except Exception:
+                    pass
+                user_dict = row_to_dict(row)
+                user_dict["actor_type"] = "user"
+                user_dict["api_token_account_id"] = row["account_id"]
+                return user_dict
+
         payload = verify_jwt(raw_token, CONFIG.jwt_secret)
         if not payload:
             raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_access_token")
@@ -2062,16 +2097,29 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not account:
                     raise ApiError(HTTPStatus.FORBIDDEN, "hosting_account_access_denied")
             else:
-                account = conn.execute(
-                    """
-                    SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
-                    FROM hosting_accounts ha
-                    LEFT JOIN plans p ON p.id = ha.plan_id
-                    WHERE ha.user_id = ?
-                    ORDER BY ha.id LIMIT 1
-                    """,
-                    (actor["id"],),
-                ).fetchone()
+                account = None
+                default_acc_id = actor.get("api_token_account_id")
+                if default_acc_id:
+                    account = conn.execute(
+                        """
+                        SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
+                        FROM hosting_accounts ha
+                        LEFT JOIN plans p ON p.id = ha.plan_id
+                        WHERE ha.id = ? AND ha.user_id = ?
+                        """,
+                        (default_acc_id, actor["id"]),
+                    ).fetchone()
+                if not account:
+                    account = conn.execute(
+                        """
+                        SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
+                        FROM hosting_accounts ha
+                        LEFT JOIN plans p ON p.id = ha.plan_id
+                        WHERE ha.user_id = ?
+                        ORDER BY ha.id LIMIT 1
+                        """,
+                        (actor["id"],),
+                    ).fetchone()
 
             path = path.rstrip("/")
             if path == "/api/client/home" and method == "GET":
@@ -5859,6 +5907,8 @@ def require_active_account(account):
     require_account(account)
     if account["status"] == "suspended":
         raise ApiError(HTTPStatus.FORBIDDEN, "hosting_account_suspended")
+    if account["status"] in {"provisioning", "rebuilding"}:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "account_maintenance_in_progress")
 
 
 def require_plan_capacity(conn, account_id, resource_table, plan_column, error):
@@ -9362,6 +9412,21 @@ def client_home(conn, user_id, active_account_id=None):
             ).fetchall()
         )
     warnings = []
+    if primary_account:
+        rebuilding_job = conn.execute(
+            """
+            SELECT id FROM jobs
+            WHERE target_type = 'hosting_account' AND target_id = ?
+              AND type = 'provision_hosting_account' AND status IN ('queued', 'running')
+            LIMIT 1
+            """,
+            (primary_account["id"],),
+        ).fetchone()
+        if primary_account.get("status") in {"provisioning", "rebuilding"} or rebuilding_job:
+            warnings.append({
+                "kind": "maintenance",
+                "message": "Maintenance activity in progress on your account. Please try again in a few minutes."
+            })
     for website in websites:
         if website["ssl_status"] == "missing":
             warnings.append({"kind": "ssl", "message": f"SSL is not installed for {website['domain']}"})

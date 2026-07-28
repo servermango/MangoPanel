@@ -1394,7 +1394,7 @@
                   </label>
                   <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
                   <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
-                  <label v-if="editingPlanId" class="plan-account-update"><input v-model="applyPlanToExistingAccounts" type="checkbox"> Apply these changes to all existing accounts on this plan</label>
+                  <label v-if="editingPlanId" class="plan-account-update"><input v-model="applyPlanToExistingAccounts" type="checkbox"> Update existing accounts under this plan (re-sync)</label>
                   <label v-if="editingPlanId" class="plan-account-update" style="margin-top:0.5rem;"><input v-model="migratePlanDomains" type="checkbox"> Migrate all existing domains on this plan to {{ providerLabel(newPlan.dns_default_provider) }}</label>
                 </div>
               </div>

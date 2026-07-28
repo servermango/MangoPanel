@@ -183,6 +183,16 @@
 
           <!-- ═══════════════════════════════════════════════════════════ DASHBOARD -->
           <section v-if="activePage === 'dashboard'" class="page-stack">
+            <!-- Maintenance alert banner -->
+            <div v-if="isAccountMaintenance" class="panel warning-panel" style="background: rgba(245, 158, 11, 0.12); border-left: 4px solid #f59e0b; margin-bottom: 1rem;">
+              <h2 style="color: #b45309; margin: 0; display: flex; align-items: center; gap: 8px;">
+                <app-icon name="warning"></app-icon> Maintenance Activity in Progress
+              </h2>
+              <p style="margin: 0.5rem 0 0; color: var(--color-text-body, #4b5563); font-size: 14px;">
+                Your hosting account is currently being updated or rebuilt. Settings are being applied in the background — please try again in a few minutes.
+              </p>
+            </div>
+
             <!-- Welcome banner -->
             <div class="dashboard-welcome">
               <div class="welcome-text">

@@ -485,6 +485,15 @@ const app = createApp({
       if (!this.activeAccount) return "No account";
       return `${this.activeAccount.username} (${this.activeAccount.plan_name || 'Account'})`;
     },
+    isAccountMaintenance() {
+      if (this.activeAccount && (this.activeAccount.status === "provisioning" || this.activeAccount.status === "rebuilding")) {
+        return true;
+      }
+      if (this.home && Array.isArray(this.home.warnings)) {
+        return this.home.warnings.some((w) => w.kind === "maintenance");
+      }
+      return false;
+    },
     filteredSites() {
       const query = this.siteSearchQuery.trim().toLowerCase();
       if (!query) return this.websites;

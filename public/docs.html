@@ -468,6 +468,11 @@
                 <li><a href="#thesis-direction">Thesis Integration</a></li>
                 <li><a href="#next-steps">Implementation Roadmap</a></li>
             </ul>
+
+            <div class="nav-group-title">API Reference</div>
+            <ul class="nav-menu">
+                <li><a href="#client-api">Client Area API</a></li>
+            </ul>
         </aside>
 
         <!-- Main Content -->
@@ -873,6 +878,129 @@ make dev-smoke</code></pre>
                     <li><strong>Phase 2 (Implemented):</strong> Local PowerDNS adapter, ACME provider, and mail edge scaffolding.</li>
                     <li><strong>Phase 3 (Implemented):</strong> Hardening, auth validation, and client dashboard metrics integration.</li>
                 </ul>
+            <!-- CLIENT AREA API REFERENCE -->
+            <section id="client-api" class="docs-section">
+                <span class="badge-pill">Developer API</span>
+                <h1>Client Area API Reference</h1>
+                <p>MangoPanel provides a clean REST API for managing websites, DNS records, databases, mailboxes, cron jobs, and monitoring resource usage using API keys.</p>
+
+                <h3>1. Generating API Keys</h3>
+                <p>Client panel users can generate API keys by navigating to <strong>Account Settings &gt; API Tokens</strong> inside the Client Area (port <code>8000</code>). Generated tokens have the prefix <code>mp_</code> (e.g., <code>mp_a1b2c3d4...</code>).</p>
+
+                <h3>2. Authentication Headers</h3>
+                <p>Pass your API key in every HTTP request using either the standard <code>Authorization</code> header, <code>X-API-Key</code> header, or <code>api_key</code> query parameter:</p>
+                <div class="code-block-wrapper">
+                    <pre><code># Option A: Bearer Header (Recommended)
+Authorization: Bearer mp_YOUR_API_KEY
+
+# Option B: Custom Header
+X-API-Key: mp_YOUR_API_KEY
+
+# Option C: Query Parameter
+GET /api/client/websites?api_key=mp_YOUR_API_KEY</code></pre>
+                </div>
+
+                <h3>3. Code Examples</h3>
+                <h4>cURL Example</h4>
+                <div class="code-block-wrapper">
+                    <pre><code># List all websites on your account
+curl -X GET "http://your-server:8000/api/client/websites" \
+     -H "Authorization: Bearer mp_YOUR_API_KEY"</code></pre>
+                </div>
+
+                <h4>Python Example</h4>
+                <div class="code-block-wrapper">
+                    <pre><code>import requests
+
+API_KEY = "mp_YOUR_API_KEY"
+BASE_URL = "http://your-server:8000"
+
+headers = {"Authorization": f"Bearer {API_KEY}"}
+
+# Fetch account overview and resource metrics
+response = requests.get(f"{BASE_URL}/api/client/home", headers=headers)
+print(response.json())</code></pre>
+                </div>
+
+                <h4>Node.js / JavaScript Example</h4>
+                <div class="code-block-wrapper">
+                    <pre><code>const API_KEY = 'mp_YOUR_API_KEY';
+const BASE_URL = 'http://your-server:8000';
+
+async function getWebsites() {
+  const res = await fetch(`${BASE_URL}/api/client/websites`, {
+    headers: { 'Authorization': `Bearer ${API_KEY}` }
+  });
+  const data = await res.json();
+  console.log(data);
+}
+getWebsites();</code></pre>
+                </div>
+
+                <h3>4. Core Client API Endpoints</h3>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Method</th>
+                                <th>Endpoint</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>GET</code></td>
+                                <td><code>/api/client/home</code></td>
+                                <td>Fetch account overview, limits, and resource metrics</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET</code></td>
+                                <td><code>/api/client/websites</code></td>
+                                <td>List websites hosted under the account</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST</code></td>
+                                <td><code>/api/client/websites</code></td>
+                                <td>Add a new website (payload: <code>{"domain": "example.com", "php_version": "8.3"}</code>)</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET</code></td>
+                                <td><code>/api/client/dns/records</code></td>
+                                <td>List DNS records for account domains</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST</code></td>
+                                <td><code>/api/client/dns/records</code></td>
+                                <td>Create a DNS record (payload: <code>{"domain_id": 1, "name": "sub", "type": "A", "content": "1.2.3.4"}</code>)</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET</code></td>
+                                <td><code>/api/client/databases</code></td>
+                                <td>List MySQL/MariaDB databases and database users</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST</code></td>
+                                <td><code>/api/client/databases</code></td>
+                                <td>Create a new database (payload: <code>{"name": "app_db"}</code>)</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET</code></td>
+                                <td><code>/api/client/mailboxes</code></td>
+                                <td>List email mailboxes</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST</code></td>
+                                <td><code>/api/client/mailboxes</code></td>
+                                <td>Create an email mailbox (payload: <code>{"email": "user@domain.com", "password": "..."}</code>)</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET</code></td>
+                                <td><code>/api/client/resource-usage</code></td>
+                                <td>Get CPU, Memory, Disk, and Inode usage trend data</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </section>
 
         </main>
