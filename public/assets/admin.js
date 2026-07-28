@@ -115,6 +115,9 @@ createApp({
         dns_dnssec_allowed: false,
         dns_dnssec_required: false,
         allow_api_access: false,
+        is_reseller: false,
+        max_clients: 0,
+        max_reseller_subplans: 0,
       },
       newAdmin: {
         full_name: "",
@@ -1013,6 +1016,9 @@ createApp({
         dns_dnssec_allowed: Boolean(plan.dns_dnssec_allowed),
         dns_dnssec_required: Boolean(plan.dns_dnssec_required),
         allow_api_access: Boolean(plan.allow_api_access),
+        is_reseller: Boolean(plan.is_reseller),
+        max_clients: plan.max_clients || 0,
+        max_reseller_subplans: plan.max_reseller_subplans || 0,
       };
       this.showPlanModal = true;
     },
@@ -1033,6 +1039,9 @@ createApp({
         dns_min_ttl: Number(this.newPlan.dns_min_ttl), dns_wildcard_records_allowed: Boolean(this.newPlan.dns_wildcard_records_allowed),
         dns_cloudflare_proxy_allowed: Boolean(this.newPlan.dns_cloudflare_proxy_allowed), dns_dnssec_allowed: Boolean(this.newPlan.dns_dnssec_allowed), dns_dnssec_required: Boolean(this.newPlan.dns_dnssec_required),
         allow_api_access: Boolean(this.newPlan.allow_api_access),
+        is_reseller: Boolean(this.newPlan.is_reseller),
+        max_clients: Number(this.newPlan.max_clients || 0),
+        max_reseller_subplans: Number(this.newPlan.max_reseller_subplans || 0),
       };
     },
     async updatePlan() {

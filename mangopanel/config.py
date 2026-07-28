@@ -43,6 +43,7 @@ class Config:
         self.port = int(os.getenv("MP_PORT", "8000"))
         self.client_port = int(os.getenv("MP_CLIENT_PORT", "8000"))
         self.admin_port = int(os.getenv("MP_ADMIN_PORT", "8001"))
+        self.reseller_port = int(os.getenv("MP_RESELLER_PORT", "8002"))
         # Single shared root in the project directory that a server admin can
         # reach directly. Both customer account files and the control-plane
         # database live under here.

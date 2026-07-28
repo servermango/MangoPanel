@@ -101,7 +101,7 @@ class MultiAccountSwitcherTests(unittest.TestCase):
                 ).lastrowid
                 payload = create_initial_hosting_account(conn, new_user_id, request_headers={"Host": "seeds.servermango.com:8443"})
                 created_web = conn.execute("SELECT * FROM websites WHERE account_id = ?", (payload["id"],)).fetchone()
-                self.assertEqual(created_web["domain"], "u000002.seeds.servermango.com")
+                self.assertEqual(created_web["domain"], f"u{new_user_id:06d}.seeds.servermango.com")
 
     def test_db_locking_and_retry_resilience(self):
         import sqlite3

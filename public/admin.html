@@ -1352,7 +1352,11 @@
                 </thead>
                 <tbody>
                   <tr v-for="plan in plans" :key="plan.id">
-                    <td><strong>{{ plan.name }}</strong><small>#{{ plan.id }}</small></td>
+                    <td>
+                      <strong>{{ plan.name }}</strong>
+                      <span v-if="plan.is_reseller" class="pill pill-warning" style="font-size: 0.7rem; margin-left: 0.4rem; padding: 1px 6px;">Reseller Plan</span>
+                      <small>#{{ plan.id }}</small>
+                    </td>
                     <td>{{ plan.cpu_limit }} CPU<small>{{ plan.memory_mb }} MB RAM</small></td>
                     <td>{{ plan.storage_mb }} MB<small>{{ plan.inode_limit }} inodes</small></td>
                     <td>{{ plan.max_websites }} sites<small>{{ plan.max_databases }} DB · {{ plan.max_mailboxes }} mail · {{ plan.max_cron_jobs }} cron</small></td>
@@ -1376,6 +1380,16 @@
               </div>
               <div class="modal-body">
                 <div class="plan-form">
+                  <div style="grid-column: 1 / -1; margin-bottom: 0.5rem; padding: 0.75rem 1rem; background: rgba(253, 181, 40, 0.05); border: 1px solid rgba(253, 181, 40, 0.2); border-radius: 8px;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: var(--brand, #fdb528); cursor: pointer; margin: 0;">
+                      <input type="checkbox" v-model="newPlan.is_reseller" style="width: auto;">
+                      Designate as Reseller Plan (Grants Reseller Access on Port 8002)
+                    </label>
+                    <div v-if="newPlan.is_reseller" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 0.75rem;">
+                      <label>Max Sub-Clients <input type="number" v-model.number="newPlan.max_clients" placeholder="0 for unlimited"></label>
+                      <label>Max Sub-Plans <input type="number" v-model.number="newPlan.max_reseller_subplans" placeholder="0 for unlimited"></label>
+                    </div>
+                  </div>
                   <label>Plan name <input v-model="newPlan.name" placeholder="Starter 10 GB"></label>
                   <label>CPU cores <input v-model="newPlan.cpu_limit" inputmode="decimal" placeholder="1"></label>
                   <label>Memory MB <input v-model.number="newPlan.memory_mb" type="number" min="128"></label>

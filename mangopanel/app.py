@@ -216,6 +216,20 @@ def clear_auth_attempts(conn, handler, actor_type):
     conn.execute("DELETE FROM auth_attempts WHERE ip_address = ? AND actor_type = ?", (ip, actor_type))
 
 
+def is_user_reseller(conn, user_id):
+    row = conn.execute(
+        """
+        SELECT p.is_reseller
+        FROM hosting_accounts ha
+        JOIN plans p ON ha.plan_id = p.id
+        WHERE ha.user_id = ? AND ha.status = 'active' AND p.is_reseller = 1
+        LIMIT 1
+        """,
+        (user_id,)
+    ).fetchone()
+    return row is not None
+
+
 def require_admin_permission(actor, permission):
     if not isinstance(actor, dict):
         raise ApiError(HTTPStatus.FORBIDDEN, "insufficient_admin_permissions")
@@ -531,7 +545,13 @@ class MangoHandler(BaseHTTPRequestHandler):
 
         try:
             if method == "GET" and (path in {"/", "/client"} or path.startswith("/client/")):
+                if panel == "reseller":
+                    return self.serve_file(PUBLIC_DIR / "reseller.html")
                 return self.serve_file(PUBLIC_DIR / "client.html")
+            if method == "GET" and (path in {"/reseller", "/reseller.html"} or path.startswith("/reseller/")):
+                if panel == "client":
+                    raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
+                return self.serve_file(PUBLIC_DIR / "reseller.html")
             if path == "/signup":
                 return self.serve_file(PUBLIC_DIR / "signup.html")
             if method == "GET" and (path in {"/login", "/login.html"}):
@@ -612,27 +632,21 @@ class MangoHandler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
         if method == "POST" and path == "/api/client/auth/exchange-impersonation":
             return self.exchange_impersonation()
-        if method == "POST" and path in {"/api/client/auth/login", "/api/admin/auth/login"}:
-            if panel == "client" and path.startswith("/api/admin/"):
+        if method == "POST" and path in {"/api/client/auth/login", "/api/admin/auth/login", "/api/reseller/auth/login"}:
+            if panel == "client" and (path.startswith("/api/admin/") or path.startswith("/api/reseller/")):
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
-            if panel == "admin" and path.startswith("/api/client/"):
+            if panel == "admin" and (path.startswith("/api/client/") or path.startswith("/api/reseller/")):
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
-            actor_type = "admin" if "/api/admin/" in path else "user"
+            if panel == "reseller" and (path.startswith("/api/client/") or path.startswith("/api/admin/")):
+                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
+            actor_type = "admin" if "/api/admin/" in path else ("reseller" if "/api/reseller/" in path else "user")
             return self.login(actor_type)
 
-        if method == "POST" and path in {"/api/client/auth/logout", "/api/admin/auth/logout"}:
-            if panel == "client" and path.startswith("/api/admin/"):
-                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
-            if panel == "admin" and path.startswith("/api/client/"):
-                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
-            actor_type = "admin" if "/api/admin/" in path else "user"
+        if method == "POST" and path in {"/api/client/auth/logout", "/api/admin/auth/logout", "/api/reseller/auth/logout"}:
+            actor_type = "admin" if "/api/admin/" in path else ("reseller" if "/api/reseller/" in path else "user")
             return self.logout(actor_type)
-        if method == "POST" and path in {"/api/client/auth/totp/verify", "/api/admin/auth/totp/verify"}:
-            if panel == "client" and path.startswith("/api/admin/"):
-                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
-            if panel == "admin" and path.startswith("/api/client/"):
-                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
-            actor_type = "admin" if "/api/admin/" in path else "user"
+        if method == "POST" and path in {"/api/client/auth/totp/verify", "/api/admin/auth/totp/verify", "/api/reseller/auth/totp/verify"}:
+            actor_type = "admin" if "/api/admin/" in path else ("reseller" if "/api/reseller/" in path else "user")
             return self.verify_totp_challenge(actor_type)
 
         if path.startswith("/auth/") or path.startswith("/api/public/") or path.startswith("/files/"):
@@ -644,6 +658,12 @@ class MangoHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/client/"):
             actor = self.require_auth("user", "admin")
             return self.client_api(method, path, query, actor)
+
+        if path.startswith("/api/reseller/"):
+            if panel == "client":
+                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_api_route")
+            actor = self.require_auth("reseller")
+            return self.route_reseller_api(method, path, query, actor)
 
         if path.startswith("/api/admin/"):
             if panel == "client":
@@ -1853,6 +1873,9 @@ class MangoHandler(BaseHTTPRequestHandler):
             if not actor or not verify_password(password, actor["password_hash"]):
                 record_auth_failure(conn, self, actor_type)
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_credentials")
+            if actor_type == "reseller" and not is_user_reseller(conn, actor["id"]):
+                record_auth_failure(conn, self, actor_type)
+                raise ApiError(HTTPStatus.FORBIDDEN, "reseller_plan_required")
             log_audit(conn, actor_type, actor["id"], "login_password_ok", table, actor["id"], self.client_address[0])
             
             if actor["totp_secret"]:
@@ -1993,8 +2016,37 @@ class MangoHandler(BaseHTTPRequestHandler):
                 admin_dict["permissions"] = parse_json_field(row["permissions_json"] if "permissions_json" in row.keys() else None, ["*"])
                 return admin_dict
 
+        # Check if this is a Reseller Panel API token (starts with "mp_reseller_")
+        if raw_token.startswith("mp_reseller_") and ("reseller" in allowed_actor_types or "user" in allowed_actor_types):
+            token_hex = raw_token.removeprefix("mp_reseller_")
+            token_hash = hashlib.sha256(token_hex.encode("utf-8")).hexdigest()
+            now = int(time.time())
+            with connect(CONFIG.db_path) as conn:
+                row = conn.execute(
+                    """
+                    SELECT t.id AS token_id, t.reseller_user_id, t.permissions_json, t.expires_at, u.*
+                    FROM reseller_api_tokens t
+                    JOIN users u ON u.id = t.reseller_user_id
+                    WHERE t.token_hash = ? AND u.status = 'active'
+                    """,
+                    (token_hash,),
+                ).fetchone()
+                if not row:
+                    raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_reseller_api_token")
+                if row["expires_at"] and int(row["expires_at"]) < now:
+                    raise ApiError(HTTPStatus.UNAUTHORIZED, "reseller_api_token_expired")
+
+                try:
+                    conn.execute("UPDATE reseller_api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?", (row["token_id"],))
+                except Exception:
+                    pass
+                reseller_dict = row_to_dict(row)
+                reseller_dict["actor_type"] = "reseller"
+                reseller_dict["permissions"] = parse_json_field(row["permissions_json"] if "permissions_json" in row.keys() else None, ["*"])
+                return reseller_dict
+
         # Check if this is a Client Panel API token (starts with "mp_")
-        if raw_token.startswith("mp_") and not raw_token.startswith("mp_admin_") and "user" in allowed_actor_types:
+        if raw_token.startswith("mp_") and not raw_token.startswith("mp_admin_") and not raw_token.startswith("mp_reseller_") and "user" in allowed_actor_types:
             token_hex = raw_token.removeprefix("mp_")
             token_hash = hashlib.sha256(token_hex.encode("utf-8")).hexdigest()
             now = int(time.time())
@@ -4565,6 +4617,263 @@ class MangoHandler(BaseHTTPRequestHandler):
 
         raise ApiError(HTTPStatus.NOT_FOUND, "unknown_client_route")
 
+    def route_reseller_api(self, method, path, query, actor):
+        path = path.rstrip("/")
+        reseller_id = actor["id"]
+        with connect(CONFIG.db_path) as conn:
+            master_account = conn.execute(
+                """
+                SELECT ha.*, p.name AS plan_name, p.storage_mb, p.memory_mb, p.inode_limit,
+                       p.max_websites, p.max_databases, p.max_mailboxes, p.max_clients, p.max_reseller_subplans, p.is_reseller
+                FROM hosting_accounts ha
+                JOIN plans p ON p.id = ha.plan_id
+                WHERE ha.user_id = ? AND ha.status = 'active' AND p.is_reseller = 1
+                LIMIT 1
+                """,
+                (reseller_id,),
+            ).fetchone()
+            if not master_account:
+                raise ApiError(HTTPStatus.FORBIDDEN, "reseller_plan_not_active")
+
+            master_plan = row_to_dict(master_account)
+
+            # 1. Reseller Dashboard
+            if path == "/api/reseller/dashboard" and method == "GET":
+                sub_clients = conn.execute("SELECT COUNT(*) AS count FROM users WHERE reseller_id = ?", (reseller_id,)).fetchone()["count"]
+                sub_accounts = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM hosting_accounts ha
+                    JOIN users u ON u.id = ha.user_id
+                    WHERE u.reseller_id = ?
+                    """,
+                    (reseller_id,),
+                ).fetchone()["count"]
+                sub_plans = conn.execute("SELECT COUNT(*) AS count FROM plans WHERE reseller_id = ?", (reseller_id,)).fetchone()["count"]
+                allocated_storage_mb = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(p.storage_mb), 0) AS total
+                    FROM hosting_accounts ha
+                    JOIN users u ON u.id = ha.user_id
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE u.reseller_id = ?
+                    """,
+                    (reseller_id,),
+                ).fetchone()["total"]
+
+                return self.json_response({
+                    "dashboard": {
+                        "sub_clients_count": sub_clients,
+                        "sub_accounts_count": sub_accounts,
+                        "sub_plans_count": sub_plans,
+                        "master_plan": master_plan,
+                        "allocated_storage_mb": allocated_storage_mb,
+                        "master_storage_mb": master_plan["storage_mb"],
+                        "max_clients_limit": master_plan["max_clients"],
+                        "max_subplans_limit": master_plan["max_reseller_subplans"],
+                    }
+                })
+
+            # 2. Reseller Sub-Clients
+            if path == "/api/reseller/clients" and method == "GET":
+                clients = rows_to_dicts(conn.execute("SELECT * FROM users WHERE reseller_id = ? ORDER BY id DESC", (reseller_id,)).fetchall())
+                for client in clients:
+                    client["accounts"] = rows_to_dicts(conn.execute("SELECT * FROM hosting_accounts WHERE user_id = ?", (client["id"],)).fetchall())
+                return self.json_response({"clients": clients})
+
+            if path == "/api/reseller/clients" and method == "POST":
+                if master_plan["max_clients"] > 0:
+                    current_clients = conn.execute("SELECT COUNT(*) AS count FROM users WHERE reseller_id = ?", (reseller_id,)).fetchone()["count"]
+                    if current_clients >= master_plan["max_clients"]:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "max_clients_limit_reached")
+                body = self.read_json()
+                email = clean_text(body.get("email"), "").lower()
+                password = body.get("password", "").strip()
+                full_name = clean_text(body.get("full_name"), email.split("@")[0])
+                if not email or "@" not in email:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_email")
+                if len(password) < 8:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "password_too_short")
+                if conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "user_email_already_exists")
+
+                cur = conn.execute(
+                    "INSERT INTO users(email, password_hash, full_name, reseller_id) VALUES (?, ?, ?, ?)",
+                    (email, hash_password(password), full_name, reseller_id),
+                )
+                conn.commit()
+                created = conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
+                return self.json_response({"client": row_to_dict(created)}, HTTPStatus.CREATED)
+
+            if path.startswith("/api/reseller/clients/") and method == "PATCH":
+                client_id = int(path.split("/")[-1])
+                client = conn.execute("SELECT * FROM users WHERE id = ? AND reseller_id = ?", (client_id, reseller_id)).fetchone()
+                if not client:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "client_not_found")
+                body = self.read_json()
+                status = body.get("status")
+                full_name = body.get("full_name")
+                if status in {"active", "suspended"}:
+                    conn.execute("UPDATE users SET status = ? WHERE id = ?", (status, client_id))
+                if full_name:
+                    conn.execute("UPDATE users SET full_name = ? WHERE id = ?", (clean_text(full_name, client["full_name"]), client_id))
+                conn.commit()
+                updated = conn.execute("SELECT * FROM users WHERE id = ?", (client_id,)).fetchone()
+                return self.json_response({"client": row_to_dict(updated)})
+
+            if path.startswith("/api/reseller/clients/") and method == "DELETE":
+                client_id = int(path.split("/")[-1])
+                client = conn.execute("SELECT * FROM users WHERE id = ? AND reseller_id = ?", (client_id, reseller_id)).fetchone()
+                if not client:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "client_not_found")
+                conn.execute("DELETE FROM users WHERE id = ?", (client_id,))
+                conn.commit()
+                return self.json_response({"deleted": True})
+
+            # 3. Reseller Sub-Plans
+            if path == "/api/reseller/plans" and method == "GET":
+                plans = rows_to_dicts(conn.execute("SELECT * FROM plans WHERE reseller_id = ? ORDER BY id DESC", (reseller_id,)).fetchall())
+                return self.json_response({"plans": plans})
+
+            if path == "/api/reseller/plans" and method == "POST":
+                if master_plan["max_reseller_subplans"] > 0:
+                    current_plans = conn.execute("SELECT COUNT(*) AS count FROM plans WHERE reseller_id = ?", (reseller_id,)).fetchone()["count"]
+                    if current_plans >= master_plan["max_reseller_subplans"]:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "max_subplans_limit_reached")
+
+                body = self.read_json()
+                plan = validate_plan_payload(body)
+
+                # ENFORCE: Sub-plan package limits cannot exceed reseller master plan package limits!
+                if plan["storage_mb"] > master_plan["storage_mb"]:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, f"subplan_storage_exceeds_master_limit (Max: {master_plan['storage_mb']} MB)")
+                if plan["memory_mb"] > master_plan["memory_mb"]:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, f"subplan_memory_exceeds_master_limit (Max: {master_plan['memory_mb']} MB)")
+                if plan["max_websites"] > master_plan["max_websites"]:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, f"subplan_websites_exceeds_master_limit (Max: {master_plan['max_websites']})")
+                if plan["max_databases"] > master_plan["max_databases"]:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, f"subplan_databases_exceeds_master_limit (Max: {master_plan['max_databases']})")
+
+                if conn.execute("SELECT id FROM plans WHERE name = ? AND reseller_id = ?", (plan["name"], reseller_id)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "plan_name_already_exists")
+
+                cur = conn.execute(
+                    """
+                    INSERT INTO plans(
+                      name, cpu_limit, memory_mb, storage_mb, inode_limit, max_websites,
+                      max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days,
+                      max_processes, php_workers, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
+                      frontend_frameworks, backend_frameworks, nodejs_versions, package_managers,
+                      dns_default_provider, dns_allowed_providers_json, dns_default_provider_account_id,
+                      dns_customer_editable, dns_max_records_per_domain, dns_allowed_record_types_json,
+                      dns_min_ttl, dns_wildcard_records_allowed, dns_cloudflare_proxy_allowed,
+                      dns_dnssec_allowed, dns_dnssec_required, allow_api_access, reseller_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        plan["name"], plan["cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"],
+                        plan["max_websites"], plan["max_databases"], plan["max_mailboxes"], plan["max_cron_jobs"],
+                        plan["daily_email_limit"], plan["backup_retention_days"], plan["max_processes"], plan["php_workers"],
+                        plan["bandwidth_mb"], plan["nameserver_1"], plan["nameserver_2"], plan["backup_location"],
+                        plan["frontend_frameworks"], plan["backend_frameworks"], plan["nodejs_versions"], plan["package_managers"],
+                        plan["dns_default_provider"], plan["dns_allowed_providers_json"], plan["dns_default_provider_account_id"],
+                        plan["dns_customer_editable"], plan["dns_max_records_per_domain"], plan["dns_allowed_record_types_json"],
+                        plan["dns_min_ttl"], plan["dns_wildcard_records_allowed"], plan["dns_cloudflare_proxy_allowed"],
+                        plan["dns_dnssec_allowed"], plan["dns_dnssec_required"], plan["allow_api_access"], reseller_id
+                    )
+                )
+                conn.commit()
+                created = conn.execute("SELECT * FROM plans WHERE id = ?", (cur.lastrowid,)).fetchone()
+                return self.json_response({"plan": row_to_dict(created)}, HTTPStatus.CREATED)
+
+            # 4. Provision Hosting Accounts
+            if path == "/api/reseller/hosting-accounts" and method == "POST":
+                body = self.read_json()
+                user_id = int(body.get("user_id", 0))
+                plan_id = int(body.get("plan_id", 0))
+
+                user = conn.execute("SELECT * FROM users WHERE id = ? AND reseller_id = ?", (user_id, reseller_id)).fetchone()
+                if not user:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "subclient_not_found")
+                plan = conn.execute("SELECT * FROM plans WHERE id = ? AND reseller_id = ?", (plan_id, reseller_id)).fetchone()
+                if not plan:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "subplan_not_found")
+
+                node = conn.execute("SELECT * FROM nodes WHERE status = 'online' LIMIT 1").fetchone()
+                if not node:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "no_active_node")
+
+                total_allocated_mb = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(p.storage_mb), 0) AS total
+                    FROM hosting_accounts ha
+                    JOIN users u ON u.id = ha.user_id
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE u.reseller_id = ?
+                    """,
+                    (reseller_id,),
+                ).fetchone()["total"]
+
+                if (total_allocated_mb + plan["storage_mb"]) > master_plan["storage_mb"]:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "reseller_aggregate_storage_limit_exceeded")
+
+                existing_count = conn.execute("SELECT COUNT(*) AS count FROM hosting_accounts WHERE user_id = ?", (user_id,)).fetchone()["count"]
+                username = "u{:06d}".format(user_id) if existing_count == 0 else "u{:06d}x{}".format(user_id, existing_count)
+                base_path = str(CONFIG.account_root / username)
+
+                cur = conn.execute(
+                    "INSERT INTO hosting_accounts(user_id, plan_id, node_id, username, base_path, status) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, plan_id, node["id"], username, base_path, "active"),
+                )
+                conn.commit()
+                created = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (cur.lastrowid,)).fetchone()
+                return self.json_response({"hosting_account": row_to_dict(created)}, HTTPStatus.CREATED)
+
+            # 5. Reseller Storage Quotas
+            if path == "/api/reseller/storage/quotas" and method == "GET":
+                accounts = rows_to_dicts(
+                    conn.execute(
+                        """
+                        SELECT ha.*, u.email, u.full_name, p.name AS plan_name, p.storage_mb AS plan_storage_mb, p.inode_limit AS plan_inode_limit
+                        FROM hosting_accounts ha
+                        JOIN users u ON u.id = ha.user_id
+                        JOIN plans p ON p.id = ha.plan_id
+                        WHERE u.reseller_id = ?
+                        """,
+                        (reseller_id,),
+                    ).fetchall()
+                )
+                return self.json_response({"accounts": accounts})
+
+            # 6. Reseller API Tokens
+            if path == "/api/reseller/api-tokens" and method == "GET":
+                tokens = rows_to_dicts(conn.execute("SELECT id, name, permissions_json, expires_at, last_used_at, created_at FROM reseller_api_tokens WHERE reseller_user_id = ? ORDER BY id DESC", (reseller_id,)).fetchall())
+                for t in tokens:
+                    t["permissions"] = parse_json_field(t.get("permissions_json"), ["*"])
+                return self.json_response({"tokens": tokens})
+
+            if path == "/api/reseller/api-tokens" and method == "POST":
+                body = self.read_json()
+                name = clean_text(body.get("name"), "Reseller Token")
+                raw_token_hex = secrets.token_hex(20)
+                raw_token = f"mp_reseller_{raw_token_hex}"
+                token_hash = hashlib.sha256(raw_token_hex.encode("utf-8")).hexdigest()
+                expires_at = int(time.time()) + (365 * 86400)
+                cur = conn.execute(
+                    "INSERT INTO reseller_api_tokens(reseller_user_id, name, token_hash, permissions_json, expires_at) VALUES (?, ?, ?, ?, ?)",
+                    (reseller_id, name, token_hash, json.dumps(body.get("permissions", ["*"])), expires_at),
+                )
+                conn.commit()
+                return self.json_response({"token_id": cur.lastrowid, "token": raw_token, "name": name}, HTTPStatus.CREATED)
+
+            if path.startswith("/api/reseller/api-tokens/") and method == "DELETE":
+                t_id = int(path.split("/")[-1])
+                conn.execute("DELETE FROM reseller_api_tokens WHERE id = ? AND reseller_user_id = ?", (t_id, reseller_id))
+                conn.commit()
+                return self.json_response({"deleted": True})
+
+            raise ApiError(HTTPStatus.NOT_FOUND, "unknown_reseller_api_route")
+
+
     def admin_api(self, method, path, query, actor):
         path = path.rstrip("/")
         with connect(CONFIG.db_path) as conn:
@@ -5390,8 +5699,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_default_provider, dns_allowed_providers_json, dns_default_provider_account_id,
                       dns_customer_editable, dns_max_records_per_domain, dns_allowed_record_types_json,
                       dns_min_ttl, dns_wildcard_records_allowed, dns_cloudflare_proxy_allowed,
-                      dns_dnssec_allowed, dns_dnssec_required, allow_api_access
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      dns_dnssec_allowed, dns_dnssec_required, allow_api_access,
+                      is_reseller, max_clients, max_reseller_subplans
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         plan["name"],
@@ -5427,6 +5737,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["dns_dnssec_allowed"],
                         plan["dns_dnssec_required"],
                         plan["allow_api_access"],
+                        plan["is_reseller"],
+                        plan["max_clients"],
+                        plan["max_reseller_subplans"],
                     ),
                 )
                 conn.commit()
@@ -5456,7 +5769,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_default_provider = ?, dns_allowed_providers_json = ?, dns_default_provider_account_id = ?,
                       dns_customer_editable = ?, dns_max_records_per_domain = ?, dns_allowed_record_types_json = ?,
                       dns_min_ttl = ?, dns_wildcard_records_allowed = ?, dns_cloudflare_proxy_allowed = ?,
-                      dns_dnssec_allowed = ?, dns_dnssec_required = ?, allow_api_access = ?
+                      dns_dnssec_allowed = ?, dns_dnssec_required = ?, allow_api_access = ?,
+                      is_reseller = ?, max_clients = ?, max_reseller_subplans = ?
                     WHERE id = ?
                     """,
                     (
@@ -5467,7 +5781,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["dns_default_provider"], plan["dns_allowed_providers_json"], plan["dns_default_provider_account_id"],
                         plan["dns_customer_editable"], plan["dns_max_records_per_domain"], plan["dns_allowed_record_types_json"],
                         plan["dns_min_ttl"], plan["dns_wildcard_records_allowed"], plan["dns_cloudflare_proxy_allowed"],
-                        plan["dns_dnssec_allowed"], plan["dns_dnssec_required"], plan["allow_api_access"], plan_id,
+                        plan["dns_dnssec_allowed"], plan["dns_dnssec_required"], plan["allow_api_access"],
+                        plan["is_reseller"], plan["max_clients"], plan["max_reseller_subplans"], plan_id,
                     ),
                 )
                 conn.commit()
@@ -9055,6 +9370,9 @@ def validate_plan_payload(body):
     dns_dnssec_allowed = 1 if body.get("dns_dnssec_allowed", False) else 0
     dns_dnssec_required = 1 if body.get("dns_dnssec_required", False) else 0
     allow_api_access = 1 if body.get("allow_api_access", False) else 0
+    is_reseller = 1 if body.get("is_reseller", False) else 0
+    max_clients = positive_int(body.get("max_clients", 0), "invalid_max_clients", minimum=0, maximum=1000000)
+    max_reseller_subplans = positive_int(body.get("max_reseller_subplans", 0), "invalid_max_reseller_subplans", minimum=0, maximum=100000)
     if dns_dnssec_required:
         dns_dnssec_allowed = 1
     
@@ -9092,6 +9410,9 @@ def validate_plan_payload(body):
         "dns_dnssec_allowed": dns_dnssec_allowed,
         "dns_dnssec_required": dns_dnssec_required,
         "allow_api_access": allow_api_access,
+        "is_reseller": is_reseller,
+        "max_clients": max_clients,
+        "max_reseller_subplans": max_reseller_subplans,
     }
 
 
@@ -9884,20 +10205,30 @@ def run():
     admin_httpd.panel = "admin"
     admin_thread = threading.Thread(target=admin_httpd.serve_forever, name="mangopanel-admin", daemon=True)
     admin_thread.start()
+
+    reseller_httpd = MangoDualServer((CONFIG.host, CONFIG.reseller_port), MangoHandler)
+    reseller_httpd.panel = "reseller"
+    reseller_thread = threading.Thread(target=reseller_httpd.serve_forever, name="mangopanel-reseller", daemon=True)
+    reseller_thread.start()
+
     local_host = "127.0.0.1" if CONFIG.host in {"0.0.0.0", "::"} else CONFIG.host
     public_host = detect_public_access_host()
-    print(f"MangoPanel client panel running at http://{local_host}:{CONFIG.client_port}")
-    print(f"MangoPanel admin panel running at  http://{local_host}:{CONFIG.admin_port}/admin")
+    print(f"MangoPanel client panel running at   http://{local_host}:{CONFIG.client_port}")
+    print(f"MangoPanel admin panel running at    http://{local_host}:{CONFIG.admin_port}/admin")
+    print(f"MangoPanel reseller panel running at http://{local_host}:{CONFIG.reseller_port}/reseller")
     print(f"Status: http://{local_host}:{CONFIG.client_port}/status")
     if public_host:
-        print(f"Public client access: http://{public_host}:{CONFIG.client_port}")
-        print(f"Public admin access:  http://{public_host}:{CONFIG.admin_port}/admin")
-        print(f"Public status:        http://{public_host}:{CONFIG.client_port}/status")
+        print(f"Public client access:   http://{public_host}:{CONFIG.client_port}")
+        print(f"Public admin access:    http://{public_host}:{CONFIG.admin_port}/admin")
+        print(f"Public reseller access: http://{public_host}:{CONFIG.reseller_port}/reseller")
+        print(f"Public status:          http://{public_host}:{CONFIG.client_port}/status")
     try:
         client_httpd.serve_forever()
     finally:
         admin_httpd.shutdown()
         admin_thread.join(timeout=5)
+        reseller_httpd.shutdown()
+        reseller_thread.join(timeout=5)
 
 
 if __name__ == "__main__":

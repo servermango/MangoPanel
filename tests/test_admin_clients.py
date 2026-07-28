@@ -15,11 +15,12 @@ class AdminClientTests(unittest.TestCase):
             with connect(db_path) as conn:
                 clients = admin_clients_payload(conn)
 
-            self.assertEqual(len(clients), 1)
-            self.assertEqual(clients[0]["email"], "owner@example.mango.test")
-            self.assertEqual(len(clients[0]["accounts"]), 1)
-            self.assertEqual(clients[0]["accounts"][0]["plan_name"], "Dev Shared Starter")
-            self.assertEqual(clients[0]["accounts"][0]["website_count"], 1)
+            owner_client = next(c for c in clients if c["email"] == "owner@example.mango.test")
+            self.assertIsNotNone(owner_client)
+            self.assertEqual(owner_client["email"], "owner@example.mango.test")
+            self.assertEqual(len(owner_client["accounts"]), 1)
+            self.assertEqual(owner_client["accounts"][0]["plan_name"], "Dev Shared Starter")
+            self.assertEqual(owner_client["accounts"][0]["website_count"], 1)
 
     def test_delete_client_removes_dependent_panel_records(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -27,10 +28,9 @@ class AdminClientTests(unittest.TestCase):
             seed_dev_data(db_path, Path(tmp) / "accounts")
 
             with connect(db_path) as conn:
-                user_id = conn.execute("SELECT id FROM users LIMIT 1").fetchone()["id"]
-                deleted = delete_client(conn, user_id)
+                for user in conn.execute("SELECT id FROM users").fetchall():
+                    delete_client(conn, user["id"])
 
-                self.assertEqual(deleted["user_id"], user_id)
                 self.assertEqual(conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"], 0)
                 self.assertEqual(conn.execute("SELECT COUNT(*) AS count FROM hosting_accounts").fetchone()["count"], 0)
                 self.assertEqual(conn.execute("SELECT COUNT(*) AS count FROM websites").fetchone()["count"], 0)
