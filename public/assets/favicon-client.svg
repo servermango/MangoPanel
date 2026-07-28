@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="mangoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff7e5f" />
+      <stop offset="60%" stop-color="#feb47b" />
+      <stop offset="100%" stop-color="#f6d365" />
+    </linearGradient>
+    <linearGradient id="leafGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#ea580c" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <!-- Background Shape -->
+  <rect width="64" height="64" rx="16" fill="url(#mangoGrad)"/>
+  <!-- Leaf -->
+  <path d="M 34 12 C 45 8, 49 17, 39 21 C 34 21, 34 14, 34 12 Z" fill="url(#leafGrad)" />
+  <!-- Stem -->
+  <path d="M 32 16 Q 33 22 35 24" stroke="#78350f" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <!-- Mango Body -->
+  <path d="M 33 24 C 47 24, 52 38, 44 50 C 35 60, 20 54, 18 42 C 16 30, 24 24, 33 24 Z" fill="#ffffff" fill-opacity="0.95" filter="url(#shadow)"/>
+  <!-- Mango Inner Body -->
+  <path d="M 32 27 C 43 27, 47 38, 41 47 C 33 55, 22 50, 20 40 C 19 32, 25 27, 32 27 Z" fill="url(#mangoGrad)"/>
+</svg>

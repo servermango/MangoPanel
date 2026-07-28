@@ -109,6 +109,7 @@ createApp({
         dns_cloudflare_proxy_allowed: false,
         dns_dnssec_allowed: false,
         dns_dnssec_required: false,
+        allow_api_access: false,
       },
       newAdmin: {
         full_name: "",
@@ -921,6 +922,7 @@ createApp({
         dns_cloudflare_proxy_allowed: Boolean(plan.dns_cloudflare_proxy_allowed),
         dns_dnssec_allowed: Boolean(plan.dns_dnssec_allowed),
         dns_dnssec_required: Boolean(plan.dns_dnssec_required),
+        allow_api_access: Boolean(plan.allow_api_access),
       };
       this.showPlanModal = true;
     },
@@ -940,6 +942,7 @@ createApp({
         dns_customer_editable: Boolean(this.newPlan.dns_customer_editable), dns_max_records_per_domain: Number(this.newPlan.dns_max_records_per_domain),
         dns_min_ttl: Number(this.newPlan.dns_min_ttl), dns_wildcard_records_allowed: Boolean(this.newPlan.dns_wildcard_records_allowed),
         dns_cloudflare_proxy_allowed: Boolean(this.newPlan.dns_cloudflare_proxy_allowed), dns_dnssec_allowed: Boolean(this.newPlan.dns_dnssec_allowed), dns_dnssec_required: Boolean(this.newPlan.dns_dnssec_required),
+        allow_api_access: Boolean(this.newPlan.allow_api_access),
       };
     },
     async updatePlan() {

@@ -6,6 +6,7 @@
     <title>MangoPanel Admin</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon-admin.svg">
     <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
     <link rel="stylesheet" href="/assets/app.css">
     <style>
@@ -1394,7 +1395,8 @@
                   </label>
                   <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
                   <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
-                  <label v-if="editingPlanId" class="plan-account-update"><input v-model="applyPlanToExistingAccounts" type="checkbox"> Update existing accounts under this plan (re-sync)</label>
+                  <label class="plan-account-update" style="margin-top:0.5rem;"><input v-model="newPlan.allow_api_access" type="checkbox"> Allow Client API Access (API Keys)</label>
+                  <label v-if="editingPlanId" class="plan-account-update" style="margin-top:0.5rem;"><input v-model="applyPlanToExistingAccounts" type="checkbox"> Update existing accounts under this plan (re-sync)</label>
                   <label v-if="editingPlanId" class="plan-account-update" style="margin-top:0.5rem;"><input v-model="migratePlanDomains" type="checkbox"> Migrate all existing domains on this plan to {{ providerLabel(newPlan.dns_default_provider) }}</label>
                 </div>
               </div>

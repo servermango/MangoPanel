@@ -7,10 +7,17 @@
     <title>MangoPanel · Sign In</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link id="mp-favicon" rel="icon" type="image/svg+xml" href="/assets/favicon-client.svg">
     <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
     <link rel="stylesheet" href="/assets/app.css">
     <script>
       (function() {
+        var isAdmin = window.location.pathname.indexOf("/admin") !== -1 || window.location.port === "8001";
+        var icon = document.getElementById("mp-favicon");
+        if (icon && isAdmin) {
+          icon.setAttribute("href", "/assets/favicon-admin.svg");
+        }
+
         var t = localStorage.getItem("mp_theme") || "Default";
         document.getElementById("theme-style").setAttribute("href", "/assets/" + t + ".css");
         

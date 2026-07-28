@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS plans (
   backups_location TEXT NOT NULL DEFAULT 'Singapore',
   frontend_frameworks TEXT NOT NULL DEFAULT 'Angular, Astro, Next.js, Nuxt, Parcel, React, React Router, Svelte, SvelteKit, Vite, Vue.js',
   backend_frameworks TEXT NOT NULL DEFAULT 'Astro, Express, Fastify, Hono, NestJS, Next.js, Nuxt, React Router, SvelteKit',
+  allow_api_access INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -1127,6 +1128,7 @@ def ensure_schema(conn):
     )
     ensure_table_columns(conn, "users", {"totp_secret": "TEXT"})
     ensure_table_columns(conn, "admins", {"totp_secret": "TEXT"})
+    ensure_table_columns(conn, "plans", {"allow_api_access": "INTEGER NOT NULL DEFAULT 0"})
     ensure_table_columns(
         conn,
         "mailboxes",

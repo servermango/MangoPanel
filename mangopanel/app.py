@@ -1962,16 +1962,19 @@ class MangoHandler(BaseHTTPRequestHandler):
             with connect(CONFIG.db_path) as conn:
                 row = conn.execute(
                     """
-                    SELECT t.id AS token_id, t.account_id, t.expires_at, ha.user_id, u.*
+                    SELECT t.id AS token_id, t.account_id, t.expires_at, ha.user_id, u.*, p.allow_api_access
                     FROM api_tokens t
                     JOIN hosting_accounts ha ON ha.id = t.account_id
                     JOIN users u ON u.id = ha.user_id
+                    JOIN plans p ON p.id = ha.plan_id
                     WHERE t.token_hash = ? AND u.status = 'active'
                     """,
                     (token_hash,),
                 ).fetchone()
                 if not row:
                     raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid_api_token")
+                if not row["allow_api_access"]:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "api_access_disabled_for_plan")
                 if row["expires_at"] and int(row["expires_at"]) < now:
                     raise ApiError(HTTPStatus.UNAUTHORIZED, "api_token_expired")
 
@@ -4142,6 +4145,12 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             if path == "/api/client/api-tokens" and method == "POST":
                 require_active_account(account)
+                plan_access = conn.execute(
+                    "SELECT p.allow_api_access FROM hosting_accounts ha JOIN plans p ON p.id = ha.plan_id WHERE ha.id = ?",
+                    (account["id"],),
+                ).fetchone()
+                if not plan_access or not plan_access["allow_api_access"]:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "api_access_disabled_for_plan")
                 body = self.read_json()
                 name = body.get("name", "").strip()
                 if not name:
@@ -5288,8 +5297,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_default_provider, dns_allowed_providers_json, dns_default_provider_account_id,
                       dns_customer_editable, dns_max_records_per_domain, dns_allowed_record_types_json,
                       dns_min_ttl, dns_wildcard_records_allowed, dns_cloudflare_proxy_allowed,
-                      dns_dnssec_allowed, dns_dnssec_required
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      dns_dnssec_allowed, dns_dnssec_required, allow_api_access
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         plan["name"],
@@ -5324,6 +5333,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["dns_cloudflare_proxy_allowed"],
                         plan["dns_dnssec_allowed"],
                         plan["dns_dnssec_required"],
+                        plan["allow_api_access"],
                     ),
                 )
                 conn.commit()
@@ -5353,7 +5363,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_default_provider = ?, dns_allowed_providers_json = ?, dns_default_provider_account_id = ?,
                       dns_customer_editable = ?, dns_max_records_per_domain = ?, dns_allowed_record_types_json = ?,
                       dns_min_ttl = ?, dns_wildcard_records_allowed = ?, dns_cloudflare_proxy_allowed = ?,
-                      dns_dnssec_allowed = ?, dns_dnssec_required = ?
+                      dns_dnssec_allowed = ?, dns_dnssec_required = ?, allow_api_access = ?
                     WHERE id = ?
                     """,
                     (
@@ -5364,7 +5374,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["dns_default_provider"], plan["dns_allowed_providers_json"], plan["dns_default_provider_account_id"],
                         plan["dns_customer_editable"], plan["dns_max_records_per_domain"], plan["dns_allowed_record_types_json"],
                         plan["dns_min_ttl"], plan["dns_wildcard_records_allowed"], plan["dns_cloudflare_proxy_allowed"],
-                        plan["dns_dnssec_allowed"], plan["dns_dnssec_required"], plan_id,
+                        plan["dns_dnssec_allowed"], plan["dns_dnssec_required"], plan["allow_api_access"], plan_id,
                     ),
                 )
                 conn.commit()
@@ -8895,6 +8905,7 @@ def validate_plan_payload(body):
     dns_cloudflare_proxy_allowed = 1 if body.get("dns_cloudflare_proxy_allowed", False) else 0
     dns_dnssec_allowed = 1 if body.get("dns_dnssec_allowed", False) else 0
     dns_dnssec_required = 1 if body.get("dns_dnssec_required", False) else 0
+    allow_api_access = 1 if body.get("allow_api_access", False) else 0
     if dns_dnssec_required:
         dns_dnssec_allowed = 1
     
@@ -8931,6 +8942,7 @@ def validate_plan_payload(body):
         "dns_cloudflare_proxy_allowed": dns_cloudflare_proxy_allowed,
         "dns_dnssec_allowed": dns_dnssec_allowed,
         "dns_dnssec_required": dns_dnssec_required,
+        "allow_api_access": allow_api_access,
     }
 
 
@@ -8952,7 +8964,7 @@ def validate_dns_record_payload(body):
     name = str(body.get("name", "@") or "@").strip()
     if not name or len(name) > 253 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-@*" for ch in name):
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_record_name")
-    value = str(body.get("value", "") or "").strip()
+    value = str(body.get("value") or body.get("content") or "").strip()
     if not value or len(value) > 4096 or "\n" in value or "\r" in value:
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_dns_record_value")
     ttl = positive_int(body.get("ttl", 300), "invalid_dns_ttl", minimum=60, maximum=86400)
@@ -9362,7 +9374,7 @@ def client_home(conn, user_id, active_account_id=None):
                    p.max_processes, p.php_workers, p.bandwidth_limit_gb * 1024 AS bandwidth_mb,
                    p.nameserver1 AS nameserver_1, p.nameserver2 AS nameserver_2, 
                    p.server_location AS node_location, p.backups_location AS backup_location,
-                   p.frontend_frameworks, p.backend_frameworks,
+                   p.frontend_frameworks, p.backend_frameworks, COALESCE(p.allow_api_access, 0) AS allow_api_access,
                    n.name AS node_name, n.hostname AS node_hostname
             FROM hosting_accounts ha
             JOIN plans p ON p.id = ha.plan_id

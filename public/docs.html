@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MangoPanel Documentation · Shared Hosting Control Plane</title>
     <meta name="description" content="Complete single-page documentation for MangoPanel: Installation, System Requirements, Basic Setup, Hosting Plans, Client Provisioning, Cloudflare DNS, Server Migration, and Architecture.">
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon-client.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -881,14 +882,11 @@ make dev-smoke</code></pre>
             <!-- CLIENT AREA API REFERENCE -->
             <section id="client-api" class="docs-section">
                 <span class="badge-pill">Developer API</span>
-                <h1>Client Area API Reference</h1>
-                <p>MangoPanel provides a clean REST API for managing websites, DNS records, databases, mailboxes, cron jobs, and monitoring resource usage using API keys.</p>
+                <h1>Client Area API Reference &amp; Parameters</h1>
+                <p>MangoPanel provides a clean REST API for managing websites, DNS records, databases, mailboxes, cron jobs, files, SSL, and monitoring resource usage using API keys or Bearer JWT tokens.</p>
 
-                <h3>1. Generating API Keys</h3>
-                <p>Client panel users can generate API keys by navigating to <strong>Account Settings &gt; API Tokens</strong> inside the Client Area (port <code>8000</code>). Generated tokens have the prefix <code>mp_</code> (e.g., <code>mp_a1b2c3d4...</code>).</p>
-
-                <h3>2. Authentication Headers</h3>
-                <p>Pass your API key in every HTTP request using either the standard <code>Authorization</code> header, <code>X-API-Key</code> header, or <code>api_key</code> query parameter:</p>
+                <h3>1. Authentication &amp; Headers</h3>
+                <p>Client panel users can generate API keys under <strong>Account Settings &gt; API Tokens</strong> inside the Client Area (port <code>8000</code>). Generated tokens have the prefix <code>mp_</code> (e.g., <code>mp_a1b2c3d4...</code>).</p>
                 <div class="code-block-wrapper">
                     <pre><code># Option A: Bearer Header (Recommended)
 Authorization: Bearer mp_YOUR_API_KEY
@@ -897,15 +895,20 @@ Authorization: Bearer mp_YOUR_API_KEY
 X-API-Key: mp_YOUR_API_KEY
 
 # Option C: Query Parameter
-GET /api/client/websites?api_key=mp_YOUR_API_KEY</code></pre>
+GET /api/client/websites?api_key=mp_YOUR_API_KEY
+
+# Optional Account Scope Switcher Header (for multi-account users)
+X-Hosting-Account-ID: 2</code></pre>
                 </div>
 
-                <h3>3. Code Examples</h3>
+                <h3>2. Code Snippets</h3>
                 <h4>cURL Example</h4>
                 <div class="code-block-wrapper">
-                    <pre><code># List all websites on your account
-curl -X GET "http://your-server:8000/api/client/websites" \
-     -H "Authorization: Bearer mp_YOUR_API_KEY"</code></pre>
+                    <pre><code># Create a new website
+curl -X POST "http://your-server:8000/api/client/websites" \
+     -H "Authorization: Bearer mp_YOUR_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"domain": "mysite.com", "php_version": "8.3"}'</code></pre>
                 </div>
 
                 <h4>Python Example</h4>
@@ -914,89 +917,417 @@ curl -X GET "http://your-server:8000/api/client/websites" \
 
 API_KEY = "mp_YOUR_API_KEY"
 BASE_URL = "http://your-server:8000"
+headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
-headers = {"Authorization": f"Bearer {API_KEY}"}
-
-# Fetch account overview and resource metrics
-response = requests.get(f"{BASE_URL}/api/client/home", headers=headers)
-print(response.json())</code></pre>
-                </div>
-
-                <h4>Node.js / JavaScript Example</h4>
-                <div class="code-block-wrapper">
-                    <pre><code>const API_KEY = 'mp_YOUR_API_KEY';
-const BASE_URL = 'http://your-server:8000';
-
-async function getWebsites() {
-  const res = await fetch(`${BASE_URL}/api/client/websites`, {
-    headers: { 'Authorization': `Bearer ${API_KEY}` }
-  });
-  const data = await res.json();
-  console.log(data);
+# Add a new DNS A-record
+payload = {
+    "domain_id": 1,
+    "name": "sub",
+    "type": "A",
+    "value": "127.0.0.1",
+    "ttl": 300,
+    "proxied": True
 }
-getWebsites();</code></pre>
+res = requests.post(f"{BASE_URL}/api/client/dns-records", headers=headers, json=payload)
+print(res.json())</code></pre>
                 </div>
 
-                <h3>4. Core Client API Endpoints</h3>
+                <h3>3. Complete Client Endpoint &amp; Parameter Reference</h3>
                 <div class="table-wrapper">
                     <table>
                         <thead>
                             <tr>
-                                <th>Method</th>
-                                <th>Endpoint</th>
+                                <th>Method &amp; Endpoint</th>
                                 <th>Description</th>
+                                <th>Parameters &amp; Payload Fields</th>
                             </tr>
                         </thead>
                         <tbody>
+                            <!-- Overview & Monitoring -->
                             <tr>
-                                <td><code>GET</code></td>
-                                <td><code>/api/client/home</code></td>
-                                <td>Fetch account overview, limits, and resource metrics</td>
+                                <td><code>GET /api/client/home</code></td>
+                                <td>Account overview, quotas, and resource summary</td>
+                                <td><em>None</em> (Optional query: <code>account_id</code>)</td>
                             </tr>
                             <tr>
-                                <td><code>GET</code></td>
-                                <td><code>/api/client/websites</code></td>
-                                <td>List websites hosted under the account</td>
+                                <td><code>GET /api/client/resource-usage</code></td>
+                                <td>CPU, Memory, Disk, and Inode trend metrics</td>
+                                <td>Query: <code>range</code> (<code>30m</code> | <code>24h</code> | <code>7d</code> | <code>30d</code>)</td>
                             </tr>
                             <tr>
-                                <td><code>POST</code></td>
-                                <td><code>/api/client/websites</code></td>
-                                <td>Add a new website (payload: <code>{"domain": "example.com", "php_version": "8.3"}</code>)</td>
+                                <td><code>POST /api/client/recalculate-usage</code></td>
+                                <td>Trigger immediate disk and inode usage recalculation</td>
+                                <td><em>None</em></td>
                             </tr>
                             <tr>
-                                <td><code>GET</code></td>
-                                <td><code>/api/client/dns/records</code></td>
-                                <td>List DNS records for account domains</td>
+                                <td><code>GET /api/client/analytics</code></td>
+                                <td>Web access and bandwidth analytics</td>
+                                <td>Query: <code>website_id</code> (int), <code>range</code> (<code>24h</code> | <code>7d</code> | <code>30d</code>)</td>
                             </tr>
                             <tr>
-                                <td><code>POST</code></td>
-                                <td><code>/api/client/dns/records</code></td>
-                                <td>Create a DNS record (payload: <code>{"domain_id": 1, "name": "sub", "type": "A", "content": "1.2.3.4"}</code>)</td>
+                                <td><code>GET /api/client/php-info</code></td>
+                                <td>Fetch PHP configuration for a website</td>
+                                <td>Query: <code>website_id</code> (required, int)</td>
                             </tr>
                             <tr>
-                                <td><code>GET</code></td>
-                                <td><code>/api/client/databases</code></td>
-                                <td>List MySQL/MariaDB databases and database users</td>
+                                <td><code>GET /api/client/sync-jobs</code></td>
+                                <td>List background stack sync jobs for account</td>
+                                <td><em>None</em></td>
+                            </tr>
+
+                            <!-- Websites -->
+                            <tr>
+                                <td><code>GET /api/client/websites</code></td>
+                                <td>List all websites on account</td>
+                                <td><em>None</em></td>
                             </tr>
                             <tr>
-                                <td><code>POST</code></td>
-                                <td><code>/api/client/databases</code></td>
-                                <td>Create a new database (payload: <code>{"name": "app_db"}</code>)</td>
+                                <td><code>POST /api/client/websites</code></td>
+                                <td>Create a new website</td>
+                                <td>
+                                    <code>domain</code> (string, required)<br>
+                                    <code>php_version</code> (string: <code>"8.1"</code>, <code>"8.2"</code>, <code>"8.3"</code>)<br>
+                                    <code>document_root</code> (string, optional)<br>
+                                    <code>index_enabled</code> (bool, default true)<br>
+                                    <code>modsec_enabled</code> (bool, default true)<br>
+                                    <code>analytics_enabled</code> (bool, default true)
+                                </td>
                             </tr>
                             <tr>
-                                <td><code>GET</code></td>
-                                <td><code>/api/client/mailboxes</code></td>
+                                <td><code>PATCH /api/client/websites/{id}</code></td>
+                                <td>Update website settings</td>
+                                <td>
+                                    <code>php_version</code> (string)<br>
+                                    <code>index_enabled</code> (bool)<br>
+                                    <code>modsec_enabled</code> (bool)<br>
+                                    <code>analytics_enabled</code> (bool)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/websites/{id}</code></td>
+                                <td>Delete website and document root</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/websites/{id}/connection-check</code></td>
+                                <td>Test website OLS &amp; PHP-FPM connectivity</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/php-versions</code></td>
+                                <td>List supported server PHP versions</td>
+                                <td><em>None</em></td>
+                            </tr>
+
+                            <!-- Domains & DNS -->
+                            <tr>
+                                <td><code>GET /api/client/domains</code></td>
+                                <td>List account domains</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/dns/check-domain</code></td>
+                                <td>Check domain DNS availability &amp; Cloudflare zone status</td>
+                                <td><code>domain</code> (string, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/domains/{id}/nameservers</code></td>
+                                <td>Update domain registrar nameservers</td>
+                                <td><code>nameservers</code> (array of strings, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/domains/{id}/dns/rebuild</code></td>
+                                <td>Rebuild and publish authoritative DNS zone</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/domains/{id}/dns/verify-nameservers</code></td>
+                                <td>Verify nameservers resolution via public DNS</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/domains/{id}/dns/export</code></td>
+                                <td>Export DNS zone file in BIND format</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/domains/{id}/dns/migrate-provider</code></td>
+                                <td>Migrate DNS provider (Local vs Cloudflare)</td>
+                                <td>
+                                    <code>provider_key</code> (string: <code>"local-dev-dns"</code>, <code>"cloudflare"</code>)<br>
+                                    <code>cloudflare_account_id</code> (int, required if Cloudflare)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/dns-records</code></td>
+                                <td>List DNS records</td>
+                                <td>Query: <code>domain_id</code> (optional int filter)</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/dns-records</code></td>
+                                <td>Add a DNS record</td>
+                                <td>
+                                    <code>domain_id</code> (int, required)<br>
+                                    <code>name</code> (string, required e.g., <code>"sub"</code> or <code>"@"</code>)<br>
+                                    <code>type</code> (string: <code>"A"</code>, <code>"AAAA"</code>, <code>"CNAME"</code>, <code>"MX"</code>, <code>"TXT"</code>, <code>"NS"</code>, <code>"SRV"</code>)<br>
+                                    <code>value</code> / <code>content</code> (string, required)<br>
+                                    <code>ttl</code> (int, default 300)<br>
+                                    <code>priority</code> (int, optional for MX/SRV)<br>
+                                    <code>proxied</code> (bool, optional for Cloudflare)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>PATCH /api/client/dns-records/{id}</code></td>
+                                <td>Update existing DNS record</td>
+                                <td><code>name</code>, <code>type</code>, <code>value</code>, <code>ttl</code>, <code>priority</code>, <code>proxied</code></td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/dns-records/{id}</code></td>
+                                <td>Delete a DNS record</td>
+                                <td><em>None</em></td>
+                            </tr>
+
+                            <!-- Databases -->
+                            <tr>
+                                <td><code>GET /api/client/databases</code></td>
+                                <td>List MySQL / MariaDB databases</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/databases</code></td>
+                                <td>Create a MySQL database</td>
+                                <td><code>name</code> (string, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/databases/{id}</code></td>
+                                <td>Delete a MySQL database</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/database-users</code></td>
+                                <td>List MySQL database users</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/database-users</code></td>
+                                <td>Create a MySQL user</td>
+                                <td>
+                                    <code>username</code> (string, required)<br>
+                                    <code>password</code> (string, minimum 8 characters)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>PATCH /api/client/database-users/{id}</code></td>
+                                <td>Change MySQL user password</td>
+                                <td><code>password</code> (string, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/database-users/{id}</code></td>
+                                <td>Delete a MySQL user</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/database-grants</code></td>
+                                <td>Grant MySQL user database privileges</td>
+                                <td>
+                                    <code>database_id</code> (int, required)<br>
+                                    <code>user_id</code> (int, required)<br>
+                                    <code>privileges</code> (string, default <code>"ALL"</code>)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/database-grants/{id}</code></td>
+                                <td>Revoke database user grant</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/pg-databases</code></td>
+                                <td>List PostgreSQL databases</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/pg-databases</code></td>
+                                <td>Create a PostgreSQL database</td>
+                                <td><code>name</code> (string, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/pg-databases/{id}</code></td>
+                                <td>Delete a PostgreSQL database</td>
+                                <td><em>None</em></td>
+                            </tr>
+
+                            <!-- Email / Mailboxes -->
+                            <tr>
+                                <td><code>GET /api/client/mailboxes</code></td>
                                 <td>List email mailboxes</td>
+                                <td><em>None</em></td>
                             </tr>
                             <tr>
-                                <td><code>POST</code></td>
-                                <td><code>/api/client/mailboxes</code></td>
-                                <td>Create an email mailbox (payload: <code>{"email": "user@domain.com", "password": "..."}</code>)</td>
+                                <td><code>POST /api/client/mailboxes</code></td>
+                                <td>Create an email mailbox</td>
+                                <td>
+                                    <code>email</code> (string, required e.g., <code>"user@domain.com"</code>)<br>
+                                    <code>password</code> (string, minimum 8 characters)<br>
+                                    <code>quota_mb</code> (int, default 1024)
+                                </td>
                             </tr>
                             <tr>
-                                <td><code>GET</code></td>
-                                <td><code>/api/client/resource-usage</code></td>
-                                <td>Get CPU, Memory, Disk, and Inode usage trend data</td>
+                                <td><code>PATCH /api/client/mailboxes/{id}</code></td>
+                                <td>Update mailbox password/quota</td>
+                                <td>
+                                    <code>password</code> (string, optional)<br>
+                                    <code>quota_mb</code> (int, optional)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/mailboxes/{id}</code></td>
+                                <td>Delete an email mailbox</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/mail-forwarders</code></td>
+                                <td>List email forwarders</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/mail-forwarders</code></td>
+                                <td>Create an email forwarder</td>
+                                <td>
+                                    <code>source_email</code> (string, required)<br>
+                                    <code>destination_email</code> (string, required)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/mail-forwarders/{id}</code></td>
+                                <td>Delete an email forwarder</td>
+                                <td><em>None</em></td>
+                            </tr>
+
+                            <!-- SSH & FTP -->
+                            <tr>
+                                <td><code>GET /api/client/ssh</code></td>
+                                <td>Get SSH access status &amp; connection details</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/ssh/toggle</code></td>
+                                <td>Enable or disable SSH shell access</td>
+                                <td><code>enabled</code> (bool, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/ssh/password</code></td>
+                                <td>Change account SSH / SFTP password</td>
+                                <td><code>password</code> (string, minimum 8 characters)</td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/ftp-accounts</code></td>
+                                <td>List custom FTP accounts</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/ftp-accounts</code></td>
+                                <td>Create a custom FTP account</td>
+                                <td>
+                                    <code>username</code> (string, required)<br>
+                                    <code>password</code> (string, minimum 8 characters)<br>
+                                    <code>path</code> (string, relative directory path)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/ftp-accounts/{id}</code></td>
+                                <td>Delete an FTP account</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/files/launch</code></td>
+                                <td>Generate single sign-on URL for File Manager</td>
+                                <td>Query: <code>path</code> (optional directory path)</td>
+                            </tr>
+
+                            <!-- Cron Jobs, SSL, Security & Tools -->
+                            <tr>
+                                <td><code>GET /api/client/cron-jobs</code></td>
+                                <td>List scheduled cron jobs</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/cron-jobs</code></td>
+                                <td>Create a scheduled cron job</td>
+                                <td>
+                                    <code>schedule</code> (string, standard 5-part cron syntax e.g. <code>"0 * * * *"</code>)<br>
+                                    <code>command</code> (string, required e.g. <code>"php /home/public_html/cron.php"</code>)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/cron-jobs/{id}</code></td>
+                                <td>Delete a cron job</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/ssl/issue</code></td>
+                                <td>Issue Let's Encrypt SSL certificate for a website</td>
+                                <td><code>website_id</code> (int, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/ssl/custom</code></td>
+                                <td>Install custom SSL certificate</td>
+                                <td>
+                                    <code>website_id</code> (int, required)<br>
+                                    <code>certificate</code> (PEM string, required)<br>
+                                    <code>private_key</code> (PEM string, required)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/backups</code></td>
+                                <td>List website backup archives</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/backups</code></td>
+                                <td>Create a full website backup archive</td>
+                                <td><code>website_id</code> (int, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/hotlink-protection</code></td>
+                                <td>Configure image hotlink protection</td>
+                                <td>
+                                    <code>website_id</code> (int, required)<br>
+                                    <code>enabled</code> (bool, required)<br>
+                                    <code>allowed_domains</code> (array of strings)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/ip-blocking</code></td>
+                                <td>Configure IP blocking rules</td>
+                                <td>
+                                    <code>website_id</code> (int, required)<br>
+                                    <code>blocked_ips</code> (array of IP strings)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/directory-privacy</code></td>
+                                <td>Password protect a website directory (.htpasswd)</td>
+                                <td>
+                                    <code>website_id</code> (int, required)<br>
+                                    <code>path</code> (string, relative directory path)<br>
+                                    <code>username</code> (string, required)<br>
+                                    <code>password</code> (string, required)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><code>GET /api/client/api-tokens</code></td>
+                                <td>List generated Client API keys</td>
+                                <td><em>None</em></td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/api-tokens</code></td>
+                                <td>Generate a new Client API key</td>
+                                <td><code>name</code> (string, required descriptive label)</td>
+                            </tr>
+                            <tr>
+                                <td><code>DELETE /api/client/api-tokens/{id}</code></td>
+                                <td>Revoke/delete a Client API key</td>
+                                <td><em>None</em></td>
                             </tr>
                         </tbody>
                     </table>
