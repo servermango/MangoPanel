@@ -936,7 +936,8 @@ def render_crontab(account, cron_jobs=None):
     for job in cron_jobs or []:
         if job["status"] != "enabled":
             continue
-        command = str(job.get("runner_command") or job["command"]).replace("\n", " ").strip()
+        runner_cmd = (job["runner_command"] if "runner_command" in job.keys() and job["runner_command"] else None) or job["command"]
+        command = str(runner_cmd).replace("\n", " ").strip()
         if not command:
             continue
         lines.append("{} {}".format(job["schedule"], command))

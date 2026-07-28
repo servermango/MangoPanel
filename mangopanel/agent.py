@@ -715,10 +715,11 @@ class Agent:
         raise AgentError("unsupported_job_type: {}".format(job_type))
 
     def job_payload(self, job):
-        payload = job["payload"] or {}
+        job_dict = row_to_dict(job) if not isinstance(job, dict) else job
+        payload = job_dict.get("payload") if isinstance(job_dict, dict) else None
         if isinstance(payload, str):
             return json.loads(payload) if payload else {}
-        return payload
+        return payload or {}
 
     def account_identity(self, account):
         uid = getattr(os, "getuid", lambda: None)()
@@ -3067,9 +3068,10 @@ class Agent:
         }
 
     def recalculate_usage(self, conn, job):
-        target_type = job.get("target_type")
-        target_id = job.get("target_id")
-        payload = json.loads(job["payload"]) if isinstance(job.get("payload"), str) else (job.get("payload") or {})
+        job_dict = row_to_dict(job) if not isinstance(job, dict) else job
+        target_type = job_dict.get("target_type")
+        target_id = job_dict.get("target_id")
+        payload = self.job_payload(job_dict)
         plan_id = payload.get("plan_id") or (target_id if target_type == "plan" else None)
 
         if target_type == "plan" or plan_id:
