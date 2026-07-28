@@ -586,6 +586,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.serve_file(PUBLIC_DIR / "docs.html")
             if path == "/status":
                 return self.serve_file(PUBLIC_DIR / "status.html")
+            if path == "/assets/admin.css":
+                return self.serve_file(PUBLIC_DIR / "assets" / "app.css")
             if path.startswith("/assets/"):
                 return self.serve_file(PUBLIC_DIR / path.lstrip("/"))
             if path == "/health":
