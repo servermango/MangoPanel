@@ -1356,4 +1356,19 @@ createApp({
       this.clearAdminSession("");
     },
   },
+  watch: {
+    "login.code"(newVal) {
+      const clean = String(newVal || "").trim();
+      if (clean.length === 6 && this.challengeToken) {
+        this.finishLogin();
+      }
+    },
+    challengeToken(newVal) {
+      if (newVal && String(this.login.code || "").trim().length === 6) {
+        this.$nextTick(() => {
+          this.finishLogin();
+        });
+      }
+    }
+  }
 }).mount("#admin-app");

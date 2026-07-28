@@ -16,6 +16,9 @@
         
         var urlHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
         var hashToken = urlHashParams.get("mp_impersonation_token") || urlHashParams.get("mp_access_token");
+        if (hashToken) {
+          localStorage.removeItem("mp_selected_account_id");
+        }
         if (!localStorage.getItem("mp_client_token") && !hashToken) {
           window.location.href = "/login";
         }

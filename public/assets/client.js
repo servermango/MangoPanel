@@ -994,7 +994,13 @@ const app = createApp({
     async api(path, options = {}) {
       const headers = { Accept: "application/json", ...(options.headers || {}) };
       if (this.token) headers.Authorization = `Bearer ${this.token}`;
-      const targetAccountId = (this.activeAccount && this.activeAccount.id) || this.selectedAccountId;
+      let targetAccountId = null;
+      if (this.activeAccount) {
+        targetAccountId = this.activeAccount.id;
+      } else if (this.home && Array.isArray(this.home.accounts) && this.home.accounts.length > 0) {
+        const found = this.home.accounts.find((a) => String(a.id) === String(this.selectedAccountId));
+        if (found) targetAccountId = found.id;
+      }
       if (targetAccountId && !headers["X-Hosting-Account-ID"]) {
         headers["X-Hosting-Account-ID"] = String(targetAccountId);
       }
@@ -3435,6 +3441,19 @@ const app = createApp({
     },
   },
   watch: {
+    "login.code"(newVal) {
+      const clean = String(newVal || "").trim();
+      if (clean.length === 6 && this.challengeToken) {
+        this.finishLogin();
+      }
+    },
+    challengeToken(newVal) {
+      if (newVal && String(this.login.code || "").trim().length === 6) {
+        this.$nextTick(() => {
+          this.finishLogin();
+        });
+      }
+    },
     activePage(newVal) {
       const newUrl = pageUrl(newVal);
       if (window.location.pathname !== newUrl) {
@@ -3463,6 +3482,7 @@ async function initClientPortal() {
   const urlHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const impersonationToken = urlHashParams.get("mp_impersonation_token") || urlHashParams.get("mp_access_token");
   if (impersonationToken) {
+    localStorage.removeItem("mp_selected_account_id");
     try {
       const response = await fetch("/api/client/auth/exchange-impersonation", {
         method: "POST",

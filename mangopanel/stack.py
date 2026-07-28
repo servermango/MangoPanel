@@ -345,13 +345,20 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
                 pass
         index = root / "index.php"
         if not index.exists():
-            tmpl = default_page_content or DEFAULT_PAGE_CONTENT
-            content = tmpl.replace("{domain}", website["domain"])
-            index.write_text(content, encoding="utf-8")
-            try:
-                os.chmod(index, 0o666)
-            except Exception:
-                pass
+            # Only drop the placeholder when the directory is truly empty.
+            # If the user has already uploaded any non-hidden files (index.html,
+            # WordPress, a zip, etc.) leave the directory untouched.
+            has_user_files = any(
+                p for p in root.iterdir() if not p.name.startswith(".")
+            ) if root.exists() else False
+            if not has_user_files:
+                tmpl = default_page_content or DEFAULT_PAGE_CONTENT
+                content = tmpl.replace("{domain}", website["domain"])
+                index.write_text(content, encoding="utf-8")
+                try:
+                    os.chmod(index, 0o666)
+                except Exception:
+                    pass
 
     mailbox_map = []
     for mailbox in mailboxes:

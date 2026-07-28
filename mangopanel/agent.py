@@ -3290,7 +3290,10 @@ def _parse_block_io_bytes(size_str):
 def get_live_disk_io(conn=None):
     global _LAST_DISK_IO_SNAPSHOT
     now = time.time()
-    dt = now - _LAST_DISK_IO_SNAPSHOT["time"]
+    if "result" in _LAST_DISK_IO_SNAPSHOT and (now - _LAST_DISK_IO_SNAPSHOT.get("time", 0.0)) < 0.5:
+        return _LAST_DISK_IO_SNAPSHOT["result"]
+
+    dt = now - _LAST_DISK_IO_SNAPSHOT.get("time", 0.0)
     if dt <= 0:
         dt = 0.3
 
@@ -3409,7 +3412,7 @@ def get_live_disk_io(conn=None):
 
     root_usage = shutil.disk_usage("/")
 
-    return {
+    result = {
         "capacity_total_bytes": root_usage.total,
         "capacity_used_bytes": root_usage.used,
         "capacity_free_bytes": root_usage.free,
@@ -3422,6 +3425,8 @@ def get_live_disk_io(conn=None):
         "sample_interval_sec": round(dt, 3),
         "timestamp": datetime.now().isoformat(),
     }
+    _LAST_DISK_IO_SNAPSHOT["result"] = result
+    return result
 
 
 _LAST_NET_IO_SNAPSHOT = {
@@ -3435,7 +3440,10 @@ _LAST_NET_IO_SNAPSHOT = {
 def get_live_network_io(conn=None):
     global _LAST_NET_IO_SNAPSHOT
     now = time.time()
-    dt = now - _LAST_NET_IO_SNAPSHOT["time"]
+    if "result" in _LAST_NET_IO_SNAPSHOT and (now - _LAST_NET_IO_SNAPSHOT.get("time", 0.0)) < 0.5:
+        return _LAST_NET_IO_SNAPSHOT["result"]
+
+    dt = now - _LAST_NET_IO_SNAPSHOT.get("time", 0.0)
     if dt <= 0:
         dt = 0.3
 
@@ -3585,7 +3593,7 @@ def get_live_network_io(conn=None):
         "containers": container_net_stats,
     }
 
-    return {
+    result = {
         "rx_rate_kbs": rx_rate_kbs,
         "tx_rate_kbs": tx_rate_kbs,
         "rx_rate_mbs": round(rx_rate_kbs / 1024.0, 2),
@@ -3598,6 +3606,8 @@ def get_live_network_io(conn=None):
         "sample_interval_sec": round(dt, 3),
         "timestamp": datetime.now().isoformat(),
     }
+    _LAST_NET_IO_SNAPSHOT["result"] = result
+    return result
 
 
 def get_account_storage_quotas(conn, config=None):

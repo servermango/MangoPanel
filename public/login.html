@@ -863,6 +863,21 @@
                 return errString;
             }
           }
+        },
+        watch: {
+          code(newVal) {
+            const clean = String(newVal || "").trim();
+            if (clean.length === 6 && this.challengeToken && !this.loading) {
+              this.finishLogin();
+            }
+          },
+          challengeToken(newVal) {
+            if (newVal && String(this.code || "").trim().length === 6 && !this.loading) {
+              this.$nextTick(() => {
+                this.finishLogin();
+              });
+            }
+          }
         }
       }).mount("#login-app");
     </script>

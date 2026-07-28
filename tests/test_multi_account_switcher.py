@@ -144,6 +144,19 @@ class MultiAccountSwitcherTests(unittest.TestCase):
                 self.assertIn("accounts", home)
                 self.assertEqual(home["accounts"][0]["id"], accs[0]["id"])
 
+    def test_client_home_without_account_header_resolves_default_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "mangopanel.sqlite3"
+            accounts_dir = Path(tmp) / "accounts"
+            seed_dev_data(db_path, accounts_dir)
+
+            with connect(db_path) as conn:
+                user = conn.execute("SELECT * FROM users ORDER BY id DESC LIMIT 1").fetchone()
+                user_id = user["id"]
+                home = client_home(conn, user_id, active_account_id=None)
+                self.assertIn("accounts", home)
+                self.assertGreaterEqual(len(home["accounts"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
