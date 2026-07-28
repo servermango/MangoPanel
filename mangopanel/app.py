@@ -14,7 +14,7 @@ import threading
 import time
 import socket
 import ssl
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -4922,7 +4922,59 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             # Live Storage & Disk IO
             if path == "/api/reseller/storage/df" and method == "GET":
-                return self.json_response(get_df_storage())
+                master_storage_mb = master_plan["storage_mb"] if master_plan else 50000
+                total_used_mb = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(ha.storage_used_mb), 0) AS total
+                    FROM hosting_accounts ha
+                    JOIN users u ON u.id = ha.user_id
+                    WHERE u.reseller_id = ?
+                    """,
+                    (reseller_id,),
+                ).fetchone()["total"]
+
+                total_allocated_mb = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(p.storage_mb), 0) AS total
+                    FROM hosting_accounts ha
+                    JOIN users u ON u.id = ha.user_id
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE u.reseller_id = ?
+                    """,
+                    (reseller_id,),
+                ).fetchone()["total"]
+
+                total_size_bytes = master_storage_mb * 1024 * 1024
+                total_used_bytes = int(total_used_mb * 1024 * 1024)
+                total_avail_bytes = max(0, total_size_bytes - total_used_bytes)
+                capacity_pct = round((total_used_bytes / total_size_bytes) * 100, 1) if total_size_bytes > 0 else 0
+
+                size_gb = round(master_storage_mb / 1024.0, 2)
+                used_gb = round(total_used_mb / 1024.0, 2)
+                avail_gb = round(total_avail_bytes / (1024.0 * 1024.0 * 1024.0), 2)
+                allocated_gb = round(total_allocated_mb / 1024.0, 2)
+
+                filesystems = [
+                    {
+                        "filesystem": f"Reseller Plan ({master_plan.get('plan_name', 'Master') if master_plan else 'Master'})",
+                        "mount": "/home/reseller",
+                        "size_human": f"{size_gb} GB",
+                        "used_human": f"{used_gb} GB (Used) / {allocated_gb} GB (Allocated)",
+                        "avail_human": f"{avail_gb} GB",
+                        "use_pct": capacity_pct,
+                        "size_bytes": total_size_bytes,
+                        "used_bytes": total_used_bytes,
+                        "avail_bytes": total_avail_bytes,
+                    }
+                ]
+
+                return self.json_response({
+                    "filesystems": filesystems,
+                    "root_capacity_pct": capacity_pct,
+                    "total_main_size_bytes": total_size_bytes,
+                    "total_main_used_bytes": total_used_bytes,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
 
             if path in {"/api/reseller/storage/live", "/api/reseller/storage/live/stream"} and method == "GET":
                 return self.json_response(get_live_disk_io(conn, reseller_id=reseller_id))
