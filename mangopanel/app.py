@@ -30,12 +30,16 @@ from .agent import (
     delete_server_ip,
     get_account_storage_quotas,
     get_df_storage,
+    get_live_cpu_io,
     get_live_disk_io,
     get_live_network_io,
     get_network_overview,
     get_path_size_breakdown,
     get_server_ips,
     get_storage_alert_settings,
+    get_system_cpu_history,
+    get_live_ram_io,
+    get_system_ram_history,
     path_usage,
     run_storage_cleanup,
     save_storage_alert_settings,
@@ -261,6 +265,71 @@ def require_admin_permission(actor, permission):
     if permission not in allowed:
         raise ApiError(HTTPStatus.FORBIDDEN, "insufficient_admin_permissions")
     return True
+
+
+def sync_cloudflare_acme_rules(conn, config, website_id=None, account_id=None):
+    query = """
+        SELECT w.id AS website_id, w.account_id, w.domain, d.dns_provider, d.dns_provider_account_id,
+               c.encrypted_secret, da.external_account_id
+        FROM websites w
+        LEFT JOIN domains d ON d.linked_website_id = w.id
+        LEFT JOIN dns_provider_accounts da ON da.id = d.dns_provider_account_id
+        LEFT JOIN dns_provider_credentials c ON c.provider_account_id = da.id
+        WHERE w.status != 'deleted'
+    """
+    params = []
+    if website_id:
+        query += " AND w.id = ?"
+        params.append(website_id)
+    if account_id:
+        query += " AND w.account_id = ?"
+        params.append(account_id)
+
+    rows = conn.execute(query, params).fetchall()
+    results = []
+    for r in rows:
+        domain = r["domain"]
+        dns_provider = r["dns_provider"]
+        provider_account_id = r["dns_provider_account_id"]
+        secret = r["encrypted_secret"] if "encrypted_secret" in r.keys() else None
+        ext_id = r["external_account_id"] if "external_account_id" in r.keys() else None
+
+        if dns_provider != DNS_PROVIDER_CLOUDFLARE or not provider_account_id:
+            acc_row = conn.execute(
+                """
+                SELECT a.*, c.encrypted_secret
+                FROM dns_provider_accounts a
+                JOIN dns_providers p ON p.id = a.provider_id
+                LEFT JOIN dns_provider_credentials c ON c.provider_account_id = a.id
+                WHERE p.key = 'cloudflare'
+                ORDER BY a.id DESC LIMIT 1
+                """
+            ).fetchone()
+            if acc_row:
+                dns_provider = DNS_PROVIDER_CLOUDFLARE
+                secret = acc_row["encrypted_secret"]
+                ext_id = acc_row["external_account_id"]
+            else:
+                results.append({"website_id": r["website_id"], "domain": domain, "status": "skipped", "reason": "not_cloudflare"})
+                continue
+
+        if not secret:
+            results.append({"website_id": r["website_id"], "domain": domain, "status": "skipped", "reason": "no_secret"})
+            continue
+
+        try:
+            token = decrypt_secret(secret, config.jwt_secret)
+            if not token:
+                results.append({"website_id": r["website_id"], "domain": domain, "status": "skipped", "reason": "invalid_secret"})
+                continue
+            cf = CloudflareDNSProvider(token, account_id=ext_id, api_base=config.cloudflare_api_base)
+            rule_res = cf.ensure_acme_rule(domain)
+            results.append({"website_id": r["website_id"], "domain": domain, "rule_result": rule_res})
+        except Exception as exc:
+            results.append({"website_id": r["website_id"], "domain": domain, "status": "error", "error": str(exc)})
+
+    return results
+
 
 
 
@@ -2375,6 +2444,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not domain_name:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_domain")
                 return self.json_response(preview_domain_dns(conn, account, domain_name))
+            if path == "/api/client/dns/sync-cloudflare-rules" and method == "POST":
+                require_active_account(account)
+                body = self.read_json() if self.headers.get("content-length") else {}
+                website_id = optional_positive_int(body.get("website_id"))
+                results = sync_cloudflare_acme_rules(conn, CONFIG, website_id=website_id, account_id=account["id"])
+                return self.json_response({"success": True, "results": results})
             if path == "/api/client/websites" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "websites", "max_websites", "website_limit_reached")
@@ -2430,6 +2505,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                                     cf = CloudflareDNSProvider(token, account_id=cf_account_id, api_base=CONFIG.cloudflare_api_base)
                                     if cf.configured():
                                         zone = cf.ensure_zone(domain)
+                                        cf.ensure_acme_rule(domain)
                                         if zone and isinstance(zone, dict):
                                             cf_ns = zone.get("name_servers") or zone.get("nameservers")
                                             if cf_ns and isinstance(cf_ns, list):
@@ -2946,6 +3022,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 verified = ns_ok or ip_ok
                 job_id = None
                 if verified:
+                    try:
+                        sync_cloudflare_acme_rules(conn, CONFIG, website_id=website_id)
+                    except Exception as exc:
+                        logging.warning("Failed to sync Cloudflare ACME rules on connection-check: %s", exc)
                     job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto", "connection_check": True})
                     conn.execute("UPDATE websites SET ssl_status = 'active' WHERE id = ?", (website_id,))
                 return self.json_response({"verified": verified, "nameservers_verified": ns_ok, "ip_verified": ip_ok, "observed_nameservers": observed_ns, "observed_ips": observed_a, "expected_nameservers": expected_ns, "auto_ssl_job_id": job_id, "message": "DNS is reachable. AutoSSL has been queued." if verified else "DNS is not pointing to this hosting account yet."})
@@ -5039,6 +5119,20 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path in {"/api/reseller/network/live", "/api/reseller/network/live/stream"} and method == "GET":
                 return self.json_response(get_live_network_io(conn, reseller_id=reseller_id))
 
+            if path in {"/api/reseller/cpu/live", "/api/reseller/cpu/live/stream"} and method == "GET":
+                return self.json_response(get_live_cpu_io(conn, reseller_id=reseller_id))
+
+            if path == "/api/reseller/cpu/history" and method == "GET":
+                range_str = (query.get("range") or ["72h"])[0]
+                return self.json_response(get_system_cpu_history(conn, range_str))
+
+            if path in {"/api/reseller/ram/live", "/api/reseller/ram/live/stream"} and method == "GET":
+                return self.json_response(get_live_ram_io(conn, reseller_id=reseller_id))
+
+            if path == "/api/reseller/ram/history" and method == "GET":
+                range_str = (query.get("range") or ["72h"])[0]
+                return self.json_response(get_system_ram_history(conn, range_str))
+
             if path == "/api/reseller/network/ips" and method == "GET":
                 ips = rows_to_dicts(conn.execute("SELECT * FROM server_ips ORDER BY id").fetchall())
                 return self.json_response({"ips": ips})
@@ -5392,6 +5486,55 @@ class MangoHandler(BaseHTTPRequestHandler):
                 account_id = int(body.get("account_id", 0))
                 ip_id = int(body.get("ip_id", 0)) if body.get("ip_id") else None
                 return self.json_response(assign_account_ip(conn, account_id, ip_id))
+
+            # Live CPU Analytics
+            if path == "/api/admin/cpu/live" and method == "GET":
+                return self.json_response(get_live_cpu_io(conn))
+            if path == "/api/admin/cpu/history" and method == "GET":
+                range_str = (query.get("range") or ["72h"])[0]
+                return self.json_response(get_system_cpu_history(conn, range_str))
+            if path == "/api/admin/cpu/live/stream" and method == "GET":
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                try:
+                    for _ in range(200):
+                        data = get_live_cpu_io(conn)
+                        msg = f"data: {json.dumps(data)}\n\n"
+                        self.wfile.write(msg.encode("utf-8"))
+                        self.wfile.flush()
+                        time.sleep(0.3)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                return
+
+            # Live RAM Analytics
+            if path == "/api/admin/ram/live" and method == "GET":
+                return self.json_response(get_live_ram_io(conn))
+            if path == "/api/admin/ram/history" and method == "GET":
+                range_str = (query.get("range") or ["72h"])[0]
+                return self.json_response(get_system_ram_history(conn, range_str))
+            if path == "/api/admin/ram/live/stream" and method == "GET":
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                try:
+                    for _ in range(200):
+                        data = get_live_ram_io(conn)
+                        msg = f"data: {json.dumps(data)}\n\n"
+                        self.wfile.write(msg.encode("utf-8"))
+                        self.wfile.flush()
+                        time.sleep(0.3)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                return
+
             if path == "/api/admin/dashboard" and method == "GET":
                 return self.json_response(admin_dashboard(conn))
             if path == "/api/admin/security/audit" and method == "GET":
@@ -5825,6 +5968,14 @@ class MangoHandler(BaseHTTPRequestHandler):
                 conn.commit()
                 log_audit(conn, "admin", actor["id"], "create_dns_provider_account", "dns_provider_account", created_acc_id, metadata={"provider": DNS_PROVIDER_CLOUDFLARE, "display_name": display_name})
                 return self.json_response({"dns_settings": dns_settings_payload(conn), "account_id": created_acc_id}, HTTPStatus.CREATED)
+            if path == "/api/admin/dns/sync-cloudflare-rules" and method == "POST":
+                require_admin_permission(actor, "dns.manage")
+                body = self.read_json() if self.headers.get("content-length") else {}
+                website_id = optional_positive_int(body.get("website_id"))
+                account_id = optional_positive_int(body.get("account_id"))
+                results = sync_cloudflare_acme_rules(conn, CONFIG, website_id=website_id, account_id=account_id)
+                log_audit(conn, "admin", actor["id"], "sync_cloudflare_acme_rules", "dns", 0, metadata={"website_id": website_id, "account_id": account_id, "count": len(results)})
+                return self.json_response({"success": True, "results": results})
             if path.startswith("/api/admin/dns-providers/cloudflare/accounts/"):
                 account_id = path_int_id(path, "/api/admin/dns-providers/cloudflare/accounts/")
                 account = conn.execute(
@@ -8547,11 +8698,77 @@ def request_domain(headers):
     return domain
 
 
+CLOUDFLARE_IP_NETWORKS = [
+    ipaddress.ip_network("173.245.48.0/20"),
+    ipaddress.ip_network("103.21.244.0/22"),
+    ipaddress.ip_network("103.22.200.0/22"),
+    ipaddress.ip_network("103.31.4.0/22"),
+    ipaddress.ip_network("141.101.64.0/18"),
+    ipaddress.ip_network("108.162.192.0/18"),
+    ipaddress.ip_network("190.93.240.0/20"),
+    ipaddress.ip_network("188.114.96.0/20"),
+    ipaddress.ip_network("197.234.240.0/22"),
+    ipaddress.ip_network("198.41.128.0/17"),
+    ipaddress.ip_network("162.158.0.0/15"),
+    ipaddress.ip_network("104.16.0.0/12"),
+    ipaddress.ip_network("172.64.0.0/13"),
+    ipaddress.ip_network("131.0.72.0/22"),
+    ipaddress.ip_network("2400:cb00::/32"),
+    ipaddress.ip_network("2606:4700::/32"),
+    ipaddress.ip_network("2803:f800::/32"),
+    ipaddress.ip_network("2405:b000::/32"),
+    ipaddress.ip_network("2405:8100::/32"),
+    ipaddress.ip_network("2a06:98c0::/29"),
+    ipaddress.ip_network("2c0f:f248::/32"),
+]
+
+
+def is_cloudflare_ip(obj):
+    return any(obj in net for net in CLOUDFLARE_IP_NETWORKS)
+
+
+def is_valid_client_ip(ip_str):
+    if not ip_str or not isinstance(ip_str, str):
+        return False
+    clean_ip = ip_str.strip()
+    try:
+        obj = ipaddress.ip_address(clean_ip)
+        if obj.is_private or obj.is_loopback or obj.is_link_local or obj.is_unspecified:
+            return False
+        if is_cloudflare_ip(obj):
+            return False
+        return True
+    except ValueError:
+        return False
+
+
 def client_ip(handler):
-    forwarded = handler.headers.get("X-Forwarded-For", "")
+    headers = getattr(handler, "headers", {}) or {}
+    cf_ip = str(headers.get("CF-Connecting-IP", "")).strip()
+    if cf_ip and is_valid_client_ip(cf_ip):
+        return cf_ip[:80]
+
+    real_ip = str(headers.get("X-Real-IP", "")).strip()
+    if real_ip and is_valid_client_ip(real_ip):
+        return real_ip[:80]
+
+    forwarded = str(headers.get("X-Forwarded-For", "")).strip()
     if forwarded:
-        return forwarded.split(",", 1)[0].strip()[:80]
-    return str(handler.client_address[0])[:80] if handler.client_address else ""
+        for part in forwarded.split(","):
+            candidate = part.strip()
+            if candidate and is_valid_client_ip(candidate):
+                return candidate[:80]
+
+    if hasattr(handler, "client_address") and handler.client_address:
+        ip = str(handler.client_address[0]).strip()
+        if is_valid_client_ip(ip):
+            return ip[:80]
+
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:80]
+    if hasattr(handler, "client_address") and handler.client_address:
+        return str(handler.client_address[0])[:80]
+    return ""
 
 
 def request_country(headers, ip_address):
@@ -8581,17 +8798,17 @@ RESOURCE_WINDOWS = {
 
 
 def resource_usage_payload(conn, account, window_key):
+    account = dict(account)
     if window_key not in RESOURCE_WINDOWS:
         window_key = "30m"
     try:
-        collect_resource_usage_sample(conn, account)
         ensure_resource_usage_history(conn, account)
         now = int(time.time())
         start = now - RESOURCE_WINDOWS[window_key]
         rows = rows_to_dicts(
             conn.execute(
                 """
-                SELECT sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, source
+                SELECT sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, inodes_used, inodes_limit, COALESCE(bandwidth_mb, 0) AS bandwidth_mb, source
                 FROM resource_usage_samples
                 WHERE account_id = ? AND sampled_at >= ?
                 ORDER BY sampled_at
@@ -8626,8 +8843,8 @@ def ensure_resource_usage_history(conn, account):
         rows.append(simulated_resource_sample(account, estimate, now - offset))
     conn.executemany(
         """
-        INSERT INTO resource_usage_samples(account_id, sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO resource_usage_samples(account_id, sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, inodes_used, inodes_limit, bandwidth_mb, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -8652,6 +8869,7 @@ def collect_all_resource_usage_samples(config=None):
 
 
 def collect_resource_usage_sample(conn, account, force=False):
+    account = dict(account)
     now = int(time.time())
     if not force:
         last = conn.execute(
@@ -8668,10 +8886,13 @@ def collect_resource_usage_sample(conn, account, force=False):
     storage_limit_mb = float(account["storage_mb"] if "storage_mb" in account.keys() and account["storage_mb"] is not None else sample.get("storage_limit_mb") or 0)
     inodes_limit = int(account["inode_limit"] if "inode_limit" in account.keys() and account["inode_limit"] is not None else 0)
 
+    bw_row = conn.execute("SELECT COALESCE(SUM(bytes_sent), 0) / (1024.0 * 1024.0) AS bw_mb FROM access_logs WHERE account_id = ?", (account["id"],)).fetchone()
+    bandwidth_mb = round(float(bw_row["bw_mb"]), 2) if bw_row else 0.0
+
     conn.execute(
         """
-        INSERT INTO resource_usage_samples(account_id, sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, inodes_used, inodes_limit, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO resource_usage_samples(account_id, sampled_at, cpu_percent, memory_mb, memory_limit_mb, storage_mb, storage_limit_mb, inodes_used, inodes_limit, bandwidth_mb, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account["id"],
@@ -8683,6 +8904,7 @@ def collect_resource_usage_sample(conn, account, force=False):
             storage_limit_mb,
             inodes_used,
             inodes_limit,
+            bandwidth_mb,
             sample["source"],
         ),
     )
@@ -8696,18 +8918,28 @@ def collect_resource_usage_sample(conn, account, force=False):
     )
 
 
+_DOCKER_STATS_CACHE = {}
+
+
 def docker_resource_usage(account):
+    account = dict(account)
+    username = account.get("username", "")
+    now = time.time()
+    if username in _DOCKER_STATS_CACHE:
+        cached_ts, cached_val = _DOCKER_STATS_CACHE[username]
+        if now - cached_ts < 30:
+            return cached_val
+
     docker = shutil.which("docker")
     if not docker:
         return None
-    username = account["username"]
     containers = [f"mp-{username}-{service}" for service in ["web", "filebrowser", "phpmyadmin", "db", "cron", "sftp"]]
     try:
         result = subprocess.run(
             [docker, "stats", "--no-stream", "--format", "{{json .}}", *containers],
             capture_output=True,
             text=True,
-            timeout=8,
+            timeout=4,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -8716,7 +8948,7 @@ def docker_resource_usage(account):
         return None
     cpu_percent = 0.0
     memory_mb = 0.0
-    memory_limit_mb = float(account["memory_mb"] or 0)
+    memory_limit_mb = float(account.get("memory_mb") or 0)
     for line in result.stdout.splitlines():
         try:
             stat = json.loads(line)
@@ -8728,7 +8960,7 @@ def docker_resource_usage(account):
         if mem_limit:
             memory_limit_mb = max(memory_limit_mb, mem_limit)
     estimate = resource_usage_estimate(account)
-    return {
+    res = {
         "cpu_percent": round(cpu_percent, 2),
         "memory_mb": round(memory_mb, 2),
         "memory_limit_mb": memory_limit_mb or estimate["memory_limit_mb"],
@@ -8736,12 +8968,15 @@ def docker_resource_usage(account):
         "storage_limit_mb": estimate["storage_limit_mb"],
         "source": "docker",
     }
+    _DOCKER_STATS_CACHE[username] = (now, res)
+    return res
 
 
 def resource_usage_estimate(account):
+    account = dict(account)
     storage_mb = directory_size_mb(Path(account["base_path"]))
-    storage_limit_mb = float(account["storage_mb"] if "storage_mb" in account.keys() and account["storage_mb"] is not None else 0)
-    memory_limit_mb = float(account["memory_mb"] if "memory_mb" in account.keys() and account["memory_mb"] is not None else 0)
+    storage_limit_mb = float(account.get("storage_mb") or 0)
+    memory_limit_mb = float(account.get("memory_mb") or 0)
     seed = int(account["id"]) * 17 + int(time.time() // 60)
     cpu_percent = 2 + (seed % 19)
     memory_mb = min(memory_limit_mb or 1024, 80 + ((seed * 13) % 260))
@@ -8757,10 +8992,14 @@ def resource_usage_estimate(account):
 
 
 def simulated_resource_sample(account, estimate, sampled_at):
+    account = dict(account)
     wave = (sampled_at // 60 + int(account["id"]) * 11) % 100
     cpu = max(0, min(100, estimate["cpu_percent"] + ((wave % 13) - 6)))
     memory = max(0, estimate["memory_mb"] + ((wave % 17) - 8) * 2)
     storage = max(0, estimate["storage_mb"] * (0.94 + (wave % 7) / 100))
+    inodes = int(estimate.get("inodes_used") or 0)
+    inodes_lim = int(estimate.get("inodes_limit") or account.get("inode_limit") or 100000)
+    bandwidth = max(0.0, round(0.5 + ((wave % 23) * 0.4), 2))
     return (
         account["id"],
         sampled_at,
@@ -8769,6 +9008,9 @@ def simulated_resource_sample(account, estimate, sampled_at):
         estimate["memory_limit_mb"],
         round(storage, 2),
         estimate["storage_limit_mb"],
+        inodes,
+        inodes_lim,
+        bandwidth,
         "historical-estimate",
     )
 
@@ -10276,7 +10518,7 @@ def client_home(conn, user_id, active_account_id=None):
                    p.nameserver1 AS nameserver_1, p.nameserver2 AS nameserver_2, 
                    p.server_location AS node_location, p.backups_location AS backup_location,
                    p.frontend_frameworks, p.backend_frameworks, COALESCE(p.allow_api_access, 0) AS allow_api_access,
-                   n.name AS node_name, n.hostname AS node_hostname
+                   n.name AS node_name, n.hostname AS node_hostname, COALESCE(n.ip_address, '157.15.203.66') AS node_ip
             FROM hosting_accounts ha
             JOIN plans p ON p.id = ha.plan_id
             JOIN nodes n ON n.id = ha.node_id

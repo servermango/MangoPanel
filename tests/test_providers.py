@@ -702,6 +702,13 @@ class PowerDNSProviderTests(unittest.TestCase):
         provider = PowerDNSProvider("http://localhost", "key", nameservers=["ns1.custom.test"])
         self.assertEqual(provider.nameservers, ["ns1.custom.test"])
 
+    def test_cloudflare_ensure_acme_rule_mocked(self):
+        provider = CloudflareDNSProvider("test-token")
+        res = provider.ensure_acme_rule("example.com")
+        self.assertEqual(res["status"], "mocked")
+        self.assertIn("rule_id", res)
+
 
 if __name__ == "__main__":
     unittest.main()
+

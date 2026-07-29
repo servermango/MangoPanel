@@ -727,9 +727,21 @@ sudo python3 scripts/admin_recovery.py --email admin@example.com --disable-totp<
                 <div class="callout callout-warning">
                     <div class="callout-title">Required Token Permissions</div>
                     <p>The Cloudflare API Token must include these explicit permissions:<br>
-                    • <strong>Zone &gt; Zone &gt; Edit</strong><br>
-                    • <strong>Zone &gt; DNS &gt; Edit</strong></p>
+                    • <strong>Zone &gt; Zone &gt; Edit</strong> (or Zone:Read for zone verification)<br>
+                    • <strong>Zone &gt; DNS &gt; Edit</strong> (for managing DNS records)<br>
+                    • <strong>Zone &gt; Page Rules &gt; Edit</strong> (Required: allows MangoPanel to automatically create ACME HTTP-01 challenge bypass rules for SSL Auto-Issuance on Cloudflare-proxied domains)</p>
                 </div>
+
+                <h3>Automated ACME Challenge Page Rules</h3>
+                <p>When a website is added or connected to MangoPanel using Cloudflare DNS, MangoPanel automatically creates a Cloudflare Page Rule targeting <code>http://*example.com/.well-known/acme-challenge/*</code> with action <code>always_use_https: off</code>. This prevents Cloudflare from redirecting Let's Encrypt HTTP ACME challenges to HTTPS port 443 before Caddy has issued an SSL certificate, eliminating <strong>HTTP 525 (SSL Handshake Failed)</strong> deadlocks.</p>
+
+                <h3>Syncing Existing Websites</h3>
+                <p>To add missing Cloudflare Page Rules to existing websites, you can use any of the following methods:</p>
+                <ul>
+                    <li><strong>API Endpoint (Client Area):</strong> <code>POST /api/client/dns/sync-cloudflare-rules</code></li>
+                    <li><strong>API Endpoint (Admin Area):</strong> <code>POST /api/admin/dns/sync-cloudflare-rules</code></li>
+                    <li><strong>CLI Script:</strong> Run <code>python scripts/sync_cloudflare_rules.py</code> on your server</li>
+                </ul>
             </section>
 
             <!-- DOMAIN & SUBDOMAIN DNS SETUP -->
@@ -1074,6 +1086,11 @@ print(res.json())</code></pre>
                                 <td><code>POST /api/client/dns/check-domain</code></td>
                                 <td>Check domain DNS availability &amp; Cloudflare zone status</td>
                                 <td><code>domain</code> (string, required)</td>
+                            </tr>
+                            <tr>
+                                <td><code>POST /api/client/dns/sync-cloudflare-rules</code></td>
+                                <td>Sync and ensure Cloudflare ACME challenge page rules for websites</td>
+                                <td><code>website_id</code> (int, optional)</td>
                             </tr>
                             <tr>
                                 <td><code>POST /api/client/domains/{id}/nameservers</code></td>
@@ -1841,7 +1858,12 @@ GET /api/admin/dashboard?api_key=mp_admin_YOUR_API_KEY</code></pre>
                                 </td>
                             </tr>
 
-                            <!-- Cloudflare DNS Accounts -->
+                            <!-- Cloudflare DNS Accounts & Rules -->
+                            <tr>
+                                <td><code>POST /api/admin/dns/sync-cloudflare-rules</code></td>
+                                <td>Sync and ensure missing Cloudflare ACME challenge page rules system-wide</td>
+                                <td><code>website_id</code> (int, optional)<br><code>account_id</code> (int, optional)</td>
+                            </tr>
                             <tr>
                                 <td><code>POST /api/admin/dns-providers/cloudflare/accounts</code></td>
                                 <td>Add a Cloudflare account for DNS management</td>

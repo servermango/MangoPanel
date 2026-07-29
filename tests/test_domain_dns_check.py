@@ -116,6 +116,18 @@ class DomainDnsCheckTests(unittest.TestCase):
                     txt_record = next(r for r in records if r["type"] == "TXT" and r["name"] == "@")
                     self.assertEqual(txt_record["value"], "custom-txt-val")
 
+    def test_sync_cloudflare_acme_rules_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            seed_dev_data(config.db_path, config.account_root)
+
+            with ClientApiServer(config, panel="client") as server:
+                token = server.login()
+                res = server.request("POST", "/api/client/dns/sync-cloudflare-rules", {}, token)
+                self.assertTrue(res["success"])
+                self.assertIsInstance(res["results"], list)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 const IS_RESELLER = Boolean(window.IS_RESELLER_PANEL);
 const ADMIN_ROUTE_PREFIX = IS_RESELLER ? "/reseller" : "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "storage", "networking", "dns", "registrars", "dns-domains", "system", "admins", "api-tokens", "status", "security", "default-page"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "system", "admins", "api-tokens", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
   let hash = window.location.hash.replace(/^#/, "");
@@ -106,6 +106,25 @@ createApp({
       networkLive: { rx_rate_kbs: 0, tx_rate_kbs: 0, rx_rate_mbs: 0, tx_rate_mbs: 0, total_rx_human: "0 MB", total_tx_human: "0 MB", top_network_users: [], sample_interval_sec: 0.3 },
       networkLiveActive: true,
       networkLiveTimer: null,
+      cpuLive: { sys_cpu_pct: 0, num_cpus: 1, load_avg_1m: 0, load_avg_5m: 0, load_avg_15m: 0, top_cpu_users: [], sample_interval_sec: 0.3 },
+      cpuLiveActive: true,
+      cpuLiveTimer: null,
+      cpuHistory: [],
+      cpuHistoryRange: "72h",
+      cpuHistoryData: { range_str: "72h", hours: 72, total_points: 0, avg_cpu_pct: 0, peak_cpu_pct: 0, min_cpu_pct: 0, avg_load_1m: 0, points: [] },
+      loadingCpuHistory: false,
+      hoveredCpuPoint: null,
+      displayCpu: { sys_cpu_pct: 0, load_avg_1m: 0, load_avg_5m: 0, load_avg_15m: 0 },
+      ramLive: { total_mb: 0, used_mb: 0, free_mb: 0, available_mb: 0, buffers_cached_mb: 0, used_pct: 0, swap_total_mb: 0, swap_used_mb: 0, swap_used_pct: 0, top_ram_users: [], sample_interval_sec: 0.3 },
+      ramLiveActive: true,
+      ramLiveTimer: null,
+      ramHistoryRange: "72h",
+      ramHistoryData: { range_str: "72h", hours: 72, total_points: 0, avg_used_pct: 0, peak_used_pct: 0, min_used_pct: 0, avg_used_mb: 0, total_mb: 0, points: [] },
+      loadingRamHistory: false,
+      hoveredRamPoint: null,
+      displayRam: { used_mb: 0, total_mb: 0, used_pct: 0, available_mb: 0, swap_used_mb: 0 },
+      displayNetwork: { rx_rate_kbs: 0, tx_rate_kbs: 0, rx_rate_mbs: 0, tx_rate_mbs: 0 },
+      displayStorage: { read_rate_kbs: 0, write_rate_kbs: 0, read_rate_mbs: 0, write_rate_mbs: 0 },
       serverIps: [],
       showAddIpModal: false,
       showAssignIpModal: false,
@@ -221,13 +240,58 @@ createApp({
         return;
       }
     }
-    if (this.token) this.load();
+    if (this.token) {
+      this.load();
+      this.goTo(adminPageFromLocation());
+    }
     window.addEventListener("popstate", () => {
-      this.activePage = adminPageFromLocation();
+      this.goTo(adminPageFromLocation());
     });
     window.addEventListener("hashchange", () => {
-      this.activePage = adminPageFromLocation();
+      this.goTo(adminPageFromLocation());
     });
+
+    const animateMetrics = () => {
+      const now = performance.now();
+
+      if (this.cpuAnimStartTime) {
+        const progress = Math.min(1.0, Math.max(0.0, (now - this.cpuAnimStartTime) / (this.cpuAnimDuration || 300)));
+        this.displayCpu.sys_cpu_pct = this.cpuAnimStart.sys_cpu_pct + (this.cpuAnimTarget.sys_cpu_pct - this.cpuAnimStart.sys_cpu_pct) * progress;
+        this.displayCpu.load_avg_1m = this.cpuAnimStart.load_avg_1m + (this.cpuAnimTarget.load_avg_1m - this.cpuAnimStart.load_avg_1m) * progress;
+        this.displayCpu.load_avg_5m = this.cpuAnimStart.load_avg_5m + (this.cpuAnimTarget.load_avg_5m - this.cpuAnimStart.load_avg_5m) * progress;
+        this.displayCpu.load_avg_15m = this.cpuAnimStart.load_avg_15m + (this.cpuAnimTarget.load_avg_15m - this.cpuAnimStart.load_avg_15m) * progress;
+      }
+
+      if (this.ramAnimStartTime) {
+        const progress = Math.min(1.0, Math.max(0.0, (now - this.ramAnimStartTime) / (this.ramAnimDuration || 300)));
+        this.displayRam.used_mb = this.ramAnimStart.used_mb + (this.ramAnimTarget.used_mb - this.ramAnimStart.used_mb) * progress;
+        this.displayRam.total_mb = this.ramAnimStart.total_mb + (this.ramAnimTarget.total_mb - this.ramAnimStart.total_mb) * progress;
+        this.displayRam.used_pct = this.ramAnimStart.used_pct + (this.ramAnimTarget.used_pct - this.ramAnimStart.used_pct) * progress;
+        this.displayRam.available_mb = this.ramAnimStart.available_mb + (this.ramAnimTarget.available_mb - this.ramAnimStart.available_mb) * progress;
+        this.displayRam.swap_used_mb = this.ramAnimStart.swap_used_mb + (this.ramAnimTarget.swap_used_mb - this.ramAnimStart.swap_used_mb) * progress;
+      }
+
+      if (this.netAnimStartTime) {
+        const progress = Math.min(1.0, Math.max(0.0, (now - this.netAnimStartTime) / (this.netAnimDuration || 300)));
+        this.displayNetwork.rx_rate_kbs = this.netAnimStart.rx_rate_kbs + (this.netAnimTarget.rx_rate_kbs - this.netAnimStart.rx_rate_kbs) * progress;
+        this.displayNetwork.tx_rate_kbs = this.netAnimStart.tx_rate_kbs + (this.netAnimTarget.tx_rate_kbs - this.netAnimStart.tx_rate_kbs) * progress;
+        this.displayNetwork.rx_rate_mbs = this.netAnimStart.rx_rate_mbs + (this.netAnimTarget.rx_rate_mbs - this.netAnimStart.rx_rate_mbs) * progress;
+        this.displayNetwork.tx_rate_mbs = this.netAnimStart.tx_rate_mbs + (this.netAnimTarget.tx_rate_mbs - this.netAnimStart.tx_rate_mbs) * progress;
+      }
+
+      if (this.storageAnimStartTime) {
+        const progress = Math.min(1.0, Math.max(0.0, (now - this.storageAnimStartTime) / (this.storageAnimDuration || 300)));
+        this.displayStorage.read_rate_kbs = this.storageAnimStart.read_rate_kbs + (this.storageAnimTarget.read_rate_kbs - this.storageAnimStart.read_rate_kbs) * progress;
+        this.displayStorage.write_rate_kbs = this.storageAnimStart.write_rate_kbs + (this.storageAnimTarget.write_rate_kbs - this.storageAnimStart.write_rate_kbs) * progress;
+        this.displayStorage.read_rate_mbs = this.storageAnimStart.read_rate_mbs + (this.storageAnimTarget.read_rate_mbs - this.storageAnimStart.read_rate_mbs) * progress;
+        this.displayStorage.write_rate_mbs = this.storageAnimStart.write_rate_mbs + (this.storageAnimTarget.write_rate_mbs - this.storageAnimStart.write_rate_mbs) * progress;
+      }
+      this.animFrameId = requestAnimationFrame(animateMetrics);
+    };
+    this.animFrameId = requestAnimationFrame(animateMetrics);
+  },
+  unmounted() {
+    if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
   },
   computed: {
     managedClients() {
@@ -285,6 +349,8 @@ createApp({
               { label: "Sub-Plans", target: "plans", description: "Create custom sub-plans for your clients." },
               { label: "Storage", target: "storage", description: "Disk capacity, read/write rates, and account storage quotas." },
               { label: "Networking", target: "networking", description: "Traffic meters and IP address allocations." },
+              { label: "CPU", target: "cpu", description: "Live CPU utilization, load averages, and per-container CPU breakdown." },
+              { label: "RAM", target: "ram", description: "Live RAM utilization, swap usage, and per-container RAM breakdown." },
             ],
           },
           {
@@ -314,6 +380,8 @@ createApp({
             { label: "Plans", target: "plans", description: "Hosting packages, resource limits, and DNS policy." },
             { label: "Storage", target: "storage", description: "Disk capacity graph (df -h), SSE live read/write rates, WHM quotas, path sizes, and cleanup." },
             { label: "Networking", target: "networking", description: "Public IP addresses, interface topology, IP aliases, and client dedicated IP assignment." },
+            { label: "CPU", target: "cpu", description: "Live CPU utilization, load averages, and per-container CPU breakdown." },
+            { label: "RAM", target: "ram", description: "Live RAM utilization, swap usage, and per-container RAM breakdown." },
           ],
         },
         {
@@ -361,20 +429,41 @@ createApp({
       }
       if (target === "storage") {
         this.stopNetworkLiveStream();
+        this.stopCpuLiveStream();
         this.loadStorage();
       } else if (target === "networking") {
         this.stopStorageLiveStream();
+        this.stopCpuLiveStream();
         this.loadNetworking();
+      } else if (target === "cpu") {
+        this.stopStorageLiveStream();
+        this.stopNetworkLiveStream();
+        this.stopRamLiveStream();
+        this.startCpuLiveStream();
+        this.loadCpuHistory();
+      } else if (target === "ram") {
+        this.stopStorageLiveStream();
+        this.stopNetworkLiveStream();
+        this.stopCpuLiveStream();
+        this.startRamLiveStream();
+        this.loadRamHistory();
       } else if (target === "overview") {
         this.loadStorage();
         this.loadNetworking();
+        this.startCpuLiveStream();
+        this.startRamLiveStream();
+        this.startNetworkLiveStream();
       } else if (target === "status") {
         this.stopStorageLiveStream();
         this.stopNetworkLiveStream();
+        this.stopCpuLiveStream();
+        this.stopRamLiveStream();
         this.loadStatusData();
       } else {
         this.stopStorageLiveStream();
         this.stopNetworkLiveStream();
+        this.stopCpuLiveStream();
+        this.stopRamLiveStream();
       }
     },
     togglePanel(panelId) {
@@ -444,21 +533,97 @@ createApp({
         console.error("Networking load error:", error);
       }
     },
+    setCpuTarget(data) {
+      if (!data) return;
+      this.cpuAnimStart = {
+        sys_cpu_pct: Number(this.displayCpu.sys_cpu_pct || 0),
+        load_avg_1m: Number(this.displayCpu.load_avg_1m || 0),
+        load_avg_5m: Number(this.displayCpu.load_avg_5m || 0),
+        load_avg_15m: Number(this.displayCpu.load_avg_15m || 0),
+      };
+      this.cpuAnimTarget = {
+        sys_cpu_pct: Number(data.sys_cpu_pct || 0),
+        load_avg_1m: Number(data.load_avg_1m || 0),
+        load_avg_5m: Number(data.load_avg_5m || 0),
+        load_avg_15m: Number(data.load_avg_15m || 0),
+      };
+      this.cpuAnimStartTime = performance.now();
+      this.cpuAnimDuration = (data.sample_interval_sec || 0.3) * 1000;
+      this.cpuLive = data;
+    },
+    setRamTarget(data) {
+      if (!data) return;
+      this.ramAnimStart = {
+        used_mb: Number(this.displayRam.used_mb || 0),
+        total_mb: Number(this.displayRam.total_mb || 0),
+        used_pct: Number(this.displayRam.used_pct || 0),
+        available_mb: Number(this.displayRam.available_mb || 0),
+        swap_used_mb: Number(this.displayRam.swap_used_mb || 0),
+      };
+      this.ramAnimTarget = {
+        used_mb: Number(data.used_mb || 0),
+        total_mb: Number(data.total_mb || 0),
+        used_pct: Number(data.used_pct || 0),
+        available_mb: Number(data.available_mb || 0),
+        swap_used_mb: Number(data.swap_used_mb || 0),
+      };
+      this.ramAnimStartTime = performance.now();
+      this.ramAnimDuration = (data.sample_interval_sec || 0.3) * 1000;
+      this.ramLive = data;
+    },
+    setNetworkTarget(data) {
+      if (!data) return;
+      this.netAnimStart = {
+        rx_rate_kbs: Number(this.displayNetwork.rx_rate_kbs || 0),
+        tx_rate_kbs: Number(this.displayNetwork.tx_rate_kbs || 0),
+        rx_rate_mbs: Number(this.displayNetwork.rx_rate_mbs || 0),
+        tx_rate_mbs: Number(this.displayNetwork.tx_rate_mbs || 0),
+      };
+      this.netAnimTarget = {
+        rx_rate_kbs: Number(data.rx_rate_kbs || 0),
+        tx_rate_kbs: Number(data.tx_rate_kbs || 0),
+        rx_rate_mbs: Number(data.rx_rate_mbs || 0),
+        tx_rate_mbs: Number(data.tx_rate_mbs || 0),
+      };
+      this.netAnimStartTime = performance.now();
+      this.netAnimDuration = (data.sample_interval_sec || 0.3) * 1000;
+      this.networkLive = data;
+    },
+    setStorageTarget(data) {
+      if (!data) return;
+      this.storageAnimStart = {
+        read_rate_kbs: Number(this.displayStorage.read_rate_kbs || 0),
+        write_rate_kbs: Number(this.displayStorage.write_rate_kbs || 0),
+        read_rate_mbs: Number(this.displayStorage.read_rate_mbs || 0),
+        write_rate_mbs: Number(this.displayStorage.write_rate_mbs || 0),
+      };
+      this.storageAnimTarget = {
+        read_rate_kbs: Number(data.read_rate_kbs || 0),
+        write_rate_kbs: Number(data.write_rate_kbs || 0),
+        read_rate_mbs: Number(data.read_rate_mbs || 0),
+        write_rate_mbs: Number(data.write_rate_mbs || 0),
+      };
+      this.storageAnimStartTime = performance.now();
+      this.storageAnimDuration = (data.sample_interval_sec || 0.3) * 1000;
+      this.storageLive = data;
+    },
     async startNetworkLiveStream() {
       this.stopNetworkLiveStream();
       this.networkLiveActive = true;
       try {
-        this.networkLive = await this.api("/api/admin/network/live");
+        const net = await this.api("/api/admin/network/live");
+        if (net) this.setNetworkTarget(net);
       } catch (e) {}
 
       if (window.EventSource) {
         try {
-          const url = `/api/admin/network/live/stream${this.token ? '?token=' + encodeURIComponent(this.token) : ''}`;
+          const streamPath = IS_RESELLER ? "/api/reseller/network/live/stream" : "/api/admin/network/live/stream";
+          const url = `${streamPath}${this.token ? '?token=' + encodeURIComponent(this.token) : ''}`;
           const es = new EventSource(url);
           es.onmessage = (e) => {
             if (!this.networkLiveActive || (this.activePage !== "networking" && this.activePage !== "overview")) return;
             try {
-              this.networkLive = JSON.parse(e.data);
+              this.setNetworkTarget(JSON.parse(e.data));
             } catch (err) {}
           };
           es.onerror = () => {
@@ -476,7 +641,8 @@ createApp({
       this.networkLiveTimer = setInterval(async () => {
         if (!this.networkLiveActive || (this.activePage !== "networking" && this.activePage !== "overview")) return;
         try {
-          this.networkLive = await this.api("/api/admin/network/live");
+          const net = await this.api("/api/admin/network/live");
+          if (net) this.setNetworkTarget(net);
         } catch (e) {}
       }, 300);
     },
@@ -492,6 +658,190 @@ createApp({
     },
     toggleNetworkLive() {
       this.networkLiveActive = !this.networkLiveActive;
+    },
+    async startCpuLiveStream() {
+      this.stopCpuLiveStream();
+      this.cpuLiveActive = true;
+      try {
+        const live = await this.api("/api/admin/cpu/live");
+        if (live) {
+          this.setCpuTarget(live);
+          if (live.sys_cpu_pct !== undefined) {
+            this.cpuHistory.push({ t: new Date().toLocaleTimeString(), v: live.sys_cpu_pct });
+            if (this.cpuHistory.length > 60) this.cpuHistory.shift();
+          }
+        }
+      } catch (e) {}
+
+      if (window.EventSource) {
+        try {
+          const streamPath = IS_RESELLER ? "/api/reseller/cpu/live/stream" : "/api/admin/cpu/live/stream";
+          const url = `${streamPath}${this.token ? '?token=' + encodeURIComponent(this.token) : ''}`;
+          const es = new EventSource(url);
+          es.onmessage = (e) => {
+            if (!this.cpuLiveActive || (this.activePage !== "cpu" && this.activePage !== "overview")) return;
+            try {
+              const data = JSON.parse(e.data);
+              this.setCpuTarget(data);
+              this.cpuHistory.push({ t: new Date().toLocaleTimeString(), v: data.sys_cpu_pct });
+              if (this.cpuHistory.length > 60) this.cpuHistory.shift();
+            } catch (err) {}
+          };
+          es.onerror = () => {
+            this.stopCpuLiveStream();
+            this.startCpuPollingFallback();
+          };
+          this.cpuLiveEs = es;
+          return;
+        } catch (e) {}
+      }
+      this.startCpuPollingFallback();
+    },
+    startCpuPollingFallback() {
+      if (this.cpuLiveTimer) clearInterval(this.cpuLiveTimer);
+      this.cpuLiveTimer = setInterval(async () => {
+        if (!this.cpuLiveActive || (this.activePage !== "cpu" && this.activePage !== "overview")) return;
+        try {
+          const data = await this.api("/api/admin/cpu/live");
+          if (data) this.cpuLive = data;
+          if (data && data.sys_cpu_pct !== undefined) {
+            this.cpuHistory.push({ t: new Date().toLocaleTimeString(), v: data.sys_cpu_pct });
+            if (this.cpuHistory.length > 60) this.cpuHistory.shift();
+          }
+        } catch (e) {}
+      }, 500);
+    },
+    stopCpuLiveStream() {
+      if (this.cpuLiveEs) {
+        this.cpuLiveEs.close();
+        this.cpuLiveEs = null;
+      }
+      if (this.cpuLiveTimer) {
+        clearInterval(this.cpuLiveTimer);
+        this.cpuLiveTimer = null;
+      }
+    },
+    toggleCpuLive() {
+      this.cpuLiveActive = !this.cpuLiveActive;
+      if (this.cpuLiveActive) {
+        this.startCpuLiveStream();
+      } else {
+        this.stopCpuLiveStream();
+      }
+    },
+    async loadCpuHistory(rangeStr = null) {
+      if (rangeStr) this.cpuHistoryRange = rangeStr;
+      this.loadingCpuHistory = true;
+      try {
+        const data = await this.api(`/api/admin/cpu/history?range=${encodeURIComponent(this.cpuHistoryRange)}`);
+        if (data) this.cpuHistoryData = data;
+      } catch (error) {
+        console.error("Cpu history load error:", error);
+      } finally {
+        this.loadingCpuHistory = false;
+      }
+    },
+    buildCpuHistorySvgPath(points, width = 760, height = 200, key = "sys_cpu_pct", maxVal = 100) {
+      if (!points || points.length < 2) return "";
+      const stepX = width / Math.max(1, points.length - 1);
+      return points.map((p, i) => {
+        const x = (i * stepX).toFixed(1);
+        const y = (height - (Math.min(maxVal, Math.max(0, p[key] || 0)) / maxVal) * (height - 20) - 10).toFixed(1);
+        return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+      }).join(' ');
+    },
+    buildCpuHistoryAreaPath(points, width = 760, height = 200, key = "sys_cpu_pct", maxVal = 100) {
+      if (!points || points.length < 2) return "";
+      const linePath = this.buildCpuHistorySvgPath(points, width, height, key, maxVal);
+      const lastX = width.toFixed(1);
+      return `${linePath} L ${lastX} ${height} L 0 ${height} Z`;
+    },
+    startRamLiveStream() {
+      this.stopRamLiveStream();
+      this.ramLiveActive = true;
+      const apiPrefix = IS_RESELLER ? "/api/reseller/ram/live" : "/api/admin/ram/live";
+      this.api(apiPrefix).then((data) => {
+        if (data) this.setRamTarget(data);
+      }).catch(() => {});
+
+      if (window.EventSource) {
+        const streamUrl = `${apiPrefix}/stream?token=${encodeURIComponent(this.token)}`;
+        const es = new EventSource(streamUrl);
+        es.onmessage = (e) => {
+          if (!this.ramLiveActive || (this.activePage !== "ram" && this.activePage !== "overview")) return;
+          try {
+            const data = JSON.parse(e.data);
+            if (data) this.setRamTarget(data);
+          } catch (err) {}
+        };
+        es.onerror = () => {
+          es.close();
+          if (this.ramLiveActive) {
+            this.startRamPollingFallback();
+          }
+        };
+        this._ramEventSource = es;
+      } else {
+        this.startRamPollingFallback();
+      }
+    },
+    startRamPollingFallback() {
+      if (this.ramLiveTimer) clearInterval(this.ramLiveTimer);
+      const apiPrefix = IS_RESELLER ? "/api/reseller/ram/live" : "/api/admin/ram/live";
+      this.ramLiveTimer = setInterval(async () => {
+        if (!this.ramLiveActive || (this.activePage !== "ram" && this.activePage !== "overview")) return;
+        try {
+          const data = await this.api(apiPrefix);
+          if (data) this.setRamTarget(data);
+        } catch (e) {}
+      }, 300);
+    },
+    stopRamLiveStream() {
+      this.ramLiveActive = false;
+      if (this._ramEventSource) {
+        this._ramEventSource.close();
+        this._ramEventSource = null;
+      }
+      if (this.ramLiveTimer) {
+        clearInterval(this.ramLiveTimer);
+        this.ramLiveTimer = null;
+      }
+    },
+    toggleRamLive() {
+      this.ramLiveActive = !this.ramLiveActive;
+      if (this.ramLiveActive) {
+        this.startRamLiveStream();
+      } else {
+        this.stopRamLiveStream();
+      }
+    },
+    async loadRamHistory(rangeStr = null) {
+      if (rangeStr) this.ramHistoryRange = rangeStr;
+      this.loadingRamHistory = true;
+      try {
+        const apiPrefix = IS_RESELLER ? "/api/reseller/ram/history" : "/api/admin/ram/history";
+        const data = await this.api(`${apiPrefix}?range=${encodeURIComponent(this.ramHistoryRange)}`);
+        if (data) this.ramHistoryData = data;
+      } catch (error) {
+        console.error("Ram history load error:", error);
+      } finally {
+        this.loadingRamHistory = false;
+      }
+    },
+    buildRamHistorySvgPath(points, width = 760, height = 200, key = "used_pct", maxVal = 100) {
+      if (!points || points.length < 2) return "";
+      const stepX = width / Math.max(1, points.length - 1);
+      return points.map((p, i) => {
+        const x = (i * stepX).toFixed(1);
+        const y = (height - (Math.min(maxVal, Math.max(0, p[key] || 0)) / maxVal) * (height - 20) - 10).toFixed(1);
+        return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+      }).join(' ');
+    },
+    buildRamHistoryAreaPath(points, width = 760, height = 200, key = "used_pct", maxVal = 100) {
+      if (!points || points.length < 2) return "";
+      const linePath = this.buildRamHistorySvgPath(points, width, height, key, maxVal);
+      const lastX = width.toFixed(1);
+      return `${linePath} L ${lastX} ${height} L 0 ${height} Z`;
     },
     openAddIpModal() {
       this.ipForm = { id: null, ip_address: "", ip_type: "ipv4", netmask_cidr: "/24", interface: "ens160", label: "Public IPv4", is_primary: false };
@@ -590,12 +940,13 @@ createApp({
 
       if (window.EventSource) {
         try {
-          const url = `/api/admin/storage/live/stream${this.token ? '?token=' + encodeURIComponent(this.token) : ''}`;
+          const streamPath = IS_RESELLER ? "/api/reseller/storage/live/stream" : "/api/admin/storage/live/stream";
+          const url = `${streamPath}${this.token ? '?token=' + encodeURIComponent(this.token) : ''}`;
           const es = new EventSource(url);
           es.onmessage = (e) => {
             if (!this.storageLiveActive || (this.activePage !== "storage" && this.activePage !== "overview")) return;
             try {
-              this.storageLive = JSON.parse(e.data);
+              this.setStorageTarget(JSON.parse(e.data));
             } catch (err) {}
           };
           es.onerror = () => {
@@ -637,7 +988,7 @@ createApp({
     async fetchStorageLiveOnce() {
       try {
         const live = await this.api("/api/admin/storage/live");
-        if (live) this.storageLive = live;
+        if (live) this.setStorageTarget(live);
       } catch (e) {
         // silent background refresh
       }

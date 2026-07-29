@@ -25,6 +25,71 @@
         }
       })();
     </script>
+    <style>
+      .translucent-overlay-spinner {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(15, 23, 42, 0.55);
+        backdrop-filter: blur(5px);
+        -webkit-backdrop-filter: blur(5px);
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        animation: fadeInOverlay 0.2s ease-out forwards;
+      }
+      .analytics-loading-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.55);
+        backdrop-filter: blur(5px);
+        -webkit-backdrop-filter: blur(5px);
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 14px;
+        animation: fadeInOverlay 0.15s ease-out forwards;
+      }
+      .translucent-overlay-card {
+        background: rgba(30, 41, 59, 0.85);
+        border: 1px solid rgba(56, 189, 248, 0.25);
+        border-radius: 16px;
+        padding: 1.5rem 2.25rem;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), 0 0 20px rgba(56, 189, 248, 0.15);
+        backdrop-filter: blur(12px);
+      }
+      .mango-loading-ring {
+        width: 42px;
+        height: 42px;
+        border: 3px solid rgba(56, 189, 248, 0.2);
+        border-top-color: #38bdf8;
+        border-right-color: #38bdf8;
+        border-radius: 50%;
+        animation: spinRing 0.75s linear infinite;
+      }
+      .loading-overlay-text {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--text-color, #38bdf8);
+        letter-spacing: 0.02em;
+      }
+      @keyframes spinRing {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      @keyframes fadeInOverlay {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+    </style>
   </head>
   <body>
     <div id="app-preloader">
@@ -32,6 +97,13 @@
       <div class="loader-progress"><div class="loader-progress-bar"></div></div>
     </div>
     <div id="client-app" class="app-shell client-shell" v-cloak>
+      <!-- Translucent Overlay Spinner for /api/client/home -->
+      <div v-if="isHomeLoading" class="translucent-overlay-spinner" role="status" aria-label="Loading dashboard data">
+        <div class="translucent-overlay-card">
+          <div class="mango-loading-ring"></div>
+          <span class="loading-overlay-text">Loading dashboard data...</span>
+        </div>
+      </div>
       <aside class="sidebar client-sidebar" v-if="token">
         <div class="brand">
           <span class="brand-mark">M</span>
@@ -252,8 +324,8 @@
                 </div>
                 <div class="resource-bar-wrap"><div class="resource-bar" :style="{ '--pct': cpuPercent + '%' }"></div></div>
                 <div class="resource-summary-nums">
-                  <strong>{{ home.resources.cpu }}</strong>
-                  <small>current trend</small>
+                  <strong>{{ home.resources.cpu_percent != null ? Number(home.resources.cpu_percent).toFixed(1) + '%' : home.resources.cpu }}</strong>
+                  <small>{{ home.resources.cpu }} load</small>
                 </div>
               </div>
               <div class="resource-summary-card">
@@ -263,8 +335,8 @@
                 </div>
                 <div class="resource-bar-wrap"><div class="resource-bar" :style="{ '--pct': memoryPercent + '%' }"></div></div>
                 <div class="resource-summary-nums">
-                  <strong>{{ home.resources.memory }}</strong>
-                  <small>runtime health</small>
+                  <strong>{{ home.resources.memory_percent != null ? Number(home.resources.memory_percent).toFixed(1) + '%' : home.resources.memory }}</strong>
+                  <small>{{ home.resources.memory }} status</small>
                 </div>
               </div>
             </div>
@@ -478,7 +550,7 @@
 
             <div v-if="activeAccount" class="premium-cards-grid">
               
-              <!-- Website Details -->
+              <!-- 1. Website Details (Half Width) -->
               <div class="premium-card">
                 <div class="premium-card-header">
                   <div class="premium-card-icon"><app-icon name="website"></app-icon></div>
@@ -488,30 +560,54 @@
                   <div class="premium-list">
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Access your website at</span>
-                      <strong class="premium-item-value"><a :href="'https://' + (selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com'))" target="_blank">https://{{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com') }}</a></strong>
+                      <strong class="premium-item-value"><a :href="'https://' + (selectedWebsite ? selectedWebsite.domain : (websites.length ? websites[0].domain : 'example.com'))" target="_blank">https://{{ selectedWebsite ? selectedWebsite.domain : (websites.length ? websites[0].domain : 'example.com') }}</a></strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Access your website with www</span>
-                      <strong class="premium-item-value"><a :href="'https://www.' + (selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com'))" target="_blank">https://www.{{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com') }}</a></strong>
+                      <strong class="premium-item-value"><a :href="'https://www.' + (selectedWebsite ? selectedWebsite.domain : (websites.length ? websites[0].domain : 'example.com'))" target="_blank">https://www.{{ selectedWebsite ? selectedWebsite.domain : (websites.length ? websites[0].domain : 'example.com') }}</a></strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Website IP address</span>
-                      <strong class="premium-item-value">{{ activeAccount.node_hostname || '127.0.0.1' }}</strong>
+                      <strong class="premium-item-value">{{ selectedWebsite?.server_ip || selectedWebsite?.ip_address || activeAccount.node_ip || '157.15.203.66' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Current nameserver 1</span>
-                      <strong class="premium-item-value">{{ activeAccount.nameserver_1 || 'ns1.dns-parking.com' }}</strong>
+                      <strong class="premium-item-value">{{ (selectedWebsite?.nameservers && selectedWebsite.nameservers[0]) || activeAccount.nameserver_1 || 'ns1.dns-parking.com' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Current nameserver 2</span>
-                      <strong class="premium-item-value">{{ activeAccount.nameserver_2 || 'ns2.dns-parking.com' }}</strong>
+                      <strong class="premium-item-value">{{ (selectedWebsite?.nameservers && selectedWebsite.nameservers[1]) || activeAccount.nameserver_2 || 'ns2.dns-parking.com' }}</strong>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <!-- Hosting Details -->
+              <!-- 2. Server Details (Half Width) -->
               <div class="premium-card">
+                <div class="premium-card-header">
+                  <div class="premium-card-icon"><app-icon name="server"></app-icon></div>
+                  <h3>Server Details</h3>
+                </div>
+                <div class="premium-card-body">
+                  <div class="premium-list">
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Server Name</span>
+                      <strong class="premium-item-value">{{ activeAccount.node_name || 'server1874' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Server Location</span>
+                      <strong class="premium-item-value">{{ activeAccount.node_location || 'Asia (India)' }}</strong>
+                    </div>
+                    <div class="premium-item premium-item-col">
+                      <span class="premium-item-label">Backups location</span>
+                      <strong class="premium-item-value">{{ activeAccount.backup_location || 'Singapore' }}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 3. Hosting Details (Full Width) -->
+              <div class="premium-card full-span">
                 <div class="premium-card-header">
                   <div class="premium-card-icon"><app-icon name="performance"></app-icon></div>
                   <h3>Hosting Details</h3>
@@ -540,39 +636,154 @@
                             :style="{ width: metric.percent == null ? '0%' : metric.percent + '%' }"
                           ></div>
                         </div>
-                        <span class="premium-usage-meta">{{ metric.meta }}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Graphs Grid (Two in a Row) -->
+                  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap:1.25rem; margin-top:1.5rem; padding-top:1.25rem; border-top:1px solid rgba(255,255,255,0.08);">
+                    <!-- 1. Containerwise Resource Usage Graph -->
+                    <div style="background:rgba(0,0,0,0.1); padding:1rem; border-radius:10px; border:1px solid rgba(255,255,255,0.05); display:flex; flex-direction:column;">
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+                        <div>
+                          <h4 style="margin:0; font-weight:700; font-size:0.9rem; color:var(--text-color, #38bdf8); display:flex; align-items:center; gap:0.4rem;">
+                            <span style="color:var(--text-color, #38bdf8);">📈 Container Resource &amp; CPU Usage Graph</span>
+                          </h4>
+                          <small style="color:#8c979e; font-size:0.72rem;">Live &amp; historical usage sampled from container stack</small>
+                        </div>
+                        <div style="display:flex; gap:0.25rem; align-items:center;">
+                          <button v-for="range in resourceUsage.windows" :key="'hp-w-' + range"
+                            type="button"
+                            class="secondary-button"
+                            :class="{ 'primary-button': resourceRange === range }"
+                            style="padding:2px 6px; font-size:0.7rem; min-width:auto;"
+                            @click="changeResourceRange(range)">
+                            {{ range }}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div class="resource-chart-wrap" style="height:160px; position:relative; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.05); padding:0.5rem 0;">
+                        <svg class="resource-chart" viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="Resource usage graph" style="width:100%; height:160px;">
+                          <line v-for="tick in [0, 45, 90, 135, 180]" :key="'hpt-' + tick" x1="0" x2="720" :y1="tick" :y2="tick" stroke="rgba(255,255,255,0.05)" stroke-width="1"></line>
+                          <g v-for="series in resourceSeries" :key="'hps-' + series.key">
+                            <path class="resource-fill" :d="resourceFillPath(series.key, series.max)" :style="{ color: series.color }"></path>
+                            <path class="resource-line" :d="resourcePath(series.key, series.max)" :style="{ color: series.color }"></path>
+                          </g>
+                        </svg>
+                      </div>
+
+                      <div class="resource-legend" style="display:flex; justify-content:space-between; align-items:center; margin-top:0.5rem; font-size:0.75rem;">
+                        <div style="display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap;">
+                          <span v-for="series in resourceSeries" :key="'hpleg-' + series.key" style="display:flex; align-items:center; gap:0.35rem;">
+                            <i :style="{ background: series.color }" style="display:inline-block; width:8px; height:8px; border-radius:50%;"></i>
+                            {{ series.label }}
+                          </span>
+                        </div>
+                        <small v-if="resourceChartPoints.length" style="color:#8c979e; font-size:0.7rem;">
+                          {{ formatSampleTime(latestResourceUsage.sampled_at) }}
+                        </small>
                       </div>
                     </div>
 
+                    <!-- 2. Dedicated RAM Usage & History Graph -->
+                    <div style="background:rgba(0,0,0,0.1); padding:1rem; border-radius:10px; border:1px solid rgba(255,255,255,0.05); display:flex; flex-direction:column;">
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+                        <div>
+                          <h4 style="margin:0; font-weight:700; font-size:0.9rem; color:var(--text-color, #38bdf8); display:flex; align-items:center; gap:0.4rem;">
+                            <span style="color:var(--text-color, #38bdf8);">🧠 Dedicated RAM Memory Usage</span>
+                          </h4>
+                          <small style="color:#8c979e; font-size:0.72rem;">Memory consumption (RAM MB) vs limit over time</small>
+                        </div>
+                        <div style="display:flex; gap:0.25rem; align-items:center;">
+                          <button v-for="range in resourceUsage.windows" :key="'ram-w-' + range"
+                            type="button"
+                            class="secondary-button"
+                            :class="{ 'primary-button': resourceRange === range }"
+                            style="padding:2px 6px; font-size:0.7rem; min-width:auto;"
+                            @click="changeResourceRange(range)">
+                            {{ range }}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div class="resource-chart-wrap" style="height:160px; position:relative; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.05); padding:0.5rem 0;">
+                        <svg class="resource-chart" viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="RAM memory usage graph" style="width:100%; height:160px;">
+                          <line v-for="tick in [0, 45, 90, 135, 180]" :key="'ramt-' + tick" x1="0" x2="720" :y1="tick" :y2="tick" stroke="rgba(255,255,255,0.05)" stroke-width="1"></line>
+                          <g>
+                            <path class="resource-fill" :d="resourceFillPath('memory_mb', Math.max(Number(latestResourceUsage.memory_limit_mb || 0), ...resourceChartPoints.map(p => Number(p.memory_mb || 0)), 1))" style="color: #245a97; fill-opacity: 0.3;"></path>
+                            <path class="resource-line" :d="resourcePath('memory_mb', Math.max(Number(latestResourceUsage.memory_limit_mb || 0), ...resourceChartPoints.map(p => Number(p.memory_mb || 0)), 1))" style="color: #38bdf8; stroke-width: 2.5; filter: drop-shadow(0 0 6px rgba(56,189,248,0.5));"></path>
+                          </g>
+                        </svg>
+                      </div>
+
+                      <div class="resource-legend" style="display:flex; justify-content:space-between; align-items:center; margin-top:0.5rem; font-size:0.75rem;">
+                        <div style="display:flex; gap:1rem; align-items:center;">
+                          <span style="display:flex; align-items:center; gap:0.35rem;">
+                            <i style="background: #38bdf8; display:inline-block; width:8px; height:8px; border-radius:50%;"></i>
+                            RAM: <strong>{{ formatResource(latestResourceUsage.memory_mb, "MB") }}</strong>
+                          </span>
+                          <span style="display:flex; align-items:center; gap:0.35rem; color:#8c979e;">
+                            Limit: <strong>{{ formatResource(latestResourceUsage.memory_limit_mb || activeAccount.memory_mb, "MB") }}</strong>
+                          </span>
+                        </div>
+                        <small v-if="resourceChartPoints.length" style="color:#8c979e; font-size:0.7rem;">
+                          {{ resourceChartPoints.length }} points
+                        </small>
+                      </div>
+                    </div>
+
+                    <!-- 3. Bandwidth Usage & History Graph -->
+                    <div style="background:rgba(0,0,0,0.1); padding:1rem; border-radius:10px; border:1px solid rgba(255,255,255,0.05); display:flex; flex-direction:column;">
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem;">
+                        <div>
+                          <h4 style="margin:0; font-weight:700; font-size:0.9rem; color:var(--text-color, #38bdf8); display:flex; align-items:center; gap:0.4rem;">
+                            <span style="color:var(--text-color, #38bdf8);">🌐 Bandwidth &amp; Network Traffic History</span>
+                          </h4>
+                          <small style="color:#8c979e; font-size:0.72rem;">HTTP transfer volume &amp; traffic bytes (MB) over time</small>
+                        </div>
+                        <div style="display:flex; gap:0.25rem; align-items:center;">
+                          <button v-for="range in resourceUsage.windows" :key="'bw-w-' + range"
+                            type="button"
+                            class="secondary-button"
+                            :class="{ 'primary-button': resourceRange === range }"
+                            style="padding:2px 6px; font-size:0.7rem; min-width:auto;"
+                            @click="changeResourceRange(range)">
+                            {{ range }}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div class="resource-chart-wrap" style="height:160px; position:relative; background:rgba(0,0,0,0.15); border-radius:8px; border:1px solid rgba(255,255,255,0.05); padding:0.5rem 0;">
+                        <svg class="resource-chart" viewBox="0 0 720 180" preserveAspectRatio="none" role="img" aria-label="Bandwidth usage graph" style="width:100%; height:160px;">
+                          <line v-for="tick in [0, 45, 90, 135, 180]" :key="'bwt-' + tick" x1="0" x2="720" :y1="tick" :y2="tick" stroke="rgba(255,255,255,0.05)" stroke-width="1"></line>
+                          <g>
+                            <path class="resource-fill" :d="resourceFillPath('bandwidth_mb', Math.max(Number(activeAccount.bandwidth_mb || 0), ...resourceChartPoints.map(p => Number(p.bandwidth_mb || 0)), 1))" style="color: #10b981; fill-opacity: 0.25;"></path>
+                            <path class="resource-line" :d="resourcePath('bandwidth_mb', Math.max(Number(activeAccount.bandwidth_mb || 0), ...resourceChartPoints.map(p => Number(p.bandwidth_mb || 0)), 1))" style="color: #10b981; stroke-width: 2.5; filter: drop-shadow(0 0 6px rgba(16,185,129,0.5));"></path>
+                          </g>
+                        </svg>
+                      </div>
+
+                      <div class="resource-legend" style="display:flex; justify-content:space-between; align-items:center; margin-top:0.5rem; font-size:0.75rem;">
+                        <div style="display:flex; gap:1rem; align-items:center;">
+                          <span style="display:flex; align-items:center; gap:0.35rem;">
+                            <i style="background: #10b981; display:inline-block; width:8px; height:8px; border-radius:50%;"></i>
+                            Bandwidth: <strong>{{ formatResource(latestResourceUsage.bandwidth_mb || (analytics && analytics.summary ? analytics.summary.bandwidth_bytes / (1024*1024) : 0), "MB") }}</strong>
+                          </span>
+                          <span style="display:flex; align-items:center; gap:0.35rem; color:#8c979e;">
+                            Quota: <strong>{{ activeAccount.bandwidth_mb > 0 ? formatResource(activeAccount.bandwidth_mb, "MB") : 'Unlimited' }}</strong>
+                          </span>
+                        </div>
+                        <small v-if="resourceChartPoints.length" style="color:#8c979e; font-size:0.7rem;">
+                          {{ resourceChartPoints.length }} data points
+                        </small>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <!-- Server Details -->
-              <div class="premium-card">
-                <div class="premium-card-header">
-                  <div class="premium-card-icon"><app-icon name="server"></app-icon></div>
-                  <h3>Server Details</h3>
-                </div>
-                <div class="premium-card-body">
-                  <div class="premium-list">
-                    <div class="premium-item premium-item-col">
-                      <span class="premium-item-label">Server Name</span>
-                      <strong class="premium-item-value">{{ activeAccount.node_name || 'server1874' }}</strong>
-                    </div>
-                    <div class="premium-item premium-item-col">
-                      <span class="premium-item-label">Server Location</span>
-                      <strong class="premium-item-value">{{ activeAccount.node_location || 'Asia (India)' }}</strong>
-                    </div>
-                    <div class="premium-item premium-item-col">
-                      <span class="premium-item-label">Backups location</span>
-                      <strong class="premium-item-value">{{ activeAccount.backup_location || 'Singapore' }}</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- FTP Details -->
+              <!-- 4. FTP Details (Half Width) -->
               <div class="premium-card">
                 <div class="premium-card-header">
                   <div class="premium-card-icon"><app-icon name="ftp"></app-icon></div>
@@ -582,11 +793,11 @@
                   <div class="premium-list">
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">FTP IP</span>
-                      <strong class="premium-item-value">ftp://{{ activeAccount.node_hostname || '127.0.0.1' }}</strong>
+                      <strong class="premium-item-value">{{ selectedWebsite?.server_ip || selectedWebsite?.ip_address || activeAccount.node_ip || '157.15.203.66' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">FTP Hostname</span>
-                      <strong class="premium-item-value">ftp://{{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com') }}</strong>
+                      <strong class="premium-item-value">ftp.{{ selectedWebsite ? selectedWebsite.domain : (selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : (websites.length ? websites[0].domain : 'example.com')) }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">FTP Username</span>
@@ -600,8 +811,8 @@
                 </div>
               </div>
 
-              <!-- Node.js details -->
-              <div class="premium-card full-span">
+              <!-- 5. Node.js Details (Half Width) -->
+              <div class="premium-card">
                 <div class="premium-card-header">
                   <div class="premium-card-icon"><app-icon name="terminal"></app-icon></div>
                   <h3>Node.js Details</h3>
@@ -670,7 +881,14 @@
           </section>
 
           <!-- ═══════════════════════════════════════════════════════════ ANALYTICS -->
-          <section v-if="activePage === 'analytics'" class="page-stack">
+          <section v-if="activePage === 'analytics'" class="page-stack" style="position: relative; min-height: 400px;">
+            <!-- Translucent Loading Overlay for Analytics -->
+            <div v-if="isAnalyticsLoading" class="analytics-loading-overlay" role="status" aria-label="Loading analytics data">
+              <div class="translucent-overlay-card">
+                <div class="mango-loading-ring"></div>
+                <span class="loading-overlay-text">Loading analytics data...</span>
+              </div>
+            </div>
             <div class="panel analytics-toolbar">
               <div>
                 <h2>Analytics</h2>

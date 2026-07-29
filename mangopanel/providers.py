@@ -1,4 +1,5 @@
 import time
+import logging
 from dataclasses import asdict, dataclass, field
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, quote
@@ -611,6 +612,174 @@ class CloudflareDNSProvider(DNSProvider):
         zone = self.ensure_zone(zone_name)
         self._request("DELETE", f"/zones/{zone['id']}")
         return {"provider": self.provider_name, "zone_name": zone_name, "provider_zone_id": zone["id"], "status": "deleted", "deleted_at": int(time.time())}
+
+    def ensure_acme_rule(self, zone_name):
+        acme_res = self._ensure_acme_page_rule(zone_name)
+        sec_res = self.ensure_security_challenge_rule(zone_name)
+        return {
+            "status": acme_res.get("status", "ok"),
+            "acme_rule": acme_res,
+            "security_challenge_rule": sec_res,
+        }
+
+    def _ensure_acme_page_rule(self, zone_name):
+        if not self.configured():
+            return {"status": "skipped", "reason": "cloudflare_not_configured"}
+        if self.api_token.startswith(("secret-", "test-", "fake-", "dev-", "cf_test_")):
+            return {"status": "mocked", "rule_id": "mock-acme-rule-123"}
+        try:
+            zone = self.ensure_zone(zone_name)
+            if not zone or not isinstance(zone, dict) or "id" not in zone:
+                return {"status": "skipped", "reason": "zone_not_found"}
+            zone_id = zone["id"]
+            clean_domain = str(zone_name).rstrip(".")
+            target_pattern = f"http://*{clean_domain}/.well-known/acme-challenge/*"
+
+            rules = self._request("GET", f"/zones/{zone_id}/pagerules") or []
+            if isinstance(rules, list):
+                for r in rules:
+                    if not isinstance(r, dict):
+                        continue
+                    for t in r.get("targets", []):
+                        constraint = t.get("constraint", {})
+                        val = constraint.get("value", "")
+                        if ".well-known/acme-challenge/" in val and clean_domain in val:
+                            return {"status": "exists", "rule_id": r.get("id"), "zone_id": zone_id}
+
+            payload = {
+                "targets": [
+                    {
+                        "target": "url",
+                        "constraint": {
+                            "operator": "matches",
+                            "value": target_pattern,
+                        },
+                    }
+                ],
+                "actions": [
+                    {
+                        "id": "always_use_https",
+                        "value": "off",
+                    }
+                ],
+                "priority": 1,
+                "status": "active",
+            }
+            res = self._request("POST", f"/zones/{zone_id}/pagerules", payload=payload)
+            rule_id = res.get("id") if isinstance(res, dict) else None
+            return {"status": "created", "rule_id": rule_id, "zone_id": zone_id}
+        except Exception as exc:
+            logging.warning("Failed to ensure Cloudflare ACME page rule for %s: %s", zone_name, exc)
+            return {"status": "error", "error": str(exc)}
+
+    def ensure_security_challenge_rule(self, zone_name):
+        """Creates default Managed Challenge rule for WordPress, Joomla, Drupal, Magento, PrestaShop, Ghost & common CMS login/admin endpoints."""
+        if not self.configured():
+            return {"status": "skipped", "reason": "cloudflare_not_configured"}
+        if self.api_token.startswith(("secret-", "test-", "fake-", "dev-", "cf_test_")):
+            return {"status": "mocked", "rule_id": "mock-challenge-rule-456"}
+        try:
+            zone = self.ensure_zone(zone_name)
+            if not zone or not isinstance(zone, dict) or "id" not in zone:
+                return {"status": "skipped", "reason": "zone_not_found"}
+            zone_id = zone["id"]
+            clean_domain = str(zone_name).rstrip(".")
+
+            expression = (
+                '(http.request.uri.path contains "/wp-login.php" or '
+                'http.request.uri.path contains "/xmlrpc.php" or '
+                'http.request.uri.path contains "/administrator" or '
+                'http.request.uri.path contains "/user/login" or '
+                'http.request.uri.path contains "/typo3" or '
+                'http.request.uri.path contains "/ghost" or '
+                'http.request.uri.path eq "/admin" or '
+                'http.request.uri.path starts_with "/admin/")'
+            )
+            rule_payload = {
+                "action": "managed_challenge",
+                "description": "MangoPanel CMS & Admin Login Browser Challenge",
+                "expression": expression,
+                "enabled": True,
+            }
+
+            # 1. Custom WAF Ruleset API (Modern Cloudflare WAF)
+            try:
+                entry_res = self._request("PUT", f"/zones/{zone_id}/rulesets/phases/http_request_firewall_custom/entrypoint", payload={"rules": [rule_payload]})
+                if entry_res and isinstance(entry_res, dict) and "id" in entry_res:
+                    return {"status": "created", "type": "ruleset", "zone_id": zone_id}
+            except Exception:
+                try:
+                    rulesets = self._request("GET", f"/zones/{zone_id}/rulesets") or []
+                    custom_rs = None
+                    if isinstance(rulesets, list):
+                        for rs in rulesets:
+                            if isinstance(rs, dict) and rs.get("phase") == "http_request_firewall_custom":
+                                custom_rs = rs
+                                break
+
+                    if custom_rs:
+                        rs_id = custom_rs.get("id")
+                        existing_rs = self._request("GET", f"/zones/{zone_id}/rulesets/{rs_id}") or {}
+                        existing_rules = existing_rs.get("rules", []) if isinstance(existing_rs, dict) else []
+                        already_exists = any("wp-login.php" in str(r.get("expression", "")) or "/administrator" in str(r.get("expression", "")) for r in existing_rules if isinstance(r, dict))
+                        if not already_exists:
+                            self._request("POST", f"/zones/{zone_id}/rulesets/{rs_id}/rules", payload=rule_payload)
+                            return {"status": "created", "type": "ruleset", "zone_id": zone_id}
+                        return {"status": "exists", "type": "ruleset", "zone_id": zone_id}
+                    else:
+                        ruleset_payload = {
+                            "name": "MangoPanel Security Ruleset",
+                            "description": "Default browser challenge for CMS login and admin endpoints",
+                            "kind": "zone",
+                            "phase": "http_request_firewall_custom",
+                            "rules": [rule_payload],
+                        }
+                        self._request("POST", f"/zones/{zone_id}/rulesets", payload=ruleset_payload)
+                        return {"status": "created", "type": "ruleset", "zone_id": zone_id}
+                except Exception as w_err:
+                    logging.info("WAF Ruleset API notice for %s, falling back to Page Rules: %s", zone_name, w_err)
+
+            # 2. Fallback: Page Rules API with Browser Integrity Check & High Security
+            target_pattern = f"*{clean_domain}/wp-login.php*"
+            rules = self._request("GET", f"/zones/{zone_id}/pagerules") or []
+            if isinstance(rules, list):
+                for r in rules:
+                    if not isinstance(r, dict):
+                        continue
+                    for t in r.get("targets", []):
+                        val = t.get("constraint", {}).get("value", "")
+                        if ("wp-login.php" in val or "administrator" in val) and clean_domain in val:
+                            return {"status": "exists", "type": "pagerule", "rule_id": r.get("id"), "zone_id": zone_id}
+
+            page_payload = {
+                "targets": [
+                    {
+                        "target": "url",
+                        "constraint": {
+                            "operator": "matches",
+                            "value": target_pattern,
+                        },
+                    }
+                ],
+                "actions": [
+                    {
+                        "id": "browser_check",
+                        "value": "on",
+                    },
+                    {
+                        "id": "security_level",
+                        "value": "high",
+                    }
+                ],
+                "priority": 2,
+                "status": "active",
+            }
+            res = self._request("POST", f"/zones/{zone_id}/pagerules", payload=page_payload)
+            rule_id = res.get("id") if isinstance(res, dict) else None
+            return {"status": "created", "type": "pagerule", "rule_id": rule_id, "zone_id": zone_id}
+        except Exception as exc:
+            logging.warning("Failed to ensure Cloudflare security challenge rule for %s: %s", zone_name, exc)
+            return {"status": "error", "error": str(exc)}
 
     def validate(self):
         if not self.configured():

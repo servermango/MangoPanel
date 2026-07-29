@@ -239,7 +239,7 @@
           <div v-for="section in sidebarSections" :key="section.label" class="nav-section">
             <span class="nav-group">{{ section.label }}</span>
             <button v-for="item in section.items" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
-              <span class="nav-item-icon">{{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[item.target] || '•' }}</span>
+              <span class="nav-item-icon">{{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',cpu:'🖥',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[item.target] || '•' }}</span>
               <span>{{ item.label }}</span>
             </button>
           </div>
@@ -255,7 +255,7 @@
         <header v-if="token" class="topbar">
           <div class="topbar-context">
             <div class="topbar-page-icon admin-page-glyph">
-              {{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[activePage] || activeMenuItem.label.slice(0, 1) }}
+              {{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',cpu:'🖥',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[activePage] || activeMenuItem.label.slice(0, 1) }}
             </div>
             <div class="topbar-page-meta">
               <span class="topbar-page-title-row">
@@ -363,6 +363,24 @@
                   <small>generated account compose files</small>
                 </div>
 
+                <div class="metric metric-clickable" @click="goTo('cpu')" title="View Live CPU Load">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>CPU Load</span>
+                    <span style="font-size:0.75rem; color:#a855f7;">🖥 CPU →</span>
+                  </div>
+                  <strong :style="{ color: displayCpu.sys_cpu_pct >= 90 ? '#ef4444' : displayCpu.sys_cpu_pct >= 60 ? '#fdb528' : '#a855f7' }">{{ displayCpu.sys_cpu_pct.toFixed(1) }}%</strong>
+                  <small>{{ displayCpu.load_avg_1m.toFixed(2) }} 1m load avg</small>
+                </div>
+
+                <div class="metric metric-clickable" @click="goTo('ram')" title="View Live RAM Usage">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>RAM Usage</span>
+                    <span style="font-size:0.75rem; color:#38bdf8;">🧠 RAM →</span>
+                  </div>
+                  <strong :style="{ color: displayRam.used_pct >= 90 ? '#ef4444' : displayRam.used_pct >= 75 ? '#fdb528' : '#38bdf8' }">{{ displayRam.used_pct.toFixed(1) }}%</strong>
+                  <small>{{ (displayRam.used_mb / 1024).toFixed(1) }} GB of {{ (displayRam.total_mb / 1024).toFixed(1) }} GB</small>
+                </div>
+
                 <div class="metric metric-clickable" @click="goTo('storage')" title="View Storage Breakdown">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
                     <span>Disk Capacity</span>
@@ -408,7 +426,7 @@
                           <span style="font-size:0.75rem; color:#38bdf8;">⬇ Download</span>
                         </div>
                         <strong style="font-size:1.4rem; color:#38bdf8; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
-                          {{ networkLive.rx_rate_mbs > 1 ? networkLive.rx_rate_mbs + ' MB/s' : networkLive.rx_rate_kbs + ' KB/s' }}
+                          {{ displayNetwork.rx_rate_mbs > 1 ? displayNetwork.rx_rate_mbs.toFixed(2) + ' MB/s' : displayNetwork.rx_rate_kbs.toFixed(1) + ' KB/s' }}
                         </strong>
                         <small style="font-size:0.73rem; color:#8c979e;">Total: {{ networkLive.total_rx_human || '0 MB' }}</small>
                       </div>
@@ -420,7 +438,7 @@
                           <span style="font-size:0.75rem; color:#fdb528;">⬆ Upload</span>
                         </div>
                         <strong style="font-size:1.4rem; color:#fdb528; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
-                          {{ networkLive.tx_rate_mbs > 1 ? networkLive.tx_rate_mbs + ' MB/s' : networkLive.tx_rate_kbs + ' KB/s' }}
+                          {{ displayNetwork.tx_rate_mbs > 1 ? displayNetwork.tx_rate_mbs.toFixed(2) + ' MB/s' : displayNetwork.tx_rate_kbs.toFixed(1) + ' KB/s' }}
                         </strong>
                         <small style="font-size:0.73rem; color:#8c979e;">Total: {{ networkLive.total_tx_human || '0 MB' }}</small>
                       </div>
@@ -428,7 +446,7 @@
 
                     <div v-if="networkLive.top_network_users && networkLive.top_network_users.length > 0" style="font-size:0.78rem; color:#8c979e; display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
                       <span>Top Network User:</span>
-                      <strong style="color:#f7f7f9; font-family:'JetBrains Mono', monospace;">{{ networkLive.top_network_users[0].name }} ({{ networkLive.top_network_users[0].tx_kbs + networkLive.top_network_users[0].rx_kbs }} KB/s)</strong>
+                      <strong style="color:var(--text-color, #38bdf8); font-family:'JetBrains Mono', monospace;">{{ networkLive.top_network_users[0].name }} ({{ networkLive.top_network_users[0].tx_kbs + networkLive.top_network_users[0].rx_kbs }} KB/s)</strong>
                     </div>
                   </div>
                 </div>
@@ -457,7 +475,7 @@
                           <span style="font-size:0.75rem; color:#72e128;">📖 Read</span>
                         </div>
                         <strong style="font-size:1.4rem; color:#72e128; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
-                          {{ storageLive.read_rate_mbs > 1 ? storageLive.read_rate_mbs + ' MB/s' : storageLive.read_rate_kbs + ' KB/s' }}
+                          {{ displayStorage.read_rate_mbs > 1 ? displayStorage.read_rate_mbs.toFixed(2) + ' MB/s' : displayStorage.read_rate_kbs.toFixed(1) + ' KB/s' }}
                         </strong>
                         <small style="font-size:0.73rem; color:#8c979e;">Read IOPS active</small>
                       </div>
@@ -469,7 +487,7 @@
                           <span style="font-size:0.75rem; color:#ec4899;">✏️ Write</span>
                         </div>
                         <strong style="font-size:1.4rem; color:#ec4899; font-family:'JetBrains Mono', monospace; display:block; margin-top:0.25rem;">
-                          {{ storageLive.write_rate_mbs > 1 ? storageLive.write_rate_mbs + ' MB/s' : storageLive.write_rate_kbs + ' KB/s' }}
+                          {{ displayStorage.write_rate_mbs > 1 ? displayStorage.write_rate_mbs.toFixed(2) + ' MB/s' : displayStorage.write_rate_kbs.toFixed(1) + ' KB/s' }}
                         </strong>
                         <small style="font-size:0.73rem; color:#8c979e;">Write IOPS active</small>
                       </div>
@@ -477,7 +495,68 @@
 
                     <div v-if="storageLive.top_writers && storageLive.top_writers.length > 0" style="font-size:0.78rem; color:#8c979e; display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
                       <span>Top Disk Writer:</span>
-                      <strong style="color:#f7f7f9; font-family:'JetBrains Mono', monospace;">{{ storageLive.top_writers[0].name }} ({{ storageLive.top_writers[0].write_kbs }} KB/s)</strong>
+                      <strong style="color:var(--text-color, #38bdf8); font-family:'JetBrains Mono', monospace;">{{ storageLive.top_writers[0].name }} ({{ storageLive.top_writers[0].write_kbs }} KB/s)</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Live CPU Load Card -->
+                <div class="panel metric-clickable" @click="goTo('cpu')" title="Click to view detailed CPU Analytics tab">
+                  <div class="section-head">
+                    <div>
+                      <h2 style="display:flex; align-items:center; gap:0.5rem;">
+                        <span>🖥 Live CPU Load</span>
+                        <span class="pill pill-success" style="font-size:0.7rem; padding:2px 6px;">● SSE Live</span>
+                      </h2>
+                      <p>Real-time system CPU utilization and load averages (1m / 5m / 15m)</p>
+                    </div>
+                    <button class="ghost-button panel-toggle-btn" @click.stop="togglePanel('panel_live_cpu')" :title="isPanelCollapsed('panel_live_cpu') ? 'Expand Panel' : 'Minimize Panel'">
+                      {{ isPanelCollapsed('panel_live_cpu') ? '＋ Expand' : '－ Minimize' }}
+                    </button>
+                  </div>
+
+                  <div v-show="!isPanelCollapsed('panel_live_cpu')">
+                    <!-- Radial gauge-style CPU % + load metrics -->
+                    <div style="display:grid; grid-template-columns:auto 1fr; gap:1.5rem; align-items:center; margin-bottom:0.75rem;">
+                      <!-- SVG Gauge -->
+                      <div style="position:relative; width:100px; height:100px; flex-shrink:0;">
+                        <svg viewBox="0 0 100 100" style="width:100%; height:100%;">
+                          <circle cx="50" cy="50" r="42" fill="transparent" stroke="rgba(255,255,255,0.06)" stroke-width="12" stroke-dasharray="264" stroke-dashoffset="0" style="transform:rotate(-90deg); transform-origin:50% 50%;"></circle>
+                          <circle cx="50" cy="50" r="42" fill="transparent"
+                            :stroke="displayCpu.sys_cpu_pct >= 90 ? '#ef4444' : displayCpu.sys_cpu_pct >= 60 ? '#fdb528' : '#a855f7'"
+                            stroke-width="12"
+                            :stroke-dasharray="`${(displayCpu.sys_cpu_pct / 100 * 264).toFixed(1)} 264`"
+                            stroke-dashoffset="0"
+                            style="transform:rotate(-90deg); transform-origin:50% 50%; transition:stroke-dasharray 0.1s linear;"></circle>
+                          <text x="50" y="46" text-anchor="middle" dominant-baseline="middle"
+                            :fill="displayCpu.sys_cpu_pct >= 90 ? '#ef4444' : displayCpu.sys_cpu_pct >= 60 ? '#fdb528' : '#a855f7'"
+                            font-size="16" font-weight="700" font-family="JetBrains Mono, monospace">
+                            {{ displayCpu.sys_cpu_pct.toFixed(1) }}%
+                          </text>
+                          <text x="50" y="62" text-anchor="middle" dominant-baseline="middle" fill="#8c979e" font-size="9">
+                            {{ cpuLive.num_cpus }} core{{ cpuLive.num_cpus !== 1 ? 's' : '' }}
+                          </text>
+                        </svg>
+                      </div>
+                      <!-- Load Averages -->
+                      <div style="display:grid; gap:0.35rem;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.8rem; background:rgba(168,85,247,0.08); border:1px solid rgba(168,85,247,0.2); border-radius:6px; padding:0.35rem 0.6rem;">
+                          <span style="color:#8c979e;">Load 1m</span>
+                          <strong style="color:#a855f7; font-family:'JetBrains Mono', monospace;">{{ displayCpu.load_avg_1m.toFixed(2) }}</strong>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:0.8rem; background:rgba(168,85,247,0.05); border:1px solid rgba(168,85,247,0.15); border-radius:6px; padding:0.35rem 0.6rem;">
+                          <span style="color:#8c979e;">Load 5m</span>
+                          <strong style="color:#a855f7; font-family:'JetBrains Mono', monospace;">{{ displayCpu.load_avg_5m.toFixed(2) }}</strong>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:0.8rem; background:rgba(168,85,247,0.03); border:1px solid rgba(168,85,247,0.1); border-radius:6px; padding:0.35rem 0.6rem;">
+                          <span style="color:#8c979e;">Load 15m</span>
+                          <strong style="color:#a855f7; font-family:'JetBrains Mono', monospace;">{{ displayCpu.load_avg_15m.toFixed(2) }}</strong>
+                        </div>
+                      </div>
+                    </div>
+                    <div v-if="cpuLive.top_cpu_users && cpuLive.top_cpu_users.length > 0" style="font-size:0.78rem; color:#8c979e; display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:6px 10px; border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+                      <span>Top CPU Process:</span>
+                      <strong style="color:var(--text-color, #38bdf8); font-family:'JetBrains Mono', monospace;">{{ cpuLive.top_cpu_users[0].name }} ({{ cpuLive.top_cpu_users[0].cpu_pct }}%)</strong>
                     </div>
                   </div>
                 </div>
@@ -681,16 +760,16 @@
                   <span>Live Read Rate</span>
                   <small style="color: #72e128; font-weight:600;">SSE Stream</small>
                 </div>
-                <strong>{{ storageLive.read_rate_mbs }} MB/s</strong>
-                <small>{{ storageLive.read_rate_kbs }} KB/sec</small>
+                <strong>{{ displayStorage.read_rate_mbs > 1 ? displayStorage.read_rate_mbs.toFixed(2) + ' MB/s' : displayStorage.read_rate_kbs.toFixed(1) + ' KB/s' }}</strong>
+                <small>Read throughput active</small>
               </div>
               <div class="metric">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                   <span>Live Write Rate</span>
                   <small style="color: #fdb528; font-weight:600;">SSE Stream</small>
                 </div>
-                <strong>{{ storageLive.write_rate_mbs }} MB/s</strong>
-                <small>{{ storageLive.write_rate_kbs }} KB/sec</small>
+                <strong>{{ displayStorage.write_rate_mbs > 1 ? displayStorage.write_rate_mbs.toFixed(2) + ' MB/s' : displayStorage.write_rate_kbs.toFixed(1) + ' KB/s' }}</strong>
+                <small>Write throughput active</small>
               </div>
               <div class="metric">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -925,7 +1004,7 @@
                   </li>
                 </ul>
 
-                <h3 style="font-size:1rem; margin-bottom:0.5rem; color:#f7f7f9;">WHM Storage Maintenance & Cleanup</h3>
+                <h3 style="font-size:1rem; margin-bottom:0.5rem; color:var(--text-color, #38bdf8);">WHM Storage Maintenance & Cleanup</h3>
                 <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem;">
                   <button class="secondary-button" @click="runStorageCleanup('docker')" :disabled="storageCleanupRunning">
                     🧹 Prune Docker Cache
@@ -951,7 +1030,7 @@
                 </div>
 
                 <div style="margin-top:1.5rem; border-top:1px solid rgba(255,255,255,0.08); padding-top:1rem;">
-                  <h3 style="font-size:1rem; margin-bottom:0.5rem; color:#f7f7f9;">Storage Alert Thresholds</h3>
+                  <h3 style="font-size:1rem; margin-bottom:0.5rem; color:var(--text-color, #38bdf8);">Storage Alert Thresholds</h3>
                   <form @submit.prevent="saveStorageAlerts">
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; margin-bottom:0.75rem;">
                       <div>
@@ -1030,7 +1109,7 @@
                 <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:1rem;">
                   <span style="font-size:0.78rem; color:#8c979e;">Inbound Rate (Download / Rx)</span>
                   <div style="font-size:1.25rem; font-weight:700; color:#38bdf8; font-family:'JetBrains Mono', monospace; margin-top:0.2rem;">
-                    {{ networkLive.rx_rate_mbs > 1 ? networkLive.rx_rate_mbs + ' MB/s' : networkLive.rx_rate_kbs + ' KB/s' }}
+                    {{ displayNetwork.rx_rate_mbs > 1 ? displayNetwork.rx_rate_mbs.toFixed(2) + ' MB/s' : displayNetwork.rx_rate_kbs.toFixed(1) + ' KB/s' }}
                   </div>
                   <small style="color:#606a70;">Total: {{ networkLive.total_rx_human || '0 MB' }}</small>
                 </div>
@@ -1038,7 +1117,7 @@
                 <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:1rem;">
                   <span style="font-size:0.78rem; color:#8c979e;">Outbound Rate (Upload / Tx)</span>
                   <div style="font-size:1.25rem; font-weight:700; color:#fdb528; font-family:'JetBrains Mono', monospace; margin-top:0.2rem;">
-                    {{ networkLive.tx_rate_mbs > 1 ? networkLive.tx_rate_mbs + ' MB/s' : networkLive.tx_rate_kbs + ' KB/s' }}
+                    {{ displayNetwork.tx_rate_mbs > 1 ? displayNetwork.tx_rate_mbs.toFixed(2) + ' MB/s' : displayNetwork.tx_rate_kbs.toFixed(1) + ' KB/s' }}
                   </div>
                   <small style="color:#606a70;">Total: {{ networkLive.total_tx_human || '0 MB' }}</small>
                 </div>
@@ -1158,7 +1237,7 @@
                       <tbody>
                         <tr v-for="sp in networkOverview.service_ports" :key="sp.service">
                           <td><strong>{{ sp.service }}</strong></td>
-                          <td><span style="font-family:'JetBrains Mono', monospace; font-weight:600; color:#f7f7f9;">{{ sp.ports }}</span></td>
+                          <td><span style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--text-color, #38bdf8);">{{ sp.ports }}</span></td>
                           <td><small>{{ sp.protocol }}</small></td>
                           <td><span class="pill pill-success">● {{ sp.status }}</span></td>
                         </tr>
@@ -1320,6 +1399,550 @@
                     </button>
                   </div>
                 </form>
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================================================ -->
+          <!-- CPU Tab                                                       -->
+          <!-- ============================================================ -->
+          <section v-if="activePage === 'cpu'" class="page-stack">
+            <!-- Top metrics row -->
+            <div class="metric-grid">
+              <div class="metric">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>CPU Utilization</span>
+                  <span class="pill" :class="displayCpu.sys_cpu_pct >= 90 ? 'pill-danger' : displayCpu.sys_cpu_pct >= 60 ? 'pill-warning' : 'pill-success'">
+                    {{ displayCpu.sys_cpu_pct >= 90 ? 'Critical' : displayCpu.sys_cpu_pct >= 60 ? 'High' : 'Normal' }}
+                  </span>
+                </div>
+                <strong style="font-size:2rem; font-family:'JetBrains Mono', monospace;" :style="{ color: displayCpu.sys_cpu_pct >= 90 ? '#ef4444' : displayCpu.sys_cpu_pct >= 60 ? '#fdb528' : '#a855f7' }">
+                  {{ displayCpu.sys_cpu_pct.toFixed(1) }}%
+                </strong>
+                <small>{{ cpuLive.num_cpus }} logical CPU core{{ cpuLive.num_cpus !== 1 ? 's' : '' }}</small>
+              </div>
+              <div class="metric">
+                <span>Load Avg (1m)</span>
+                <strong style="color:#a855f7;">{{ displayCpu.load_avg_1m.toFixed(2) }}</strong>
+                <small>processes waiting</small>
+              </div>
+              <div class="metric">
+                <span>Load Avg (5m)</span>
+                <strong style="color:#a855f7;">{{ displayCpu.load_avg_5m.toFixed(2) }}</strong>
+                <small>5-minute average</small>
+              </div>
+              <div class="metric">
+                <span>Load Avg (15m)</span>
+                <strong style="color:#a855f7;">{{ displayCpu.load_avg_15m.toFixed(2) }}</strong>
+                <small>15-minute trend</small>
+              </div>
+            </div>
+
+            <!-- Live Gauge + History Chart -->
+            <div class="two-column">
+              <!-- CPU Radial Gauge -->
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Live CPU Gauge</h2>
+                    <p>System-wide CPU utilization (all cores combined)</p>
+                  </div>
+                  <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <button class="ghost-button" style="padding:4px 10px; font-size:0.8rem;" @click="toggleCpuLive">
+                      {{ cpuLiveActive ? '⏸ Pause' : '▶ Resume' }}
+                    </button>
+                    <span class="pill pill-success" v-if="cpuLiveActive">● SSE Live</span>
+                    <span class="pill" v-else>Paused</span>
+                  </div>
+                </div>
+                <!-- Large Gauge -->
+                <div style="display:flex; flex-direction:column; align-items:center; padding:1.5rem 1rem;">
+                  <div style="position:relative; width:200px; height:200px;">
+                    <svg viewBox="0 0 100 100" style="width:100%; height:100%;">
+                      <circle cx="50" cy="50" r="42" fill="transparent" stroke="rgba(255,255,255,0.06)" stroke-width="12" stroke-dasharray="264" stroke-dashoffset="0" style="transform:rotate(-90deg); transform-origin:50% 50%;"></circle>
+                      <circle cx="50" cy="50" r="42" fill="transparent"
+                        :stroke="displayCpu.sys_cpu_pct >= 90 ? '#ef4444' : displayCpu.sys_cpu_pct >= 60 ? '#fdb528' : '#a855f7'"
+                        stroke-width="12"
+                        :stroke-dasharray="`${(displayCpu.sys_cpu_pct / 100 * 264).toFixed(1)} 264`"
+                        stroke-dashoffset="0"
+                        style="transform:rotate(-90deg); transform-origin:50% 50%; transition:stroke-dasharray 0.1s linear; filter:drop-shadow(0 0 8px currentColor);"></circle>
+                      <text x="50" y="44" text-anchor="middle" dominant-baseline="middle"
+                        :fill="displayCpu.sys_cpu_pct >= 90 ? '#ef4444' : displayCpu.sys_cpu_pct >= 60 ? '#fdb528' : '#a855f7'"
+                        font-size="22" font-weight="700" font-family="JetBrains Mono, monospace">
+                        {{ displayCpu.sys_cpu_pct.toFixed(1) }}%
+                      </text>
+                      <text x="50" y="60" text-anchor="middle" dominant-baseline="middle" fill="#8c979e" font-size="8">
+                        {{ cpuLive.num_cpus }} core{{ cpuLive.num_cpus !== 1 ? 's' : '' }} • {{ displayCpu.load_avg_1m.toFixed(2) }} load
+                      </text>
+                    </svg>
+                  </div>
+                  <!-- Threshold legend -->
+                  <div style="display:flex; gap:1rem; margin-top:0.5rem; font-size:0.78rem;">
+                    <span style="color:#a855f7;">● Normal</span>
+                    <span style="color:#fdb528;">● High (60%+)</span>
+                    <span style="color:#ef4444;">● Critical (90%+)</span>
+                  </div>
+                  <small style="color:#606a70; margin-top:0.5rem;">Updated: {{ cpuLive.timestamp ? cpuLive.timestamp.split('T')[1].slice(0,8) : 'N/A' }}</small>
+                </div>
+              </div>
+
+              <!-- CPU History Browsable Line Graph (Up to 3 Days / 72 Hours) -->
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2 style="display:flex; align-items:center; gap:0.5rem;">
+                      <span>📈 Historical CPU Load Graph</span>
+                      <span class="pill pill-success" style="font-size:0.7rem; padding:2px 6px;">3-Day Stored History</span>
+                    </h2>
+                    <p>Browse stored CPU utilization &amp; load trends over the past 3 days (72 hours).</p>
+                  </div>
+                  <!-- Timeframe selector buttons -->
+                  <div style="display:flex; gap:0.35rem; align-items:center;">
+                    <button v-for="r in ['1h', '6h', '24h', '72h']" :key="r"
+                      :class="cpuHistoryRange === r ? 'primary-button' : 'secondary-button'"
+                      style="padding:3px 10px; font-size:0.78rem;"
+                      @click="loadCpuHistory(r)">
+                      {{ { '1h': '1 Hour', '6h': '6 Hours', '24h': '24 Hours', '72h': '3 Days (72h)' }[r] }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- History Summary Stats -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+                  <div style="background:rgba(168,85,247,0.06); border:1px solid rgba(168,85,247,0.2); border-radius:8px; padding:0.6rem 0.8rem;">
+                    <span style="font-size:0.72rem; color:#8c979e; text-transform:uppercase; font-weight:700;">Avg CPU</span>
+                    <div style="font-size:1.3rem; font-weight:700; color:#a855f7; font-family:'JetBrains Mono', monospace; margin-top:0.1rem;">
+                      {{ cpuHistoryData.avg_cpu_pct || 0 }}%
+                    </div>
+                  </div>
+                  <div style="background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.2); border-radius:8px; padding:0.6rem 0.8rem;">
+                    <span style="font-size:0.72rem; color:#8c979e; text-transform:uppercase; font-weight:700;">Peak CPU</span>
+                    <div style="font-size:1.3rem; font-weight:700; color:#ef4444; font-family:'JetBrains Mono', monospace; margin-top:0.1rem;">
+                      {{ cpuHistoryData.peak_cpu_pct || 0 }}%
+                    </div>
+                  </div>
+                  <div style="background:rgba(114,225,40,0.06); border:1px solid rgba(114,225,40,0.2); border-radius:8px; padding:0.6rem 0.8rem;">
+                    <span style="font-size:0.72rem; color:#8c979e; text-transform:uppercase; font-weight:700;">Min CPU</span>
+                    <div style="font-size:1.3rem; font-weight:700; color:#72e128; font-family:'JetBrains Mono', monospace; margin-top:0.1rem;">
+                      {{ cpuHistoryData.min_cpu_pct || 0 }}%
+                    </div>
+                  </div>
+                  <div style="background:rgba(56,189,248,0.06); border:1px solid rgba(56,189,248,0.2); border-radius:8px; padding:0.6rem 0.8rem;">
+                    <span style="font-size:0.72rem; color:#8c979e; text-transform:uppercase; font-weight:700;">Avg Load 1m</span>
+                    <div style="font-size:1.3rem; font-weight:700; color:#38bdf8; font-family:'JetBrains Mono', monospace; margin-top:0.1rem;">
+                      {{ cpuHistoryData.avg_load_1m || 0 }}
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Interactive SVG Line Graph -->
+                <div v-if="cpuHistoryData.points && cpuHistoryData.points.length >= 2" style="position:relative; padding:0.5rem 0;">
+                  <svg viewBox="0 0 760 200" style="width:100%; height:200px; overflow:visible;">
+                    <defs>
+                      <linearGradient id="cpuHistGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#a855f7" stop-opacity="0.45"/>
+                        <stop offset="100%" stop-color="#a855f7" stop-opacity="0.02"/>
+                      </linearGradient>
+                    </defs>
+                    <!-- Y-Axis Gridlines & Percent Labels -->
+                    <g class="grid-lines">
+                      <line v-for="pct in [25, 50, 75, 100]" :key="'grid-' + pct"
+                        x1="0" :y1="200 - (pct / 100) * 180 - 10" x2="760" :y2="200 - (pct / 100) * 180 - 10"
+                        stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="4 4"/>
+                      <text v-for="pct in [25, 50, 75, 100]" :key="'lbl-' + pct"
+                        x="4" :y="200 - (pct / 100) * 180 - 14" fill="#8c979e" font-size="9" font-family="JetBrains Mono, monospace">
+                        {{ pct }}%
+                      </text>
+                    </g>
+
+                    <!-- Filled Area under CPU Line -->
+                    <path :d="buildCpuHistoryAreaPath(cpuHistoryData.points, 760, 200, 'sys_cpu_pct', 100)"
+                      fill="url(#cpuHistGrad)" stroke="none"/>
+
+                    <!-- CPU % Main Line -->
+                    <path :d="buildCpuHistorySvgPath(cpuHistoryData.points, 760, 200, 'sys_cpu_pct', 100)"
+                      fill="none" stroke="#a855f7" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+                      style="filter: drop-shadow(0 0 6px rgba(168,85,247,0.6));"/>
+
+                    <!-- Interactive Data Points / Hover Circles -->
+                    <g v-for="(pt, idx) in cpuHistoryData.points" :key="'pt-' + idx">
+                      <circle
+                        :cx="(idx * (760 / Math.max(1, cpuHistoryData.points.length - 1))).toFixed(1)"
+                        :cy="(200 - (Math.min(100, pt.sys_cpu_pct) / 100) * 180 - 10).toFixed(1)"
+                        r="3.5"
+                        fill="#a855f7"
+                        stroke="#0b0f19"
+                        stroke-width="1.5"
+                        style="cursor:pointer; transition:r 0.15s ease;"
+                        @mouseenter="hoveredCpuPoint = pt"
+                        @mouseleave="hoveredCpuPoint = null"/>
+                    </g>
+                  </svg>
+
+                  <!-- X-Axis Time Labels -->
+                  <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:#8c979e; margin-top:0.3rem; padding:0 4px; font-family:'JetBrains Mono', monospace;">
+                    <span>{{ cpuHistoryData.points[0].display_time }}</span>
+                    <span>{{ cpuHistoryData.points[Math.floor(cpuHistoryData.points.length / 2)].display_time }}</span>
+                    <span>{{ cpuHistoryData.points[cpuHistoryData.points.length - 1].display_time }}</span>
+                  </div>
+
+                  <!-- Hover Tooltip Popup -->
+                  <div v-if="hoveredCpuPoint"
+                    style="position:absolute; top:10px; right:10px; background:#0f172a; border:1px solid #a855f7; border-radius:8px; padding:0.6rem 0.9rem; font-size:0.78rem; box-shadow:0 10px 25px rgba(0,0,0,0.5); z-index:10; pointer-events:none;">
+                    <div style="font-weight:700; color:#f7f7f9; margin-bottom:0.25rem; font-family:'JetBrains Mono', monospace;">
+                      📅 {{ hoveredCpuPoint.display_time }}
+                    </div>
+                    <div style="color:#a855f7; font-weight:600;">
+                      CPU Utilization: <strong>{{ hoveredCpuPoint.sys_cpu_pct }}%</strong>
+                    </div>
+                    <div style="color:#38bdf8; font-size:0.74rem; margin-top:0.15rem;">
+                      Load Averages: 1m <strong>{{ hoveredCpuPoint.load_1m }}</strong> | 5m <strong>{{ hoveredCpuPoint.load_5m }}</strong> | 15m <strong>{{ hoveredCpuPoint.load_15m }}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-else style="padding:3rem; text-align:center; color:#8c979e;">
+                  <span style="font-size:2rem;">📊</span>
+                  <p style="margin-top:0.5rem;">Loading stored 3-day CPU history graph…</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Per-Container CPU Breakdown -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Live CPU Usage by Container / Stack</h2>
+                  <p>Real-time CPU consumption per Docker container, stack, and core service (updated every ~300ms via SSE).</p>
+                </div>
+              </div>
+
+              <!-- Top-level system summary bar -->
+              <div style="margin-bottom:1.5rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+                  <span style="font-size:0.82rem; color:#8c979e;">System Total CPU Usage</span>
+                  <strong style="font-family:'JetBrains Mono', monospace;" :style="{ color: displayCpu.sys_cpu_pct >= 90 ? '#ef4444' : displayCpu.sys_cpu_pct >= 60 ? '#fdb528' : '#a855f7' }">{{ displayCpu.sys_cpu_pct.toFixed(1) }}%</strong>
+                </div>
+                <div style="background:rgba(255,255,255,0.06); border-radius:6px; height:10px; overflow:hidden;">
+                  <div
+                    :style="{ width: displayCpu.sys_cpu_pct.toFixed(1) + '%', background: displayCpu.sys_cpu_pct >= 90 ? 'linear-gradient(90deg, #ef4444, #dc2626)' : displayCpu.sys_cpu_pct >= 60 ? 'linear-gradient(90deg, #fdb528, #f59e0b)' : 'linear-gradient(90deg, #a855f7, #7c3aed)', transition: 'width 0.1s linear' }"
+                    style="height:100%; border-radius:6px;"></div>
+                </div>
+              </div>
+
+              <!-- Per-container table -->
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th class="sortable-th" @click="sortBy('cpu_users', 'name')">Container / Stack {{ getSortIcon('cpu_users', 'name') }}</th>
+                      <th class="sortable-th" @click="sortBy('cpu_users', 'stack_type')">Stack Type {{ getSortIcon('cpu_users', 'stack_type') }}</th>
+                      <th class="sortable-th" @click="sortBy('cpu_users', 'associated_domain')">Domain {{ getSortIcon('cpu_users', 'associated_domain') }}</th>
+                      <th class="sortable-th" @click="sortBy('cpu_users', 'owner')">Account Owner {{ getSortIcon('cpu_users', 'owner') }}</th>
+                      <th class="sortable-th" @click="sortBy('cpu_users', 'cpu_pct')">CPU % {{ getSortIcon('cpu_users', 'cpu_pct') }}</th>
+                      <th>Memory Usage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="cu in getSortedList(cpuLive.top_cpu_users, 'cpu_users', sortState.colKey, sortState.colKey === 'cpu_pct')" :key="'cpu-' + cu.name">
+                      <td style="max-width:200px; word-break:break-all; overflow-wrap:anywhere;">
+                        <strong style="font-family:'JetBrains Mono', monospace;" :title="cu.name">{{ cu.name }}</strong>
+                      </td>
+                      <td><span class="pill">{{ cu.stack_type }}</span></td>
+                      <td>{{ cu.associated_domain }}</td>
+                      <td><small>{{ cu.owner }}</small></td>
+                      <td>
+                        <div style="display:flex; align-items:center; gap:0.5rem;">
+                          <div style="flex:1; background:rgba(255,255,255,0.06); border-radius:4px; height:6px; overflow:hidden; min-width:60px;">
+                            <div
+                              :style="{ width: Math.min(cu.cpu_pct, 100) + '%', background: cu.cpu_pct >= 90 ? '#ef4444' : cu.cpu_pct >= 60 ? '#fdb528' : '#a855f7', transition:'width 0.3s ease' }"
+                              style="height:100%; border-radius:4px;"></div>
+                          </div>
+                          <strong
+                            :style="{ color: cu.cpu_pct >= 90 ? '#ef4444' : cu.cpu_pct >= 60 ? '#fdb528' : (cu.cpu_pct > 0 ? '#a855f7' : '#8c979e') }"
+                            style="font-family:'JetBrains Mono', monospace; font-size:0.9rem; min-width:3.5rem; text-align:right;">
+                            {{ cu.cpu_pct.toFixed(2) }}%
+                          </strong>
+                        </div>
+                      </td>
+                      <td><small style="font-family:'JetBrains Mono', monospace; color:#8c979e;">{{ cu.mem_str || 'N/A' }}</small></td>
+                    </tr>
+                    <tr v-if="!cpuLive.top_cpu_users || cpuLive.top_cpu_users.length === 0">
+                      <td colspan="6" style="text-align:center; color:#8c979e; padding:2rem;">No active container CPU data detected. Docker stats may not be available.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ RAM ANALYTICS -->
+          <section v-if="activePage === 'ram'" class="page-stack">
+            <!-- Top metrics row -->
+            <div class="metric-grid">
+              <div class="metric">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>RAM Utilization</span>
+                  <span class="pill" :class="displayRam.used_pct >= 90 ? 'pill-danger' : displayRam.used_pct >= 75 ? 'pill-warning' : 'pill-success'">
+                    {{ displayRam.used_pct >= 90 ? 'Critical' : displayRam.used_pct >= 75 ? 'High' : 'Normal' }}
+                  </span>
+                </div>
+                <strong style="font-size:2rem; font-family:'JetBrains Mono', monospace;" :style="{ color: displayRam.used_pct >= 90 ? '#ef4444' : displayRam.used_pct >= 75 ? '#fdb528' : '#38bdf8' }">
+                  {{ displayRam.used_pct.toFixed(1) }}%
+                </strong>
+                <small>{{ (displayRam.used_mb / 1024).toFixed(2) }} GB of {{ (displayRam.total_mb / 1024).toFixed(2) }} GB total</small>
+              </div>
+              <div class="metric">
+                <span>Available RAM</span>
+                <strong style="color:#72e128;">{{ (displayRam.available_mb / 1024).toFixed(2) }} GB</strong>
+                <small>{{ ramLive.available_mb }} MB unallocated</small>
+              </div>
+              <div class="metric">
+                <span>Buffers &amp; Cache</span>
+                <strong style="color:#38bdf8;">{{ (ramLive.buffers_cached_mb / 1024).toFixed(2) }} GB</strong>
+                <small>kernel memory page cache</small>
+              </div>
+              <div class="metric">
+                <span>Swap Usage</span>
+                <strong :style="{ color: ramLive.swap_used_pct > 50 ? '#ef4444' : '#a855f7' }">{{ ramLive.swap_used_mb }} MB</strong>
+                <small>of {{ ramLive.swap_total_mb }} MB total swap</small>
+              </div>
+            </div>
+
+            <!-- Live Radial Gauge + 3-Day History Chart -->
+            <div class="two-column">
+              <!-- RAM Radial Gauge -->
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2>Live RAM Gauge</h2>
+                    <p>System physical memory utilization (physical RAM)</p>
+                  </div>
+                  <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <button class="ghost-button" style="padding:4px 10px; font-size:0.8rem;" @click="toggleRamLive">
+                      {{ ramLiveActive ? '⏸ Pause' : '▶ Resume' }}
+                    </button>
+                    <span class="pill pill-success" v-if="ramLiveActive">● SSE Live</span>
+                    <span class="pill" v-else>Paused</span>
+                  </div>
+                </div>
+                <!-- Large Gauge -->
+                <div style="display:flex; flex-direction:column; align-items:center; padding:1.5rem 1rem;">
+                  <div style="position:relative; width:200px; height:200px;">
+                    <svg viewBox="0 0 100 100" style="width:100%; height:100%;">
+                      <circle cx="50" cy="50" r="42" fill="transparent" stroke="rgba(255,255,255,0.06)" stroke-width="12" stroke-dasharray="264" stroke-dashoffset="0" style="transform:rotate(-90deg); transform-origin:50% 50%;"></circle>
+                      <circle cx="50" cy="50" r="42" fill="transparent"
+                        :stroke="displayRam.used_pct >= 90 ? '#ef4444' : displayRam.used_pct >= 75 ? '#fdb528' : '#38bdf8'"
+                        stroke-width="12"
+                        :stroke-dasharray="`${(displayRam.used_pct / 100 * 264).toFixed(1)} 264`"
+                        stroke-dashoffset="0"
+                        style="transform:rotate(-90deg); transform-origin:50% 50%; transition:stroke-dasharray 0.1s linear; filter:drop-shadow(0 0 8px currentColor);"></circle>
+                      <text x="50" y="44" text-anchor="middle" dominant-baseline="middle"
+                        :fill="displayRam.used_pct >= 90 ? '#ef4444' : displayRam.used_pct >= 75 ? '#fdb528' : '#38bdf8'"
+                        font-size="22" font-weight="700" font-family="JetBrains Mono, monospace">
+                        {{ displayRam.used_pct.toFixed(1) }}%
+                      </text>
+                      <text x="50" y="60" text-anchor="middle" dominant-baseline="middle" fill="#8c979e" font-size="8">
+                        {{ (displayRam.used_mb / 1024).toFixed(1) }}GB / {{ (displayRam.total_mb / 1024).toFixed(1) }}GB
+                      </text>
+                    </svg>
+                  </div>
+                  <!-- Threshold legend -->
+                  <div style="display:flex; gap:1rem; margin-top:0.5rem; font-size:0.78rem;">
+                    <span style="color:#38bdf8;">● Normal</span>
+                    <span style="color:#fdb528;">● High (75%+)</span>
+                    <span style="color:#ef4444;">● Critical (90%+)</span>
+                  </div>
+                  <small style="color:#606a70; margin-top:0.5rem;">Updated: {{ ramLive.timestamp ? ramLive.timestamp.split('T')[1].slice(0,8) : 'N/A' }}</small>
+                </div>
+              </div>
+
+              <!-- RAM History Browsable Line Graph (Up to 3 Days / 72 Hours) -->
+              <div class="panel">
+                <div class="section-head">
+                  <div>
+                    <h2 style="display:flex; align-items:center; gap:0.5rem;">
+                      <span>📈 Historical RAM Graph</span>
+                      <span class="pill pill-success" style="font-size:0.7rem; padding:2px 6px;">3-Day Stored History</span>
+                    </h2>
+                    <p>Browse stored memory utilization &amp; swap trends over the past 3 days (72 hours).</p>
+                  </div>
+                  <!-- Timeframe selector buttons -->
+                  <div style="display:flex; gap:0.35rem; align-items:center;">
+                    <button v-for="r in ['1h', '6h', '24h', '72h']" :key="r"
+                      :class="ramHistoryRange === r ? 'primary-button' : 'secondary-button'"
+                      style="padding:3px 10px; font-size:0.78rem;"
+                      @click="loadRamHistory(r)">
+                      {{ { '1h': '1 Hour', '6h': '6 Hours', '24h': '24 Hours', '72h': '3 Days (72h)' }[r] }}
+                    </button>
+                  </div>
+                </div>
+
+                <!-- History Summary Stats -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:0.75rem; margin-bottom:1rem;">
+                  <div style="background:rgba(56,189,248,0.06); border:1px solid rgba(56,189,248,0.2); border-radius:8px; padding:0.6rem 0.8rem;">
+                    <span style="font-size:0.72rem; color:#8c979e; text-transform:uppercase; font-weight:700;">Avg RAM</span>
+                    <div style="font-size:1.3rem; font-weight:700; color:#38bdf8; font-family:'JetBrains Mono', monospace; margin-top:0.1rem;">
+                      {{ ramHistoryData.avg_used_pct || 0 }}%
+                    </div>
+                  </div>
+                  <div style="background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.2); border-radius:8px; padding:0.6rem 0.8rem;">
+                    <span style="font-size:0.72rem; color:#8c979e; text-transform:uppercase; font-weight:700;">Peak RAM</span>
+                    <div style="font-size:1.3rem; font-weight:700; color:#ef4444; font-family:'JetBrains Mono', monospace; margin-top:0.1rem;">
+                      {{ ramHistoryData.peak_used_pct || 0 }}%
+                    </div>
+                  </div>
+                  <div style="background:rgba(114,225,40,0.06); border:1px solid rgba(114,225,40,0.2); border-radius:8px; padding:0.6rem 0.8rem;">
+                    <span style="font-size:0.72rem; color:#8c979e; text-transform:uppercase; font-weight:700;">Min RAM</span>
+                    <div style="font-size:1.3rem; font-weight:700; color:#72e128; font-family:'JetBrains Mono', monospace; margin-top:0.1rem;">
+                      {{ ramHistoryData.min_used_pct || 0 }}%
+                    </div>
+                  </div>
+                  <div style="background:rgba(168,85,247,0.06); border:1px solid rgba(168,85,247,0.2); border-radius:8px; padding:0.6rem 0.8rem;">
+                    <span style="font-size:0.72rem; color:#8c979e; text-transform:uppercase; font-weight:700;">Avg Used GB</span>
+                    <div style="font-size:1.3rem; font-weight:700; color:#a855f7; font-family:'JetBrains Mono', monospace; margin-top:0.1rem;">
+                      {{ ((ramHistoryData.avg_used_mb || 0) / 1024).toFixed(1) }} GB
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Interactive SVG Line Graph -->
+                <div v-if="ramHistoryData.points && ramHistoryData.points.length >= 2" style="position:relative; padding:0.5rem 0;">
+                  <svg viewBox="0 0 760 200" style="width:100%; height:200px; overflow:visible;">
+                    <defs>
+                      <linearGradient id="ramHistGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.45"/>
+                        <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.02"/>
+                      </linearGradient>
+                    </defs>
+                    <!-- Y-Axis Gridlines & Percent Labels -->
+                    <g class="grid-lines">
+                      <line v-for="pct in [25, 50, 75, 100]" :key="'ram-grid-' + pct"
+                        x1="0" :y1="200 - (pct / 100) * 180 - 10" x2="760" :y2="200 - (pct / 100) * 180 - 10"
+                        stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="4 4"/>
+                      <text v-for="pct in [25, 50, 75, 100]" :key="'ram-lbl-' + pct"
+                        x="4" :y="200 - (pct / 100) * 180 - 14" fill="#8c979e" font-size="9" font-family="JetBrains Mono, monospace">
+                        {{ pct }}%
+                      </text>
+                    </g>
+
+                    <!-- Filled Area under RAM Line -->
+                    <path :d="buildRamHistoryAreaPath(ramHistoryData.points, 760, 200, 'used_pct', 100)"
+                      fill="url(#ramHistGrad)" stroke="none"/>
+
+                    <!-- RAM % Main Line -->
+                    <path :d="buildRamHistorySvgPath(ramHistoryData.points, 760, 200, 'used_pct', 100)"
+                      fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+                      style="filter: drop-shadow(0 0 6px rgba(56,189,248,0.6));"/>
+
+                    <!-- Interactive Data Points / Hover Circles -->
+                    <g v-for="(pt, idx) in ramHistoryData.points" :key="'ram-pt-' + idx">
+                      <circle
+                        :cx="(idx * (760 / Math.max(1, ramHistoryData.points.length - 1))).toFixed(1)"
+                        :cy="(200 - (Math.min(100, pt.used_pct) / 100) * 180 - 10).toFixed(1)"
+                        r="3.5"
+                        fill="#38bdf8"
+                        stroke="#0b0f19"
+                        stroke-width="1.5"
+                        style="cursor:pointer; transition:r 0.15s ease;"
+                        @mouseenter="hoveredRamPoint = pt"
+                        @mouseleave="hoveredRamPoint = null"/>
+                    </g>
+                  </svg>
+
+                  <!-- X-Axis Time Labels -->
+                  <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:#8c979e; margin-top:0.3rem; padding:0 4px; font-family:'JetBrains Mono', monospace;">
+                    <span>{{ ramHistoryData.points[0].display_time }}</span>
+                    <span>{{ ramHistoryData.points[Math.floor(ramHistoryData.points.length / 2)].display_time }}</span>
+                    <span>{{ ramHistoryData.points[ramHistoryData.points.length - 1].display_time }}</span>
+                  </div>
+
+                  <!-- Hover Tooltip Popup -->
+                  <div v-if="hoveredRamPoint"
+                    style="position:absolute; top:10px; right:10px; background:#0f172a; border:1px solid #38bdf8; border-radius:8px; padding:0.6rem 0.9rem; font-size:0.78rem; box-shadow:0 10px 25px rgba(0,0,0,0.5); z-index:10; pointer-events:none;">
+                    <div style="font-weight:700; color:#f7f7f9; margin-bottom:0.25rem; font-family:'JetBrains Mono', monospace;">
+                      📅 {{ hoveredRamPoint.display_time }}
+                    </div>
+                    <div style="color:#38bdf8; font-weight:600;">
+                      RAM Utilization: <strong>{{ hoveredRamPoint.used_pct }}%</strong> ({{ (hoveredRamPoint.used_mb / 1024).toFixed(2) }} GB)
+                    </div>
+                    <div style="color:#a855f7; font-size:0.74rem; margin-top:0.15rem;">
+                      Swap Used: <strong>{{ hoveredRamPoint.swap_used_mb }} MB</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-else style="padding:3rem; text-align:center; color:#8c979e;">
+                  <span style="font-size:2rem;">📊</span>
+                  <p style="margin-top:0.5rem;">Loading stored 3-day RAM history graph…</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Per-Container RAM Breakdown -->
+            <div class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>Live RAM Usage by Container / Stack</h2>
+                  <p>Real-time physical memory consumption per Docker container, stack, and core service (updated every ~300ms via SSE).</p>
+                </div>
+              </div>
+
+              <!-- Top-level system summary bar -->
+              <div style="margin-bottom:1.5rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+                  <span style="font-size:0.82rem; color:#8c979e;">System Total RAM Usage</span>
+                  <strong style="font-family:'JetBrains Mono', monospace;" :style="{ color: displayRam.used_pct >= 90 ? '#ef4444' : displayRam.used_pct >= 75 ? '#fdb528' : '#38bdf8' }">{{ displayRam.used_pct.toFixed(1) }}% ({{ (displayRam.used_mb / 1024).toFixed(1) }} GB / {{ (displayRam.total_mb / 1024).toFixed(1) }} GB)</strong>
+                </div>
+                <div style="background:rgba(255,255,255,0.06); border-radius:6px; height:10px; overflow:hidden;">
+                  <div
+                    :style="{ width: displayRam.used_pct.toFixed(1) + '%', background: displayRam.used_pct >= 90 ? 'linear-gradient(90deg, #ef4444, #dc2626)' : displayRam.used_pct >= 75 ? 'linear-gradient(90deg, #fdb528, #f59e0b)' : 'linear-gradient(90deg, #38bdf8, #0284c7)', transition: 'width 0.1s linear' }"
+                    style="height:100%; border-radius:6px;"></div>
+                </div>
+              </div>
+
+              <!-- Per-container table -->
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th class="sortable-th" @click="sortBy('ram_users', 'name')">Container / Stack {{ getSortIcon('ram_users', 'name') }}</th>
+                      <th class="sortable-th" @click="sortBy('ram_users', 'stack_type')">Stack Type {{ getSortIcon('ram_users', 'stack_type') }}</th>
+                      <th class="sortable-th" @click="sortBy('ram_users', 'associated_domain')">Associated Domain {{ getSortIcon('ram_users', 'associated_domain') }}</th>
+                      <th class="sortable-th" @click="sortBy('ram_users', 'owner')">Owner / Client {{ getSortIcon('ram_users', 'owner') }}</th>
+                      <th class="sortable-th" @click="sortBy('ram_users', 'mem_mb')">RAM Usage (MB) {{ getSortIcon('ram_users', 'mem_mb') }}</th>
+                      <th>Formatted Mem</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="ru in getSortedList(ramLive.top_ram_users, 'ram_users', sortState.colKey, sortState.colKey === 'mem_mb')" :key="'ram-' + ru.name">
+                      <td>
+                        <div style="font-weight:700; color:var(--text-color, #38bdf8); font-family:'JetBrains Mono', monospace;">{{ ru.name }}</div>
+                      </td>
+                      <td>
+                        <span class="pill" :class="ru.stack_type === 'Core Service' ? 'pill-warning' : 'pill-success'">{{ ru.stack_type }}</span>
+                      </td>
+                      <td>
+                        <a v-if="ru.associated_domain !== 'N/A' && ru.associated_domain !== 'All Domains (Global)'" :href="'https://' + ru.associated_domain" target="_blank" style="color:#38bdf8; text-decoration:none;">
+                          {{ ru.associated_domain }} ↗
+                        </a>
+                        <span v-else style="color:#8c979e;">{{ ru.associated_domain }}</span>
+                      </td>
+                      <td>
+                        <span style="color:#d0d7de;">{{ ru.owner }}</span>
+                      </td>
+                      <td>
+                        <strong style="color:#38bdf8; font-family:'JetBrains Mono', monospace;">{{ ru.mem_mb }} MB</strong>
+                      </td>
+                      <td>
+                        <small style="color:#8c979e; font-family:'JetBrains Mono', monospace;">{{ ru.mem_str }}</small>
+                      </td>
+                    </tr>
+                    <tr v-if="!ramLive.top_ram_users || ramLive.top_ram_users.length === 0">
+                      <td colspan="6" style="text-align:center; color:#8c979e; padding:2rem;">No active container RAM data detected. Docker stats may not be available.</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </section>

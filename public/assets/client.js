@@ -227,6 +227,8 @@ const app = createApp({
       selectedAccountId: localStorage.getItem("mp_selected_account_id") || "",
       accountSwitcherOpen: false,
       recalculatingUsage: false,
+      isHomeLoading: false,
+      isAnalyticsLoading: false,
       home: {
         resources: { disk_used_mb: 0, disk_limit_mb: 0, inodes_used: 0, inodes_limit: 0, cpu: "unknown", memory: "unknown" },
         warnings: [],
@@ -695,8 +697,7 @@ const app = createApp({
           used: Number(latest.cpu_percent || 0),
           limit: Number(account.cpu_limit || 0) * 100,
           unit: "percent",
-          value: `${Number(latest.cpu_percent || 0).toFixed(1)}%`,
-          metaLimit: `${Number(account.cpu_limit || 0)} cores`,
+          value: `${Number(latest.cpu_percent || 0).toFixed(1)}% (${Number(account.cpu_limit || 0)} cores assigned)`,
         },
         {
           key: "inodes",
@@ -721,7 +722,7 @@ const app = createApp({
           used: null,
           limit: Number(account.max_processes || 0),
           unit: "count",
-          metaOverride: "No live usage feed",
+          value: `${Number(account.max_processes || 0)} processes assigned`,
         },
         {
           key: "php-workers",
@@ -730,7 +731,7 @@ const app = createApp({
           used: null,
           limit: Number(account.php_workers || 0),
           unit: "count",
-          metaOverride: "No live usage feed",
+          value: `${Number(account.php_workers || 0)} workers assigned`,
         },
         {
           key: "bandwidth",
@@ -739,14 +740,22 @@ const app = createApp({
           used: bandwidthUsedMb,
           limit: bandwidthLimitMb,
           unit: "mb",
-          metaOverride: bandwidthLimitMb > 0 ? null : "Unlimited plan",
         },
       ];
 
       return metrics.map((metric) => {
         const percent = this.planUsagePercent(metric.used, metric.limit);
         const tone = this.planUsageTone(percent);
-        const value = metric.value || this.formatPlanMetricValue(metric.used, metric.unit);
+        let value = metric.value;
+        if (!value) {
+          if (metric.used != null && metric.limit != null && metric.limit > 0) {
+            value = `${this.formatPlanMetricValue(metric.used, metric.unit)} / ${this.formatPlanMetricValue(metric.limit, metric.unit)}`;
+          } else if (metric.used != null) {
+            value = `${this.formatPlanMetricValue(metric.used, metric.unit)} (Unlimited)`;
+          } else {
+            value = `${this.formatPlanMetricValue(metric.limit, metric.unit)} assigned`;
+          }
+        }
         const meta = metric.metaOverride || this.planUsageMeta(metric.used, metric.limit, metric.unit, metric.metaLimit);
         return { ...metric, percent, tone, value, meta };
       });
@@ -1028,34 +1037,40 @@ const app = createApp({
       }
     },
     async api(path, options = {}) {
-      const headers = { Accept: "application/json", ...(options.headers || {}) };
-      if (this.token) headers.Authorization = `Bearer ${this.token}`;
-      let targetAccountId = null;
-      if (this.activeAccount) {
-        targetAccountId = this.activeAccount.id;
-      } else if (this.home && Array.isArray(this.home.accounts) && this.home.accounts.length > 0) {
-        const found = this.home.accounts.find((a) => String(a.id) === String(this.selectedAccountId));
-        if (found) targetAccountId = found.id;
-      }
-      if (targetAccountId && !headers["X-Hosting-Account-ID"]) {
-        headers["X-Hosting-Account-ID"] = String(targetAccountId);
-      }
-      if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-      const body = options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body;
-      const response = await fetch(path, { ...options, body, headers });
-      const payload = await response.json();
-      if (!response.ok) {
-        if (response.status === 503 && payload.error === "database_busy" && !options._dbRetry) {
-          await new Promise((r) => setTimeout(r, 500));
-          return this.api(path, { ...options, _dbRetry: true });
+      const isHomeReq = typeof path === "string" && path.includes("/api/client/home");
+      if (isHomeReq) this.isHomeLoading = true;
+      try {
+        const headers = { Accept: "application/json", ...(options.headers || {}) };
+        if (this.token) headers.Authorization = `Bearer ${this.token}`;
+        let targetAccountId = null;
+        if (this.activeAccount) {
+          targetAccountId = this.activeAccount.id;
+        } else if (this.home && Array.isArray(this.home.accounts) && this.home.accounts.length > 0) {
+          const found = this.home.accounts.find((a) => String(a.id) === String(this.selectedAccountId));
+          if (found) targetAccountId = found.id;
         }
-        const error = payload.error || "Request failed";
-        if (error === "invalid_access_token") {
-          this.handleSessionExpired();
+        if (targetAccountId && !headers["X-Hosting-Account-ID"]) {
+          headers["X-Hosting-Account-ID"] = String(targetAccountId);
         }
-        throw new Error(payload.detail ? `${error}: ${payload.detail}` : error);
+        if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+        const body = options.body && typeof options.body !== "string" ? JSON.stringify(options.body) : options.body;
+        const response = await fetch(path, { ...options, body, headers });
+        const payload = await response.json();
+        if (!response.ok) {
+          if (response.status === 503 && payload.error === "database_busy" && !options._dbRetry) {
+            await new Promise((r) => setTimeout(r, 500));
+            return this.api(path, { ...options, _dbRetry: true });
+          }
+          const error = payload.error || "Request failed";
+          if (error === "invalid_access_token") {
+            this.handleSessionExpired();
+          }
+          throw new Error(payload.detail ? `${error}: ${payload.detail}` : error);
+        }
+        return payload;
+      } finally {
+        if (isHomeReq) this.isHomeLoading = false;
       }
-      return payload;
     },
     async startLogin() {
       this.notify("", "success");
@@ -1552,11 +1567,14 @@ const app = createApp({
     },
     async loadAnalytics() {
       if (!this.token) return;
+      this.isAnalyticsLoading = true;
       try {
         const siteId = this.selectedWebsite?.id || "";
         this.analytics = await this.api(`/api/client/analytics?website_id=${encodeURIComponent(siteId)}&filter=${encodeURIComponent(this.analytics.filter)}`);
       } catch (error) {
         this.notify(error.message, "error");
+      } finally {
+        this.isAnalyticsLoading = false;
       }
     },
     async toggleAnalyticsTracking(site) {

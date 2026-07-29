@@ -633,6 +633,8 @@ showVersionNumber                0
 adminEmails                      root@localhost
 indexFiles                       index.html, index.php
 disableWebAdmin                  0
+useIpInProxyHeader               2
+extIpInHeader                    1
 
 errorlog $SERVER_ROOT/logs/error.log {
     logLevel             DEBUG

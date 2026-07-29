@@ -917,6 +917,44 @@ def ensure_schema(conn):
         ON resource_usage_samples(account_id, sampled_at)
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_cpu_samples (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sampled_at INTEGER NOT NULL,
+          sys_cpu_pct REAL NOT NULL DEFAULT 0,
+          load_1m REAL NOT NULL DEFAULT 0,
+          load_5m REAL NOT NULL DEFAULT 0,
+          load_15m REAL NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_system_cpu_samples_time
+        ON system_cpu_samples(sampled_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_ram_samples (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sampled_at INTEGER NOT NULL,
+          used_mb REAL NOT NULL DEFAULT 0,
+          total_mb REAL NOT NULL DEFAULT 0,
+          used_pct REAL NOT NULL DEFAULT 0,
+          swap_used_mb REAL NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_system_ram_samples_time
+        ON system_ram_samples(sampled_at)
+        """
+    )
     ensure_table_columns(
         conn,
         "hosting_accounts",
@@ -1041,6 +1079,22 @@ def ensure_schema(conn):
             "analytics_enabled": "INTEGER NOT NULL DEFAULT 1",
         },
     )
+    ensure_table_columns(
+        conn,
+        "nodes",
+        {
+            "ip_address": "TEXT DEFAULT '157.15.203.66'",
+        },
+    )
+    ensure_table_columns(
+        conn,
+        "resource_usage_samples",
+        {
+            "bandwidth_mb": "REAL NOT NULL DEFAULT 0",
+        },
+    )
+    conn.execute("UPDATE nodes SET hostname = 'seeds.servermango.com' WHERE hostname = 'localhost'")
+    conn.execute("UPDATE nodes SET ip_address = '157.15.203.66' WHERE ip_address IS NULL OR ip_address = '' OR ip_address = '127.0.0.1'")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS dns_zones (
@@ -1843,7 +1897,7 @@ def seed_dev_data(db_path, account_root=None):
             INSERT OR IGNORE INTO nodes(name, hostname, status, docker_version, quota_backend, last_seen_at)
             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
-            ("local-m1", "localhost", "online", "dev-docker", "dev-simulator"),
+            ("local-m1", "seeds.servermango.com", "online", "dev-docker", "dev-simulator"),
         )
 
         user_id = conn.execute("SELECT id FROM users WHERE email = ?", ("owner@example.mango.test",)).fetchone()["id"]
