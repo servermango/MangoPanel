@@ -151,8 +151,12 @@ class MultiAccountSwitcherTests(unittest.TestCase):
             seed_dev_data(db_path, accounts_dir)
 
             with connect(db_path) as conn:
-                user = conn.execute("SELECT * FROM users ORDER BY id DESC LIMIT 1").fetchone()
-                user_id = user["id"]
+                # Pick a user that actually has a hosting account (reseller users may not)
+                user_row = conn.execute(
+                    "SELECT u.* FROM users u JOIN hosting_accounts ha ON ha.user_id = u.id LIMIT 1"
+                ).fetchone()
+                self.assertIsNotNone(user_row, "Expected at least one user with a hosting account in seed data")
+                user_id = user_row["id"]
                 home = client_home(conn, user_id, active_account_id=None)
                 self.assertIn("accounts", home)
                 self.assertGreaterEqual(len(home["accounts"]), 1)

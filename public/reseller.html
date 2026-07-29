@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>MangoPanel Reseller</title>
+    <title>MangoPanel Admin</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
     <link rel="icon" type="image/svg+xml" href="/assets/favicon-admin.svg">
@@ -229,10 +229,10 @@
     <div id="admin-app" class="app-shell admin-shell" v-cloak>
       <aside class="sidebar admin-sidebar" v-if="token">
         <div class="brand">
-          <span class="brand-mark">💼</span>
+          <span class="brand-mark">🥭</span>
           <div>
             <strong>MangoPanel</strong>
-            <small>Reseller portal</small>
+            <small>Admin console</small>
           </div>
         </div>
         <nav class="nav-list">
@@ -245,7 +245,7 @@
           </div>
           <div class="nav-section">
             <span class="nav-group">Quick Links</span>
-            <a :href="clientPanelUrl">🖥️ Client Control Panel ↗</a>
+            <a href="/admin/setup">⚡ Setup Wizard</a>
             <a href="/status">📡 Public Status</a>
           </div>
         </nav>
@@ -260,7 +260,7 @@
             <div class="topbar-page-meta">
               <span class="topbar-page-title-row">
                 <span class="topbar-page-title">{{ activeMenuItem.label }}</span>
-                <span class="feature-status-badge feature-status-functional">Reseller</span>
+                <span class="feature-status-badge feature-status-functional">Admin</span>
               </span>
               <span class="topbar-page-desc">{{ activeMenuItem.description }}</span>
             </div>
@@ -273,15 +273,15 @@
         <section v-if="!token" class="admin-login-wrapper">
           <div class="admin-login-card">
             <div class="admin-brand-header">
-              <div class="admin-brand-icon">💼</div>
-              <h1 class="admin-brand-title">MangoPanel Reseller</h1>
-              <p class="admin-brand-subtitle">Reseller Portal & Sub-Client Console</p>
+              <div class="admin-brand-icon">🥭</div>
+              <h1 class="admin-brand-title">MangoPanel Admin</h1>
+              <p class="admin-brand-subtitle">Super Admin Console & Control Plane</p>
             </div>
 
             <!-- Step 1: Email & Password -->
             <form v-if="!challengeToken" @submit.prevent="startLogin">
               <div class="admin-form-group">
-                <label>Reseller Email</label>
+                <label>Admin Email</label>
                 <input class="admin-form-input" v-model="login.email" type="email" placeholder="admin@domain.com" autocomplete="username" required autofocus>
               </div>
               <div class="admin-form-group">
@@ -1372,6 +1372,98 @@
             </div>
           </section>
 
+          <!-- Reseller Plans View (Super Admin) -->
+          <section v-if="activePage === 'reseller-plans'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Reseller Plans</h2>
+                <p>Define resource boundaries, storage quotas, and sub-account limits for reseller partners.</p>
+              </div>
+              <button class="primary-button" @click="openResellerPlanModal()">Create Reseller Plan</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Package Name</th>
+                    <th>Storage Allocation</th>
+                    <th>Max Sub-Clients</th>
+                    <th>Max Accounts</th>
+                    <th>RAM Quota</th>
+                    <th>Sites & DB Limits</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="rp in resellerPlans" :key="rp.id">
+                    <td><strong>{{ rp.name }}</strong><small>ID: #{{ rp.id }}</small></td>
+                    <td><strong>{{ (rp.max_storage_mb / 1024).toFixed(1) }} GB</strong><small>{{ rp.max_storage_mb }} MB total</small></td>
+                    <td>{{ rp.max_clients ? rp.max_clients + ' clients' : 'Unlimited' }}</td>
+                    <td>{{ rp.max_hosting_accounts ? rp.max_hosting_accounts + ' accounts' : 'Unlimited' }}</td>
+                    <td>{{ (rp.max_ram_mb / 1024).toFixed(1) }} GB RAM</td>
+                    <td>{{ rp.max_websites }} sites · {{ rp.max_databases }} DBs</td>
+                    <td class="actions">
+                      <button type="button" @click="openResellerPlanModal(rp)">Edit</button>
+                      <button type="button" class="danger-button" @click="deleteResellerPlan(rp.id)">Delete</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!resellerPlans.length">
+                    <td colspan="7" style="text-align: center; color: var(--muted); padding: 2rem;">No Reseller Plans created yet. Click "Create Reseller Plan" above to add one.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- Reseller Users View (Super Admin) -->
+          <section v-if="activePage === 'reseller-users'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Reseller Users</h2>
+                <p>Manage reseller partner accounts and assign Reseller Package resource limits.</p>
+              </div>
+              <button class="primary-button" @click="openResellerUserModal()">Create Reseller User</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Reseller Name & Email</th>
+                    <th>Assigned Reseller Plan</th>
+                    <th>Status</th>
+                    <th>Created At</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="ru in resellerUsers" :key="ru.id">
+                    <td>
+                      <strong>{{ ru.full_name }}</strong>
+                      <small>{{ ru.email }}</small>
+                    </td>
+                    <td>
+                      <span class="pill pill-success">{{ ru.reseller_plan_name || 'Pro Reseller' }}</span>
+                    </td>
+                    <td>
+                      <span class="pill" :class="ru.status === 'active' ? 'pill-success' : 'pill-danger'">{{ ru.status }}</span>
+                    </td>
+                    <td>{{ ru.created_at ? ru.created_at.slice(0, 10) : 'N/A' }}</td>
+                    <td class="actions">
+                      <button type="button" @click="openResellerUserModal(ru)">Edit</button>
+                      <button type="button" class="secondary-button" @click="toggleResellerUserStatus(ru)">
+                        {{ ru.status === 'active' ? 'Suspend' : 'Activate' }}
+                      </button>
+                      <button type="button" class="danger-button" @click="deleteResellerUser(ru.id)">Delete</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!resellerUsers.length">
+                    <td colspan="5" style="text-align: center; color: var(--muted); padding: 2rem;">No Reseller Users registered yet. Click "Create Reseller User" above to add one.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <div v-if="showPlanModal" class="modal-overlay" @click.self="closePlanModal">
             <div class="modal-panel">
               <div class="modal-header">
@@ -2276,15 +2368,97 @@
               </div>
             </div>
           </div>
+
+          <!-- Reseller Plan Modal -->
+          <div v-if="showResellerPlanModal" class="modal-overlay" @click.self="showResellerPlanModal = false">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2>{{ resellerPlanForm.id ? 'Edit Reseller Plan' : 'Create Reseller Plan' }}</h2>
+                <button class="close-button" type="button" @click="showResellerPlanModal = false">×</button>
+              </div>
+              <form @submit.prevent="saveResellerPlan">
+                <div class="admin-form-group">
+                  <label>Plan Name</label>
+                  <input class="admin-form-input" v-model="resellerPlanForm.name" required placeholder="e.g. Gold Reseller Package">
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:0.8rem;">
+                  <div class="admin-form-group">
+                    <label>Max Storage (MB)</label>
+                    <input class="admin-form-input" type="number" v-model.number="resellerPlanForm.max_storage_mb" required placeholder="50000">
+                  </div>
+                  <div class="admin-form-group">
+                    <label>Max Sub-Clients</label>
+                    <input class="admin-form-input" type="number" v-model.number="resellerPlanForm.max_clients" required placeholder="10">
+                  </div>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:0.8rem;">
+                  <div class="admin-form-group">
+                    <label>Max Hosting Accounts</label>
+                    <input class="admin-form-input" type="number" v-model.number="resellerPlanForm.max_hosting_accounts" required placeholder="20">
+                  </div>
+                  <div class="admin-form-group">
+                    <label>Max Total RAM (MB)</label>
+                    <input class="admin-form-input" type="number" v-model.number="resellerPlanForm.max_ram_mb" required placeholder="8192">
+                  </div>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:0.8rem;">
+                  <div class="admin-form-group">
+                    <label>Max Websites</label>
+                    <input class="admin-form-input" type="number" v-model.number="resellerPlanForm.max_websites" required placeholder="50">
+                  </div>
+                  <div class="admin-form-group">
+                    <label>Max Databases</label>
+                    <input class="admin-form-input" type="number" v-model.number="resellerPlanForm.max_databases" required placeholder="50">
+                  </div>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1.5rem;">
+                  <button class="secondary-button" type="button" @click="showResellerPlanModal = false">Cancel</button>
+                  <button class="primary-button" type="submit">Save Plan</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Reseller User Modal -->
+          <div v-if="showResellerUserModal" class="modal-overlay" @click.self="showResellerUserModal = false">
+            <div class="modal-panel">
+              <div class="modal-header">
+                <h2>{{ resellerUserForm.id ? 'Edit Reseller User' : 'Create Reseller User' }}</h2>
+                <button class="close-button" type="button" @click="showResellerUserModal = false">×</button>
+              </div>
+              <form @submit.prevent="saveResellerUser">
+                <div class="admin-form-group">
+                  <label>Full Name</label>
+                  <input class="admin-form-input" v-model="resellerUserForm.full_name" required placeholder="e.g. John Reseller">
+                </div>
+                <div class="admin-form-group" style="margin-top:0.8rem;">
+                  <label>Email Address</label>
+                  <input class="admin-form-input" type="email" v-model="resellerUserForm.email" :disabled="Boolean(resellerUserForm.id)" required placeholder="partner@domain.com">
+                </div>
+                <div v-if="!resellerUserForm.id" class="admin-form-group" style="margin-top:0.8rem;">
+                  <label>Password</label>
+                  <input class="admin-form-input" type="password" v-model="resellerUserForm.password" required minlength="8" placeholder="••••••••••••">
+                </div>
+                <div class="admin-form-group" style="margin-top:0.8rem;">
+                  <label>Assigned Reseller Package</label>
+                  <select class="admin-form-input" v-model="resellerUserForm.reseller_plan_id" required>
+                    <option v-for="rp in resellerPlans" :key="rp.id" :value="rp.id">{{ rp.name }} ({{ (rp.max_storage_mb/1024).toFixed(1) }} GB, {{ rp.max_clients }} Clients)</option>
+                  </select>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1.5rem;">
+                  <button class="secondary-button" type="button" @click="showResellerUserModal = false">Cancel</button>
+                  <button class="primary-button" type="submit">Save Reseller User</button>
+                </div>
+              </form>
+            </div>
+          </div>
           </div>
         </template>
       </main>
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script>
-      window.IS_RESELLER_PANEL = true;
-    </script>
+    <script>window.IS_RESELLER_PANEL = true;</script>
     <script src="/assets/admin.js"></script>
   </body>
 </html>

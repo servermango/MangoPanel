@@ -32,8 +32,12 @@ class ComprehensiveClientAPISecurityTests(unittest.TestCase):
             self.user1_id = user1["id"]
             self.user1_acc = conn.execute("SELECT * FROM hosting_accounts WHERE user_id = ? LIMIT 1", (self.user1_id,)).fetchone()
 
-            user2 = conn.execute("SELECT * FROM users WHERE id != ? LIMIT 1", (self.user1_id,)).fetchone()
-            if not user2:
+            # Find a second user that has a hosting account (not a reseller-only user)
+            user2_row = conn.execute(
+                "SELECT u.* FROM users u JOIN hosting_accounts ha ON ha.user_id = u.id WHERE u.id != ? LIMIT 1",
+                (self.user1_id,)
+            ).fetchone()
+            if not user2_row:
                 cur = conn.execute(
                     "INSERT INTO users (email, password_hash, full_name, status) VALUES ('user2@test.com', 'hash', 'User Two', 'active')"
                 )
@@ -47,7 +51,7 @@ class ComprehensiveClientAPISecurityTests(unittest.TestCase):
                 self.user2_id = user2_id
                 self.user2_acc = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (cur_acc.lastrowid,)).fetchone()
             else:
-                self.user2_id = user2["id"]
+                self.user2_id = user2_row["id"]
                 self.user2_acc = conn.execute("SELECT * FROM hosting_accounts WHERE user_id = ? LIMIT 1", (self.user2_id,)).fetchone()
 
         self.user1_jwt = create_jwt({"sub": self.user1_id, "actor_type": "user", "purpose": "access"}, self.config.jwt_secret, 3600)

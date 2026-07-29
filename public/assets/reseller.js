@@ -44,18 +44,43 @@ createApp({
       return `${window.location.protocol}//${host}:${port}/#sso_token=${encodeURIComponent(currentToken)}`;
     },
   },
-  mounted() {
+  async mounted() {
     const hash = window.location.hash.replace("#", "?");
     const searchParams = new URLSearchParams(window.location.search);
     const hashParams = new URLSearchParams(hash);
-    const urlSsoToken = searchParams.get("sso_token") || searchParams.get("token") || hashParams.get("sso_token") || hashParams.get("token");
-    if (urlSsoToken) {
-      this.token = urlSsoToken;
-      localStorage.setItem("mp_reseller_token", urlSsoToken);
-      if (window.history && window.history.replaceState) {
-        window.history.replaceState(null, "", "/reseller#dashboard");
+
+    // Check for admin "Login as Reseller" impersonation token first
+    const impersonationToken = hashParams.get("mp_impersonation_token") || hashParams.get("mp_access_token");
+    if (impersonationToken) {
+      try {
+        const response = await fetch("/api/reseller/auth/exchange-impersonation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ impersonation_token: impersonationToken }),
+        });
+        const data = await response.json();
+        if (response.ok && data.access_token) {
+          this.token = data.access_token;
+          localStorage.setItem("mp_reseller_token", data.access_token);
+        }
+      } catch (err) {
+        console.error("Reseller impersonation exchange failed:", err);
+      }
+      window.history.replaceState(null, "", "/reseller#dashboard");
+    }
+
+    // Regular SSO token (plain access JWT passed via URL)
+    if (!this.token) {
+      const urlSsoToken = searchParams.get("sso_token") || searchParams.get("token") || hashParams.get("sso_token") || hashParams.get("token");
+      if (urlSsoToken) {
+        this.token = urlSsoToken;
+        localStorage.setItem("mp_reseller_token", urlSsoToken);
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, "", "/reseller#dashboard");
+        }
       }
     }
+
     if (!this.token) {
       this.token = localStorage.getItem("mp_reseller_token") || localStorage.getItem("mp_client_token") || localStorage.getItem("token") || "";
     }

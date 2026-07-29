@@ -1511,15 +1511,36 @@ def ensure_registrar_schema(conn):
 
 
 def ensure_reseller_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reseller_plans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          max_storage_mb INTEGER NOT NULL DEFAULT 50000,
+          max_clients INTEGER NOT NULL DEFAULT 10,
+          max_hosting_accounts INTEGER NOT NULL DEFAULT 20,
+          max_ram_mb INTEGER NOT NULL DEFAULT 8192,
+          max_websites INTEGER NOT NULL DEFAULT 50,
+          max_databases INTEGER NOT NULL DEFAULT 50,
+          max_subplans INTEGER NOT NULL DEFAULT 10,
+          allow_custom_plans INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     ensure_table_columns(conn, "plans", {
         "is_reseller": "INTEGER NOT NULL DEFAULT 0",
-        "reseller_id": "INTEGER REFERENCES users(id)",
+        "reseller_id": "INTEGER",
         "max_clients": "INTEGER NOT NULL DEFAULT 0",
         "max_reseller_subplans": "INTEGER NOT NULL DEFAULT 0",
     })
     ensure_table_columns(conn, "users", {
-        "reseller_id": "INTEGER REFERENCES users(id)",
+        "reseller_id": "INTEGER",
+        "is_reseller": "INTEGER NOT NULL DEFAULT 0",
+        "reseller_plan_id": "INTEGER",
     })
+    conn.execute("UPDATE plans SET reseller_id = NULL WHERE reseller_id IS NOT NULL AND reseller_id NOT IN (SELECT id FROM users)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS reseller_api_tokens (
@@ -1795,13 +1816,27 @@ def seed_dev_data(db_path, account_root=None):
         )
         conn.execute(
             """
-            INSERT OR IGNORE INTO plans(
-              name, cpu_limit, memory_mb, storage_mb, inode_limit, max_websites,
-              max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days,
-              is_reseller, max_clients, max_reseller_subplans
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO reseller_plans(
+              name, max_storage_mb, max_clients, max_hosting_accounts, max_ram_mb, max_websites, max_databases, max_subplans
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("Dev Reseller Pro", "4 cores", 8192, 102400, 1000000, 50, 50, 100, 50, 2500, 30, 1, 20, 10),
+            ("Dev Reseller Starter", 50000, 10, 20, 8192, 50, 50, 10),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO reseller_plans(
+              name, max_storage_mb, max_clients, max_hosting_accounts, max_ram_mb, max_websites, max_databases, max_subplans
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Dev Reseller Pro", 200000, 50, 100, 32768, 200, 200, 25),
+        )
+        default_reseller_plan_id = conn.execute("SELECT id FROM reseller_plans WHERE name = 'Dev Reseller Pro'").fetchone()["id"]
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO users(email, password_hash, full_name, totp_secret, is_reseller, reseller_plan_id)
+            VALUES (?, ?, ?, ?, 1, ?)
+            """,
+            ("reseller@example.mango.test", password_hash, "Reseller Partner", user_secret, default_reseller_plan_id),
         )
         conn.execute(
             """
@@ -1809,13 +1844,6 @@ def seed_dev_data(db_path, account_root=None):
             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             ("local-m1", "localhost", "online", "dev-docker", "dev-simulator"),
-        )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO users(email, password_hash, full_name, totp_secret)
-            VALUES (?, ?, ?, ?)
-            """,
-            ("reseller@example.mango.test", password_hash, "Reseller Partner", user_secret),
         )
 
         user_id = conn.execute("SELECT id FROM users WHERE email = ?", ("owner@example.mango.test",)).fetchone()["id"]
@@ -1845,16 +1873,6 @@ def seed_dev_data(db_path, account_root=None):
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (user_id, plan_id, node_id, "u000001", account_base_path, "active"),
-        )
-        reseller_user_id = conn.execute("SELECT id FROM users WHERE email = ?", ("reseller@example.mango.test",)).fetchone()["id"]
-        reseller_plan_id = conn.execute("SELECT id FROM plans WHERE name = ?", ("Dev Reseller Pro",)).fetchone()["id"]
-        reseller_account_base = str(Path(account_root or default_account_root) / f"u{reseller_user_id:06d}")
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO hosting_accounts(user_id, plan_id, node_id, username, base_path, status)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (reseller_user_id, reseller_plan_id, node_id, f"u{reseller_user_id:06d}", reseller_account_base, "active"),
         )
         account_id = conn.execute("SELECT id FROM hosting_accounts WHERE username = ?", ("u000001",)).fetchone()["id"]
 

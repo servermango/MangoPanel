@@ -217,7 +217,15 @@ def clear_auth_attempts(conn, handler, actor_type):
 
 
 def is_user_reseller(conn, user_id):
-    row = conn.execute(
+    # New architecture: user has is_reseller flag or is assigned a reseller plan
+    new_arch = conn.execute(
+        "SELECT id FROM users WHERE id = ? AND (is_reseller = 1 OR reseller_plan_id IS NOT NULL)",
+        (user_id,)
+    ).fetchone()
+    if new_arch:
+        return True
+    # Legacy architecture: user has an active hosting account on a reseller plan
+    legacy = conn.execute(
         """
         SELECT p.is_reseller
         FROM hosting_accounts ha
@@ -227,7 +235,7 @@ def is_user_reseller(conn, user_id):
         """,
         (user_id,)
     ).fetchone()
-    return row is not None
+    return legacy is not None
 
 
 def require_admin_permission(actor, permission):
@@ -632,7 +640,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
         if panel == "admin" and path == "/api/public/signup":
             raise ApiError(HTTPStatus.NOT_FOUND, "unknown_public_route")
-        if method == "POST" and path == "/api/client/auth/exchange-impersonation":
+        if method == "POST" and path in {"/api/client/auth/exchange-impersonation", "/api/reseller/auth/exchange-impersonation"}:
             return self.exchange_impersonation()
         if method == "POST" and path in {"/api/client/auth/login", "/api/admin/auth/login", "/api/reseller/auth/login"}:
             if panel == "client" and (path.startswith("/api/admin/") or path.startswith("/api/reseller/")):
@@ -4636,21 +4644,52 @@ class MangoHandler(BaseHTTPRequestHandler):
         path = path.rstrip("/")
         reseller_id = actor["id"]
         with connect(CONFIG.db_path) as conn:
-            master_account = conn.execute(
+            reseller_user = conn.execute(
                 """
-                SELECT ha.*, p.name AS plan_name, p.storage_mb, p.memory_mb, p.inode_limit,
-                       p.max_websites, p.max_databases, p.max_mailboxes, p.max_clients, p.max_reseller_subplans, p.is_reseller
-                FROM hosting_accounts ha
-                JOIN plans p ON p.id = ha.plan_id
-                WHERE ha.user_id = ? AND ha.status = 'active' AND p.is_reseller = 1
-                LIMIT 1
+                SELECT u.*, rp.name AS plan_name, rp.max_storage_mb AS storage_mb, rp.max_clients,
+                       rp.max_subplans AS max_reseller_subplans, rp.max_websites, rp.max_databases, rp.max_ram_mb AS memory_mb
+                FROM users u
+                LEFT JOIN reseller_plans rp ON rp.id = u.reseller_plan_id
+                WHERE u.id = ? AND u.status = 'active' AND (u.is_reseller = 1 OR u.reseller_plan_id IS NOT NULL)
                 """,
                 (reseller_id,),
             ).fetchone()
-            if not master_account:
-                raise ApiError(HTTPStatus.FORBIDDEN, "reseller_plan_not_active")
 
-            master_plan = row_to_dict(master_account)
+            if reseller_user:
+                master_plan = row_to_dict(reseller_user)
+                if not master_plan.get("plan_name"):
+                    rp_default = conn.execute("SELECT * FROM reseller_plans ORDER BY id ASC LIMIT 1").fetchone()
+                    if rp_default:
+                        master_plan["plan_name"] = rp_default["name"]
+                        master_plan["storage_mb"] = rp_default["max_storage_mb"]
+                        master_plan["max_clients"] = rp_default["max_clients"]
+                        master_plan["max_reseller_subplans"] = rp_default["max_subplans"]
+                        master_plan["max_websites"] = rp_default["max_websites"]
+                        master_plan["max_databases"] = rp_default["max_databases"]
+                        master_plan["memory_mb"] = rp_default["max_ram_mb"]
+                    else:
+                        master_plan["plan_name"] = "Default Reseller Plan"
+                        master_plan["storage_mb"] = 50000
+                        master_plan["max_clients"] = 10
+                        master_plan["max_reseller_subplans"] = 10
+                        master_plan["max_websites"] = 50
+                        master_plan["max_databases"] = 50
+                        master_plan["memory_mb"] = 8192
+            else:
+                master_account = conn.execute(
+                    """
+                    SELECT ha.*, p.name AS plan_name, p.storage_mb, p.memory_mb, p.inode_limit,
+                           p.max_websites, p.max_databases, p.max_mailboxes, p.max_clients, p.max_reseller_subplans, p.is_reseller
+                    FROM hosting_accounts ha
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE ha.user_id = ? AND ha.status = 'active' AND p.is_reseller = 1
+                    LIMIT 1
+                    """,
+                    (reseller_id,),
+                ).fetchone()
+                if not master_account:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "reseller_plan_not_active")
+                master_plan = row_to_dict(master_account)
 
             # 1. Reseller Dashboard
             if path == "/api/reseller/dashboard" and method == "GET":
@@ -5063,6 +5102,212 @@ class MangoHandler(BaseHTTPRequestHandler):
     def admin_api(self, method, path, query, actor):
         path = path.rstrip("/")
         with connect(CONFIG.db_path) as conn:
+            # Reseller Plans API
+            if path == "/api/admin/reseller-plans" and method == "GET":
+                plans = rows_to_dicts(conn.execute("SELECT * FROM reseller_plans ORDER BY id DESC").fetchall())
+                return self.json_response({"reseller_plans": plans})
+
+            if path == "/api/admin/reseller-plans" and method == "POST":
+                require_admin_permission(actor, "plans.manage")
+                body = self.read_json()
+                name = clean_text(body.get("name"), "Reseller Plan")
+                if conn.execute("SELECT id FROM reseller_plans WHERE name = ?", (name,)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "reseller_plan_name_already_exists")
+                max_storage_mb = int(body.get("max_storage_mb", 50000))
+                max_clients = int(body.get("max_clients", 10))
+                max_hosting_accounts = int(body.get("max_hosting_accounts", 20))
+                max_ram_mb = int(body.get("max_ram_mb", 8192))
+                max_websites = int(body.get("max_websites", 50))
+                max_databases = int(body.get("max_databases", 50))
+                max_subplans = int(body.get("max_subplans", 10))
+
+                cur = conn.execute(
+                    """
+                    INSERT INTO reseller_plans(
+                      name, max_storage_mb, max_clients, max_hosting_accounts, max_ram_mb,
+                      max_websites, max_databases, max_subplans
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (name, max_storage_mb, max_clients, max_hosting_accounts, max_ram_mb, max_websites, max_databases, max_subplans),
+                )
+                conn.commit()
+                created = conn.execute("SELECT * FROM reseller_plans WHERE id = ?", (cur.lastrowid,)).fetchone()
+                return self.json_response({"reseller_plan": row_to_dict(created)}, HTTPStatus.CREATED)
+
+            match_rp_id = re.match(r"^/api/admin/reseller-plans/(\d+)$", path)
+            if match_rp_id and method == "PATCH":
+                require_admin_permission(actor, "plans.manage")
+                rp_id = int(match_rp_id.group(1))
+                rp = conn.execute("SELECT * FROM reseller_plans WHERE id = ?", (rp_id,)).fetchone()
+                if not rp:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "reseller_plan_not_found")
+                body = self.read_json()
+                name = clean_text(body.get("name"), rp["name"])
+                max_storage_mb = int(body.get("max_storage_mb", rp["max_storage_mb"]))
+                max_clients = int(body.get("max_clients", rp["max_clients"]))
+                max_hosting_accounts = int(body.get("max_hosting_accounts", rp["max_hosting_accounts"]))
+                max_ram_mb = int(body.get("max_ram_mb", rp["max_ram_mb"]))
+                max_websites = int(body.get("max_websites", rp["max_websites"]))
+                max_databases = int(body.get("max_databases", rp["max_databases"]))
+                max_subplans = int(body.get("max_subplans", rp["max_subplans"]))
+
+                conn.execute(
+                    """
+                    UPDATE reseller_plans
+                    SET name = ?, max_storage_mb = ?, max_clients = ?, max_hosting_accounts = ?,
+                        max_ram_mb = ?, max_websites = ?, max_databases = ?, max_subplans = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (name, max_storage_mb, max_clients, max_hosting_accounts, max_ram_mb, max_websites, max_databases, max_subplans, rp_id),
+                )
+                conn.commit()
+                updated = conn.execute("SELECT * FROM reseller_plans WHERE id = ?", (rp_id,)).fetchone()
+                return self.json_response({"reseller_plan": row_to_dict(updated)})
+
+            if match_rp_id and method == "DELETE":
+                require_admin_permission(actor, "plans.manage")
+                rp_id = int(match_rp_id.group(1))
+                conn.execute("DELETE FROM reseller_plans WHERE id = ?", (rp_id,))
+                conn.commit()
+                return self.json_response({"deleted": True})
+
+            # Reseller Users API
+            if path == "/api/admin/reseller-users" and method == "GET":
+                users = rows_to_dicts(
+                    conn.execute(
+                        """
+                        SELECT u.id, u.email, u.full_name, u.status, u.is_reseller, u.reseller_plan_id, u.created_at,
+                               rp.name AS reseller_plan_name, rp.max_storage_mb, rp.max_clients
+                        FROM users u
+                        LEFT JOIN reseller_plans rp ON rp.id = u.reseller_plan_id
+                        WHERE u.is_reseller = 1 OR u.reseller_plan_id IS NOT NULL
+                        ORDER BY u.id DESC
+                        """
+                    ).fetchall()
+                )
+                return self.json_response({"reseller_users": users})
+
+            if path == "/api/admin/reseller-users" and method == "POST":
+                require_admin_permission(actor, "users.manage")
+                body = self.read_json()
+                email = clean_text(body.get("email"), "").lower()
+                password = body.get("password", "").strip()
+                full_name = clean_text(body.get("full_name"), email.split("@")[0] if "@" in email else "Reseller")
+                reseller_plan_id = optional_positive_int(body.get("reseller_plan_id"))
+
+                if not email or "@" not in email:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_email")
+                if len(password) < 8:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "password_too_short")
+                if reseller_plan_id:
+                    rp_check = conn.execute("SELECT id FROM reseller_plans WHERE id = ?", (reseller_plan_id,)).fetchone()
+                    if not rp_check:
+                        reseller_plan_id = None
+                if not reseller_plan_id:
+                    rp_first = conn.execute("SELECT id FROM reseller_plans ORDER BY id LIMIT 1").fetchone()
+                    if rp_first:
+                        reseller_plan_id = rp_first["id"]
+                    else:
+                        reseller_plan_id = None
+
+                if conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "user_email_already_registered")
+
+                cur = conn.execute(
+                    """
+                    INSERT INTO users(email, password_hash, full_name, is_reseller, reseller_plan_id, status)
+                    VALUES (?, ?, ?, 1, ?, 'active')
+                    """,
+                    (email, hash_password(password), full_name, reseller_plan_id),
+                )
+                conn.commit()
+                created = conn.execute(
+                    """
+                    SELECT u.id, u.email, u.full_name, u.status, u.is_reseller, u.reseller_plan_id, u.created_at,
+                           rp.name AS reseller_plan_name
+                    FROM users u
+                    LEFT JOIN reseller_plans rp ON rp.id = u.reseller_plan_id
+                    WHERE u.id = ?
+                    """,
+                    (cur.lastrowid,),
+                ).fetchone()
+                return self.json_response({"reseller_user": row_to_dict(created)}, HTTPStatus.CREATED)
+
+            match_ru_id = re.match(r"^/api/admin/reseller-users/(\d+)$", path)
+            if match_ru_id and method == "PATCH":
+                require_admin_permission(actor, "users.manage")
+                ru_id = int(match_ru_id.group(1))
+                ru = conn.execute("SELECT * FROM users WHERE id = ? AND (is_reseller = 1 OR reseller_plan_id IS NOT NULL)", (ru_id,)).fetchone()
+                if not ru:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "reseller_user_not_found")
+                body = self.read_json()
+                status = body.get("status", ru["status"])
+                full_name = clean_text(body.get("full_name"), ru["full_name"])
+                reseller_plan_id = optional_positive_int(body.get("reseller_plan_id")) or ru["reseller_plan_id"]
+
+                conn.execute(
+                    "UPDATE users SET status = ?, full_name = ?, reseller_plan_id = ?, is_reseller = 1 WHERE id = ?",
+                    (status, full_name, reseller_plan_id, ru_id),
+                )
+                conn.commit()
+                updated = conn.execute(
+                    """
+                    SELECT u.id, u.email, u.full_name, u.status, u.is_reseller, u.reseller_plan_id, u.created_at,
+                           rp.name AS reseller_plan_name
+                    FROM users u
+                    LEFT JOIN reseller_plans rp ON rp.id = u.reseller_plan_id
+                    WHERE u.id = ?
+                    """,
+                    (ru_id,),
+                ).fetchone()
+                return self.json_response({"reseller_user": row_to_dict(updated)})
+
+            if match_ru_id and method == "DELETE":
+                require_admin_permission(actor, "users.manage")
+                ru_id = int(match_ru_id.group(1))
+                conn.execute("DELETE FROM users WHERE id = ?", (ru_id,))
+                conn.commit()
+                return self.json_response({"deleted": True})
+
+            # Reseller Users — Login As
+            login_as_reseller_match = re.match(r"^/api/admin/reseller-users/(\d+)/login-as$", path)
+            if login_as_reseller_match and method == "POST":
+                require_admin_permission(actor, "impersonate")
+                ru_id = int(login_as_reseller_match.group(1))
+                ru = conn.execute(
+                    "SELECT id, email, status, is_reseller FROM users WHERE id = ? AND (is_reseller = 1 OR reseller_plan_id IS NOT NULL)",
+                    (ru_id,),
+                ).fetchone()
+                if not ru:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "reseller_user_not_found")
+                if ru["status"] != "active":
+                    raise ApiError(HTTPStatus.CONFLICT, "reseller_user_not_active")
+                token_id = secrets.token_urlsafe(16)
+                imp_token = create_jwt(
+                    {"sub": ru_id, "actor_type": "user", "purpose": "impersonation_exchange", "admin_id": actor["id"], "jti": token_id},
+                    CONFIG.jwt_secret,
+                    60,
+                )
+                token_hash = hashlib.sha256(imp_token.encode("utf-8")).hexdigest()
+                conn.execute(
+                    "INSERT INTO impersonation_tokens(token_hash, user_id, admin_id, expires_at) VALUES (?, ?, ?, ?)",
+                    (token_hash, ru_id, actor["id"], int(time.time()) + 300),
+                )
+                log_audit(conn, "admin", actor["id"], "login_as_reseller", "user", ru_id, self.client_address[0], {"email": ru["email"]})
+                forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+                scheme = forwarded_proto if forwarded_proto in {"http", "https"} else "http"
+                request_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip() or self.headers.get("Host", "")
+                hostname = request_host.split(":", 1)[0].strip() if request_host else ""
+                if not hostname or hostname in {"0.0.0.0", ""}:
+                    hostname = CONFIG.public_host or "127.0.0.1"
+                if CONFIG.reseller_port in (80, 443):
+                    hostname_with_port = hostname
+                else:
+                    hostname_with_port = f"{hostname}:{CONFIG.reseller_port}"
+                reseller_url = f"{scheme}://{hostname_with_port}/reseller#mp_impersonation_token={imp_token}"
+                return self.json_response({"reseller_url": reseller_url})
+
             if path == "/api/admin/storage/df" and method == "GET":
                 return self.json_response(get_df_storage())
             if path == "/api/admin/storage/live" and method == "GET":
@@ -5324,7 +5569,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 token_hash = hashlib.sha256(imp_token.encode("utf-8")).hexdigest()
                 conn.execute(
                     "INSERT INTO impersonation_tokens(token_hash, user_id, admin_id, expires_at) VALUES (?, ?, ?, ?)",
-                    (token_hash, user_id, actor["id"], int(time.time()) + 60),
+                    (token_hash, user_id, actor["id"], int(time.time()) + 300),
                 )
                 log_audit(
                     conn,

@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 const IS_RESELLER = Boolean(window.IS_RESELLER_PANEL);
 const ADMIN_ROUTE_PREFIX = IS_RESELLER ? "/reseller" : "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "storage", "networking", "dns", "registrars", "dns-domains", "system", "admins", "api-tokens", "status", "security", "default-page"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "storage", "networking", "dns", "registrars", "dns-domains", "system", "admins", "api-tokens", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
   let hash = window.location.hash.replace(/^#/, "");
@@ -13,6 +13,13 @@ function getInitialToken() {
   const searchParams = new URLSearchParams(window.location.search);
   const hashStr = window.location.hash.replace(/^#/, "");
   const hashParams = new URLSearchParams(hashStr);
+
+  // If there is an impersonation token in the hash, skip it here — it will be
+  // exchanged asynchronously in mounted() for a real access token.
+  if (hashParams.get("mp_impersonation_token") || hashParams.get("mp_access_token")) {
+    return "";
+  }
+
   const urlSsoToken = searchParams.get("sso_token") || searchParams.get("token") || hashParams.get("sso_token") || hashParams.get("token");
   
   if (urlSsoToken) {
@@ -53,6 +60,12 @@ createApp({
       selectedClientId: "",
       showClientModal: false,
       plans: [],
+      resellerPlans: [],
+      resellerUsers: [],
+      showResellerPlanModal: false,
+      showResellerUserModal: false,
+      resellerPlanForm: { id: null, name: "", max_storage_mb: 50000, max_clients: 10, max_hosting_accounts: 20, max_ram_mb: 8192, max_websites: 50, max_databases: 50, max_subplans: 10 },
+      resellerUserForm: { id: null, email: "", password: "", full_name: "", reseller_plan_id: "", status: "active" },
       recalculatingUsage: false,
       showPlanModal: false,
       editingPlanId: null,
@@ -177,7 +190,37 @@ createApp({
       showDefaultPagePreviewModal: false,
     };
   },
-  mounted() {
+  async mounted() {
+    // Handle impersonation token for reseller panel (Login as Reseller from admin)
+    if (IS_RESELLER) {
+      const hashStr = window.location.hash.replace(/^#/, "");
+      const hashParams = new URLSearchParams(hashStr);
+      const impersonationToken = hashParams.get("mp_impersonation_token") || hashParams.get("mp_access_token");
+      if (impersonationToken) {
+        window.history.replaceState(null, "", window.location.pathname + "#overview");
+        this.activePage = "overview";
+        try {
+          const res = await fetch("/api/reseller/auth/exchange-impersonation", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ impersonation_token: impersonationToken }),
+          });
+          const data = await res.json();
+          if (res.ok && data.access_token) {
+            this.token = data.access_token;
+            localStorage.setItem("mp_reseller_token", data.access_token);
+            await this.load();
+          } else {
+            this.message = data.error || "Login as reseller failed — the session link may have expired. Please try again.";
+          }
+        } catch (err) {
+          this.message = "Login as reseller failed: " + err.message;
+        }
+        window.addEventListener("popstate", () => { this.activePage = adminPageFromLocation(); });
+        window.addEventListener("hashchange", () => { this.activePage = adminPageFromLocation(); });
+        return;
+      }
+    }
     if (this.token) this.load();
     window.addEventListener("popstate", () => {
       this.activePage = adminPageFromLocation();
@@ -232,6 +275,36 @@ createApp({
       return { used_pct, total_gb, used_gb, slices };
     },
     sidebarSections() {
+      if (this.isResellerMode) {
+        return [
+          {
+            label: "Reseller Management",
+            items: [
+              { label: "Overview", target: "overview", description: "Resource counts, node health, and service summary." },
+              { label: "Sub-Clients", target: "clients", description: "Manage user accounts under your reseller profile." },
+              { label: "Sub-Plans", target: "plans", description: "Create custom sub-plans for your clients." },
+              { label: "Storage", target: "storage", description: "Disk capacity, read/write rates, and account storage quotas." },
+              { label: "Networking", target: "networking", description: "Traffic meters and IP address allocations." },
+            ],
+          },
+          {
+            label: "DNS & Domains",
+            items: [
+              { label: "DNS Settings", target: "dns", description: "Global DNS mode and local nameservers." },
+              { label: "Managed DNS Domains", target: "dns-domains", description: "Domain zones and DNS records." },
+            ],
+          },
+          {
+            label: "Security & Tools",
+            items: [
+              { label: "Security Checklist", target: "security", description: "Server security audit and WAF status." },
+              { label: "Reseller API Keys", target: "api-tokens", description: "Manage Reseller API tokens." },
+              { label: "Status", target: "status", description: "Platform status and service health." },
+            ],
+          },
+        ];
+      }
+
       return [
         {
           label: "Operations",
@@ -241,6 +314,13 @@ createApp({
             { label: "Plans", target: "plans", description: "Hosting packages, resource limits, and DNS policy." },
             { label: "Storage", target: "storage", description: "Disk capacity graph (df -h), SSE live read/write rates, WHM quotas, path sizes, and cleanup." },
             { label: "Networking", target: "networking", description: "Public IP addresses, interface topology, IP aliases, and client dedicated IP assignment." },
+          ],
+        },
+        {
+          label: "Resellers",
+          items: [
+            { label: "Reseller Plans", target: "reseller-plans", description: "Create and manage reseller package boundaries." },
+            { label: "Reseller Users", target: "reseller-users", description: "Manage reseller partner accounts and assigned plans." },
           ],
         },
         {
@@ -729,11 +809,145 @@ createApp({
         this.stacks = stacksRes.account_stacks;
         this.jobEvents = jobsRes.job_events;
 
+        if (!IS_RESELLER) {
+          Promise.all([
+            this.loadResellerPlans(),
+            this.loadResellerUsers(),
+          ]).catch(() => {});
+        }
+
         Promise.all([
           this.loadDefaultPage(),
           this.fetchAdminApiTokens(),
           this.loadStatusData(),
         ]).catch(() => {});
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async loadResellerPlans() {
+      try {
+        const res = await this.api("/api/admin/reseller-plans");
+        this.resellerPlans = res.reseller_plans || [];
+      } catch (error) {
+        console.error("Reseller plans load error:", error);
+      }
+    },
+    openResellerPlanModal(plan = null) {
+      if (plan) {
+        this.resellerPlanForm = {
+          id: plan.id,
+          name: plan.name,
+          max_storage_mb: plan.max_storage_mb,
+          max_clients: plan.max_clients,
+          max_hosting_accounts: plan.max_hosting_accounts,
+          max_ram_mb: plan.max_ram_mb,
+          max_websites: plan.max_websites,
+          max_databases: plan.max_databases,
+          max_subplans: plan.max_subplans,
+        };
+      } else {
+        this.resellerPlanForm = { id: null, name: "", max_storage_mb: 50000, max_clients: 10, max_hosting_accounts: 20, max_ram_mb: 8192, max_websites: 50, max_databases: 50, max_subplans: 10 };
+      }
+      this.showResellerPlanModal = true;
+    },
+    async saveResellerPlan() {
+      try {
+        if (this.resellerPlanForm.id) {
+          await this.api(`/api/admin/reseller-plans/${this.resellerPlanForm.id}`, {
+            method: "PATCH",
+            body: JSON.stringify(this.resellerPlanForm),
+          });
+        } else {
+          await this.api("/api/admin/reseller-plans", {
+            method: "POST",
+            body: JSON.stringify(this.resellerPlanForm),
+          });
+        }
+        this.showResellerPlanModal = false;
+        await this.loadResellerPlans();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async deleteResellerPlan(id) {
+      if (!confirm("Are you sure you want to delete this reseller plan?")) return;
+      try {
+        await this.api(`/api/admin/reseller-plans/${id}`, { method: "DELETE" });
+        await this.loadResellerPlans();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async loadResellerUsers() {
+      try {
+        const res = await this.api("/api/admin/reseller-users");
+        this.resellerUsers = res.reseller_users || [];
+      } catch (error) {
+        console.error("Reseller users load error:", error);
+      }
+    },
+    openResellerUserModal(user = null) {
+      if (user) {
+        this.resellerUserForm = {
+          id: user.id,
+          email: user.email,
+          password: "",
+          full_name: user.full_name,
+          reseller_plan_id: user.reseller_plan_id || "",
+          status: user.status,
+        };
+      } else {
+        const defaultPlan = this.resellerPlans[0] ? this.resellerPlans[0].id : "";
+        this.resellerUserForm = { id: null, email: "", password: "", full_name: "", reseller_plan_id: defaultPlan, status: "active" };
+      }
+      this.showResellerUserModal = true;
+    },
+    async saveResellerUser() {
+      try {
+        if (this.resellerUserForm.id) {
+          await this.api(`/api/admin/reseller-users/${this.resellerUserForm.id}`, {
+            method: "PATCH",
+            body: JSON.stringify(this.resellerUserForm),
+          });
+        } else {
+          await this.api("/api/admin/reseller-users", {
+            method: "POST",
+            body: JSON.stringify(this.resellerUserForm),
+          });
+        }
+        this.showResellerUserModal = false;
+        await this.loadResellerUsers();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async toggleResellerUserStatus(user) {
+      const nextStatus = user.status === "active" ? "suspended" : "active";
+      try {
+        await this.api(`/api/admin/reseller-users/${user.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: nextStatus }),
+        });
+        await this.loadResellerUsers();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async deleteResellerUser(id) {
+      if (!confirm("Are you sure you want to delete this reseller user?")) return;
+      try {
+        await this.api(`/api/admin/reseller-users/${id}`, { method: "DELETE" });
+        await this.loadResellerUsers();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async loginAsReseller(ru) {
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/reseller-users/${ru.id}/login-as`, { method: "POST" });
+        window.open(payload.reseller_url, "_blank");
       } catch (error) {
         this.message = error.message;
       }
