@@ -470,7 +470,7 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     (fb_branding_dir / "custom.js").write_text(FILEBROWSER_CUSTOM_JS, encoding="utf-8")
     fb_settings = fb_config_dir / "settings.json"
     fb_settings.write_text(
-        '{\n  "port": 80,\n  "baseURL": "/files",\n  "address": "",\n  "log": "stdout",\n  "database": "/database/filebrowser.db",\n  "root": "/srv",\n  "auth": {\n    "method": "noauth"\n  },\n  "branding": {\n    "name": "File Manager",\n    "disableUsedPercentage": true,\n    "files": "/branding"\n  }\n}\n',
+        '{\n  "port": 80,\n  "baseURL": "/files",\n  "address": "",\n  "log": "stdout",\n  "database": "/database/filebrowser.db",\n  "root": "/srv",\n  "auth": {\n    "method": "noauth"\n  },\n  "branding": {\n    "name": "File Manager",\n    "disableUsedPercentage": false,\n    "files": "/branding"\n  }\n}\n',
         encoding="utf-8"
     )
     
@@ -801,10 +801,12 @@ virtualHost {domain} {{
     if websites:
         maps = []
         for i, w in enumerate(websites):
+            dom = w["domain"]
+            aliases = f"{dom}, www.{dom}" if not dom.startswith("www.") else dom
             if i == 0:
-                maps.append(f"map                     {w['domain']} {w['domain']}, *")
+                maps.append(f"map                     {dom} {aliases}, *")
             else:
-                maps.append(f"map                     {w['domain']} {w['domain']}")
+                maps.append(f"map                     {dom} {aliases}")
         maps_str = "\n  ".join(maps)
         blocks.append(
             f"""
@@ -845,7 +847,7 @@ accesslog {logs_dir}/access.log {{
     )
     return f"""
 docRoot                   {doc_root}
-indexFiles                index.html, index.php
+indexFiles                index.php, index.html
 enableGzip                1
 enableBr                  1
 
@@ -860,6 +862,11 @@ errorlog {logs_dir}/error.log {{
 }}
 
 {accesslog_block}
+
+rewrite  {{
+  enable                  1
+  autoLoadHtaccess        1
+}}
 
 errorpage 403 {{
   url                     /_mangopanel_errors/403.html
@@ -887,10 +894,6 @@ context / {{
   location                {doc_root}/
   allowBrowse             1
   indexFiles              index.php, index.html
-  rewrite  {{
-    enable                1
-    autoLoadHtaccess      1
-  }}
 }}
 
 extprocessor lsphp_{safe_domain} {{
@@ -1027,10 +1030,10 @@ services:
     user: "{uid}:{uid}"
     restart: unless-stopped
     mem_limit: 128m
-    entrypoint: ["/bin/sh", "-c", 'if [ ! -f /config/settings.json ]; then cp -a /defaults/settings.json /config/settings.json; fi; umask 0000; exec /bin/filebrowser "$$@"', "--"]
+    entrypoint: ["/bin/sh", "-c", 'if [ ! -f /config/settings.json ]; then cp -a /defaults/settings.json /config/settings.json; fi; umask 0000; if [ ! -f /database/filebrowser.db ]; then /bin/filebrowser config init -d /database/filebrowser.db --auth.method noauth >/dev/null 2>&1; fi; /bin/filebrowser config set --auth.method noauth -d /database/filebrowser.db >/dev/null 2>&1 || true; exec /bin/filebrowser "$$@"', "--"]
     command: ["--config", "/config/settings.json", "--noauth", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
     environment:
-      FB_BRANDING_DISABLE_USED_PERCENTAGE: "true"
+      FB_BRANDING_DISABLE_USED_PERCENTAGE: "false"
       FB_BRANDING_FILES: "/branding"
     labels:
       caddy: "{filebrowser_domain}"
@@ -1046,11 +1049,12 @@ services:
       caddy.route.2_handle_path: "/files/api/extract"
       caddy.route.2_handle_path.0_rewrite: "* /api/public/filebrowser/extract"
       caddy.route.2_handle_path.1_reverse_proxy: "host.docker.internal:8000"
-      caddy.route.3_@html: "header Accept *text/html*"
-      caddy.route.4_handle: "@html"
+      caddy.route.3_handle_path: "/files/api/usage*"
+      caddy.route.3_handle_path.0_rewrite: "* /api/public/filebrowser/usage"
+      caddy.route.3_handle_path.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.4_handle: "*"
       caddy.route.4_handle.0_rewrite: "* /api/public/filebrowser/proxy{{uri}}"
       caddy.route.4_handle.1_reverse_proxy: "host.docker.internal:8000"
-      caddy.route.5_reverse_proxy: "{{upstreams 80}}"
     volumes:
       - {base_path}/domains:/srv/domains
       - {base_path}/databases:/srv/databases

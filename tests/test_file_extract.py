@@ -6,7 +6,7 @@ import tarfile
 from pathlib import Path
 from http import HTTPStatus
 
-from mangopanel.app import normalize_account_relative_path, ApiError
+from mangopanel.app import normalize_account_relative_path, ApiError, inject_filebrowser_custom_js
 from mangopanel.config import FILEBROWSER_CUSTOM_JS
 
 
@@ -15,7 +15,15 @@ class FileExtractTests(unittest.TestCase):
         self.assertIn("mp-extract-btn", FILEBROWSER_CUSTOM_JS)
         self.assertIn("isArchive", FILEBROWSER_CUSTOM_JS)
         self.assertIn("doExtract", FILEBROWSER_CUSTOM_JS)
+        self.assertIn("resolveActiveArchivePath", FILEBROWSER_CUSTOM_JS)
+        self.assertIn("getArchivePathFromSelection", FILEBROWSER_CUSTOM_JS)
         self.assertIn("/files/api/extract", FILEBROWSER_CUSTOM_JS)
+
+    def test_inject_custom_js_into_html_with_uppercase_head(self):
+        html = "<HTML><HEAD><title>File Browser</title></HEAD><BODY>hello</BODY></HTML>"
+        modified = inject_filebrowser_custom_js(html)
+        self.assertIn('/files/custom.js', modified)
+        self.assertIn('<script src="/files/custom.js"></script>', modified)
 
     def test_zip_extraction_success(self):
         with tempfile.TemporaryDirectory() as tmp:

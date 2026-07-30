@@ -768,7 +768,6 @@ def connect(db_path, timeout=60.0):
     conn = sqlite3.connect(db_path, timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 60000")
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn
@@ -1091,6 +1090,14 @@ def ensure_schema(conn):
         "resource_usage_samples",
         {
             "bandwidth_mb": "REAL NOT NULL DEFAULT 0",
+        },
+    )
+    ensure_table_columns(
+        conn,
+        "collaborators",
+        {
+            "target_user_id": "INTEGER REFERENCES users(id)",
+            "invited_name": "TEXT NOT NULL DEFAULT ''",
         },
     )
     conn.execute("UPDATE nodes SET hostname = 'seeds.servermango.com' WHERE hostname = 'localhost'")

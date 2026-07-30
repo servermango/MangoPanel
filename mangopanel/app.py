@@ -59,6 +59,7 @@ from .db import (
     rows_to_dicts,
     seed_dev_data,
     set_system_setting,
+    with_db_retry,
 )
 from .default_page import DEFAULT_PAGE_CONTENT
 from .providers import (
@@ -335,14 +336,23 @@ def sync_cloudflare_acme_rules(conn, config, website_id=None, account_id=None):
 
 
 def get_cookie_domain(host_header):
-    host = host_header.split(":")[0]
-    if host == "localhost":
+    if not host_header:
+        return ""
+    host = host_header.split(":")[0].lower()
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return ""
+    if host.endswith(".localhost"):
         return ".localhost"
     if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host):
+        return ""
+    if re.match(r"^(?:files|pma|mail)[-.]", host):
         return ""
     parts = host.split(".")
     if len(parts) >= 2:
         return "." + ".".join(parts[-2:])
+    return ""
+
+
 def is_request_https(headers):
     if not headers:
         return False
@@ -355,23 +365,18 @@ def auth_cookie_header(token, host_header, max_age=None, is_https=False):
     cookie_domain = get_cookie_domain(host_header)
     domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
     ttl = CONFIG.token_ttl_seconds if max_age is None else max_age
-    secure = "; Secure" if (CONFIG.env == "production" and is_https) else ""
+    secure = "; Secure" if is_https else ""
     return f"mp_client_token={token}; Path=/; Max-Age={ttl}; HttpOnly; SameSite=Lax{secure}{domain_attr}"
 
 
 def auth_cookie_headers(token, host_header, is_https=False):
     cookie_domain = get_cookie_domain(host_header)
-    host = host_header.split(":")[0] if host_header else ""
     if cookie_domain == ".localhost":
         return [
             f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; HttpOnly; SameSite=Lax; Domain=localhost",
             f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; HttpOnly; SameSite=Lax; Domain=.localhost",
         ]
-    headers = [auth_cookie_header(token, host_header, CONFIG.token_ttl_seconds, is_https=is_https)]
-    if host and host not in {"127.0.0.1", "localhost"}:
-        secure = "; Secure" if (CONFIG.env == "production" and is_https) else ""
-        headers.append(f"mp_client_token={token}; Path=/; Max-Age={CONFIG.token_ttl_seconds}; HttpOnly; SameSite=Lax{secure}")
-    return headers
+    return [auth_cookie_header(token, host_header, CONFIG.token_ttl_seconds, is_https=is_https)]
 
 
 def named_cookie_header(name, token, host_header, max_age=None, is_https=False):
@@ -517,6 +522,20 @@ def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host, is_
     return f"{scheme}://{subdomain}"
 
 
+def inject_filebrowser_custom_js(html: str) -> str:
+    if not html or "/files/custom.js" in html:
+        return html
+
+    for pattern in ["</head>", "</HEAD>"]:
+        if pattern in html:
+            return html.replace(pattern, '<script src="/files/custom.js"></script>' + pattern, 1)
+
+    if "<body" in html.lower():
+        return re.sub(r"(<body[^>]*>)", r"\1<script src=\"/files/custom.js\"></script>", html, count=1, flags=re.IGNORECASE)
+
+    return html + '<script src="/files/custom.js"></script>'
+
+
 def ensure_server_ssl_cert(cert_path=None, key_path=None):
     cert_p = Path(cert_path or CONFIG.ssl_cert_path)
     key_p = Path(key_path or CONFIG.ssl_key_path)
@@ -621,6 +640,12 @@ class MangoHandler(BaseHTTPRequestHandler):
         panel = getattr(self.server, "panel", "combined")
 
         try:
+            forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+            host_part = forwarded_host.split(":")[0].lower() if forwarded_host else ""
+            if host_part.startswith("files-") or host_part.startswith("files."):
+                if path in {"/login", "/login.html", "/files/login", "/files/api/login", "/api/login"} or path.endswith("/files/login") or path.endswith("/api/login"):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+
             if method == "GET" and (path in {"/", "/client"} or path.startswith("/client/")):
                 if panel == "reseller":
                     return self.serve_file(PUBLIC_DIR / "reseller.html")
@@ -671,7 +696,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"status": "ok", "service": "mangopanel-api"})
 
             if path.startswith("/api/") or path.startswith("/auth/") or path.startswith("/files/"):
-                return self.route_api(method, path, self.query_params)
+                return with_db_retry(lambda: self.route_api(method, path, self.query_params))
 
             self.json_response({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except ApiError as exc:
@@ -785,6 +810,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             return self.public_webmail_logout()
         if path == "/api/public/mail-jmap" and method == "GET":
             return self.public_mail_jmap()
+        if path in {"/files/api/usage", "/api/public/filebrowser/usage"} and method == "GET":
+            return self.serve_filebrowser_usage()
         if path in {"/files/custom.js", "/api/public/filebrowser/custom.js"} and method == "GET":
             return self.serve_filebrowser_custom_js()
         if path in {"/files/api/extract", "/api/public/filebrowser/extract"} and method == "POST":
@@ -869,15 +896,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.UNAUTHORIZED, "inactive_user")
 
             account = None
-            if username:
+            req_acc_id = payload.get("account_id")
+            if req_acc_id:
                 account = conn.execute(
-                    "SELECT * FROM hosting_accounts WHERE user_id = ? AND username = ? AND status = 'active'",
-                    (actor_id, username),
+                    "SELECT * FROM hosting_accounts WHERE id = ? AND status = 'active'",
+                    (req_acc_id,),
                 ).fetchone()
-            elif payload.get("account_id"):
+            elif username:
                 account = conn.execute(
-                    "SELECT * FROM hosting_accounts WHERE id = ? AND user_id = ? AND status = 'active'",
-                    (payload["account_id"], actor_id),
+                    "SELECT * FROM hosting_accounts WHERE username = ? AND status = 'active'",
+                    (username,),
                 ).fetchone()
             else:
                 account = conn.execute(
@@ -887,6 +915,16 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             if not account:
                 raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+
+            acc_dict = dict(account)
+            if acc_dict["user_id"] != actor_id:
+                scope = get_collaborator_scope(conn, actor_id, acc_dict["id"])
+                if not scope.get("is_collaborator"):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+                if tool == "filebrowser" and scope.get("allowed_menus") is not None and "files" not in scope.get("allowed_menus", []):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "menu_access_denied")
+                if tool == "phpmyadmin" and scope.get("allowed_menus") is not None and "databases" not in scope.get("allowed_menus", []):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "menu_access_denied")
 
             access_token = create_jwt(
                 {"sub": actor_id, "actor_type": actor_type, "purpose": "access", "jti": secrets.token_urlsafe(16)},
@@ -898,10 +936,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 "INSERT INTO sessions(actor_type, actor_id, token_id, expires_at) VALUES (?, ?, ?, ?)",
                 (actor_type, actor_id, access_payload["jti"], int(time.time()) + 600),
             )
-            default_path = "/files" if tool == "filebrowser" else "/db/"
+            default_path = "/files/" if tool == "filebrowser" else "/db/"
             if tool == "webmail":
                 default_path = "/webmail"
             clean_path = suffix or default_path
+            if clean_path.rstrip("/") == "/files":
+                clean_path = "/files/"
             self.send_response(HTTPStatus.FOUND)
             cookie_headers = auth_cookie_headers(access_token, forwarded_host, is_https=self.is_https)
             if tool == "webmail":
@@ -934,15 +974,62 @@ class MangoHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.record_access_log(HTTPStatus.OK, len(body))
 
+    def serve_filebrowser_usage(self, account=None):
+        with connect(CONFIG.db_path) as conn:
+            if not account:
+                forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+                username = None
+                if forwarded_host:
+                    match = re.match(r"^(?:files|pma|mail)[-.](\w+)\.", forwarded_host)
+                    if match:
+                        username = match.group(1)
+                if username:
+                    account = conn.execute("SELECT * FROM hosting_accounts WHERE username = ? AND status = 'active'", (username,)).fetchone()
+                if not account:
+                    account = conn.execute("SELECT * FROM hosting_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").fetchone()
 
+            used_mb = 0
+            limit_mb = 1000
+            if account:
+                usage = conn.execute(
+                    "SELECT storage_mb, storage_limit_mb FROM resource_usage_samples WHERE account_id = ? ORDER BY sampled_at DESC LIMIT 1",
+                    (account["id"],)
+                ).fetchone()
+                used_mb = usage["storage_mb"] if usage else 0
+                limit_mb = usage["storage_limit_mb"] if usage else 0
+                if limit_mb == 0:
+                    plan = conn.execute("SELECT storage_mb FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+                    limit_mb = plan["storage_mb"] if plan else 1000
+
+            total_bytes = int(round(limit_mb * 1024 * 1024))
+            used_bytes = int(round(used_mb * 1024 * 1024))
+            return self.json_response({"total": total_bytes, "used": used_bytes})
 
     def public_filebrowser_proxy(self, path):
+        clean_path_raw = path.replace("/api/public/filebrowser/proxy", "") or "/files/"
+        clean_path_no_query = urlparse(clean_path_raw).path.rstrip("/")
+        is_login_endpoint = clean_path_no_query in {"/files/login", "/login", "/files/api/login", "/api/login"} or clean_path_no_query.endswith("/files/login") or clean_path_no_query.endswith("/api/login")
+
         forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
         username = None
         if forwarded_host:
             match = re.match(r"^(?:files|pma|mail)[-.](\w+)\.", forwarded_host)
             if match:
                 username = match.group(1)
+
+        token = None
+        cookie_header = self.headers.get("Cookie", "")
+        if cookie_header:
+            m = re.search(r'(?:^|;\s*)(?:mp_auth|mp_client_token)=([^;]+)', cookie_header)
+            if m:
+                token = m.group(1).strip()
+        if not token:
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth.removeprefix("Bearer ").strip()
+
+        if is_login_endpoint and not token:
+            raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
 
         with connect(CONFIG.db_path) as conn:
             account = None
@@ -953,52 +1040,115 @@ class MangoHandler(BaseHTTPRequestHandler):
             if not account:
                 raise ApiError(HTTPStatus.NOT_FOUND, "account_not_found")
 
+            if token:
+                payload = verify_jwt(token, CONFIG.jwt_secret)
+                if payload and payload.get("sub"):
+                    actor_id = payload["sub"]
+                    scope = get_collaborator_scope(conn, actor_id, account["id"])
+                    if scope and scope.get("is_collaborator") and scope.get("allowed_website_ids") is not None:
+                        allowed_ws = scope["allowed_website_ids"]
+                        allowed_domains = []
+                        if allowed_ws:
+                            placeholders = ",".join("?" for _ in allowed_ws)
+                            allowed_domains = [r["domain"].lower() for r in conn.execute(f"SELECT domain FROM websites WHERE account_id = ? AND id IN ({placeholders})", [account["id"], *allowed_ws]).fetchall()]
+                        
+                        import urllib.parse
+                        decoded_path = urllib.parse.unquote(path)
+                        clean_p = decoded_path.replace("/api/public/filebrowser/proxy", "").replace("/files", "")
+                        
+                        subpath = None
+                        for prefix in ["/api/resources", "/api/raw", "/api/preview"]:
+                            if clean_p.startswith(prefix):
+                                subpath = clean_p[len(prefix):] or "/"
+                                break
+
+                        if subpath is None and clean_p.startswith("/domains/"):
+                            subpath = clean_p
+
+                        if subpath is not None:
+                            subpath = "/" + subpath.lstrip("/").rstrip("/")
+                            permitted = False
+                            for dom in allowed_domains:
+                                dom_prefix = f"/domains/{dom}"
+                                if subpath == dom_prefix or subpath.startswith(f"{dom_prefix}/"):
+                                    permitted = True
+                                    break
+                            if not permitted:
+                                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_collaborator_restricted_path")
+
             container_name = f"mp-{account['username']}-filebrowser"
             clean_path = path.replace("/api/public/filebrowser/proxy", "") or "/files/"
             if not clean_path.startswith("/"):
                 clean_path = "/" + clean_path
+
+            if clean_path.rstrip("/") in {"/api/usage", "/files/api/usage"}:
+                return self.serve_filebrowser_usage(account)
 
             container_ip = resolve_container_ip(container_name)
             upstream_url = f"http://{container_ip}:80{clean_path}"
 
             req_headers = {}
             for k, v in self.headers.items():
-                if k.lower() not in {"host", "content-length"}:
+                kl = k.lower()
+                if kl not in {"host", "content-length", "x-forwarded-uri", "x-forwarded-prefix", "x-forwarded-path", "x-original-uri", "accept-encoding"}:
                     req_headers[k] = v
+            req_headers["X-Forwarded-Uri"] = clean_path
+            req_headers["Accept-Encoding"] = "identity"
 
             import urllib.request
+
+            class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                    return None
+
+            opener = urllib.request.build_opener(NoRedirectHandler)
             req = urllib.request.Request(upstream_url, headers=req_headers)
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = resp.read()
-                    content_type = resp.headers.get("Content-Type", "")
-                    
-                    self.send_response(resp.status)
-                    for hk, hv in resp.headers.items():
-                        if hk.lower() not in {"content-length", "transfer-encoding"}:
-                            self.send_header(hk, hv)
-
-                    if "text/html" in content_type:
-                        html = data.decode("utf-8", errors="ignore")
-                        if "</head>" in html and "/files/custom.js" not in html:
-                            html = html.replace("</head>", '<script src="/files/custom.js"></script></head>', 1)
-                        data = html.encode("utf-8")
-
-                    self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    self.wfile.write(data)
-                    self.record_access_log(resp.status, len(data))
+                resp = opener.open(req, timeout=10)
+                data = resp.read()
+                status = resp.status
+                resp_headers = resp.headers
             except urllib.error.HTTPError as e:
                 data = e.read()
-                self.send_response(e.code)
-                for hk, hv in e.headers.items():
-                    if hk.lower() not in {"content-length", "transfer-encoding"}:
-                        self.send_header(hk, hv)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                status = e.code
+                resp_headers = e.headers
             except Exception as e:
                 raise ApiError(HTTPStatus.BAD_GATEWAY, f"filebrowser_proxy_error: {e}")
+
+            location = resp_headers.get("Location", "")
+            if status in {301, 302, 303, 307, 308}:
+                if "/login" in location or location.endswith("/login"):
+                    target_url = f"http://{container_ip}:80/files/"
+                    try:
+                        resp2 = opener.open(urllib.request.Request(target_url, headers=req_headers), timeout=10)
+                        data = resp2.read()
+                        status = resp2.status
+                        resp_headers = resp2.headers
+                    except Exception:
+                        pass
+
+            content_type = resp_headers.get("Content-Type", "")
+            content_encoding = (resp_headers.get("Content-Encoding") or "").lower()
+
+            if "text/html" in content_type:
+                if content_encoding == "gzip":
+                    import gzip
+                    try:
+                        data = gzip.decompress(data)
+                    except Exception:
+                        pass
+                html = data.decode("utf-8", errors="ignore")
+                data = inject_filebrowser_custom_js(html).encode("utf-8")
+
+            self.send_response(status)
+            for hk, hv in resp_headers.items():
+                if hk.lower() not in {"content-length", "transfer-encoding", "content-encoding"}:
+                    self.send_header(hk, hv)
+
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            self.record_access_log(status, len(data))
 
     def extract_file_archive(self, account=None, actor=None):
         body = self.read_json()
@@ -1050,6 +1200,40 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             abs_path, rel_path = normalize_account_relative_path(account, clean_path)
             abs_file = str(abs_path)
+
+            actor_id = actor["id"] if actor else None
+            if not actor_id:
+                cookie_header = self.headers.get("Cookie", "")
+                from http.cookies import SimpleCookie
+                cookies = SimpleCookie(cookie_header)
+                token_cookie = cookies.get("mp_client_token") or cookies.get("mp_auth")
+                if token_cookie:
+                    payload = verify_jwt(token_cookie.value, CONFIG.jwt_secret)
+                    if payload and payload.get("sub"):
+                        actor_id = payload["sub"]
+
+            if actor_id and account and account["user_id"] != actor_id:
+                scope = get_collaborator_scope(conn, actor_id, account["id"])
+                if not scope.get("is_collaborator"):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+                if scope.get("allowed_menus") is not None and "files" not in scope.get("allowed_menus", []):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "menu_access_denied")
+                if scope.get("allowed_website_ids") is not None:
+                    allowed_ws = scope["allowed_website_ids"]
+                    allowed_domains = []
+                    if allowed_ws:
+                        placeholders = ",".join("?" for _ in allowed_ws)
+                        allowed_domains = [r["domain"].lower() for r in conn.execute(f"SELECT domain FROM websites WHERE account_id = ? AND id IN ({placeholders})", [account["id"], *allowed_ws]).fetchall()]
+
+                    sub_p = "/" + rel_path.lstrip("/")
+                    permitted = False
+                    for dom in allowed_domains:
+                        dom_prefix = f"/domains/{dom}"
+                        if sub_p == dom_prefix or sub_p.startswith(f"{dom_prefix}/"):
+                            permitted = True
+                            break
+                    if not permitted:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_collaborator_restricted_path")
 
             if not os.path.exists(abs_file):
                 raise ApiError(HTTPStatus.NOT_FOUND, "file_not_found")
@@ -1746,6 +1930,21 @@ class MangoHandler(BaseHTTPRequestHandler):
         forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
         forwarded_uri = self.headers.get("X-Forwarded-Uri", "")
 
+        is_login_request = False
+        if forwarded_uri:
+            parsed_uri_path = urlparse(forwarded_uri).path.rstrip("/")
+            is_login_request = parsed_uri_path in {"/files/login", "/login", "/files/api/login", "/api/login"} or parsed_uri_path.endswith("/files/login") or parsed_uri_path.endswith("/api/login")
+
+        if forwarded_host:
+            host_part = forwarded_host.split(":")[0].lower()
+            if host_part.startswith("files-") or host_part.startswith("files."):
+                if forwarded_uri:
+                    uri_path = urlparse(forwarded_uri).path.rstrip("/")
+                    is_login_request = is_login_request or uri_path in {"/login", "/files/login", "/api/login", "/files/api/login"} or uri_path.endswith("/login")
+
+        if is_login_request and not token:
+            raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+
         if forwarded_uri and (
             forwarded_uri.startswith("/files/static/")
             or "/static/" in forwarded_uri
@@ -1781,7 +1980,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                         parts = host_part.split(".")
                         if len(parts) >= 2 and not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_part):
                             redirect_host = ".".join(parts[-2:])
-                login_url = f"http://{redirect_host}:{CONFIG.client_port}/login"
+                scheme = "https" if self.is_https else "http"
+                port_str = "" if forwarded_host else (f":{CONFIG.client_port}" if CONFIG.client_port not in {80, 443} else "")
+                login_url = f"{scheme}://{redirect_host}{port_str}/login"
                 self.send_response(HTTPStatus.FOUND)
                 self.send_header("Location", login_url)
                 self.end_headers()
@@ -1800,7 +2001,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                         parts = host_part.split(".")
                         if len(parts) >= 2 and not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_part):
                             redirect_host = ".".join(parts[-2:])
-                login_url = f"http://{redirect_host}:{CONFIG.client_port}/login"
+                scheme = "https" if self.is_https else "http"
+                port_str = "" if forwarded_host else (f":{CONFIG.client_port}" if CONFIG.client_port not in {80, 443} else "")
+                login_url = f"{scheme}://{redirect_host}{port_str}/login"
                 self.send_response(HTTPStatus.FOUND)
                 self.send_header("Location", login_url)
                 self.end_headers()
@@ -1825,24 +2028,64 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not user or user["status"] != "active":
                     raise ApiError(HTTPStatus.UNAUTHORIZED, "inactive_user")
                 account = None
-                if username:
+                req_acc_id = payload.get("account_id")
+                if req_acc_id:
                     account = conn.execute(
-                        "SELECT id FROM hosting_accounts WHERE user_id = ? AND username = ? AND status = 'active'",
-                        (actor_id, username)
+                        "SELECT * FROM hosting_accounts WHERE id = ? AND status = 'active'",
+                        (req_acc_id,),
                     ).fetchone()
-                elif payload.get("account_id"):
+                elif username:
                     account = conn.execute(
-                        "SELECT id FROM hosting_accounts WHERE id = ? AND user_id = ? AND status = 'active'",
-                        (payload["account_id"], actor_id)
+                        "SELECT * FROM hosting_accounts WHERE username = ? AND status = 'active'",
+                        (username,),
                     ).fetchone()
                 else:
                     account = conn.execute(
-                        "SELECT id FROM hosting_accounts WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
-                        (actor_id,)
+                        "SELECT * FROM hosting_accounts WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+                        (actor_id,),
                     ).fetchone()
 
                 if not account:
                     raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+
+                acc_dict = dict(account)
+                if acc_dict["user_id"] != actor_id:
+                    scope = get_collaborator_scope(conn, actor_id, acc_dict["id"])
+                    if not scope.get("is_collaborator"):
+                        raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+                    
+                    if scope.get("allowed_menus") is not None and "files" not in scope.get("allowed_menus", []):
+                        raise ApiError(HTTPStatus.FORBIDDEN, "menu_access_denied")
+                    
+                    if scope.get("allowed_website_ids") is not None and forwarded_uri:
+                        allowed_ws = scope["allowed_website_ids"]
+                        allowed_domains = []
+                        if allowed_ws:
+                            placeholders = ",".join("?" for _ in allowed_ws)
+                            allowed_domains = [r["domain"].lower() for r in conn.execute(f"SELECT domain FROM websites WHERE account_id = ? AND id IN ({placeholders})", [acc_dict["id"], *allowed_ws]).fetchall()]
+                        
+                        import urllib.parse
+                        decoded_uri = urllib.parse.unquote(forwarded_uri)
+                        clean_uri = decoded_uri.replace("/api/public/filebrowser/proxy", "")
+                        if clean_uri.startswith("/files"):
+                            clean_uri = clean_uri[len("/files"):]
+                        
+                        subpath = None
+                        for prefix in ["/api/resources", "/api/raw", "/api/preview"]:
+                            if clean_uri.startswith(prefix):
+                                subpath = clean_uri[len(prefix):] or "/"
+                                break
+
+                        if subpath is not None:
+                            subpath = "/" + subpath.lstrip("/").rstrip("/")
+                            permitted = False
+                            for dom in allowed_domains:
+                                dom_prefix = f"/domains/{dom}"
+                                if subpath == dom_prefix or subpath.startswith(f"{dom_prefix}/"):
+                                    permitted = True
+                                    break
+                            if not permitted:
+                                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_collaborator_restricted_path")
 
                 if magic_mode:
                     access_token = create_jwt(
@@ -2281,7 +2524,28 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (req_account_id, actor["id"]),
                 ).fetchone()
                 if not account:
-                    raise ApiError(HTTPStatus.FORBIDDEN, "hosting_account_access_denied")
+                    # Check if actor is a collaborator on this account
+                    collab_check = conn.execute(
+                        """
+                        SELECT id FROM collaborators
+                        WHERE hosting_account_id = ?
+                          AND (target_user_id = ? OR LOWER(invited_email) = LOWER(?))
+                          AND status = 'active'
+                        """,
+                        (req_account_id, actor["id"], actor.get("email", "")),
+                    ).fetchone()
+                    if collab_check:
+                        account = conn.execute(
+                            """
+                            SELECT ha.*, p.memory_mb, p.storage_mb, p.inode_limit
+                            FROM hosting_accounts ha
+                            LEFT JOIN plans p ON p.id = ha.plan_id
+                            WHERE ha.id = ?
+                            """,
+                            (req_account_id,),
+                        ).fetchone()
+                    if not account:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "hosting_account_access_denied")
             else:
                 account = None
                 default_acc_id = actor.get("api_token_account_id")
@@ -2384,17 +2648,36 @@ class MangoHandler(BaseHTTPRequestHandler):
                     except Exception:
                         return False
                 if account:
-                    rows = conn.execute(
-                        """
-                        SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
-                        FROM websites w
-                        JOIN hosting_accounts ha ON ha.id = w.account_id
-                        LEFT JOIN domains d ON d.linked_website_id = w.id
-                        WHERE w.account_id = ?
-                        ORDER BY w.id
-                        """,
-                        (account["id"],),
-                    ).fetchall()
+                    scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                    if scope and scope.get("is_collaborator") and scope.get("allowed_website_ids") is not None:
+                        allowed_ws = scope["allowed_website_ids"]
+                        if allowed_ws:
+                            placeholders = ",".join("?" for _ in allowed_ws)
+                            rows = conn.execute(
+                                f"""
+                                SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                                FROM websites w
+                                JOIN hosting_accounts ha ON ha.id = w.account_id
+                                LEFT JOIN domains d ON d.linked_website_id = w.id
+                                WHERE w.account_id = ? AND w.id IN ({placeholders})
+                                ORDER BY w.id
+                                """,
+                                [account["id"], *allowed_ws],
+                            ).fetchall()
+                        else:
+                            rows = []
+                    else:
+                        rows = conn.execute(
+                            """
+                            SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                            FROM websites w
+                            JOIN hosting_accounts ha ON ha.id = w.account_id
+                            LEFT JOIN domains d ON d.linked_website_id = w.id
+                            WHERE w.account_id = ?
+                            ORDER BY w.id
+                            """,
+                            (account["id"],),
+                        ).fetchall()
                 else:
                     rows = conn.execute(
                         """
@@ -2452,6 +2735,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"success": True, "results": results})
             if path == "/api/client/websites" and method == "POST":
                 require_active_account(account)
+                require_collaborator_permission(conn, actor["id"], account["id"], "can_create_websites")
                 require_plan_capacity(conn, account["id"], "websites", "max_websites", "website_limit_reached")
                 require_inode_capacity(conn, account["id"])
                 body = self.read_json()
@@ -2591,10 +2875,9 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/client/websites/") and not path.endswith("/php") and not path.endswith("/modsec") and not path.endswith("/connection-check"):
                 require_active_account(account)
                 website_id = path_int_id(path, "/api/client/websites/")
-                website = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone()
-                if not website:
-                    raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                website = require_owned_website(conn, account["id"], website_id, actor["id"])
                 if method == "PATCH":
+                    require_collaborator_permission(conn, actor["id"], account["id"], "can_edit_websites")
                     body = self.read_json()
                     allowed_php = {"8.2", "8.3", "8.4"}
                     php_version = body.get("php_version", website["php_version"])
@@ -2651,6 +2934,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     updated = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
                     return self.json_response({"website": row_to_dict(updated), "job_id": job_id})
                 if method == "DELETE":
+                    require_collaborator_permission(conn, actor["id"], account["id"], "can_delete_websites")
                     domain = website["domain"]
                     job_id = delete_client_website(conn, account, website)
                     log_activity(conn, actor["id"], "website_deleted", {"website_id": website_id, "domain": domain})
@@ -2661,17 +2945,36 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"php_versions": ["8.2", "8.3", "8.4"]})
             if path == "/api/client/domains" and method == "GET":
                 if account:
-                    rows = conn.execute(
-                        """
-                        SELECT d.*, z.nameservers_json AS zone_nameservers_json
-                        FROM domains d
-                        JOIN hosting_accounts ha ON ha.id = d.account_id
-                        LEFT JOIN dns_zones z ON z.domain_id = d.id
-                        WHERE d.account_id = ?
-                        ORDER BY d.name
-                        """,
-                        (account["id"],),
-                    ).fetchall()
+                    scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                    if scope and scope.get("is_collaborator") and scope.get("allowed_website_ids") is not None:
+                        allowed_ws = scope["allowed_website_ids"]
+                        if allowed_ws:
+                            placeholders = ",".join("?" for _ in allowed_ws)
+                            rows = conn.execute(
+                                f"""
+                                SELECT d.*, z.nameservers_json AS zone_nameservers_json
+                                FROM domains d
+                                JOIN hosting_accounts ha ON ha.id = d.account_id
+                                LEFT JOIN dns_zones z ON z.domain_id = d.id
+                                WHERE d.account_id = ? AND d.linked_website_id IN ({placeholders})
+                                ORDER BY d.name
+                                """,
+                                [account["id"], *allowed_ws],
+                            ).fetchall()
+                        else:
+                            rows = []
+                    else:
+                        rows = conn.execute(
+                            """
+                            SELECT d.*, z.nameservers_json AS zone_nameservers_json
+                            FROM domains d
+                            JOIN hosting_accounts ha ON ha.id = d.account_id
+                            LEFT JOIN dns_zones z ON z.domain_id = d.id
+                            WHERE d.account_id = ?
+                            ORDER BY d.name
+                            """,
+                            (account["id"],),
+                        ).fetchall()
                 else:
                     rows = conn.execute(
                         """
@@ -2795,6 +3098,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 })
             if path == "/api/client/dns-records" and method == "GET":
                 require_account(account)
+                scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                if scope and scope.get("is_collaborator"):
+                    if not scope.get("allowed_menus") or "dns" not in scope["allowed_menus"]:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_to_dns")
                 domain_id = optional_positive_int(query.get("domain_id", [""])[0])
                 if domain_id:
                     domain = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (domain_id, account["id"])).fetchone()
@@ -2817,6 +3124,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"dns_records": decorated_dns_records(rows), "dns_zones": dns_zones})
             if path == "/api/client/dns-records" and method == "POST":
                 require_active_account(account)
+                scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                if scope and scope.get("is_collaborator"):
+                    if not scope.get("allowed_menus") or "dns" not in scope["allowed_menus"]:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_to_dns")
                 body = self.read_json()
                 record_payload = validate_dns_record_payload(body)
                 domain_id = record_payload["domain_id"]
@@ -2848,6 +3159,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"dns_record_id": cur.lastrowid, "job_id": job_id, "dns_records": decorated_dns_records(all_records), "dns_zones": dns_zones}, HTTPStatus.CREATED)
             if path.startswith("/api/client/dns-records/") and method == "PATCH":
                 require_active_account(account)
+                scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                if scope and scope.get("is_collaborator"):
+                    if not scope.get("allowed_menus") or "dns" not in scope["allowed_menus"]:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_to_dns")
                 record_id = path_int_id(path, "/api/client/dns-records/")
                 record = conn.execute(
                     """
@@ -2895,6 +3210,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"dns_record_id": record_id, "job_id": job_id, "dns_records": decorated_dns_records(all_records), "dns_zones": dns_zones})
             if path.startswith("/api/client/dns-records/") and method == "DELETE":
                 require_active_account(account)
+                scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                if scope and scope.get("is_collaborator"):
+                    if not scope.get("allowed_menus") or "dns" not in scope["allowed_menus"]:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_to_dns")
                 record_id = path_int_id(path, "/api/client/dns-records/")
                 record = conn.execute(
                     """
@@ -3051,12 +3370,190 @@ class MangoHandler(BaseHTTPRequestHandler):
                 job_id = enqueue_agent_job(conn, "install_custom_ssl", "website", website_id, {"crt": crt, "key": key})
                 log_activity(conn, actor["id"], "custom_ssl_installed", {"website_id": website_id, "domain": website["domain"]})
                 return self.json_response({"success": True, "ssl_status": "custom", "job_id": job_id})
+            if path == "/api/client/collaborators/check-email" and method == "POST":
+                require_account(account)
+                if account["user_id"] != actor["id"]:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "only_owner_can_manage_collaborators")
+                body = self.read_json()
+                email = str(body.get("email", "")).strip().lower()
+                if not email:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "email_required")
+                u_row = conn.execute("SELECT id, email, full_name FROM users WHERE LOWER(email) = LOWER(?)", (email,)).fetchone()
+                if u_row:
+                    u = dict(u_row)
+                    return self.json_response({"exists": True, "user": {"id": u["id"], "email": u["email"], "full_name": u["full_name"]}})
+                return self.json_response({"exists": False, "user": None})
+
+            if path == "/api/client/collaborators/create-user" and method == "POST":
+                require_account(account)
+                if account["user_id"] != actor["id"]:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "only_owner_can_manage_collaborators")
+                body = self.read_json()
+                email = str(body.get("email", "")).strip().lower()
+                full_name = str(body.get("full_name", "")).strip()
+                password = str(body.get("password", ""))
+                enable_totp = bool(body.get("enable_totp", False))
+
+                if not email or "@" not in email:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "valid_email_required")
+                if not full_name:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "name_required")
+                if len(password) < 6:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "password_min_6_chars")
+
+                existing = conn.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (email,)).fetchone()
+                if existing:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "user_already_exists")
+
+                pwd_hash = hash_password(password)
+                cur = conn.execute(
+                    "INSERT INTO users (role, email, password_hash, full_name, status, totp_secret, created_at) VALUES ('client', ?, ?, ?, 'active', '', CURRENT_TIMESTAMP)",
+                    (email, pwd_hash, full_name),
+                )
+                new_user_id = cur.lastrowid
+
+                totp_data = None
+                if enable_totp:
+                    totp_secret = generate_totp_secret()
+                    conn.execute("UPDATE users SET totp_secret = ? WHERE id = ?", (totp_secret, new_user_id))
+                    totp_data = {"secret": totp_secret, "uri": generate_totp_uri(totp_secret, email, "MangoPanel")}
+
+                return self.json_response({"status": "created", "user": {"id": new_user_id, "email": email, "full_name": full_name}, "totp": totp_data})
+
+            if path == "/api/client/collaborators" and method == "GET":
+                require_account(account)
+                rows = conn.execute(
+                    """
+                    SELECT c.*, u.full_name AS target_full_name, u.email AS target_email
+                    FROM collaborators c
+                    LEFT JOIN users u ON u.id = c.target_user_id
+                    WHERE c.hosting_account_id = ?
+                    ORDER BY c.id DESC
+                    """,
+                    (account["id"],),
+                ).fetchall()
+                collabs = []
+                for r in rows:
+                    d = dict(r)
+                    d["permissions"] = parse_json_field(d.get("permissions_json"), {})
+                    collabs.append(d)
+
+                shared_rows = conn.execute(
+                    """
+                    SELECT c.id AS collaborator_id, c.permissions_json, ha.id AS hosting_account_id, ha.username AS account_number, ha.user_id AS owner_id, ou.full_name AS owner_name, ou.email AS owner_email, p.name AS plan_name
+                    FROM collaborators c
+                    JOIN hosting_accounts ha ON ha.id = c.hosting_account_id
+                    JOIN users ou ON ou.id = ha.user_id
+                    JOIN plans p ON p.id = ha.plan_id
+                    WHERE (c.target_user_id = ? OR LOWER(c.invited_email) = LOWER(?)) AND c.status = 'active'
+                    """,
+                    (actor["id"], actor.get("email", "")),
+                ).fetchall()
+                shared = []
+                for r in shared_rows:
+                    d = dict(r)
+                    d["permissions"] = parse_json_field(d.get("permissions_json"), {})
+                    shared.append(d)
+
+                return self.json_response({"collaborators": collabs, "shared_accounts": shared})
+
+            if path == "/api/client/collaborators" and method == "POST":
+                require_account(account)
+                if account["user_id"] != actor["id"]:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "only_owner_can_manage_collaborators")
+
+                body = self.read_json()
+                email = str(body.get("invited_email", "")).strip().lower()
+                name = str(body.get("invited_name", "")).strip()
+                perms = body.get("permissions", {})
+                if not email:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "email_required")
+
+                u_row = conn.execute("SELECT id, full_name FROM users WHERE LOWER(email) = LOWER(?)", (email,)).fetchone()
+                target_user_id = u_row["id"] if u_row else None
+                if not name and u_row and u_row["full_name"]:
+                    name = u_row["full_name"]
+
+                collab_id = optional_positive_int(body.get("id"))
+                perms_json = json.dumps(perms)
+
+                if collab_id:
+                    conn.execute(
+                        """
+                        UPDATE collaborators
+                        SET invited_email = ?, invited_name = ?, target_user_id = ?, permissions_json = ?, status = 'active'
+                        WHERE id = ? AND hosting_account_id = ?
+                        """,
+                        (email, name, target_user_id, perms_json, collab_id, account["id"]),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO collaborators (owner_user_id, invited_email, invited_name, target_user_id, hosting_account_id, permissions_json, status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)
+                        """,
+                        (actor["id"], email, name, target_user_id, account["id"], perms_json),
+                    )
+
+                return self.json_response({"status": "saved"})
+
+            if path.startswith("/api/client/collaborators/") and method == "DELETE":
+                collab_id = path_int_id(path, "/api/client/collaborators/")
+                c_row = conn.execute("SELECT * FROM collaborators WHERE id = ?", (collab_id,)).fetchone()
+                if not c_row:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "collaborator_not_found")
+                collab = dict(c_row)
+                acc = conn.execute("SELECT user_id FROM hosting_accounts WHERE id = ?", (collab["hosting_account_id"],)).fetchone()
+                is_owner = acc and acc["user_id"] == actor["id"]
+                is_target = (collab.get("target_user_id") == actor["id"]) or (collab.get("invited_email", "").strip().lower() == actor.get("email", "").strip().lower())
+
+                if not is_owner and not is_target:
+                    raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
+
+                conn.execute("DELETE FROM collaborators WHERE id = ?", (collab_id,))
+                return self.json_response({"status": "deleted"})
+
+            if path == "/api/client/collaborators/switch-account" and method == "POST":
+                body = self.read_json()
+                target_acc_id = path_int_id_val(body.get("account_id"))
+                acc = conn.execute("SELECT * FROM hosting_accounts WHERE id = ? AND status != 'deleted'", (target_acc_id,)).fetchone()
+                if not acc:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "account_not_found")
+                acc_d = dict(acc)
+                if acc_d["user_id"] != actor["id"]:
+                    collab = conn.execute(
+                        "SELECT id FROM collaborators WHERE hosting_account_id = ? AND (target_user_id = ? OR LOWER(invited_email) = LOWER(?)) AND status = 'active'",
+                        (target_acc_id, actor["id"], actor.get("email", "")),
+                    ).fetchone()
+                    if not collab:
+                        raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_to_account")
+
+                sid = get_session_id_from_handler(self)
+                if sid:
+                    conn.execute("UPDATE sessions SET active_account_id = ? WHERE session_id = ?", (target_acc_id, sid))
+                return self.json_response({"status": "switched", "active_account_id": target_acc_id})
             if path == "/api/client/files/launch" and method == "GET":
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
                 forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
                 base_url = resolve_tool_launch_url("filebrowser", runtime.get("filebrowser_url", ""), account, forwarded_host)
                 requested_path = query.get("path", [""])[0].strip()
+                scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                if scope and scope.get("is_collaborator") and scope.get("allowed_website_ids") is not None:
+                    allowed_ws = scope["allowed_website_ids"]
+                    allowed_domains = []
+                    if allowed_ws:
+                        placeholders = ",".join("?" for _ in allowed_ws)
+                        allowed_domains = [r["domain"] for r in conn.execute(f"SELECT domain FROM websites WHERE account_id = ? AND id IN ({placeholders})", [account["id"], *allowed_ws]).fetchall()]
+                    
+                    is_valid = False
+                    for dom in allowed_domains:
+                        target_prefix = f"/domains/{dom}"
+                        if requested_path == target_prefix or requested_path.startswith(f"{target_prefix}/"):
+                            is_valid = True
+                            break
+                    if not is_valid and allowed_domains:
+                        requested_path = f"/domains/{allowed_domains[0]}"
                 launch_token = create_jwt(
                     {
                         "sub": actor["id"],
@@ -3086,36 +3583,43 @@ class MangoHandler(BaseHTTPRequestHandler):
                     plan = conn.execute("SELECT storage_mb FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
                     limit_mb = plan["storage_mb"] if plan else 1000
 
-                css_text = f"""
-                /* Hide the native FileBrowser disk usage percentage */
-                div[class*="progress"], div[class*="usage"], .credits {{
-                    display: none !important;
-                }}
+                u_str = f"{round(used_mb / 1024, 1)} GB" if used_mb >= 1024 else f"{round(used_mb)} MB"
+                l_str = f"{round(limit_mb / 1024, 1)} GB" if limit_mb >= 1024 else f"{round(limit_mb)} MB"
 
-                body::after {{
-                    content: "Storage: {used_mb} MB of {limit_mb} MB used";
-                    position: fixed;
-                    bottom: 20px;
-                    left: 20px;
-                    background: var(--surfacePrimary);
-                    color: var(--textPrimary);
-                    padding: 8px 12px;
-                    border-radius: 4px;
-                    font-family: sans-serif;
-                    font-size: 13px;
-                    z-index: 9999;
-                    pointer-events: none;
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+                pct = min(100, round((used_mb / limit_mb) * 100)) if limit_mb > 0 else 0
+                bar_color = "#ef4444" if pct > 90 else ("#f59e0b" if pct > 75 else "#10b981")
+
+                css_text = f"""
+                .credits .progress div,
+                .credits div div,
+                div[class*="progress"] div {{
+                    background-color: {bar_color} !important;
+                    background: {bar_color} !important;
                 }}
                 """
 
+                custom_js_code = f"window.MP_STORAGE_DATA = {{ used: {round(used_mb)}, limit: {round(limit_mb)} }};\n" + FILEBROWSER_CUSTOM_JS
                 import os
+                config_dir = os.path.join(account["base_path"], ".runtime", "stack", "filebrowser-config")
+                os.makedirs(config_dir, exist_ok=True)
+                settings_file = os.path.join(config_dir, "settings.json")
+                if os.path.exists(settings_file):
+                    try:
+                        with open(settings_file, "r") as f:
+                            st = json.load(f)
+                        if st.get("branding", {}).get("disableUsedPercentage") is not False:
+                            st.setdefault("branding", {})["disableUsedPercentage"] = False
+                            with open(settings_file, "w") as f:
+                                json.dump(st, f, indent=2)
+                    except Exception:
+                        pass
+
                 branding_dir = os.path.join(account["base_path"], ".runtime", "stack", "filebrowser-branding")
                 os.makedirs(branding_dir, exist_ok=True)
                 with open(os.path.join(branding_dir, "custom.css"), "w") as f:
                     f.write(css_text)
                 with open(os.path.join(branding_dir, "custom.js"), "w") as f:
-                    f.write(FILEBROWSER_CUSTOM_JS)
+                    f.write(custom_js_code)
 
                 return self.json_response({"launch_url": launch_url, "expires_in": 600})
             if path == "/api/client/files/extract" and method == "POST":
@@ -3177,7 +3681,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"launch_url": launch_url, "expires_in": 3600, "mailbox": mailbox_row_payload(conn, mailbox)})
             if path == "/api/client/databases" and method == "GET":
                 require_account(account)
-                return self.json_response(client_databases_payload(conn, account["id"]))
+                return self.json_response(client_databases_payload(conn, account["id"], actor["id"]))
             if path == "/api/client/pg-databases" and method == "GET":
                 require_account(account)
                 return self.json_response(client_pg_databases_payload(conn, account["id"]))
@@ -3268,6 +3772,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_inode_capacity(conn, account["id"])
             if path == "/api/client/databases" and method == "POST":
                 require_active_account(account)
+                require_collaborator_permission(conn, actor["id"], account["id"], "can_create_databases")
                 require_plan_capacity(conn, account["id"], "databases", "max_databases", "database_limit_reached")
                 require_inode_capacity(conn, account["id"])
                 body = self.read_json()
@@ -3303,12 +3808,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                         enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {})
                 job_id = enqueue_agent_job(conn, "create_database", "database", db_id, {"name": name, "account_id": account["id"]})
                 log_activity(conn, actor["id"], "database_created", {"name": name})
-                return self.json_response({"database_id": db_id, "job_id": job_id, **client_databases_payload(conn, account["id"])}, HTTPStatus.CREATED)
+                return self.json_response({"database_id": db_id, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])}, HTTPStatus.CREATED)
             if path.startswith("/api/client/databases/"):
                 require_active_account(account)
                 database_id = path_int_id(path, "/api/client/databases/")
-                database = require_owned_database(conn, account["id"], database_id)
+                database = require_owned_database(conn, account["id"], database_id, actor["id"])
                 if method == "PATCH":
+                    require_collaborator_permission(conn, actor["id"], account["id"], "can_edit_databases")
                     body = self.read_json()
                     name = validate_db_identifier(body.get("name") or database["name"], "invalid_database_name")
                     status = body.get("status", database["status"])
@@ -3323,18 +3829,19 @@ class MangoHandler(BaseHTTPRequestHandler):
                     )
                     job_id = enqueue_agent_job(conn, "update_database", "database", database_id, {"name": name, "status": status})
                     log_activity(conn, actor["id"], "database_updated", {"name": name})
-                    return self.json_response({"job_id": job_id, **client_databases_payload(conn, account["id"])})
+                    return self.json_response({"job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])})
                 if method == "DELETE":
+                    require_collaborator_permission(conn, actor["id"], account["id"], "can_delete_databases")
                     conn.execute("DELETE FROM database_grants WHERE database_id = ?", (database_id,))
                     conn.execute("UPDATE wordpress_installs SET database_id = NULL WHERE database_id = ?", (database_id,))
                     conn.execute("DELETE FROM databases WHERE id = ?", (database_id,))
                     job_id = enqueue_agent_job(conn, "delete_database", "database", database_id, {"name": database["name"], "account_id": account["id"]})
                     log_activity(conn, actor["id"], "database_deleted", {"name": database["name"]})
-                    return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"])})
+                    return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_database_route")
             if path == "/api/client/database-users" and method == "GET":
                 require_account(account)
-                return self.json_response(client_databases_payload(conn, account["id"]))
+                return self.json_response(client_databases_payload(conn, account["id"], actor["id"]))
             if path == "/api/client/database-users" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -3351,7 +3858,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
                 job_id = enqueue_agent_job(conn, "create_database_user", "database_user", cur.lastrowid, {"username": username, "password": password, "account_id": account["id"]})
                 log_activity(conn, actor["id"], "database_user_created", {"username": username})
-                return self.json_response({"database_user_id": cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"])}, HTTPStatus.CREATED)
+                return self.json_response({"database_user_id": cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])}, HTTPStatus.CREATED)
             if path.startswith("/api/client/database-users/"):
                 require_active_account(account)
                 user_id = path_int_id(path, "/api/client/database-users/")
@@ -3378,13 +3885,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                     )
                     job_id = enqueue_agent_job(conn, "update_database_user", "database_user", user_id, {"username": username, "status": status, "password": body.get("password"), "account_id": account["id"]})
                     log_activity(conn, actor["id"], "database_user_updated", {"username": username})
-                    return self.json_response({"job_id": job_id, **client_databases_payload(conn, account["id"])})
+                    return self.json_response({"job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])})
                 if method == "DELETE":
                     conn.execute("DELETE FROM database_grants WHERE user_id = ?", (user_id,))
                     conn.execute("DELETE FROM database_users WHERE id = ?", (user_id,))
                     job_id = enqueue_agent_job(conn, "delete_database_user", "database_user", user_id, {"username": db_user["username"], "account_id": account["id"]})
                     log_activity(conn, actor["id"], "database_user_deleted", {"username": db_user["username"]})
-                    return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"])})
+                    return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_database_user_route")
             if path == "/api/client/database-grants" and method == "POST":
                 require_active_account(account)
@@ -3408,7 +3915,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     raise
                 job_id = enqueue_agent_job(conn, "grant_database_user", "database_grant", cur.lastrowid, {"database_id": database_id, "user_id": user_id, "privileges": privileges, "account_id": account["id"]})
                 log_activity(conn, actor["id"], "database_user_added_to_database", {"database_id": database_id, "user_id": user_id})
-                return self.json_response({"database_grant_id": cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"])}, HTTPStatus.CREATED)
+                return self.json_response({"database_grant_id": cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])}, HTTPStatus.CREATED)
             if path.startswith("/api/client/database-grants/"):
                 require_active_account(account)
                 grant_id = path_int_id(path, "/api/client/database-grants/")
@@ -3425,15 +3932,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                     )
                     job_id = enqueue_agent_job(conn, "update_database_grant", "database_grant", grant_id, {"privileges": privileges, "status": status})
                     log_activity(conn, actor["id"], "database_grant_updated", {"grant_id": grant_id})
-                    return self.json_response({"job_id": job_id, **client_databases_payload(conn, account["id"])})
+                    return self.json_response({"job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])})
                 if method == "DELETE":
                     conn.execute("DELETE FROM database_grants WHERE id = ?", (grant_id,))
                     job_id = enqueue_agent_job(conn, "revoke_database_user", "database_grant", grant_id, {"database_id": grant["database_id"], "user_id": grant["user_id"], "account_id": account["id"]})
                     log_activity(conn, actor["id"], "database_user_removed_from_database", {"grant_id": grant_id})
-                    return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"])})
+                    return self.json_response({"deleted": True, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])})
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_database_grant_route")
             if path == "/api/client/mailboxes" and method == "POST":
                 require_active_account(account)
+                require_collaborator_permission(conn, actor["id"], account["id"], "can_create_mail")
                 require_plan_capacity(conn, account["id"], "mailboxes", "max_mailboxes", "mailbox_limit_reached")
                 body = self.read_json()
                 email = normalize_email(body.get("email"))
@@ -3956,8 +4464,26 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"restoring": True, "backup_id": backup_id, "job_id": job_id})
             if path == "/api/client/fix-ownership" and method == "POST":
                 require_active_account(account)
-                job_id = enqueue_agent_job(conn, "fix_file_ownership", "hosting_account", account["id"], {})
-                return self.json_response({"fixed": True, "job_id": job_id})
+                body = self.read_json() if self.headers.get("Content-Length", "0") != "0" else {}
+                raw_site = body.get("website_id")
+                website_id = None
+                if raw_site not in (None, "", "all", 0, "0"):
+                    try:
+                        website_id = int(raw_site)
+                    except (ValueError, TypeError):
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_website_id")
+                    website = conn.execute("SELECT id, domain FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone()
+                    if not website:
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                    if actor.get("actor_type") == "user" and actor.get("id") != account["user_id"]:
+                        scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                        if scope and scope.get("is_collaborator") and scope.get("allowed_website_ids") is not None:
+                            if website_id not in scope["allowed_website_ids"]:
+                                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_to_website")
+
+                payload = {"website_id": website_id} if website_id else {}
+                job_id = enqueue_agent_job(conn, "fix_file_ownership", "hosting_account", account["id"], payload)
+                return self.json_response({"fixed": True, "job_id": job_id, "website_id": website_id})
             if path == "/api/client/wordpress/install" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "databases", "max_databases", "database_limit_reached")
@@ -4285,7 +4811,7 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             if path == "/api/client/disk-usage" and method == "GET":
                 require_account(account)
-                return self.json_response(client_disk_usage_payload(conn, account))
+                return self.json_response(client_disk_usage_payload(conn, account, actor["id"]))
 
             if path == "/api/client/redirects" and method == "GET":
                 require_account(account)
@@ -4307,6 +4833,7 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             if path == "/api/client/ftp-accounts" and method == "POST":
                 require_active_account(account)
+                require_collaborator_permission(conn, actor["id"], account["id"], "can_create_ftp")
                 body = self.read_json()
                 username = validate_db_identifier(body.get("username", ""), "invalid_ftp_username")
                 password = body.get("password", "")
@@ -8341,14 +8868,28 @@ def client_php_info_payload(conn, account, website_id=None):
     return payload
 
 
-def client_disk_usage_payload(conn, account):
+def client_disk_usage_payload(conn, account, user_id=None):
     base_path = Path(account["base_path"]).resolve()
-    websites = rows_to_dicts(
-        conn.execute(
-            "SELECT id, domain, document_root FROM websites WHERE account_id = ? ORDER BY id",
-            (account["id"],),
-        ).fetchall()
-    )
+    scope = get_collaborator_scope(conn, user_id, account["id"]) if user_id else None
+    if scope and scope.get("is_collaborator") and scope.get("allowed_website_ids") is not None:
+        allowed_ws = scope["allowed_website_ids"]
+        if allowed_ws:
+            placeholders = ",".join("?" for _ in allowed_ws)
+            websites = rows_to_dicts(
+                conn.execute(
+                    f"SELECT id, domain, document_root FROM websites WHERE account_id = ? AND id IN ({placeholders}) ORDER BY id",
+                    [account["id"], *allowed_ws],
+                ).fetchall()
+            )
+        else:
+            websites = []
+    else:
+        websites = rows_to_dicts(
+            conn.execute(
+                "SELECT id, domain, document_root FROM websites WHERE account_id = ? ORDER BY id",
+                (account["id"],),
+            ).fetchall()
+        )
     usage = []
     for website in websites:
         doc_root = Path(website["document_root"])
@@ -9074,23 +9615,53 @@ def downsample_resource_usage(rows, max_points=240):
     return sampled[-max_points:]
 
 
-def client_databases_payload(conn, account_id):
+def client_databases_payload(conn, account_id, user_id=None):
     runtime = account_runtime(conn, account_id)
-    databases = rows_to_dicts(conn.execute("SELECT * FROM databases WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
-    users = rows_to_dicts(conn.execute("SELECT id, account_id, username, status, created_at, updated_at FROM database_users WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
-    grants = rows_to_dicts(
-        conn.execute(
-            """
-            SELECT dg.*, d.name AS database_name, du.username AS username
-            FROM database_grants dg
-            JOIN databases d ON d.id = dg.database_id
-            JOIN database_users du ON du.id = dg.user_id
-            WHERE d.account_id = ?
-            ORDER BY d.name, du.username
-            """,
-            (account_id,),
-        ).fetchall()
-    )
+    scope = get_collaborator_scope(conn, user_id, account_id) if user_id else None
+    if scope and scope.get("is_collaborator") and scope.get("allowed_database_ids") is not None:
+        allowed_db = scope["allowed_database_ids"]
+        if allowed_db:
+            placeholders = ",".join("?" for _ in allowed_db)
+            databases = rows_to_dicts(conn.execute(f"SELECT * FROM databases WHERE account_id = ? AND id IN ({placeholders}) ORDER BY id", [account_id, *allowed_db]).fetchall())
+            grants = rows_to_dicts(
+                conn.execute(
+                    f"""
+                    SELECT dg.*, d.name AS database_name, du.username AS username
+                    FROM database_grants dg
+                    JOIN databases d ON d.id = dg.database_id
+                    JOIN database_users du ON du.id = dg.user_id
+                    WHERE d.account_id = ? AND d.id IN ({placeholders})
+                    ORDER BY d.name, du.username
+                    """,
+                    [account_id, *allowed_db],
+                ).fetchall()
+            )
+            allowed_user_ids = {g["user_id"] for g in grants}
+            if allowed_user_ids:
+                u_placeholders = ",".join("?" for _ in allowed_user_ids)
+                users = rows_to_dicts(conn.execute(f"SELECT id, account_id, username, status, created_at, updated_at FROM database_users WHERE account_id = ? AND id IN ({u_placeholders}) ORDER BY id", [account_id, *allowed_user_ids]).fetchall())
+            else:
+                users = []
+        else:
+            databases = []
+            users = []
+            grants = []
+    else:
+        databases = rows_to_dicts(conn.execute("SELECT * FROM databases WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
+        users = rows_to_dicts(conn.execute("SELECT id, account_id, username, status, created_at, updated_at FROM database_users WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
+        grants = rows_to_dicts(
+            conn.execute(
+                """
+                SELECT dg.*, d.name AS database_name, du.username AS username
+                FROM database_grants dg
+                JOIN databases d ON d.id = dg.database_id
+                JOIN database_users du ON du.id = dg.user_id
+                WHERE d.account_id = ?
+                ORDER BY d.name, du.username
+                """,
+                (account_id,),
+            ).fetchall()
+        )
     grants_by_database = {}
     for grant in grants:
         grants_by_database.setdefault(grant["database_id"], []).append(grant)
@@ -9227,10 +9798,27 @@ def path_int_id(path, prefix):
     return value
 
 
-def require_owned_database(conn, account_id, database_id):
+def require_owned_website(conn, account_id, website_id, user_id=None):
+    row = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account_id)).fetchone()
+    if not row:
+        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+    if user_id:
+        scope = get_collaborator_scope(conn, user_id, account_id)
+        if scope and scope.get("is_collaborator") and scope.get("allowed_website_ids") is not None:
+            if int(website_id) not in scope["allowed_website_ids"]:
+                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_to_website")
+    return row
+
+
+def require_owned_database(conn, account_id, database_id, user_id=None):
     row = conn.execute("SELECT * FROM databases WHERE id = ? AND account_id = ?", (database_id, account_id)).fetchone()
     if not row:
         raise ApiError(HTTPStatus.NOT_FOUND, "database_not_found")
+    if user_id:
+        scope = get_collaborator_scope(conn, user_id, account_id)
+        if scope and scope.get("is_collaborator") and scope.get("allowed_database_ids") is not None:
+            if int(database_id) not in scope["allowed_database_ids"]:
+                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied_to_database")
     return row
 
 
@@ -10506,11 +11094,117 @@ def sql_placeholders(values):
     return ",".join("?" for _ in values)
 
 
+def get_collaborator_scope(conn, user_id, account_id):
+    if not user_id or not account_id:
+        return {
+            "is_collaborator": False,
+            "allowed_website_ids": None,
+            "allowed_database_ids": None,
+            "allowed_menus": None,
+            "can_create_websites": True,
+            "can_edit_websites": True,
+            "can_delete_websites": True,
+            "can_create_databases": True,
+            "can_edit_databases": True,
+            "can_delete_databases": True,
+            "can_create_ftp": True,
+            "can_create_mail": True,
+            "can_edit_files": True,
+        }
+
+    acc = conn.execute("SELECT user_id FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+    if acc and acc["user_id"] == user_id:
+        return {
+            "is_collaborator": False,
+            "allowed_website_ids": None,
+            "allowed_database_ids": None,
+            "allowed_menus": None,
+            "can_create_websites": True,
+            "can_edit_websites": True,
+            "can_delete_websites": True,
+            "can_create_databases": True,
+            "can_edit_databases": True,
+            "can_delete_databases": True,
+            "can_create_ftp": True,
+            "can_create_mail": True,
+            "can_edit_files": True,
+        }
+
+    u = conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+    email = u["email"] if u else ""
+
+    row = conn.execute(
+        """
+        SELECT * FROM collaborators
+        WHERE hosting_account_id = ? AND (target_user_id = ? OR LOWER(invited_email) = LOWER(?)) AND status = 'active'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (account_id, user_id, email),
+    ).fetchone()
+
+    if not row:
+        return {
+            "is_collaborator": True,
+            "allowed_website_ids": [],
+            "allowed_database_ids": [],
+            "allowed_menus": [],
+            "can_create_websites": False,
+            "can_edit_websites": False,
+            "can_delete_websites": False,
+            "can_create_databases": False,
+            "can_edit_databases": False,
+            "can_delete_databases": False,
+            "can_create_ftp": False,
+            "can_create_mail": False,
+            "can_edit_files": False,
+        }
+
+    collab = dict(row)
+    perms = parse_json_field(collab.get("permissions_json"), {})
+
+    all_ws = perms.get("all_websites", True)
+    ws_ids = [int(x) for x in perms.get("website_ids", []) if str(x).isdigit()] if not all_ws else None
+
+    all_db = perms.get("all_databases", True)
+    db_ids = [int(x) for x in perms.get("database_ids", []) if str(x).isdigit()] if not all_db else None
+
+    menus = perms.get("allowed_menus", ["websites", "files", "databases", "ftp", "mail", "dns", "cron", "ssl", "analytics", "collaborators"])
+
+    return {
+        "is_collaborator": True,
+        "collaborator_id": collab["id"],
+        "permissions": perms,
+        "allowed_website_ids": ws_ids,
+        "allowed_database_ids": db_ids,
+        "allowed_menus": list(menus) if menus is not None else None,
+        "can_create_websites": perms.get("can_create_websites", False),
+        "can_edit_websites": perms.get("can_edit_websites", True),
+        "can_delete_websites": perms.get("can_delete_websites", False),
+        "can_create_databases": perms.get("can_create_databases", False),
+        "can_edit_databases": perms.get("can_edit_databases", True),
+        "can_delete_databases": perms.get("can_delete_databases", False),
+        "can_create_ftp": perms.get("can_create_ftp", False),
+        "can_create_mail": perms.get("can_create_mail", False),
+        "can_edit_files": perms.get("can_edit_files", True),
+    }
+
+
+def require_collaborator_permission(conn, actor_id, account_id, perm_key, err_msg=None):
+    scope = get_collaborator_scope(conn, actor_id, account_id)
+    if scope.get("is_collaborator"):
+        if not scope.get(perm_key):
+            raise ApiError(HTTPStatus.FORBIDDEN, err_msg or f"collaborator_permission_denied_{perm_key}")
+    return scope
+
+
 def client_home(conn, user_id, active_account_id=None):
+    user_row = conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+    user_email = user_row["email"] if user_row else ""
+
     accounts = rows_to_dicts(
         conn.execute(
             """
-            SELECT ha.*,
+            SELECT DISTINCT ha.*,
                    p.name AS plan_name, p.cpu_limit, p.memory_mb, p.storage_mb,
                    p.inode_limit, p.max_websites, p.max_databases, p.max_mailboxes,
                    p.max_cron_jobs, p.daily_email_limit, p.backup_retention_days,
@@ -10518,14 +11212,16 @@ def client_home(conn, user_id, active_account_id=None):
                    p.nameserver1 AS nameserver_1, p.nameserver2 AS nameserver_2, 
                    p.server_location AS node_location, p.backups_location AS backup_location,
                    p.frontend_frameworks, p.backend_frameworks, COALESCE(p.allow_api_access, 0) AS allow_api_access,
-                   n.name AS node_name, n.hostname AS node_hostname, COALESCE(n.ip_address, '157.15.203.66') AS node_ip
+                   n.name AS node_name, n.hostname AS node_hostname, COALESCE(n.ip_address, '157.15.203.66') AS node_ip,
+                   (CASE WHEN ha.user_id = ? THEN 1 ELSE 0 END) AS is_owner
             FROM hosting_accounts ha
             JOIN plans p ON p.id = ha.plan_id
             JOIN nodes n ON n.id = ha.node_id
-            WHERE ha.user_id = ?
+            LEFT JOIN collaborators c ON c.hosting_account_id = ha.id AND c.status = 'active'
+            WHERE ha.user_id = ? OR (c.target_user_id = ? OR LOWER(c.invited_email) = LOWER(?))
             ORDER BY ha.id
             """,
-            (user_id,),
+            (user_id, user_id, user_id, user_email),
         ).fetchall()
     )
     primary_account = None
@@ -10538,34 +11234,44 @@ def client_home(conn, user_id, active_account_id=None):
         if not primary_account:
             primary_account = accounts[0]
 
+    collab_scope = get_collaborator_scope(conn, user_id, primary_account["id"]) if primary_account else None
+
     if primary_account:
-        websites = rows_to_dicts(
-            conn.execute(
-                """
-                SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
-                FROM websites w
-                JOIN hosting_accounts ha ON ha.id = w.account_id
-                LEFT JOIN domains d ON d.linked_website_id = w.id
-                WHERE w.account_id = ?
-                ORDER BY w.id
-                """,
-                (primary_account["id"],),
-            ).fetchall()
-        )
+        if collab_scope and collab_scope.get("is_collaborator") and collab_scope.get("allowed_website_ids") is not None:
+            allowed_ws = collab_scope["allowed_website_ids"]
+            if allowed_ws:
+                placeholders = ",".join("?" for _ in allowed_ws)
+                websites = rows_to_dicts(
+                    conn.execute(
+                        f"""
+                        SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                        FROM websites w
+                        JOIN hosting_accounts ha ON ha.id = w.account_id
+                        LEFT JOIN domains d ON d.linked_website_id = w.id
+                        WHERE w.account_id = ? AND w.id IN ({placeholders})
+                        ORDER BY w.id
+                        """,
+                        [primary_account["id"], *allowed_ws],
+                    ).fetchall()
+                )
+            else:
+                websites = []
+        else:
+            websites = rows_to_dicts(
+                conn.execute(
+                    """
+                    SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
+                    FROM websites w
+                    JOIN hosting_accounts ha ON ha.id = w.account_id
+                    LEFT JOIN domains d ON d.linked_website_id = w.id
+                    WHERE w.account_id = ?
+                    ORDER BY w.id
+                    """,
+                    (primary_account["id"],),
+                ).fetchall()
+            )
     else:
-        websites = rows_to_dicts(
-            conn.execute(
-                """
-                SELECT w.*, d.id AS domain_id, d.nameservers_json, d.provider_state_json, d.dns_provider, d.dns_status
-                FROM websites w
-                JOIN hosting_accounts ha ON ha.id = w.account_id
-                LEFT JOIN domains d ON d.linked_website_id = w.id
-                WHERE ha.user_id = ?
-                ORDER BY w.id
-                """,
-                (user_id,),
-            ).fetchall()
-        )
+        websites = []
     warnings = []
     if primary_account:
         rebuilding_job = conn.execute(
@@ -10647,6 +11353,7 @@ def client_home(conn, user_id, active_account_id=None):
         "email": user["email"] if user else None,
         "accounts": accounts,
         "websites": websites,
+        "collaborator_scope": collab_scope,
         "warnings": warnings,
         "has_2fa": has_2fa,
         "server_ip": get_host_public_ip(conn),

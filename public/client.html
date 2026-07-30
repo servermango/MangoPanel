@@ -487,26 +487,34 @@
             </div>
 
             <div class="files-cards-grid">
-              <!-- Card 1: Root Filesystem -->
-              <div class="panel file-access-card" @click="launch('files')">
+              <!-- Card 1: Root Filesystem (Hidden for restricted collaborators) -->
+              <div v-if="!isCollaboratorRestrictedWebsites" class="panel file-access-card" @click="launch('files')">
                 <div class="large-icon"><app-icon name="server"></app-icon></div>
                 <h3>Access Root Filesystem of this hosting</h3>
               </div>
 
-              <!-- Card 2: All Domains -->
-              <div class="panel file-access-card" @click="launch('files', '/domains')">
+              <!-- Card 2: All Domains (Hidden for restricted collaborators) -->
+              <div v-if="!isCollaboratorRestrictedWebsites" class="panel file-access-card" @click="launch('files', '/domains')">
                 <div class="large-icon"><app-icon name="folder"></app-icon></div>
                 <h3>Access files of all domains</h3>
               </div>
 
-              <!-- Card 3: Selected Domain -->
-              <div class="panel file-access-card" :class="{ disabled: !selectedWebsiteId }" @click="selectedWebsiteId ? launch('files', '/domains/' + selectedWebsiteLabel) : null">
+              <!-- Standard Mode Card 3: Selected Domain -->
+              <div v-if="!isCollaboratorRestrictedWebsites" class="panel file-access-card" :class="{ disabled: !selectedWebsiteId }" @click="selectedWebsiteId ? launch('files', '/domains/' + selectedWebsiteLabel) : null">
                 <div class="large-icon"><app-icon name="website"></app-icon></div>
                 <h3>Access files of domain {{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : '[select domain]' }}</h3>
               </div>
 
-              <!-- Card 4: Fix Permissions -->
-              <div class="panel file-access-card" @click="activePage = 'fix-file-ownership'">
+              <!-- Restricted Collaborator Cards: Allowed Domains Only -->
+              <template v-if="isCollaboratorRestrictedWebsites">
+                <div v-for="site in websites" :key="site.id" class="panel file-access-card" @click="launch('files', '/domains/' + site.domain)">
+                  <div class="large-icon"><app-icon name="website"></app-icon></div>
+                  <h3>Access files of domain {{ site.domain }}</h3>
+                </div>
+              </template>
+
+              <!-- Card 4: Fix Permissions (Hidden for restricted collaborators) -->
+              <div v-if="!isCollaboratorRestrictedWebsites" class="panel file-access-card" @click="activePage = 'fix-file-ownership'">
                 <div class="large-icon"><app-icon name="fix"></app-icon></div>
                 <h3>Fix Permissions & Ownership</h3>
               </div>
@@ -2422,12 +2430,32 @@
             </div>
 
             <div class="fix-ownership-panel">
+              <div class="form-group" style="margin-bottom: 1.5rem;">
+                <label for="fix-permissions-site-select" style="display:block; font-weight:600; margin-bottom: 0.5rem; color: var(--text-color, #f8fafc);">
+                  Target Website / Scope
+                </label>
+                <select
+                  id="fix-permissions-site-select"
+                  v-model="fixOwnershipWebsiteId"
+                  class="form-control"
+                  style="max-width: 400px; width: 100%; padding: 0.6rem 0.8rem; border-radius: 6px; border: 1px solid var(--border-color, rgba(255,255,255,0.15)); background: var(--bg-dark, #0f172a); color: var(--text-color, #f8fafc);"
+                >
+                  <option value="all">All Websites & Account Files (All Sites)</option>
+                  <option v-for="site in websites" :key="site.id" :value="site.id">
+                    {{ site.domain }}
+                  </option>
+                </select>
+                <p class="help-text" style="margin-top: 0.4rem; font-size: 0.85rem; opacity: 0.7;">
+                  Select a specific website to fix permissions for that site only, or choose 'All Websites & Account Files' to fix permissions across all sites.
+                </p>
+              </div>
+
               <div class="info-box">
                 <app-icon name="warning"></app-icon>
                 <div>
                   <strong>What this does:</strong>
                   <ul style="margin: .5rem 0 0; padding-left: 1.2rem;">
-                    <li>Resets all file ownership to your account user</li>
+                    <li>Resets file ownership to your account user</li>
                     <li>Sets directories to 755 and files to 644</li>
                     <li>Ensures container services have read access to serve website files</li>
                     <li>Preserves .htaccess and config file permissions</li>
@@ -2840,6 +2868,286 @@
                 <div style="display: flex; gap: 1rem; align-items: center;">
                   <input v-model="tfaDisableCode" type="text" placeholder="000000" maxlength="6" style="width: 150px; text-align: center; letter-spacing: 2px; font-size: 1.2rem;">
                   <button class="danger-button" @click="disable2FA" :disabled="tfaDisableCode.length !== 6">Disable 2FA</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ═══════════════════════════════════════════════════════════ ACCOUNT SHARING -->
+          <section v-if="activePage === 'account-sharing'" class="panel">
+            <div class="advanced-tool-header">
+              <span style="font-size: 1.8rem; margin-right: 0.5rem;">🤝</span>
+              <div>
+                <h2>Account Sharing</h2>
+                <p>Grant granular access to team members or external developers, or manage accounts shared with you.</p>
+              </div>
+              <button v-if="collabTab === 'grant'" class="primary-button" style="margin-left: auto;" @click="openShareModal()">
+                <span>+ Add Collaborator</span>
+              </button>
+            </div>
+
+            <!-- Sub Tabs Bar -->
+            <div style="display: flex; gap: 0.75rem; margin-bottom: 1.5rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.75rem;">
+              <button 
+                class="secondary-button" 
+                :class="{ active: collabTab === 'grant' }" 
+                :style="collabTab === 'grant' ? 'background: var(--accent-color, #3b82f6); color: #fff; font-weight: 600;' : ''"
+                @click="collabTab = 'grant'"
+              >
+                🤝 Grant Access
+                <span v-if="collaborators.length" class="badge" style="margin-left: 0.4rem; background: rgba(255,255,255,0.2); padding: 0.1rem 0.5rem; border-radius: 10px; font-size: 0.75rem;">{{ collaborators.length }}</span>
+              </button>
+              <button 
+                class="secondary-button" 
+                :class="{ active: collabTab === 'given' }" 
+                :style="collabTab === 'given' ? 'background: var(--accent-color, #3b82f6); color: #fff; font-weight: 600;' : ''"
+                @click="collabTab = 'given'"
+              >
+                📥 Access Given to Me
+                <span v-if="sharedAccounts.length" class="badge" style="margin-left: 0.4rem; background: rgba(255,255,255,0.2); padding: 0.1rem 0.5rem; border-radius: 10px; font-size: 0.75rem;">{{ sharedAccounts.length }}</span>
+              </button>
+            </div>
+
+            <div class="settings-layout" style="grid-template-columns: 1fr;">
+              <!-- Sub-tab 1: Grant Access (Collaborators Table) -->
+              <div v-if="collabTab === 'grant'" class="settings-card">
+                <h3>Active Collaborators</h3>
+                <p class="text-sm muted mb-4">Users who have been given access to this hosting account.</p>
+
+                <div v-if="collaborators.length === 0" class="empty-state" style="padding: 2.5rem; text-align: center; background: rgba(15, 23, 42, 0.4); border-radius: 12px;">
+                  <span style="font-size: 2.5rem; display: block; margin-bottom: 0.75rem;">👥</span>
+                  <h4>No Collaborators Invited</h4>
+                  <p class="muted" style="max-width: 450px; margin: 0.5rem auto 1.25rem;">You haven't shared this hosting account with anyone yet. Click "Add Collaborator" to grant access to a team member or developer.</p>
+                  <button class="primary-button" @click="openShareModal()">Share Access Now</button>
+                </div>
+
+                <div v-else class="table-responsive">
+                  <table class="modern-table">
+                    <thead>
+                      <tr>
+                        <th>Collaborator</th>
+                        <th>Invited Email</th>
+                        <th>Website Scope</th>
+                        <th>Database Scope</th>
+                        <th>Status</th>
+                        <th style="text-align: right;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="c in collaborators" :key="c.id">
+                        <td>
+                          <strong>{{ c.invited_name || c.target_full_name || 'Collaborator' }}</strong>
+                        </td>
+                        <td>{{ c.invited_email }}</td>
+                        <td>
+                          <span v-if="c.permissions.all_websites !== false" class="status-badge success">All Websites</span>
+                          <span v-else-if="c.permissions.website_ids && c.permissions.website_ids.length" class="status-badge info">{{ c.permissions.website_ids.length }} Website(s)</span>
+                          <span v-else class="status-badge warning">No Websites</span>
+                        </td>
+                        <td>
+                          <span v-if="c.permissions.all_databases !== false" class="status-badge success">All Databases</span>
+                          <span v-else-if="c.permissions.database_ids && c.permissions.database_ids.length" class="status-badge info">{{ c.permissions.database_ids.length }} DB(s)</span>
+                          <span v-else class="status-badge warning">No DBs</span>
+                        </td>
+                        <td>
+                          <span class="status-badge" :class="c.status === 'active' ? 'success' : 'warning'">{{ c.status }}</span>
+                        </td>
+                        <td style="text-align: right;">
+                          <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                            <button class="secondary-button compact" @click="editCollaborator(c)">Edit Permissions</button>
+                            <button class="danger-button compact" @click="revokeCollaborator(c.id)">Revoke Access</button>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Sub-tab 2: Access Given to Me -->
+              <div v-if="collabTab === 'given'" class="settings-card">
+                <h3>Accounts Shared With You</h3>
+                <p class="text-sm muted mb-4">Hosting accounts owned by other users that you have collaborator access to.</p>
+
+                <div v-if="!sharedAccounts || sharedAccounts.length === 0" class="empty-state" style="padding: 2.5rem; text-align: center; background: rgba(15, 23, 42, 0.4); border-radius: 12px;">
+                  <span style="font-size: 2.5rem; display: block; margin-bottom: 0.75rem;">📬</span>
+                  <h4>No Accounts Shared With You</h4>
+                  <p class="muted" style="max-width: 450px; margin: 0.5rem auto;">Other account owners haven't granted you access to their hosting accounts yet.</p>
+                </div>
+
+                <div v-else class="table-responsive">
+                  <table class="modern-table">
+                    <thead>
+                      <tr>
+                        <th>Account</th>
+                        <th>Owner</th>
+                        <th>Plan</th>
+                        <th style="text-align: right;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="sa in sharedAccounts" :key="sa.collaborator_id">
+                        <td><strong>{{ sa.account_number }}</strong></td>
+                        <td>{{ sa.owner_name }} ({{ sa.owner_email }})</td>
+                        <td>{{ sa.plan_name }}</td>
+                        <td style="text-align: right;">
+                          <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                            <button class="primary-button compact" @click="switchAccount(sa.hosting_account_id)">Switch to Account</button>
+                            <button class="danger-button compact" @click="leaveSharedAccount(sa.collaborator_id)">Remove My Access</button>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Share Access Modal -->
+            <div v-if="shareModalOpen" class="modal-backdrop" @click.self="closeShareModal">
+              <div class="modal-card" style="max-width: 680px; width: 90%; max-height: 90vh; overflow-y: auto;">
+                <div class="modal-header">
+                  <h3>{{ editingCollabId ? 'Edit Collaborator Permissions' : 'Share Account Access' }}</h3>
+                  <button class="modal-close" @click="closeShareModal">×</button>
+                </div>
+
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                  <!-- Step 1: User Email & Name -->
+                  <div class="form-group">
+                    <label>Collaborator Email Address</label>
+                    <div style="display: flex; gap: 0.5rem;">
+                      <input v-model="shareForm.email" type="email" placeholder="colleague@example.com" :disabled="editingCollabId" @blur="checkShareEmail">
+                      <button v-if="!editingCollabId" type="button" class="secondary-button" @click="checkShareEmail" :disabled="checkingEmail">
+                        {{ checkingEmail ? 'Checking...' : 'Check User' }}
+                      </button>
+                    </div>
+                    <small v-if="emailCheckStatus === 'found'" class="text-success" style="display: block; margin-top: 0.35rem;">✓ User exists: {{ existingUserData.full_name }} ({{ existingUserData.email }})</small>
+                    <small v-if="emailCheckStatus === 'not_found'" class="text-warning" style="display: block; margin-top: 0.35rem;">⚠️ No user found with this email. You can create a new user account for them below.</small>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Full Name</label>
+                    <input v-model="shareForm.name" type="text" placeholder="John Doe">
+                  </div>
+
+                  <!-- New User Account Creation Form (if user does not exist) -->
+                  <div v-if="emailCheckStatus === 'not_found' && !editingCollabId" style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 10px; padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem;">
+                    <h4 style="margin: 0; color: #38bdf8; font-size: 0.95rem;">👤 Create New User Credentials</h4>
+                    <p class="muted text-xs" style="margin: 0;">Set initial password for this new user so they can log in as a normal user.</p>
+
+                    <div class="form-group" style="margin: 0;">
+                      <label>Set Password</label>
+                      <input v-model="shareForm.newPassword" type="password" placeholder="At least 6 characters" minlength="6">
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                      <input v-model="shareForm.enableTotp" type="checkbox" id="enable_totp_cb">
+                      <label for="enable_totp_cb" style="margin: 0; cursor: pointer; font-size: 0.85rem;">Require Two-Factor Authentication (2FA TOTP)</label>
+                    </div>
+                  </div>
+
+                  <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 0.5rem 0;">
+
+                  <!-- Step 2: Granular Permissions -->
+                  <h4 style="margin: 0; font-size: 1rem;">Granular Permissions</h4>
+
+                  <!-- Menu Access Checkboxes -->
+                  <div class="form-group">
+                    <label style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Allowed Panel Menus</label>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.5rem;">
+                      <label v-for="menu in availableMenus" :key="menu.id" style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" :value="menu.id" v-model="shareForm.allowed_menus">
+                        <span>{{ menu.label }}</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <!-- Website Scope -->
+                  <div class="form-group">
+                    <label style="font-weight: 600; margin-bottom: 0.35rem; display: block;">Website Scope</label>
+                    <div style="display: flex; gap: 1.5rem; margin-bottom: 0.5rem;">
+                      <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+                        <input type="radio" :value="true" v-model="shareForm.all_websites">
+                        <span>All Websites</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+                        <input type="radio" :value="false" v-model="shareForm.all_websites">
+                        <span>Specific Websites</span>
+                      </label>
+                    </div>
+
+                    <div v-if="!shareForm.all_websites" style="display: flex; flex-direction: column; gap: 0.4rem; max-height: 140px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 0.75rem; border-radius: 8px;">
+                      <label v-for="w in websites" :key="w.id" style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" :value="w.id" v-model="shareForm.website_ids">
+                        <span>{{ w.domain }}</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <!-- Database Scope -->
+                  <div class="form-group">
+                    <label style="font-weight: 600; margin-bottom: 0.35rem; display: block;">Database Scope</label>
+                    <div style="display: flex; gap: 1.5rem; margin-bottom: 0.5rem;">
+                      <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+                        <input type="radio" :value="true" v-model="shareForm.all_databases">
+                        <span>All Databases</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+                        <input type="radio" :value="false" v-model="shareForm.all_databases">
+                        <span>Specific Databases</span>
+                      </label>
+                    </div>
+
+                    <div v-if="!shareForm.all_databases" style="display: flex; flex-direction: column; gap: 0.4rem; max-height: 140px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 0.75rem; border-radius: 8px;">
+                      <div v-if="!databases || databases.length === 0" class="muted text-xs">No databases created yet.</div>
+                      <label v-for="db in databases" :key="db.id" style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" :value="db.id" v-model="shareForm.database_ids">
+                        <span>{{ db.name }}</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <!-- Action Capabilities -->
+                  <div class="form-group">
+                    <label style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Action Capabilities</label>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.5rem;">
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_create_websites">
+                        <span>Allow Create Websites</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_delete_websites">
+                        <span>Allow Delete Websites</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_create_databases">
+                        <span>Allow Create Databases</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_delete_databases">
+                        <span>Allow Delete Databases</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_create_ftp">
+                        <span>Allow Create FTP</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_create_mail">
+                        <span>Allow Create Email</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_edit_files">
+                        <span>Allow File Manager Edits</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem;">
+                  <button class="secondary-button" @click="closeShareModal">Cancel</button>
+                  <button class="primary-button" @click="saveSharePermissions" :disabled="savingCollab">
+                    {{ savingCollab ? 'Saving...' : (editingCollabId ? 'Update Permissions' : 'Grant Access') }}
+                  </button>
                 </div>
               </div>
             </div>

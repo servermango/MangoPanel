@@ -41,6 +41,7 @@ const CLIENT_PAGE_TARGETS = new Set([
   "ssl-tls",
   "ssh-sftp-access",
   "fix-permissions",
+  "account-sharing",
 ]);
 
 const PHP_VERSIONS = ["8.2", "8.3", "8.4"];
@@ -291,6 +292,47 @@ const app = createApp({
       siteSearchQuery: "",
       searchQuery: "",
       userMenuOpen: false,
+      collaborators: [],
+      sharedAccounts: [],
+      collabTab: "grant",
+      shareModalOpen: false,
+      editingCollabId: null,
+      checkingEmail: false,
+      emailCheckStatus: null,
+      existingUserData: null,
+      savingCollab: false,
+      availableMenus: [
+        { id: "websites", label: "Websites & Domains" },
+        { id: "files", label: "File Manager" },
+        { id: "databases", label: "Databases" },
+        { id: "ftp", label: "FTP Accounts" },
+        { id: "mail", label: "Email Accounts" },
+        { id: "dns", label: "DNS Manager" },
+        { id: "cron", label: "Cron Jobs" },
+        { id: "ssl", label: "SSL Certificates" },
+        { id: "analytics", label: "Analytics" },
+      ],
+      shareForm: {
+        id: null,
+        email: "",
+        name: "",
+        newPassword: "",
+        enableTotp: false,
+        all_websites: true,
+        website_ids: [],
+        all_databases: true,
+        database_ids: [],
+        allowed_menus: ["websites", "files", "databases", "ftp", "mail", "dns", "cron", "ssl", "analytics"],
+        can_create_websites: false,
+        can_edit_websites: true,
+        can_delete_websites: false,
+        can_create_databases: false,
+        can_edit_databases: true,
+        can_delete_databases: false,
+        can_create_ftp: false,
+        can_create_mail: false,
+        can_edit_files: true,
+      },
       dbModal: null,
       dbSubmitting: false,
       newDatabase: { name: "", username: "" },
@@ -395,6 +437,7 @@ const app = createApp({
       // Fix File Ownership
       fixOwnershipRunning: false,
       fixOwnershipResult: null,
+      fixOwnershipWebsiteId: "all",
       // Password Protect Dirs
       protectedDirs: [],
       newProtectedDir: { path: "", username: "", password: "" },
@@ -462,6 +505,10 @@ const app = createApp({
     if (this.resourcePoll) window.clearInterval(this.resourcePoll);
   },
   computed: {
+    isCollaboratorRestrictedWebsites() {
+      const scope = this.home?.collaborator_scope;
+      return Boolean(scope && scope.is_collaborator && Array.isArray(scope.allowed_website_ids));
+    },
     userIsReseller() {
       return Boolean(this.home && this.home.is_reseller);
     },
@@ -558,7 +605,7 @@ const app = createApp({
           },
         ];
       }
-      return [
+      const rawSections = [
         {
           label: "Overview",
           items: [
@@ -595,8 +642,9 @@ const app = createApp({
           ],
         },
         {
-          label: "Security",
+          label: "Security & Team",
           items: [
+            { label: "Account Sharing", target: "account-sharing", icon: "user", description: "Share hosting account access with collaborators." },
             { label: "Security", target: "security", icon: "security", description: "SSL, warnings, and protection status." },
             { label: "SSL/TLS", target: "ssl-tls", icon: "ssl", description: "Issue and manage certificates." },
             { label: "SSH Access", target: "ssh-access", icon: "terminal", description: "SFTP and shell access details." },
@@ -619,6 +667,37 @@ const app = createApp({
           ],
         },
       ];
+
+      const scope = this.home?.collaborator_scope;
+      if (!scope || !scope.is_collaborator || !Array.isArray(scope.allowed_menus)) {
+        return rawSections;
+      }
+
+      const menuMap = {
+        websites: ["website", "redirects", "site-builder", "installer", "php-configuration", "php-info", "cache-manager", "folder-index-manager", "services", "api-tokens"],
+        files: ["files", "disk-usage", "password-protect-directories", "fix-file-ownership", "backups", "git", "images"],
+        databases: ["databases", "mysql-database-wizard", "remote-mysql", "postgresql-databases", "postgresql-database-wizard", "phppgadmin"],
+        ftp: ["ftp-accounts", "ssh-access"],
+        mail: ["email"],
+        dns: ["domains", "dns-zone-editor"],
+        cron: ["cron-jobs"],
+        ssl: ["security", "ssl-tls", "modsecurity", "hotlink-protection", "ip-manager"],
+        analytics: ["analytics", "performance", "activity", "visitors", "errors", "bandwidth", "raw-access", "webalizer", "resource-usage"],
+        collaborators: ["account-sharing"],
+      };
+
+      const allowedTargets = new Set(["dashboard", "hosting-plan", "two-factor-auth"]);
+      for (const m of scope.allowed_menus) {
+        if (menuMap[m] && m !== "collaborators") {
+          menuMap[m].forEach((t) => allowedTargets.add(t));
+        }
+      }
+      allowedTargets.delete("account-sharing");
+
+      return rawSections.map((sec) => ({
+        label: sec.label,
+        items: sec.items.filter((item) => allowedTargets.has(item.target)),
+      })).filter((sec) => sec.items.length > 0);
     },
     activeMenuItem() {
       return this.menuItems.find((item) => item.target === this.activePage) || this.menuItems[0];
@@ -825,6 +904,29 @@ const app = createApp({
         { label: "Services", target: "services", icon: "services", color: "#4b5563", group: "Advanced" },
         { label: "Activity Log", target: "activity", icon: "activity", color: "#4b5563", group: "Advanced" },
       ];
+      const scope = this.home?.collaborator_scope;
+      if (scope && scope.is_collaborator && Array.isArray(scope.allowed_menus)) {
+        const menuMap = {
+          websites: ["website", "redirects", "site-builder", "installer", "php-configuration", "php-info", "cache-manager", "folder-index-manager", "services", "api-tokens"],
+          files: ["files", "disk-usage", "password-protect-directories", "fix-file-ownership", "backups", "git", "images"],
+          databases: ["databases", "mysql-database-wizard", "remote-mysql", "postgresql-databases", "postgresql-database-wizard", "phppgadmin"],
+          ftp: ["ftp-accounts", "ssh-access"],
+          mail: ["email"],
+          dns: ["domains", "dns-zone-editor"],
+          cron: ["cron-jobs"],
+          ssl: ["security", "ssl-tls", "modsecurity", "hotlink-protection", "ip-manager"],
+          analytics: ["analytics", "performance", "activity", "visitors", "errors", "bandwidth", "raw-access", "webalizer", "resource-usage"],
+          collaborators: ["account-sharing"],
+        };
+        const allowedTargets = new Set(["dashboard", "hosting-plan", "two-factor-auth"]);
+        for (const m of scope.allowed_menus) {
+          if (menuMap[m] && m !== "collaborators") {
+            menuMap[m].forEach((t) => allowedTargets.add(t));
+          }
+        }
+        allowedTargets.delete("account-sharing");
+        return tiles.filter((tile) => allowedTargets.has(tile.target));
+      }
       if (this.hasHostingAccount) return tiles;
       return tiles.filter((tile) => tile.group === "Domains");
     },
@@ -1144,6 +1246,7 @@ const app = createApp({
         this.hotlink = { ...this.hotlink, ...(hotlinkPayload.hotlink || {}) };
         this.has2FA = this.home.has_2fa || false;
         await this.loadInstallerScripts();
+        await this.fetchCollaborators();
         if (this.activePage === "services") {
           await this.loadServicesStatus();
         }
@@ -1172,11 +1275,210 @@ const app = createApp({
         this.pgGrants = pgPayload.pg_grants || [];
       } catch (e) {}
     },
+    async fetchCollaborators() {
+      if (!this.token) return;
+      try {
+        const res = await this.api("/api/client/collaborators");
+        if (res) {
+          this.collaborators = res.collaborators || [];
+          this.sharedAccounts = res.shared_accounts || [];
+        }
+      } catch (err) {}
+    },
+    openShareModal() {
+      this.editingCollabId = null;
+      this.emailCheckStatus = null;
+      this.existingUserData = null;
+      this.shareForm = {
+        id: null,
+        email: "",
+        name: "",
+        newPassword: "",
+        enableTotp: false,
+        all_websites: true,
+        website_ids: [],
+        all_databases: true,
+        database_ids: [],
+        allowed_menus: ["websites", "files", "databases", "ftp", "mail", "dns", "cron", "ssl", "analytics"],
+        can_create_websites: false,
+        can_edit_websites: true,
+        can_delete_websites: false,
+        can_create_databases: false,
+        can_edit_databases: true,
+        can_delete_databases: false,
+        can_create_ftp: false,
+        can_create_mail: false,
+        can_edit_files: true,
+      };
+      this.shareModalOpen = true;
+    },
+    closeShareModal() {
+      this.shareModalOpen = false;
+      this.editingCollabId = null;
+      this.emailCheckStatus = null;
+    },
+    async checkShareEmail() {
+      const email = this.shareForm.email.trim();
+      if (!email || !email.includes("@")) return;
+      this.checkingEmail = true;
+      this.emailCheckStatus = null;
+      try {
+        const res = await this.api("/api/client/collaborators/check-email", {
+          method: "POST",
+          body: JSON.stringify({ email }),
+        });
+        this.checkingEmail = false;
+        if (res && res.exists) {
+          this.emailCheckStatus = "found";
+          this.existingUserData = res.user;
+          if (!this.shareForm.name && res.user.full_name) {
+            this.shareForm.name = res.user.full_name;
+          }
+        } else {
+          this.emailCheckStatus = "not_found";
+          this.existingUserData = null;
+        }
+      } catch (e) {
+        this.checkingEmail = false;
+      }
+    },
+    async saveSharePermissions() {
+      const email = this.shareForm.email.trim();
+      const name = this.shareForm.name.trim();
+      if (!email) {
+        this.notify("Please enter a collaborator email address.", "error");
+        return;
+      }
+      this.savingCollab = true;
+
+      const doSaveCollaborator = async () => {
+        const payload = {
+          id: this.shareForm.id,
+          invited_email: email,
+          invited_name: name,
+          permissions: {
+            all_websites: this.shareForm.all_websites,
+            website_ids: this.shareForm.website_ids,
+            all_databases: this.shareForm.all_databases,
+            database_ids: this.shareForm.database_ids,
+            allowed_menus: this.shareForm.allowed_menus,
+            can_create_websites: this.shareForm.can_create_websites,
+            can_edit_websites: this.shareForm.can_edit_websites,
+            can_delete_websites: this.shareForm.can_delete_websites,
+            can_create_databases: this.shareForm.can_create_databases,
+            can_edit_databases: this.shareForm.can_edit_databases,
+            can_delete_databases: this.shareForm.can_delete_databases,
+            can_create_ftp: this.shareForm.can_create_ftp,
+            can_create_mail: this.shareForm.can_create_mail,
+            can_edit_files: this.shareForm.can_edit_files,
+          },
+        };
+        try {
+          await this.api("/api/client/collaborators", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          this.savingCollab = false;
+          this.notify("Collaborator access permissions saved successfully.", "success");
+          this.closeShareModal();
+          await this.fetchCollaborators();
+        } catch (err) {
+          this.savingCollab = false;
+          this.notify(err.message || "Failed to save collaborator permissions", "error");
+        }
+      };
+
+      if (this.emailCheckStatus === "not_found" && !this.editingCollabId) {
+        if (!this.shareForm.newPassword || this.shareForm.newPassword.length < 6) {
+          this.notify("Please set a password of at least 6 characters for the new user.", "error");
+          this.savingCollab = false;
+          return;
+        }
+        try {
+          await this.api("/api/client/collaborators/create-user", {
+            method: "POST",
+            body: JSON.stringify({
+              email,
+              full_name: name || "Collaborator",
+              password: this.shareForm.newPassword,
+              enable_totp: this.shareForm.enableTotp,
+            }),
+          });
+          await doSaveCollaborator();
+        } catch (err) {
+          this.savingCollab = false;
+          this.notify(err.message || "Failed to create user account", "error");
+        }
+      } else {
+        await doSaveCollaborator();
+      }
+    },
+    editCollaborator(c) {
+      this.editingCollabId = c.id;
+      this.emailCheckStatus = "found";
+      this.existingUserData = { email: c.invited_email, full_name: c.invited_name };
+      const perms = c.permissions || {};
+      this.shareForm = {
+        id: c.id,
+        email: c.invited_email,
+        name: c.invited_name || "",
+        newPassword: "",
+        enableTotp: false,
+        all_websites: perms.all_websites !== false,
+        website_ids: perms.website_ids || [],
+        all_databases: perms.all_databases !== false,
+        database_ids: perms.database_ids || [],
+        allowed_menus: perms.allowed_menus || ["websites", "files", "databases", "ftp", "mail", "dns", "cron", "ssl", "analytics"],
+        can_create_websites: !!perms.can_create_websites,
+        can_edit_websites: perms.can_edit_websites !== false,
+        can_delete_websites: !!perms.can_delete_websites,
+        can_create_databases: !!perms.can_create_databases,
+        can_edit_databases: perms.can_edit_databases !== false,
+        can_delete_databases: !!perms.can_delete_databases,
+        can_create_ftp: !!perms.can_create_ftp,
+        can_create_mail: !!perms.can_create_mail,
+        can_edit_files: perms.can_edit_files !== false,
+      };
+      this.shareModalOpen = true;
+    },
+    async revokeCollaborator(id) {
+      if (!confirm("Are you sure you want to revoke access for this collaborator?")) return;
+      try {
+        await this.api(`/api/client/collaborators/${id}`, { method: "DELETE" });
+        this.notify("Collaborator access revoked.", "success");
+        await this.fetchCollaborators();
+      } catch (err) {
+        this.notify(err.message || "Failed to revoke access", "error");
+      }
+    },
+    async switchAccount(accId) {
+      try {
+        await this.api("/api/client/collaborators/switch-account", {
+          method: "POST",
+          body: JSON.stringify({ account_id: accId }),
+        });
+        this.notify("Switched active account context.", "success");
+        await this.loadHome();
+        await this.fetchCollaborators();
+      } catch (err) {
+        this.notify(err.message || "Failed to switch account", "error");
+      }
+    },
+    async leaveSharedAccount(collabId) {
+      if (!confirm("Are you sure you want to remove yourself from this shared account? You will lose access immediately.")) return;
+      try {
+        await this.api(`/api/client/collaborators/${collabId}`, { method: "DELETE" });
+        this.notify("You have removed yourself from the shared account.", "success");
+        await this.fetchCollaborators();
+      } catch (err) {
+        this.notify(err.message || "Failed to remove access", "error");
+      }
+    },
     async loadDatabases() {
       this.applyDatabasePayload(await this.api("/api/client/databases"));
     },
     async loadHome() {
-      await this.loadDatabases();
+      await this.load();
     },
     async loadSyncJobs() {
       if (!this.token) return;
@@ -1867,13 +2169,23 @@ const app = createApp({
     },
     // Fix Permissions
     async fixFileOwnership() {
-      if (!window.confirm("Run Fix Permissions? This will reset ownership and fix permissions (755 for directories, 644 for files) on all account files.")) return;
+      const selectedSite = this.websites.find(w => String(w.id) === String(this.fixOwnershipWebsiteId));
+      const targetLabel = selectedSite ? `website "${selectedSite.domain}"` : "all websites and account files";
+      if (!window.confirm(`Run Fix Permissions for ${targetLabel}? This will reset ownership and fix permissions (755 for directories, 644 for files).`)) return;
       this.fixOwnershipRunning = true;
       this.fixOwnershipResult = null;
       try {
-        const payload = await this.api("/api/client/fix-ownership", { method: "POST", body: "{}" });
-        this.fixOwnershipResult = { success: true, message: `Job queued (#${payload.job_id}). File permissions and ownership repair is running in the background.` };
-        this.notify("Fix permissions job queued", "success");
+        const payload = await this.api("/api/client/fix-ownership", {
+          method: "POST",
+          body: JSON.stringify({
+            website_id: (this.fixOwnershipWebsiteId && this.fixOwnershipWebsiteId !== "all") ? Number(this.fixOwnershipWebsiteId) : null
+          })
+        });
+        const msg = selectedSite
+          ? `Job queued (#${payload.job_id}). Permission repair running for website ${selectedSite.domain}.`
+          : `Job queued (#${payload.job_id}). File permissions and ownership repair is running in the background for all sites.`;
+        this.fixOwnershipResult = { success: true, message: msg };
+        this.notify(`Fix permissions job queued (#${payload.job_id})`, "success");
       } catch (error) {
         this.fixOwnershipResult = { success: false, message: error.message };
         this.notify(error.message, "error");
@@ -3191,6 +3503,9 @@ const app = createApp({
         if (this.domains.length) this.selectedDomainId = this.domains[0].id;
         this.newDnsRecord.domain_id = this.selectedDomainId;
         this.loadDnsRecords();
+        if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }
+      } else if (target === "account-sharing") {
+        this.fetchCollaborators();
         if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }
       } else {
         if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }

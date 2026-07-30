@@ -706,7 +706,7 @@ class PowerDNSProviderTests(unittest.TestCase):
         provider = CloudflareDNSProvider("test-token")
         res = provider.ensure_acme_rule("example.com")
         self.assertEqual(res["status"], "mocked")
-        self.assertIn("rule_id", res)
+        self.assertIn("acme_rule", res)
 
 
 if __name__ == "__main__":

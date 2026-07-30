@@ -549,7 +549,7 @@ class Agent:
         if job_type == "restore_backup":
             return self.restore_backup(conn, job["target_id"])
         if job_type == "fix_file_ownership":
-            return self.fix_file_ownership(conn, job["target_id"])
+            return self.fix_file_ownership(conn, job["target_id"], job.get("payload"))
         if job_type == "sync_ip_rules":
             return self.sync_ip_rules(conn, job["target_id"])
         if job_type == "sync_website_index":
@@ -2605,7 +2605,7 @@ class Agent:
             "services": service_rows,
         }
 
-    def fix_file_ownership(self, conn, account_id):
+    def fix_file_ownership(self, conn, account_id, payload=None):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
@@ -2613,8 +2613,32 @@ class Agent:
         if not base_path.exists():
             raise AgentError("account_path_not_found")
 
+        website_id = None
+        if payload and isinstance(payload, dict):
+            website_id = payload.get("website_id")
+            if website_id in ("all", "0", 0, ""):
+                website_id = None
+
+        target_path = base_path
+        target_domain = None
+        if website_id:
+            website = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account_id)).fetchone()
+            if website:
+                target_domain = website["domain"]
+                doc_root = Path(website["document_root"])
+                if not doc_root.is_absolute():
+                    doc_root = (base_path / doc_root).resolve()
+                else:
+                    doc_root = doc_root.resolve()
+
+                domain_dir = doc_root.parent if doc_root.name == "public_html" and doc_root.parent.exists() else doc_root
+                if domain_dir.exists() and (domain_dir == base_path or str(domain_dir).startswith(str(base_path) + os.sep)):
+                    target_path = domain_dir
+                elif doc_root.exists() and (doc_root == base_path or str(doc_root).startswith(str(base_path) + os.sep)):
+                    target_path = doc_root
+
         try:
-            os.chmod(base_path, 0o755)
+            os.chmod(target_path, 0o755)
         except Exception:
             pass
 
@@ -2623,7 +2647,7 @@ class Agent:
         preserved_files = 0
         skipped_symlinks = 0
 
-        for root, dirs, files in os.walk(base_path):
+        for root, dirs, files in os.walk(target_path):
             current = Path(root)
             if current.is_symlink():
                 skipped_symlinks += 1
@@ -2687,6 +2711,8 @@ class Agent:
         report = {
             "account_id": account["id"],
             "username": account["username"],
+            "website_id": website_id,
+            "target_domain": target_domain,
             "directories_fixed": directories_fixed,
             "files_fixed": files_fixed,
             "preserved_files": preserved_files,
@@ -2697,12 +2723,15 @@ class Agent:
         return {
             "fixed": True,
             "account_id": account["id"],
+            "website_id": website_id,
+            "target_domain": target_domain,
             "directories_fixed": directories_fixed,
             "files_fixed": files_fixed,
             "preserved_files": preserved_files,
             "skipped_symlinks": skipped_symlinks,
             "artifact_path": str(report_path),
         }
+
 
     def sync_ip_rules(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
