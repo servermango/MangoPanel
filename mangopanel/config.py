@@ -357,180 +357,49 @@ FILEBROWSER_CUSTOM_JS = r"""(function () {
     return getArchivePathFromSelection();
   }
 
-  /* ── Filebrowser DOM facts (from actual source code analysis):
-     - Items are: div.item[data-ext=".zip"][aria-label="filename"][aria-selected]
-     - Header actions: header > div#dropdown > action buttons
-     - No floating context menu exists — right-click just selects the item
-     - We must show our own context menu on right-click for archive files
+  /* ── Highlighted Extract Header Button & Menu Integration ───────────
+     - Highlighted action button in header toolbar
+     - Also injects into native dropdown / action menus when opened
      ─────────────────────────────────────────────────────────────────── */
 
-  /* ── Custom context menu overlay ──────────────────────────────── */
-  let mpCtxMenu = null;
-  let mpCtxTarget = null;
-
-  function ensureCtxMenu() {
-    if (mpCtxMenu) return mpCtxMenu;
-    let menu = document.createElement('div');
-    menu.id = 'mp-extract-ctx';
-    menu.style.cssText = [
-      'position:fixed', 'z-index:999999', 'display:none',
-      'background:#1a1a2e', 'border:1px solid rgba(255,255,255,0.1)',
-      'border-radius:8px', 'box-shadow:0 12px 40px rgba(0,0,0,0.5)',
-      'min-width:180px', 'padding:4px 0', 'overflow:hidden',
-      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
-      'backdrop-filter:blur(10px)', '-webkit-backdrop-filter:blur(10px)',
-      'animation:mpCtxFadeIn 0.12s ease-out'
-    ].join(';') + ';';
-
-    let style = document.createElement('style');
-    style.textContent = '@keyframes mpCtxFadeIn{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}';
-    menu.appendChild(style);
-
-    let extractBtn = document.createElement('button');
-    extractBtn.id = 'mp-extract-btn';
-    extractBtn.type = 'button';
-    extractBtn.style.cssText = [
-      'display:flex', 'align-items:center', 'width:100%', 'padding:10px 16px',
-      'background:none', 'border:none', 'color:#e2e8f0', 'font-size:14px',
-      'cursor:pointer', 'text-align:left', 'gap:10px', 'transition:background 0.12s ease',
-      'font-family:inherit'
-    ].join(';') + ';';
-    extractBtn.innerHTML = '<i class="material-icons" style="font-size:20px;color:#60a5fa;">unarchive</i><span>Extract Here</span>';
-    extractBtn.addEventListener('mouseenter', function() { this.style.background = 'rgba(96,165,250,0.15)'; });
-    extractBtn.addEventListener('mouseleave', function() { this.style.background = 'none'; });
-    extractBtn.addEventListener('click', function(ev) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      closeCtxMenu();
-      if (mpCtxTarget) {
-        doExtract(mpCtxTarget);
-        mpCtxTarget = null;
-      }
-    });
-    menu.appendChild(extractBtn);
-
-    let downloadBtn = document.createElement('button');
-    downloadBtn.type = 'button';
-    downloadBtn.style.cssText = extractBtn.style.cssText;
-    downloadBtn.innerHTML = '<i class="material-icons" style="font-size:20px;color:#94a3b8;">file_download</i><span>Download</span>';
-    downloadBtn.addEventListener('mouseenter', function() { this.style.background = 'rgba(148,163,184,0.12)'; });
-    downloadBtn.addEventListener('mouseleave', function() { this.style.background = 'none'; });
-    downloadBtn.addEventListener('click', function(ev) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      closeCtxMenu();
-      if (mpCtxTarget) {
-        let dlPath = '/files/api/raw' + mpCtxTarget + '?auth=' + (localStorage.getItem('jwt') || '');
-        window.open(dlPath, '_blank');
-        mpCtxTarget = null;
-      }
-    });
-    menu.appendChild(downloadBtn);
-
-    (document.body || document.documentElement).appendChild(menu);
-    mpCtxMenu = menu;
-    return menu;
-  }
-
-  function openCtxMenu(x, y, archivePath) {
-    mpCtxTarget = archivePath;
-    let menu = ensureCtxMenu();
-    menu.style.display = 'block';
-    /* Force layout to get size before positioning */
-    let w = menu.offsetWidth;
-    let h = menu.offsetHeight;
-    let maxX = window.innerWidth - w - 8;
-    let maxY = window.innerHeight - h - 8;
-    menu.style.left = Math.min(x, Math.max(0, maxX)) + 'px';
-    menu.style.top = Math.min(y, Math.max(0, maxY)) + 'px';
-  }
-
-  function closeCtxMenu() {
-    if (mpCtxMenu) {
-      mpCtxMenu.style.display = 'none';
-    }
-    mpCtxTarget = null;
-  }
-
-  /* Close context menu on any click, scroll, or Escape */
-  document.addEventListener('click', closeCtxMenu, true);
-  document.addEventListener('scroll', closeCtxMenu, true);
-  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeCtxMenu(); });
-
-  /* ── Right-click intercept ───────────────────────────────────── */
-  document.addEventListener('contextmenu', function(e) {
-    closeCtxMenu();
-    /* Walk up from the target to find a .item element with archive data */
-    let archivePath = getZipPathFromTarget(e.target);
-
-    /* Also try filebrowser's data-ext attribute on .item elements */
-    if (!archivePath) {
-      let el = e.target;
-      let depth = 0;
-      while (el && depth < 10 && el !== document.body) {
-        if (el.classList && el.classList.contains('item') && el.getAttribute('data-ext')) {
-          let ext = (el.getAttribute('data-ext') || '').toLowerCase();
-          let name = el.getAttribute('aria-label') || '';
-          if (isArchive(name) || ['.zip','.tar','.gz','.tgz','.7z','.rar','.bz2','.xz'].indexOf(ext) >= 0) {
-            let curDir = getCurrentDirectory();
-            if (!curDir.endsWith('/')) curDir += '/';
-            archivePath = curDir + name;
-            break;
-          }
-        }
-        el = el.parentElement;
-        depth++;
-      }
-    }
-
-    if (!archivePath) {
-      archivePath = getSelectedZipPath();
-    }
-
-    if (archivePath) {
-      e.preventDefault();
-      e.stopPropagation();
-      lastActiveZipPath = archivePath;
-      openCtxMenu(e.clientX, e.clientY, archivePath);
-    }
-  }, true);
-
-  /* ── Inject "Extract" button into filebrowser's header #dropdown ── */
-  function injectHeaderExtractBtn() {
+  function injectExtractButtons() {
     let archivePath = getSelectedZipPath() || lastActiveZipPath;
     let dropdown = document.getElementById('dropdown');
     let headerEl = document.querySelector('header');
-
-    /* Also try to find the file-selection bar on mobile */
     let fileSelectionBar = document.getElementById('file-selection');
+    let actionBars = document.querySelectorAll('#action-bar, .action-bar, header .actions, #toolbar, .toolbar');
 
-    let containers = [dropdown, headerEl, fileSelectionBar].filter(Boolean);
+    let containers = new Set([dropdown, headerEl, fileSelectionBar, ...actionBars]);
+    let validContainers = Array.from(containers).filter(Boolean);
 
-    if (archivePath && containers.length > 0) {
-      containers.forEach(function(container) {
+    if (archivePath && validContainers.length > 0) {
+      validContainers.forEach(function(container) {
         if (container.querySelector('#mp-extract-header-btn')) return;
         let btn = document.createElement('button');
         btn.id = 'mp-extract-header-btn';
         btn.type = 'button';
+        btn.className = 'action mp-extract-btn';
         btn.title = 'Extract Archive';
         btn.setAttribute('aria-label', 'Extract Archive');
         btn.style.cssText = [
-          'display:inline-flex', 'align-items:center', 'gap:5px',
-          'padding:7px 14px', 'margin:0 4px',
-          'background:rgba(96,165,250,0.12)', 'color:#60a5fa',
-          'border:1px solid rgba(96,165,250,0.25)', 'border-radius:6px',
-          'font:inherit', 'font-size:13px', 'font-weight:500',
-          'cursor:pointer', 'transition:all 0.15s ease',
-          'white-space:nowrap'
+          'display:inline-flex', 'align-items:center', 'gap:6px',
+          'padding:7px 16px', 'margin:0 6px',
+          'background:linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+          'color:#ffffff', 'border:1px solid #3b82f6', 'border-radius:6px',
+          'font:inherit', 'font-size:13px', 'font-weight:600',
+          'cursor:pointer', 'box-shadow:0 2px 10px rgba(37, 99, 235, 0.45)',
+          'transition:all 0.15s ease', 'white-space:nowrap', 'z-index:100'
         ].join(';') + ';';
-        btn.innerHTML = '<i class="material-icons" style="font-size:18px;">unarchive</i><span>Extract</span>';
+        btn.innerHTML = '<i class="material-icons" style="font-size:18px;color:#ffffff;">unarchive</i><span>Extract</span>';
         btn.addEventListener('mouseenter', function() {
-          this.style.background = 'rgba(96,165,250,0.25)';
-          this.style.borderColor = 'rgba(96,165,250,0.45)';
+          this.style.background = 'linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%)';
+          this.style.boxShadow = '0 4px 14px rgba(37, 99, 235, 0.6)';
+          this.style.transform = 'translateY(-1px)';
         });
         btn.addEventListener('mouseleave', function() {
-          this.style.background = 'rgba(96,165,250,0.12)';
-          this.style.borderColor = 'rgba(96,165,250,0.25)';
+          this.style.background = 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)';
+          this.style.boxShadow = '0 2px 10px rgba(37, 99, 235, 0.45)';
+          this.style.transform = 'none';
         });
         btn.addEventListener('click', function(ev) {
           ev.preventDefault();
@@ -546,14 +415,47 @@ FILEBROWSER_CUSTOM_JS = r"""(function () {
           container.appendChild(btn);
         }
       });
-    } else {
-      /* Remove if no archive selected */
+    } else if (!archivePath) {
       document.querySelectorAll('#mp-extract-header-btn').forEach(function(el) { el.remove(); });
+    }
+
+    /* Also inject Extract option into default dropdown / context menu containers if present */
+    if (archivePath) {
+      let activeMenus = document.querySelectorAll('#context-menu, .card.floating, .card-floating, [role="menu"], .action-menu, .dropdown-menu, #dropdown.active');
+      activeMenus.forEach(function(menu) {
+        if (menu.querySelector('#mp-extract-menu-btn')) return;
+        let btn = document.createElement('button');
+        btn.id = 'mp-extract-menu-btn';
+        btn.type = 'button';
+        btn.className = 'action mp-extract-btn';
+        btn.setAttribute('aria-label', 'Extract');
+        btn.title = 'Extract Archive';
+        btn.style.cssText = 'display:flex;align-items:center;width:100%;padding:8px 16px;background:none;border:none;color:inherit;font:inherit;cursor:pointer;text-align:left;box-sizing:border-box;font-size:14px;gap:10px;';
+        btn.innerHTML = '<i class="material-icons" style="font-size:18px;color:#3b82f6;">unarchive</i><span>Extract</span>';
+        btn.addEventListener('click', function(ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          doExtract(archivePath);
+        });
+        let targetList = menu.querySelector('ul') || menu.querySelector('.aria-menu') || menu;
+        targetList.appendChild(btn);
+      });
+    } else {
+      document.querySelectorAll('#mp-extract-menu-btn').forEach(function(el) { el.remove(); });
     }
   }
 
-  /* Poll for selection changes — filebrowser uses Vue reactivity so we can't
-     get events, but we can detect selection via aria-selected attributes */
+  /* Listen for contextmenu events without preventing default */
+  document.addEventListener('contextmenu', function(e) {
+    let zipPath = getZipPathFromTarget(e.target);
+    if (zipPath) {
+      lastActiveZipPath = zipPath;
+    }
+    setTimeout(injectExtractButtons, 50);
+    setTimeout(injectExtractButtons, 150);
+  }, true);
+
+  /* Poll for selection changes and archive detection */
   setInterval(function() {
     let selected = document.querySelectorAll('.item[aria-selected="true"]');
     let hasArchive = false;
@@ -570,8 +472,8 @@ FILEBROWSER_CUSTOM_JS = r"""(function () {
     if (!hasArchive && selected.length > 0) {
       lastActiveZipPath = null;
     }
-    injectHeaderExtractBtn();
-  }, 500);
+    injectExtractButtons();
+  }, 300);
 
   async function doExtract(filePath) {
     let zipName = filePath.split('/').pop();
