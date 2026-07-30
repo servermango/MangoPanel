@@ -214,48 +214,53 @@ FILEBROWSER_CUSTOM_JS = r"""(function () {
 
   let lastActiveZipPath = null;
 
+  function cleanPath(raw) {
+    if (!raw) return '';
+    let str = String(raw).trim();
+    if (str.includes('://')) {
+      try {
+        str = new URL(str).pathname;
+      } catch (e) {
+        str = str.split('://').pop();
+      }
+    }
+    str = decodeURIComponent(str.split('?')[0].split('#')[0]);
+    if (str.includes('/auth/')) {
+      let parts = str.split('/auth/');
+      let afterAuth = parts[parts.length - 1];
+      if (afterAuth.includes('/files/')) {
+        str = '/' + afterAuth.split('/files/')[1];
+      } else {
+        let subParts = afterAuth.split('/');
+        str = subParts.length > 1 ? '/' + subParts.slice(1).join('/') : '/';
+      }
+    }
+    if (str.startsWith('/api/public/filebrowser/proxy')) str = str.replace('/api/public/filebrowser/proxy', '');
+    if (str.startsWith('/api/public/tool-launch/filebrowser')) str = str.replace('/api/public/tool-launch/filebrowser', '');
+    if (str.startsWith('/files/files/')) str = str.replace('/files/files/', '/');
+    else if (str.startsWith('/files/files')) str = str.replace('/files/files', '');
+    else if (str.startsWith('/files/')) str = str.replace('/files/', '/');
+    else if (str.startsWith('/files')) str = str.replace('/files', '');
+    if (str.startsWith('/api/resources/')) str = str.replace('/api/resources/', '/');
+    else if (str.startsWith('/api/raw/')) str = str.replace('/api/raw/', '/');
+    else if (str.startsWith('/api/preview/')) str = str.replace('/api/preview/', '/');
+
+    if (!str.startsWith('/')) str = '/' + str;
+    str = str.replace(/\/+/g, '/');
+    if (str.length > 1 && str.endsWith('/')) str = str.slice(0, -1);
+    return str;
+  }
+
   function getCurrentDirectory() {
     let p = window.location.pathname || '';
     let hash = window.location.hash || '';
-    let raw = '';
-    if (hash && hash.includes('#')) {
-      raw = hash.split('#')[1] || '';
-    } else {
-      raw = p;
-    }
-    raw = decodeURIComponent(raw.split('?')[0]);
-    if (raw.startsWith('/api/public/filebrowser/proxy')) raw = raw.replace('/api/public/filebrowser/proxy', '');
-    if (raw.startsWith('/files/files/')) raw = raw.replace('/files/files/', '/');
-    else if (raw.startsWith('/files/files')) raw = raw.replace('/files/files', '');
-    else if (raw.startsWith('/files/')) raw = raw.replace('/files/', '/');
-    else if (raw.startsWith('/files')) raw = raw.replace('/files', '');
-    
-    if (!raw.startsWith('/')) raw = '/' + raw;
-    if (raw.length > 1 && raw.endsWith('/')) raw = raw.slice(0, -1);
-    return raw;
+    let raw = (hash && hash.includes('#')) ? (hash.split('#')[1] || '') : p;
+    return cleanPath(raw);
   }
 
   function normalizeArchivePath(rawPath) {
     if (!rawPath) return null;
-    let decoded = decodeURIComponent(String(rawPath).trim());
-    if (decoded.includes('://')) {
-      try {
-        decoded = new URL(decoded).pathname;
-      } catch (e) {
-        decoded = decoded.split('://').pop();
-      }
-    }
-    if (decoded.includes('?')) decoded = decoded.split('?')[0];
-    if (decoded.includes('#')) decoded = decoded.split('#')[0];
-    if (decoded.startsWith('/api/public/filebrowser/proxy')) decoded = decoded.replace('/api/public/filebrowser/proxy', '');
-    if (decoded.startsWith('/files/files/')) decoded = decoded.replace('/files/files/', '/');
-    else if (decoded.startsWith('/files/')) decoded = decoded.replace('/files/', '/');
-    else if (decoded.startsWith('/files')) decoded = decoded.replace('/files', '');
-    if (decoded.startsWith('/api/resources/')) decoded = decoded.replace('/api/resources/', '/');
-    else if (decoded.startsWith('/api/raw/')) decoded = decoded.replace('/api/raw/', '/');
-    else if (decoded.startsWith('/api/preview/')) decoded = decoded.replace('/api/preview/', '/');
-    if (!decoded.startsWith('/')) decoded = '/' + decoded;
-    decoded = decoded.replace(/\/+/g, '/');
+    let decoded = cleanPath(rawPath);
     return isArchive(decoded) ? decoded : null;
   }
 
@@ -476,13 +481,14 @@ FILEBROWSER_CUSTOM_JS = r"""(function () {
   }, 300);
 
   async function doExtract(filePath) {
-    let zipName = filePath.split('/').pop();
+    let targetPath = cleanPath(filePath);
+    let zipName = targetPath.split('/').pop();
     showToast("Extracting " + zipName + "...", "info");
     try {
       let res = await fetch("/files/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: filePath })
+        body: JSON.stringify({ path: targetPath })
       });
       let text = await res.text();
       let data = {};

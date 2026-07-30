@@ -1212,7 +1212,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                     if payload and payload.get("sub"):
                         actor_id = payload["sub"]
 
-            if actor_id and account and account["user_id"] != actor_id:
+            if not actor_id:
+                raise ApiError(HTTPStatus.FORBIDDEN, "authentication_required")
+
+            if account and account["user_id"] != actor_id:
                 scope = get_collaborator_scope(conn, actor_id, account["id"])
                 if not scope.get("is_collaborator"):
                     raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
