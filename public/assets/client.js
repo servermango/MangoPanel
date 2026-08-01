@@ -241,6 +241,8 @@ const app = createApp({
       featureStatuses: {},
       websites: [],
       domains: [],
+      registeredDomains: [],
+      registeredWhoisModal: { open: false, loading: false, domain: "", activeTab: "registrant", form: {}, currentNameservers: [], defaultNameservers: [], nameserverMode: "default", nameservers: ["", ""], saving: false },
       databases: [],
       databaseUsers: [],
       databaseGrants: [],
@@ -363,7 +365,7 @@ const app = createApp({
         }
       },
       siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], dnsCheckResult: null, dnsAction: 'keep', isCheckingDns: false, isSubmitting: false, isBuilding: false, errorMessage: '', dnsTab: 'records' },
-      connectWizard: { isOpen: false, website: null, method: 'nameservers', checking: false, result: null },
+      connectWizard: { isOpen: false, website: null, method: 'nameservers', auto_update_dns: false, checking: false, result: null },
       sshState: { enabled: false, toggling: false, loaded: false, hasPassword: false, settingPassword: false, newPassword: null, passwordModal: false, passwordInput: "", passwordError: "" },
       sslModal: { isOpen: false, website_id: "", crt: "", key: "", isSubmitting: false, errorMessage: "" },
       issuingSsl: {},
@@ -1275,8 +1277,14 @@ const app = createApp({
           if (this.activePage === "settings") await this.loadProfile();
           return;
         }
-        this.websites = (await this.api("/api/client/websites")).websites;
-        this.domains = (await this.api("/api/client/domains")).domains;
+        this.websites = this.hasHostingAccount ? (await this.api("/api/client/websites")).websites : [];
+        const domainsPayload = await this.api("/api/client/domains");
+        this.domains = domainsPayload.domains || [];
+        this.registeredDomains = domainsPayload.registered_domains || [];
+        if (!this.hasHostingAccount) {
+          if (!['dashboard', 'domains', 'dns-zone-editor'].includes(this.activePage)) this.activePage = 'domains';
+          return;
+        }
         this.cacheStatus = { ...this.cacheStatus, ...((await this.api("/api/client/cache/status")).cache_status || {}) };
         await this.loadDatabases();
         await this.loadResourceUsage();
@@ -1321,6 +1329,57 @@ const app = createApp({
       } catch (error) {
         this.notify(error.message, "error");
       }
+    },
+    async renewRegisteredDomain(domain) {
+      const years = Number(window.prompt(`Renew ${domain.domain_name} for how many year(s)?`, "1"));
+      if (!Number.isInteger(years) || years < 1 || years > 10) return;
+      if (!window.confirm(`Renew ${domain.domain_name} for ${years} year(s)?`)) return;
+      try {
+        await this.api(`/api/client/registered-domains/${encodeURIComponent(domain.domain_name)}/renew`, { method: "POST", body: JSON.stringify({ years }) });
+        const payload = await this.api("/api/client/domains");
+        this.domains = payload.domains || [];
+        this.registeredDomains = payload.registered_domains || [];
+        this.notify(`${domain.domain_name} renewal submitted`, "success");
+      } catch (error) { this.notify(error.message, "error"); }
+    },
+    async showRegisteredWhois(domain) {
+      this.registeredWhoisModal = { ...this.registeredWhoisModal, open: true, loading: true, domain: domain.domain_name, activeTab: "registrant" };
+      try {
+        const payload = await this.api(`/api/client/registered-domains/${encodeURIComponent(domain.domain_name)}/whois`);
+        const source = payload.whois || {};
+        const section = (key) => { const raw = source[key] || source[key.toLowerCase()] || {}; const name = raw.name || [raw.FirstName, raw.LastName].filter(Boolean).join(" ") || raw.Name || ""; return { ...raw, name, organization: raw.organization || raw.Organization || "", email: raw.email || raw.EMail || raw.Email || "", phone: raw.phone || raw.Phone || "", address: raw.address || raw.AddressLine1 || raw.Address1 || "", city: raw.city || raw.City || "", state: raw.state || raw.State || raw.StateProvince || "", postal_code: raw.postal_code || raw.ZipCode || raw.Zip || "", country: raw.country || raw.Country || "" }; };
+        this.registeredWhoisModal = { open: true, loading: false, domain: payload.domain, activeTab: "registrant", form: { registrant: section("registrant"), administrative: section("administrative"), technical: section("technical"), billing: section("billing") }, currentNameservers: payload.nameservers || [], defaultNameservers: payload.default_nameservers || [], nameserverMode: "default", nameservers: [...(payload.nameservers || []), "", ""].slice(0, 2), saving: false };
+        if (!payload.refreshed && payload.refresh_error) this.notify(`Fresh WHOIS pull unavailable: ${payload.refresh_error}`, "error");
+      } catch (error) { this.registeredWhoisModal.loading = false; this.notify(error.message, "error"); }
+    },
+    async saveRegisteredWhois() {
+      const modal = this.registeredWhoisModal;
+      modal.saving = true;
+      try {
+        await this.api(`/api/client/registered-domains/${encodeURIComponent(modal.domain)}/whois-update`, { method: "POST", body: JSON.stringify({ whois: modal.form }) });
+        this.notify("WHOIS contact details saved", "success");
+      } catch (error) { this.notify(error.message, "error"); }
+      finally { modal.saving = false; }
+    },
+    async showRegisteredNameservers(domain) {
+      this.registeredWhoisModal = { ...this.registeredWhoisModal, open: true, loading: true, domain: domain.domain_name, activeTab: "nameservers" };
+      try {
+        const payload = await this.api(`/api/client/registered-domains/${encodeURIComponent(domain.domain_name)}/whois`);
+        this.registeredWhoisModal = { ...this.registeredWhoisModal, loading: false, domain: payload.domain, currentNameservers: payload.nameservers || [], defaultNameservers: payload.default_nameservers || [], nameservers: [...(payload.nameservers || []), "", ""].slice(0, 2), nameserverMode: "default" };
+      } catch (error) { this.registeredWhoisModal.loading = false; this.notify(error.message, "error"); }
+    },
+    async saveRegisteredNameservers() {
+      const modal = this.registeredWhoisModal;
+      const nameservers = modal.nameservers.filter((value) => String(value || "").trim());
+      if (modal.nameserverMode === "custom" && nameservers.length < 2) { this.notify("Enter at least two custom nameservers", "error"); return; }
+      modal.saving = true;
+      try {
+        const payload = await this.api(`/api/client/registered-domains/${encodeURIComponent(modal.domain)}/nameservers`, { method: "POST", body: JSON.stringify({ mode: modal.nameserverMode, nameservers }) });
+        modal.currentNameservers = payload.nameservers || nameservers;
+        modal.nameservers = [...modal.currentNameservers, "", ""].slice(0, 2);
+        this.notify("Nameservers updated", "success");
+      } catch (error) { this.notify(error.message, "error"); }
+      finally { modal.saving = false; }
     },
     async applyDatabasePayload(payload) {
       this.databases = payload.databases || [];
@@ -3344,7 +3403,7 @@ const app = createApp({
       }
     },
     openConnectWizard(site) {
-      this.connectWizard = { isOpen: true, website: site, method: "nameservers", checking: false, result: null };
+      this.connectWizard = { isOpen: true, website: site, method: "nameservers", auto_update_dns: Boolean(site.registrar_assigned), checking: false, result: null };
     },
     closeConnectWizard() {
       if (!this.connectWizard.checking) this.connectWizard.isOpen = false;
@@ -3355,13 +3414,13 @@ const app = createApp({
       wizard.checking = true;
       wizard.result = null;
       try {
-        const payload = await this.api(`/api/client/websites/${wizard.website.id}/connection-check`, { method: "POST", body: "{}" });
+        const payload = await this.api(`/api/client/websites/${wizard.website.id}/connection-check`, { method: "POST", body: JSON.stringify({ auto_update_dns: Boolean(wizard.auto_update_dns) }) });
         wizard.result = payload;
         if (payload.verified) {
           this.notify("Connection verified. AutoSSL has been queued.", "success");
           await this.load();
         } else {
-          this.notify("DNS is not pointing to this hosting account yet.", "warning");
+          this.notify(payload.message || "DNS is not pointing to this hosting account yet.", "warning");
         }
       } catch (error) { wizard.result = { verified: false, message: error.message }; this.notify(error.message, "error"); }
       finally { wizard.checking = false; }

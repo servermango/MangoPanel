@@ -2785,6 +2785,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                     ).fetchall()
                 websites = rows_to_dicts(rows)
                 for website in websites:
+                    registrar_assignment = conn.execute(
+                        """SELECT r.id, r.domain_name, r.nameservers_json, ra.label AS account_label
+                           FROM registrar_domain_records r
+                           JOIN registrar_accounts ra ON ra.id = r.registrar_account_id
+                           WHERE lower(r.domain_name) = lower(?) AND r.client_user_id = ? AND ra.status != 'deleted'
+                           LIMIT 1""",
+                        (website["domain"], actor["id"]),
+                    ).fetchone()
+                    website["registrar_assigned"] = bool(registrar_assignment)
+                    website["registrar_account_label"] = registrar_assignment["account_label"] if registrar_assignment else ""
                     runtime = account_runtime(conn, website["account_id"])
                     website["public_url"] = f"http://{website['domain']}"
                     website["host_header"] = website["domain"]
@@ -2937,7 +2947,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 if not domain_link:
                     raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "domain_record_missing")
-                mail_host = "mail-{}.localhost".format(account["username"]) if CONFIG.public_host == "127.0.0.1" else "mail.{}.{}".format(account["username"], CONFIG.public_host)
+                mail_host = mail_dns_target_for_account(account["username"])
 
                 if dns_check.get("exists") and dns_check.get("dns_provider") == "cloudflare" and dns_action == "keep":
                     import_remote_cloudflare_records(conn, domain_link["id"], domain, dns_check.get("remote_records", []))
@@ -3086,7 +3096,96 @@ class MangoHandler(BaseHTTPRequestHandler):
                         """,
                         (actor["id"],),
                     ).fetchall()
-                return self.json_response({"domains": [decorate_domain(row) for row in rows]})
+                registered_rows = conn.execute(
+                    """SELECT r.domain_name, r.status, r.expiry_at, r.registered_at,
+                              r.auto_renew, r.transfer_lock, r.auth_code_available,
+                              r.nameservers_json, ra.label AS registrar_account,
+                              rp.display_name AS registrar_name
+                       FROM registrar_domain_records r
+                       JOIN registrar_accounts ra ON ra.id = r.registrar_account_id
+                       JOIN registrar_providers rp ON rp.id = ra.provider_id
+                       WHERE r.client_user_id = ? AND ra.status != 'deleted'
+                       ORDER BY r.domain_name COLLATE NOCASE""",
+                    (actor["id"],),
+                ).fetchall()
+                registered_domains = []
+                for registered in registered_rows:
+                    item = row_to_dict(registered)
+                    item["nameservers"] = parse_json_field(item.pop("nameservers_json", "[]"), [])
+                    item["auto_renew"] = bool(item.get("auto_renew"))
+                    item["transfer_lock"] = bool(item.get("transfer_lock"))
+                    item["auth_code_available"] = bool(item.get("auth_code_available"))
+                    registered_domains.append(item)
+                return self.json_response({"domains": [decorate_domain(row) for row in rows], "registered_domains": registered_domains})
+            registered_action = re.match(r"^/api/client/registered-domains/([^/]+)/(renew|whois|whois-update|nameservers)/?$", path)
+            if registered_action:
+                domain_name = sanitize_domain(registered_action.group(1))
+                action = registered_action.group(2)
+                record = conn.execute(
+                    """SELECT r.*, ra.label AS account_label, rp.key AS provider_key
+                       FROM registrar_domain_records r
+                       JOIN registrar_accounts ra ON ra.id = r.registrar_account_id
+                       JOIN registrar_providers rp ON rp.id = ra.provider_id
+                       WHERE lower(r.domain_name) = lower(?) AND r.client_user_id = ? AND ra.status != 'deleted'""",
+                    (domain_name, actor["id"]),
+                ).fetchone()
+                if not record:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "registered_domain_not_found")
+                if action == "whois":
+                    whois = parse_json_field(record["whois_json"], {})
+                    nameservers = parse_json_field(record["nameservers_json"], [])
+                    metadata = parse_json_field(record["metadata_json"], {})
+                    refresh_error = ""
+                    account = conn.execute("SELECT ra.*, rp.key AS provider_key FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id WHERE ra.id = ?", (record["registrar_account_id"],)).fetchone()
+                    try:
+                        fresh = registrar_for(account["provider_key"], registrar_account_settings(conn, account)).get_details(domain_name)
+                        whois = fresh.get("whois") or whois
+                        nameservers = fresh.get("nameservers") or nameservers
+                        metadata = fresh.get("metadata") or metadata
+                        conn.execute("UPDATE registrar_domain_records SET whois_json = ?, nameservers_json = ?, metadata_json = ?, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(whois, sort_keys=True), json.dumps(nameservers), json.dumps(metadata, sort_keys=True), record["id"]))
+                    except (RegistrarError, NotImplementedError) as exc:
+                        refresh_error = str(exc)
+                    return self.json_response({
+                        "domain": domain_name,
+                        "whois": whois,
+                        "metadata": metadata,
+                        "nameservers": nameservers,
+                        "default_nameservers": default_registrar_nameservers(conn),
+                        "refreshed": not bool(refresh_error),
+                        "refresh_error": refresh_error,
+                    })
+                if method != "POST":
+                    raise ApiError(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
+                body = self.read_json()
+                if action == "whois-update":
+                    whois = body.get("whois") if isinstance(body.get("whois"), dict) else {}
+                    conn.execute("UPDATE registrar_domain_records SET whois_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(whois, sort_keys=True), record["id"]))
+                    return self.json_response({"updated": True, "domain": domain_name, "whois": whois})
+                if action == "nameservers":
+                    mode = str(body.get("mode") or "default").lower()
+                    nameservers = default_registrar_nameservers(conn) if mode == "default" else [str(value).strip().rstrip(".").lower() for value in (body.get("nameservers") or []) if str(value).strip()]
+                    if len(nameservers) < 2 or len(nameservers) > 4:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "two_to_four_nameservers_required")
+                    account = conn.execute("SELECT ra.*, rp.key AS provider_key FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id WHERE ra.id = ?", (record["registrar_account_id"],)).fetchone()
+                    try:
+                        result = registrar_for(account["provider_key"], registrar_account_settings(conn, account)).update_nameservers(domain_name, nameservers)
+                    except NotImplementedError:
+                        result = {"local_only": True, "reason": "provider_nameserver_update_not_supported"}
+                    except RegistrarError as exc:
+                        raise ApiError(HTTPStatus.BAD_GATEWAY, "nameserver_update_failed: " + str(exc)[:180])
+                    conn.execute("UPDATE registrar_domain_records SET nameservers_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), record["id"]))
+                    return self.json_response({"updated": True, "domain": domain_name, "mode": mode, "nameservers": nameservers, "result": result})
+                try:
+                    years = max(1, min(10, int(body.get("years", 1))))
+                except (TypeError, ValueError):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_renewal_years")
+                account = conn.execute("SELECT ra.*, rp.key AS provider_key FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id WHERE ra.id = ?", (record["registrar_account_id"],)).fetchone()
+                try:
+                    result = registrar_for(account["provider_key"], registrar_account_settings(conn, account)).renew(domain_name, years)
+                except RegistrarError as exc:
+                    raise ApiError(HTTPStatus.BAD_GATEWAY, "domain_renewal_failed: " + str(exc)[:180])
+                conn.execute("UPDATE registrar_domain_records SET updated_at = CURRENT_TIMESTAMP, synced_at = CURRENT_TIMESTAMP WHERE id = ?", (record["id"],))
+                return self.json_response({"renewed": True, "domain": domain_name, "years": years, "result": result})
             if path == "/api/client/dns/provider-options" and method == "GET":
                 require_account(account)
                 plan = conn.execute("SELECT p.* FROM hosting_accounts ha JOIN plans p ON p.id = ha.plan_id WHERE ha.id = ?", (account["id"],)).fetchone()
@@ -3206,7 +3305,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not domain:
                     raise ApiError(HTTPStatus.NOT_FOUND, "domain_not_found")
                 public_ip = get_host_public_ip(conn)
-                mail_host = domain["name"]
+                mail_host = mail_dns_target_for_account(account["username"])
 
                 conn.execute(
                     "DELETE FROM dns_records WHERE domain_id = ? AND ((type = 'A' AND name = '@') OR (type = 'CNAME' AND name = 'www') OR (type = 'MX' AND name = '@') OR (type = 'TXT' AND name = '@'))",
@@ -3461,8 +3560,41 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not website:
                     raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
                 domain_name = website["domain"]
+                body = self.read_json()
+                auto_update_dns = bool(body.get("auto_update_dns"))
+                nameserver_update = None
+                if auto_update_dns:
+                    domain_row = conn.execute("SELECT * FROM domains WHERE linked_website_id = ?", (website_id,)).fetchone()
+                    registrar_record = conn.execute(
+                        """SELECT r.*, ra.*, rp.key AS provider_key
+                           FROM registrar_domain_records r
+                           JOIN registrar_accounts ra ON ra.id = r.registrar_account_id
+                           JOIN registrar_providers rp ON rp.id = ra.provider_id
+                           WHERE lower(r.domain_name) = lower(?) AND r.client_user_id = ? AND ra.status != 'deleted'
+                           LIMIT 1""",
+                        (domain_name, actor["id"]),
+                    ).fetchone()
+                    if not registrar_record:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "domain_not_assigned_to_client_for_dns_update")
+                    nameservers = parse_json_field(domain_row["nameservers_json"], []) if domain_row else []
+                    if not nameservers:
+                        nameservers = preview_domain_dns(conn, account, domain_name).get("nameservers") or default_registrar_nameservers(conn)
+                    if len(nameservers) < 2:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "dns_nameservers_not_ready")
+                    try:
+                        nameserver_update = registrar_for(registrar_record["provider_key"], registrar_account_settings(conn, registrar_record)).update_nameservers(domain_name, nameservers)
+                    except NotImplementedError:
+                        raise ApiError(HTTPStatus.BAD_GATEWAY, "domain_provider_nameserver_update_not_supported")
+                    except RegistrarError as exc:
+                        raise ApiError(HTTPStatus.BAD_GATEWAY, "domain_provider_nameserver_update_failed: " + str(exc)[:180])
+                    conn.execute("UPDATE registrar_domain_records SET nameservers_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), registrar_record["id"]))
+                    if domain_row:
+                        conn.execute("UPDATE domains SET nameservers_json = ?, nameserver_source = 'custom', last_registrar_sync_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), domain_row["id"]))
                 observed_a = []
                 observed_ns = []
+                dns_sync_job_id = None
+                if auto_update_dns and domain_row:
+                    dns_sync_job_id = enqueue_dns_zone_sync(domain_row["id"], {"reason": "connect_auto_update_dns"})
                 dig = shutil.which("dig")
                 if dig:
                     for record_type, target in (("A", observed_a), ("AAAA", observed_a), ("NS", observed_ns)):
@@ -3492,7 +3624,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         logging.warning("Failed to sync Cloudflare ACME rules on connection-check: %s", exc)
                     job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto", "connection_check": True})
                     conn.execute("UPDATE websites SET ssl_status = 'active' WHERE id = ?", (website_id,))
-                return self.json_response({"verified": verified, "nameservers_verified": ns_ok, "ip_verified": ip_ok, "observed_nameservers": observed_ns, "observed_ips": observed_a, "expected_nameservers": expected_ns, "auto_ssl_job_id": job_id, "message": "DNS is reachable. AutoSSL has been queued." if verified else "DNS is not pointing to this hosting account yet."})
+                return self.json_response({"verified": verified, "nameservers_verified": ns_ok, "ip_verified": ip_ok, "observed_nameservers": observed_ns, "observed_ips": observed_a, "expected_nameservers": expected_ns, "dns_sync_job_id": dns_sync_job_id, "auto_ssl_job_id": job_id, "nameserver_update": nameserver_update, "message": "DNS is reachable. DNS records and AutoSSL have been queued." if verified else ("Nameservers updated. DNS record sync is queued; SSL will be issued after propagation." if auto_update_dns else "DNS is not pointing to this hosting account yet.")})
             if path == "/api/client/ssl/custom" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -6576,6 +6708,200 @@ class MangoHandler(BaseHTTPRequestHandler):
                 update_global_dns_assignment(conn, settings["global_mode"], settings["policy"])
                 log_audit(conn, "admin", actor["id"], "update_dns_settings", "dns_provider", local_provider["id"], metadata={"global_mode": settings["global_mode"]})
                 return self.json_response({"dns_settings": dns_settings_payload(conn)})
+            if path == "/api/admin/registrar-dashboard" and method == "GET":
+                return self.json_response(registrar_dashboard_payload(conn, query))
+            if path == "/api/admin/registrar-accounts" and method == "POST":
+                require_admin_permission(actor, "clients.manage")
+                body = self.read_json()
+                provider_key = clean_text(body.get("provider_key"), "").lower()
+                provider = conn.execute("SELECT * FROM registrar_providers WHERE key = ?", (provider_key,)).fetchone()
+                if not provider:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "registrar_provider_not_found")
+                label = clean_text(body.get("label") or provider["display_name"], "")
+                if not label:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "registrar_account_label_required")
+                identifier = clean_text(body.get("account_identifier"), "")
+                settings = body.get("settings") if isinstance(body.get("settings"), dict) else {}
+                secret = str(body.get("api_key") or body.get("api_token") or "").strip()
+                linked_dns_account_id = body.get("dns_provider_account_id")
+                if linked_dns_account_id not in (None, ""):
+                    try:
+                        linked_dns_account_id = positive_int(linked_dns_account_id, "invalid_dns_provider_account_id")
+                    except ApiError:
+                        raise
+                    linked = conn.execute(
+                        """SELECT a.id FROM dns_provider_accounts a JOIN dns_providers p ON p.id = a.provider_id
+                           WHERE a.id = ? AND p.key = 'cloudflare' AND a.status = 'active'""",
+                        (linked_dns_account_id,),
+                    ).fetchone()
+                    if provider_key != "cloudflare" or not linked:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_cloudflare_dns_account_link")
+                    # The registrar account reuses the DNS account's encrypted
+                    # token; do not require or duplicate the secret in the form.
+                    secret = ""
+                existing = conn.execute("SELECT id FROM registrar_accounts WHERE provider_id = ? AND label = ?", (provider["id"], label)).fetchone()
+                if existing:
+                    raise ApiError(HTTPStatus.CONFLICT, "registrar_account_exists")
+                cur = conn.execute(
+                    """INSERT INTO registrar_accounts(provider_id,label,account_identifier,settings_json,encrypted_secret,secret_label,status,dns_provider_account_id)
+                       VALUES (?,?,?,?,?,?, 'active', ?)""",
+                    (provider["id"], label, identifier, json.dumps(settings, sort_keys=True), encrypt_secret(secret, CONFIG.jwt_secret) if secret else "", "..." + secret[-4:] if secret else "", linked_dns_account_id),
+                )
+                log_audit(conn, "admin", actor["id"], "create_registrar_account", "registrar_account", cur.lastrowid, metadata={"provider": provider_key, "label": label})
+                return self.json_response({"account_id": cur.lastrowid}, HTTPStatus.CREATED)
+            if path.startswith("/api/admin/registrar-accounts/") and method == "PATCH":
+                require_admin_permission(actor, "clients.manage")
+                body = self.read_json()
+                verify_admin_sensitive_change(actor, body)
+                account_id = positive_int(path.split("/")[-1], "invalid_registrar_account_id")
+                account = conn.execute(
+                    "SELECT ra.*, rp.key AS provider_key FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id WHERE ra.id = ?",
+                    (account_id,),
+                ).fetchone()
+                if not account:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "registrar_account_not_found")
+                label = clean_text(body.get("label", account["label"]), "")
+                identifier = clean_text(body.get("account_identifier", account["account_identifier"]), "")
+                if not label:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "registrar_account_label_required")
+                settings = parse_json_field(account["settings_json"], {})
+                incoming_settings = body.get("settings") if isinstance(body.get("settings"), dict) else {}
+                for key in ("api_base", "client_ip"):
+                    if key in incoming_settings:
+                        settings[key] = clean_text(incoming_settings.get(key), "")
+                linked_dns_account_id = body.get("dns_provider_account_id", account["dns_provider_account_id"])
+                if linked_dns_account_id in (None, ""):
+                    linked_dns_account_id = None
+                else:
+                    linked_dns_account_id = positive_int(linked_dns_account_id, "invalid_dns_provider_account_id")
+                    linked = conn.execute(
+                        """SELECT a.id FROM dns_provider_accounts a JOIN dns_providers p ON p.id = a.provider_id
+                           WHERE a.id = ? AND p.key = 'cloudflare' AND a.status = 'active'""",
+                        (linked_dns_account_id,),
+                    ).fetchone()
+                    if account["provider_key"] != "cloudflare" or not linked:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_cloudflare_dns_account_link")
+                secret = str(body.get("api_key") or body.get("api_token") or "").strip()
+                encrypted_secret = account["encrypted_secret"]
+                secret_label = account["secret_label"]
+                if account["provider_key"] == "cloudflare" and linked_dns_account_id:
+                    linked = conn.execute("SELECT encrypted_secret FROM dns_provider_credentials WHERE provider_account_id = ?", (linked_dns_account_id,)).fetchone()
+                    if not linked or not linked["encrypted_secret"]:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_dns_account_credentials_missing")
+                    encrypted_secret = ""
+                    secret_label = ""
+                elif secret:
+                    encrypted_secret = encrypt_secret(secret, CONFIG.jwt_secret)
+                    secret_label = "..." + secret[-4:]
+                conn.execute(
+                    """UPDATE registrar_accounts
+                       SET label = ?, account_identifier = ?, settings_json = ?, encrypted_secret = ?, secret_label = ?,
+                           dns_provider_account_id = ?, last_error = '', updated_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (label, identifier, json.dumps(settings, sort_keys=True), encrypted_secret, secret_label, linked_dns_account_id, account_id),
+                )
+                log_audit(conn, "admin", actor["id"], "update_registrar_account", "registrar_account", account_id, metadata={"provider": account["provider_key"], "label": label})
+                return self.json_response({"updated": True, "account_id": account_id})
+            if path.startswith("/api/admin/registrar-accounts/") and method == "DELETE":
+                require_admin_permission(actor, "clients.manage")
+                account_id = int(path.split("/")[-1])
+                account = conn.execute("SELECT * FROM registrar_accounts WHERE id = ?", (account_id,)).fetchone()
+                if not account:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "registrar_account_not_found")
+                delete_records = str((query.get("delete_records") or ["false"])[0]).lower() in {"1", "true", "yes", "on"}
+                if delete_records:
+                    conn.execute("UPDATE domains SET registrar_account_id = NULL, registrar_provider_id = NULL WHERE registrar_account_id = ?", (account_id,))
+                    conn.execute("DELETE FROM registrar_domain_records WHERE registrar_account_id = ?", (account_id,))
+                    conn.execute("DELETE FROM registrar_accounts WHERE id = ?", (account_id,))
+                    action = "delete_registrar_account_and_records"
+                else:
+                    # Keep the locally imported inventory, but remove all
+                    # credentials and hide the account from active cards.
+                    conn.execute(
+                        """UPDATE registrar_accounts
+                           SET label = ?, account_identifier = '', encrypted_secret = '', secret_label = '',
+                               status = 'deleted', last_error = 'Registrar account deleted; local records retained',
+                               updated_at = CURRENT_TIMESTAMP
+                           WHERE id = ?""",
+                        ("Deleted · " + str(account["label"]), account_id),
+                    )
+                    action = "delete_registrar_account_keep_records"
+                log_audit(conn, "admin", actor["id"], action, "registrar_account", account_id)
+                return self.json_response({"deleted": True, "records_deleted": delete_records})
+            if path.startswith("/api/admin/registrar-accounts/") and path.endswith("/sync") and method == "POST":
+                account_id = int(path.split("/")[-2])
+                account = conn.execute("SELECT ra.*, rp.key AS provider_key FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id WHERE ra.id = ?", (account_id,)).fetchone()
+                if not account:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "registrar_account_not_found")
+                # Provider-specific inventory implementations can be added
+                # independently; this endpoint always records the attempted
+                # sync locally and returns a useful status to the control panel.
+                try:
+                    adapter = registrar_for(account["provider_key"], registrar_account_settings(conn, account))
+                    result = adapter.list_domains()
+                    provider_result = result if isinstance(result, dict) else {}
+                    inventory = provider_result.get("domains", []) if isinstance(result, dict) else (result or [])
+                    imported = 0
+                    synced_names = set()
+                    for item in inventory:
+                        name = clean_text(item.get("domain") or item.get("domain_name"), "").lower()
+                        if not name:
+                            continue
+                        synced_names.add(name)
+                        local_domain = conn.execute("SELECT id FROM domains WHERE lower(name) = ?", (name,)).fetchone()
+                        conn.execute(
+                            """INSERT INTO registrar_domain_records(registrar_account_id,domain_id,registrar_domain_id,domain_name,status,expiry_at,registered_at,auto_renew,transfer_lock,auth_code_available,nameservers_json,whois_json,metadata_json,synced_at)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                               ON CONFLICT(registrar_account_id,domain_name) DO UPDATE SET registrar_domain_id=excluded.registrar_domain_id,status=excluded.status,expiry_at=excluded.expiry_at,registered_at=excluded.registered_at,auto_renew=excluded.auto_renew,transfer_lock=excluded.transfer_lock,auth_code_available=excluded.auth_code_available,nameservers_json=excluded.nameservers_json,whois_json=excluded.whois_json,metadata_json=excluded.metadata_json,synced_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP""",
+                            (account_id, local_domain["id"] if local_domain else None, str(item.get("id") or ""), name, str(item.get("status") or "active"), item.get("expiry_at"), item.get("registered_at"), int(bool(item.get("auto_renew"))), int(bool(item.get("transfer_lock"))), int(bool(item.get("auth_code_available"))), json.dumps(item.get("nameservers") or []), json.dumps(item.get("whois") or {}), json.dumps(item, sort_keys=True)),
+                        )
+                        imported += 1
+                    if account["provider_key"] == "cloudflare":
+                        if synced_names:
+                            placeholders = ",".join("?" for _ in synced_names)
+                            conn.execute("DELETE FROM registrar_domain_records WHERE registrar_account_id = ? AND domain_name NOT IN (" + placeholders + ")", [account_id, *sorted(synced_names)])
+                        else:
+                            conn.execute("DELETE FROM registrar_domain_records WHERE registrar_account_id = ?", (account_id,))
+                    balances = provider_result.get("balances") if isinstance(provider_result.get("balances"), list) else []
+                    conn.execute("UPDATE registrar_accounts SET balance = ?, currency = ?, balances_json = ?, last_sync_at = CURRENT_TIMESTAMP, last_error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (provider_result.get("balance"), provider_result.get("currency", ""), json.dumps(balances, sort_keys=True), account_id))
+                    return self.json_response({"synced": True, "imported": imported, "result": provider_result})
+                except (RegistrarError, AttributeError) as exc:
+                    conn.execute("UPDATE registrar_accounts SET last_sync_at = CURRENT_TIMESTAMP, last_error = ? WHERE id = ?", (str(exc)[:500], account_id))
+                    raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_sync_failed: " + str(exc)[:180])
+            if path.startswith("/api/admin/registrar-domain-records/") and path.endswith("/manage") and method == "POST":
+                record_id = int(path.split("/")[-2])
+                record = conn.execute("SELECT * FROM registrar_domain_records WHERE id = ?", (record_id,)).fetchone()
+                if not record:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "registrar_domain_not_found")
+                body = self.read_json()
+                client_user_id = optional_positive_int(body.get("user_id"))
+                if client_user_id and not conn.execute("SELECT id FROM users WHERE id = ? AND status = 'active'", (client_user_id,)).fetchone():
+                    raise ApiError(HTTPStatus.NOT_FOUND, "assigned_client_not_found")
+                nameservers = [str(value).strip().rstrip(".").lower() for value in (body.get("nameservers") or []) if str(value).strip()]
+                if len(nameservers) > 4:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "too_many_nameservers")
+                conn.execute("UPDATE registrar_domain_records SET client_user_id = ?, domain_id = NULL, nameservers_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (client_user_id, json.dumps(nameservers), record_id))
+                return self.json_response({"updated": True, "record_id": record_id})
+            if path == "/api/admin/registrar-domain-records/bulk-manage" and method == "POST":
+                body = self.read_json()
+                ids = [optional_positive_int(value) for value in (body.get("ids") or [])]
+                ids = [value for value in ids if value]
+                if not ids:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "registrar_domain_ids_required")
+                action = str(body.get("action") or "").lower()
+                placeholders = ",".join("?" for _ in ids)
+                if action == "assign":
+                    client_user_id = optional_positive_int(body.get("user_id"))
+                    if not client_user_id or not conn.execute("SELECT id FROM users WHERE id = ? AND status = 'active'", (client_user_id,)).fetchone():
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "active_client_required")
+                    conn.execute("UPDATE registrar_domain_records SET client_user_id = ?, domain_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id IN (" + placeholders + ")", [client_user_id, *ids])
+                elif action == "unassign":
+                    conn.execute("UPDATE registrar_domain_records SET client_user_id = NULL, domain_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id IN (" + placeholders + ")", ids)
+                elif action == "delete_local":
+                    conn.execute("DELETE FROM registrar_domain_records WHERE id IN (" + placeholders + ")", ids)
+                else:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "unsupported_registrar_bulk_action")
+                return self.json_response({"updated": True, "count": len(ids), "action": action})
             if path == "/api/admin/domains" and method == "POST":
                 body = self.read_json()
                 user_id = optional_positive_int(body.get("user_id"))
@@ -7597,7 +7923,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "active",
                     ),
                 )
-                website_mail_host = "mail-{}.localhost".format(username) if CONFIG.public_host == "127.0.0.1" else "mail.{}.{}".format(username, CONFIG.public_host)
+                website_mail_host = mail_dns_target_for_account(username)
                 seed_website_dns_records(conn, domain_id, domain, website_mail_host, dkim_material)
                 job_id = enqueue_agent_job(conn, "provision_hosting_account", "hosting_account", account_id, {"admin_create": True})
                 log_audit(conn, "admin", actor["id"], "create_hosting_account", "hosting_account", account_id, metadata={"user_id": user_id, "plan_id": plan_id})
@@ -7754,6 +8080,167 @@ def registrar_settings(conn, provider):
         settings["api_key"] = decrypt_secret(credential["encrypted_secret"], CONFIG.jwt_secret)
         settings["api_token"] = settings["api_key"]
     return settings
+
+
+def registrar_account_settings(conn, account):
+    """Build adapter settings for a first-class registrar account."""
+    settings = parse_json_field(account["settings_json"], {}) if "settings_json" in account.keys() else {}
+    encrypted_secret = account["encrypted_secret"]
+    if account["dns_provider_account_id"]:
+        linked = conn.execute(
+            "SELECT c.encrypted_secret, a.external_account_id FROM dns_provider_credentials c JOIN dns_provider_accounts a ON a.id = c.provider_account_id JOIN dns_providers p ON p.id = a.provider_id WHERE a.id = ? AND p.key = 'cloudflare'",
+            (account["dns_provider_account_id"],),
+        ).fetchone()
+        encrypted_secret = linked["encrypted_secret"] if linked else ""
+        if linked and linked["external_account_id"]:
+            settings["cloudflare_account_id"] = linked["external_account_id"]
+    if encrypted_secret:
+        secret = decrypt_secret(encrypted_secret, CONFIG.jwt_secret)
+        settings["api_key"] = secret
+        settings["api_token"] = secret
+    if account["account_identifier"]:
+        settings.setdefault("reseller_id", account["account_identifier"])
+        settings.setdefault("username", account["account_identifier"])
+    return settings
+
+
+def registrar_account_payload(row):
+    item = row_to_dict(row)
+    item["settings"] = parse_json_field(item.pop("settings_json", "{}"), {})
+    item.pop("encrypted_secret", None)
+    item["secret_configured"] = bool(item.pop("secret_label", ""))
+    item["balance"] = float(item["balance"]) if item.get("balance") is not None else None
+    balances = parse_json_field(item.pop("balances_json", "[]"), [])
+    item["balances"] = [
+        {"balance": float(entry.get("balance")), "currency": str(entry.get("currency") or "")}
+        for entry in balances
+        if isinstance(entry, dict) and entry.get("balance") not in (None, "")
+    ]
+    return item
+
+
+def registrar_dashboard_payload(conn, query=None):
+    query = query or {}
+    search = str((query.get("search") or [""])[0]).strip().lower()
+    provider_filter = str((query.get("provider") or [""])[0]).strip().lower()
+    sort = str((query.get("sort") or ["expiry"])[0]).strip().lower()
+    direction = str((query.get("direction") or ["asc"])[0]).strip().lower()
+    accounts_rows = conn.execute(
+        """
+        SELECT ra.*, rp.key AS provider_key, rp.display_name AS provider_name,
+               da.display_name AS linked_dns_account_name
+        FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id
+        LEFT JOIN dns_provider_accounts da ON da.id = ra.dns_provider_account_id
+        WHERE ra.status != 'deleted'
+        ORDER BY rp.display_name, ra.label
+        """
+    ).fetchall()
+    accounts = [registrar_account_payload(row) for row in accounts_rows]
+    for item, row in zip(accounts, accounts_rows):
+        item["provider_key"] = row["provider_key"]
+        item["provider_name"] = row["provider_name"]
+
+    domain_rows = conn.execute(
+        """
+        SELECT r.*, ra.label AS account_label, ra.account_identifier,
+               rp.key AS provider_key, rp.display_name AS provider_name,
+               d.id AS local_domain_id, d.registrar_status AS local_status,
+               u.email AS owner_email, ha.username,
+               cu.id AS client_user_id, cu.email AS client_email, cu.full_name AS client_name
+        FROM registrar_domain_records r
+        JOIN registrar_accounts ra ON ra.id = r.registrar_account_id
+        JOIN registrar_providers rp ON rp.id = ra.provider_id
+        LEFT JOIN domains d ON d.id = r.domain_id
+        LEFT JOIN hosting_accounts ha ON ha.id = d.account_id
+        LEFT JOIN users u ON u.id = ha.user_id
+        LEFT JOIN users cu ON cu.id = r.client_user_id
+        ORDER BY r.domain_name COLLATE NOCASE
+        """
+    ).fetchall()
+    seen = set()
+    domains = []
+    for row in domain_rows:
+        item = row_to_dict(row)
+        item["nameservers"] = parse_json_field(item.pop("nameservers_json", "[]"), [])
+        item["whois"] = parse_json_field(item.pop("whois_json", "{}"), {})
+        item["metadata"] = parse_json_field(item.pop("metadata_json", "{}"), {})
+        item["auto_renew"] = bool(item.get("auto_renew"))
+        item["transfer_lock"] = bool(item.get("transfer_lock"))
+        item["auth_code_available"] = bool(item.get("auth_code_available"))
+        item["client_user_id"] = item.get("client_user_id")
+        item["owner_email"] = item.get("client_email") or item.get("owner_email")
+        item["client_name"] = item.get("client_name") or ""
+        domains.append(item)
+        seen.add((str(item["domain_name"]).lower(), item["registrar_account_id"]))
+
+    # Domains assigned before the inventory table was introduced remain
+    # visible in the control panel until their registrar is synchronized.
+    legacy_rows = conn.execute(
+        """
+        SELECT d.*, rp.key AS provider_key, rp.display_name AS provider_name,
+               u.email AS owner_email, ha.username
+        FROM domains d JOIN registrar_providers rp ON rp.id = d.registrar_provider_id
+        JOIN hosting_accounts ha ON ha.id = d.account_id JOIN users u ON u.id = ha.user_id
+        WHERE d.registrar_provider_id IS NOT NULL
+        """
+    ).fetchall()
+    for row in legacy_rows:
+        key = (str(row["name"]).lower(), row["registrar_account_id"] if "registrar_account_id" in row.keys() else None)
+        if any(str(item["domain_name"]).lower() == str(row["name"]).lower() for item in domains):
+            continue
+        domains.append({
+            "id": None, "domain_name": row["name"], "provider_key": row["provider_key"],
+            "provider_name": row["provider_name"], "account_label": "Unassigned legacy account",
+            "status": row["registrar_status"], "local_domain_id": row["id"],
+            "owner_email": row["owner_email"], "username": row["username"],
+            "expiry_at": None, "registered_at": row["created_at"], "auto_renew": False,
+            "transfer_lock": False, "auth_code_available": False, "nameservers": parse_json_field(row["nameservers_json"], []),
+            "synced_at": row["last_registrar_sync_at"],
+        })
+
+    if provider_filter:
+        domains = [item for item in domains if str(item.get("provider_key", "")).lower() == provider_filter]
+    if search:
+        domains = [item for item in domains if search in str(item.get("domain_name", "")).lower() or search in str(item.get("owner_email", "")).lower() or search in str(item.get("account_label", "")).lower()]
+    reverse = direction == "desc"
+    if sort == "domain":
+        domains.sort(key=lambda item: str(item.get("domain_name", "")).lower(), reverse=reverse)
+    elif sort == "provider":
+        domains.sort(key=lambda item: (str(item.get("provider_name", "")).lower(), str(item.get("domain_name", "")).lower()), reverse=reverse)
+    else:
+        domains.sort(key=lambda item: (item.get("expiry_at") or "9999-12-31", str(item.get("domain_name", "")).lower()), reverse=reverse)
+
+    today = datetime.now(timezone.utc).date()
+    expiring = 0
+    for item in domains:
+        try:
+            expiry = datetime.fromisoformat(str(item.get("expiry_at")).replace("Z", "+00:00")).date()
+            item["days_to_expiry"] = (expiry - today).days
+            if 0 <= item["days_to_expiry"] <= 30:
+                expiring += 1
+        except (TypeError, ValueError):
+            item["days_to_expiry"] = None
+    # Balances are not additive across currencies. Keep each currency as an
+    # independent total instead of presenting a misleading grand total.
+    balance_totals = {}
+    for account in accounts:
+        account_balances = account.get("balances") or []
+        if not account_balances and account.get("balance") is not None:
+            account_balances = [{"balance": account["balance"], "currency": account.get("currency") or "Unknown"}]
+        for balance in account_balances:
+            currency = str(balance.get("currency") or "Unknown").upper()
+            try:
+                amount = float(balance.get("balance"))
+            except (TypeError, ValueError):
+                continue
+            balance_totals[currency] = round(balance_totals.get(currency, 0) + amount, 2)
+    balances = [{"currency": currency, "balance": amount} for currency, amount in sorted(balance_totals.items())]
+    return {
+        "stats": {"managed_domains": len(domains), "expiring_30_days": expiring, "registrar_accounts": len(accounts), "configured_providers": sum(1 for item in accounts if item["secret_configured"]), "balances": balances, "total_balance": None},
+        "accounts": accounts,
+        "domains": domains,
+        "providers": [row_to_dict(row) for row in conn.execute("SELECT id,key,display_name,status FROM registrar_providers ORDER BY display_name").fetchall()],
+    }
 
 
 def default_registrar_nameservers(conn):
@@ -8439,6 +8926,11 @@ def import_remote_cloudflare_records(conn, domain_id, domain, remote_records):
         if rec_type == "SRV" and data:
             val = "{} {} {}".format(data.get("weight", 0), data.get("port", 0), str(data.get("target") or "").rstrip("."))
             priority = data.get("priority", priority)
+        elif rec_type == "TXT" and len(str(val)) >= 2 and str(val).startswith('"') and str(val).endswith('"'):
+            # Cloudflare may return a single TXT chunk with presentation
+            # quotes. Store the logical TXT value used by the panel; the
+            # provider adapter adds the required wire-format quoting later.
+            val = str(val)[1:-1].replace('\\"', '"').replace('\\\\', '\\')
         proxied = 1 if record.get("proxied") else 0
         cf_id = record.get("id")
         metadata = json.dumps({"cloudflare_id": cf_id}) if cf_id else None
@@ -10526,6 +11018,13 @@ def shared_mail_edge_host():
     return f"mail.{CONFIG.public_host}"
 
 
+def mail_dns_target_for_account(username):
+    """Return the public MX target; development keeps its local hostname."""
+    if CONFIG.public_host == "127.0.0.1":
+        return f"mail-{username}.localhost"
+    return shared_mail_edge_host()
+
+
 def shared_mail_edge_url():
     return f"http://{shared_mail_edge_host()}"
 
@@ -11313,7 +11812,7 @@ def create_initial_hosting_account(conn, user_id, request_headers=None):
         "SELECT id FROM mail_domains WHERE account_id = ? AND domain_id = ?",
         (account_id, domain_id),
     ).fetchone()["id"]
-    mail_host = "mail-{}.localhost".format(username) if CONFIG.public_host == "127.0.0.1" else "mail.{}.{}".format(username, CONFIG.public_host)
+    mail_host = mail_dns_target_for_account(username)
     dkim_material = seed_website_dns_records(conn, domain_id, domain, mail_host)
     conn.execute(
         """

@@ -1604,7 +1604,55 @@ def ensure_registrar_schema(conn):
         )
         """
     )
-    for key, label in (("resellerclub", "ResellerClub / PDR"), ("domainnameapi", "DomainNameAPI"), ("cloudflare", "Cloudflare")):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS registrar_accounts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          provider_id INTEGER NOT NULL REFERENCES registrar_providers(id),
+          label TEXT NOT NULL,
+          account_identifier TEXT NOT NULL DEFAULT '',
+          settings_json TEXT NOT NULL DEFAULT '{}',
+          encrypted_secret TEXT NOT NULL DEFAULT '',
+          secret_label TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active',
+          balance REAL,
+          currency TEXT NOT NULL DEFAULT '',
+          balances_json TEXT NOT NULL DEFAULT '[]',
+          dns_provider_account_id INTEGER,
+          last_sync_at TEXT,
+          last_error TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(provider_id, label)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS registrar_domain_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          registrar_account_id INTEGER NOT NULL REFERENCES registrar_accounts(id),
+          client_user_id INTEGER REFERENCES users(id),
+          domain_id INTEGER REFERENCES domains(id),
+          registrar_domain_id TEXT NOT NULL DEFAULT '',
+          domain_name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'unknown',
+          expiry_at TEXT,
+          registered_at TEXT,
+          auto_renew INTEGER NOT NULL DEFAULT 0,
+          transfer_lock INTEGER NOT NULL DEFAULT 0,
+          auth_code_available INTEGER NOT NULL DEFAULT 0,
+          nameservers_json TEXT NOT NULL DEFAULT '[]',
+          whois_json TEXT NOT NULL DEFAULT '{}',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          synced_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(registrar_account_id, domain_name)
+        )
+        """
+    )
+    for key, label in (("resellerclub", "ResellerClub"), ("pdr", "PDR / ResellerClub"), ("domainnameapi", "DomainNameAPI"), ("namecheap", "Namecheap"), ("cloudflare", "Cloudflare")):
         conn.execute("INSERT OR IGNORE INTO registrar_providers(key, display_name) VALUES (?, ?)", (key, label))
     ensure_table_columns(conn, "domains", {
         "registrar_provider_id": "INTEGER",
@@ -1614,7 +1662,38 @@ def ensure_registrar_schema(conn):
         "nameserver_source": "TEXT NOT NULL DEFAULT 'default'",
         "custom_nameservers_json": "TEXT NOT NULL DEFAULT '[]'",
         "last_registrar_sync_at": "TEXT",
+        "registrar_account_id": "INTEGER",
     })
+    ensure_table_columns(conn, "registrar_accounts", {
+        "dns_provider_account_id": "INTEGER",
+        "balances_json": "TEXT NOT NULL DEFAULT '[]'",
+    })
+    ensure_table_columns(conn, "registrar_domain_records", {
+        "client_user_id": "INTEGER",
+    })
+    # Migrate the previous account/domain-level association to the owning
+    # client user. Registrar inventory is now assigned directly to users.
+    conn.execute(
+        """UPDATE registrar_domain_records
+           SET client_user_id = (
+             SELECT ha.user_id FROM domains d JOIN hosting_accounts ha ON ha.id = d.account_id
+             WHERE d.id = registrar_domain_records.domain_id
+           )
+           WHERE client_user_id IS NULL AND domain_id IS NOT NULL"""
+    )
+    # Preserve the existing one-credential-per-provider setup by creating a
+    # first-class account for it when the application is upgraded.
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO registrar_accounts
+          (provider_id, label, account_identifier, settings_json, encrypted_secret, secret_label, status)
+        SELECT p.id, p.display_name, json_extract(p.settings_json, '$.reseller_id'),
+               p.settings_json, COALESCE(c.encrypted_secret, ''), COALESCE(c.secret_label, ''), p.status
+        FROM registrar_providers p
+        LEFT JOIN registrar_credentials c ON c.provider_id = p.id
+        WHERE c.id IS NOT NULL OR json_extract(p.settings_json, '$.reseller_id') IS NOT NULL
+        """
+    )
 
 
 def ensure_reseller_schema(conn):

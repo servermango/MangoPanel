@@ -37,6 +37,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_remote_url="${REPO_REMOTE_URL:-https://github.com/servermango/MangoPanel.git}"
 venv_dir="${VENV_DIR:-$repo_root/.venv}"
 target_user="${SUDO_USER:-$USER}"
+public_host="${MP_PUBLIC_HOST:-seeds.servermango.com}"
 needs_new_login=false
 
 say() {
@@ -341,17 +342,21 @@ install_system_service() {
 [Unit]
 Description=MangoPanel
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=simple
 WorkingDirectory=$repo_root
 Environment=MP_ENV=production
 Environment=MP_HOST=0.0.0.0
+Environment=MP_PUBLIC_HOST=$public_host
 Environment=MP_CLIENT_PORT=8000
 Environment=MP_ADMIN_PORT=8001
 ExecStart=$python_exec -m mangopanel.app
-Restart=on-failure
+Restart=always
 RestartSec=5
+TimeoutStopSec=30
 KillSignal=SIGTERM
 
 [Install]
@@ -360,6 +365,7 @@ EOF
 
       run_sudo systemctl daemon-reload
       run_sudo systemctl enable --now "${service_name}.service"
+      run_sudo systemctl is-active --quiet "${service_name}.service" || die "${service_name}.service was installed but did not remain active. Check: systemctl status ${service_name}.service"
       ;;
     macos)
       mkdir -p "${HOME}/Library/LaunchAgents"

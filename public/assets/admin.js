@@ -74,6 +74,18 @@ createApp({
       dnsDomains: [],
       registrars: [],
       registrarForm: { key: "resellerclub", reseller_id: "", api_base: "", api_key: "", api_token: "" },
+      registrarDashboard: { stats: { managed_domains: 0, expiring_30_days: 0, registrar_accounts: 0, configured_providers: 0, balances: [], total_balance: null }, accounts: [], domains: [], providers: [] },
+      registrarSearch: "",
+      registrarProviderFilter: "",
+      registrarSort: "expiry",
+      registrarDirection: "asc",
+      showRegistrarAccountModal: false,
+      registrarAccountForm: { provider_key: "resellerclub", label: "", account_identifier: "", api_base: "", client_ip: "", api_key: "", api_token: "", dns_provider_account_id: "" },
+      registrarAccountEditModal: { open: false, account: null, form: {}, saving: false },
+      registrarSyncing: {},
+      selectedRegistrarDomains: [],
+      registrarAssignModal: { open: false, ids: [], search: "", user_id: "", saving: false },
+      registrarManageModal: { open: false, record: null, user_id: "", nameservers: ["", ""], saving: false },
       domainForm: { user_id: "", account_id: "", domain: "", registrar_provider_id: "", register: false, nameservers: ["", ""] },
       dnsSettings: { global_mode: "local_powerdns", local: { nameservers: ["ns1.mango.test", "ns2.mango.test"], public_ipv4: "127.0.0.1", public_ipv6: "", soa_email: "hostmaster.mango.test", default_ttl: 300 }, providers: [], accounts: [], health_checks: [] },
       cloudflareAccount: { id: null, display_name: "", account_name: "", external_account_id: "", api_token: "", status: "active" },
@@ -318,6 +330,12 @@ createApp({
     managedClients() {
       if (!this.selectedClientId) return this.clients;
       return this.clients.filter((client) => Number(client.id) === Number(this.selectedClientId));
+    },
+    registrarDomains() {
+      return this.registrarDashboard.domains || [];
+    },
+    allRegistrarDomainsSelected() {
+      return this.registrarDomains.length > 0 && this.registrarDomains.every((item) => this.selectedRegistrarDomains.includes(item.id));
     },
     filteredFilesystems() {
       if (!this.storageDf || !this.storageDf.filesystems) return [];
@@ -1178,6 +1196,7 @@ createApp({
         this.dnsSettings = dnsRes.dns_settings;
         this.dnsDomains = domsRes.domains || [];
         this.registrars = regsRes.registrars || [];
+        await this.loadRegistrarDashboard();
         this.stacks = stacksRes.account_stacks;
         this.jobEvents = jobsRes.job_events;
 
@@ -1374,6 +1393,149 @@ createApp({
     },
     registrarByKey(key) {
       return this.registrars.find((item) => item.key === key) || {};
+    },
+    async loadRegistrarDashboard() {
+      const params = new URLSearchParams();
+      if (this.registrarSearch) params.set("search", this.registrarSearch);
+      if (this.registrarProviderFilter) params.set("provider", this.registrarProviderFilter);
+      params.set("sort", this.registrarSort);
+      params.set("direction", this.registrarDirection);
+      try {
+        this.registrarDashboard = await this.api(`/api/admin/registrar-dashboard?${params.toString()}`);
+      } catch (error) { this.message = error.message; }
+    },
+    openRegistrarAccountModal() {
+      this.registrarAccountForm = { provider_key: "resellerclub", label: "", account_identifier: "", api_base: "", client_ip: "", api_key: "", api_token: "", dns_provider_account_id: "" };
+      this.showRegistrarAccountModal = true;
+    },
+    openRegistrarAccountDetails(account) {
+      const settings = account.settings || {};
+      this.registrarAccountEditModal = {
+        open: true,
+        account,
+        saving: false,
+        form: {
+          label: account.label || "",
+          account_identifier: account.account_identifier || "",
+          api_base: settings.api_base || "",
+          client_ip: settings.client_ip || "",
+          api_key: "",
+          dns_provider_account_id: account.dns_provider_account_id || "",
+        },
+      };
+    },
+    async saveRegistrarAccountDetails() {
+      const modal = this.registrarAccountEditModal;
+      if (!modal.account) return;
+      modal.saving = true;
+      try {
+        const form = modal.form;
+        const result = await this.api(`/api/admin/registrar-accounts/${modal.account.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            label: form.label,
+            account_identifier: form.account_identifier,
+            settings: { api_base: form.api_base, client_ip: form.client_ip },
+            api_key: form.api_key,
+            dns_provider_account_id: form.dns_provider_account_id || null,
+          }),
+        });
+        modal.open = false;
+        this.message = result.updated ? "Registrar account settings updated" : "Registrar account settings saved";
+        await this.loadRegistrarDashboard();
+      } catch (error) { this.message = error.message; }
+      finally { modal.saving = false; }
+    },
+    async saveRegistrarAccount() {
+      try {
+        const form = this.registrarAccountForm;
+        if (form.provider_key === "namecheap") {
+          if (!form.account_identifier) form.account_identifier = window.prompt("Enter your Namecheap account username. This is used as both ApiUser and UserName:", "") || "";
+          if (!form.client_ip) form.client_ip = window.prompt("Enter the public IPv4 address whitelisted in Namecheap API Access:", "") || "";
+          if (!form.account_identifier || !form.client_ip) throw new Error("Namecheap username and whitelisted server IPv4 are required");
+        }
+        await this.api("/api/admin/registrar-accounts", { method: "POST", body: JSON.stringify({ provider_key: form.provider_key, label: form.label, account_identifier: form.account_identifier, dns_provider_account_id: form.dns_provider_account_id || null, settings: { api_base: form.api_base, client_ip: form.client_ip }, api_key: form.api_key, api_token: form.api_token }) });
+        this.showRegistrarAccountModal = false;
+        this.message = "Registrar account added";
+        await this.loadRegistrarDashboard();
+      } catch (error) { this.message = error.message; }
+    },
+    async syncRegistrarAccount(account) {
+      this.registrarSyncing[account.id] = true;
+      try {
+        const result = await this.api(`/api/admin/registrar-accounts/${account.id}/sync`, { method: "POST", body: "{}" });
+        this.message = `Sync completed: ${result.imported || 0} domain(s) imported`;
+        await this.loadRegistrarDashboard();
+      } catch (error) { this.message = error.message; }
+      finally { this.registrarSyncing[account.id] = false; }
+    },
+    async deleteRegistrarAccount(account) {
+      if (!window.confirm(`Delete registrar account “${account.label}”?`)) return;
+      const deleteRecords = window.confirm("Also delete all locally synchronized domain records? Click OK to delete them; click Cancel to keep them locally.");
+      try {
+        const result = await this.api(`/api/admin/registrar-accounts/${account.id}?delete_records=${deleteRecords ? "true" : "false"}`, { method: "DELETE" });
+        this.message = result.records_deleted ? "Registrar and local records deleted" : "Registrar deleted; local records retained";
+        this.selectedRegistrarDomains = [];
+        await this.loadRegistrarDashboard();
+      } catch (error) { this.message = error.message; }
+    },
+    toggleRegistrarDomainSelection(id) {
+      const index = this.selectedRegistrarDomains.indexOf(id);
+      if (index >= 0) this.selectedRegistrarDomains.splice(index, 1);
+      else this.selectedRegistrarDomains.push(id);
+    },
+    toggleAllRegistrarDomains() {
+      this.selectedRegistrarDomains = this.allRegistrarDomainsSelected ? [] : this.registrarDomains.map((item) => item.id).filter((id) => id != null);
+    },
+    openRegistrarManage(domain) {
+      this.registrarManageModal = { open: true, record: domain, user_id: domain.client_user_id || "", nameservers: [...(domain.nameservers || []), "", ""].slice(0, 2), saving: false };
+    },
+    async saveRegistrarManage() {
+      const modal = this.registrarManageModal;
+      if (!modal.record || modal.record.id === null) return;
+      modal.saving = true;
+      try {
+        await this.api(`/api/admin/registrar-domain-records/${modal.record.id}/manage`, { method: "POST", body: JSON.stringify({ user_id: modal.user_id || null, nameservers: modal.nameservers.filter((item) => String(item || "").trim()) }) });
+        modal.open = false;
+        this.message = "Registrar domain association updated";
+        await this.loadRegistrarDashboard();
+      } catch (error) { this.message = error.message; }
+      finally { modal.saving = false; }
+    },
+    async bulkRegistrarAction(action) {
+      const ids = this.selectedRegistrarDomains.filter((id) => id != null);
+      if (!ids.length) return;
+      const label = action === "delete_local" ? "remove these records from the local inventory" : "unassign these domains from clients";
+      if (!window.confirm(`Are you sure you want to ${label}? This will not delete domains at the registrar.`)) return;
+      try {
+        await this.api("/api/admin/registrar-domain-records/bulk-manage", { method: "POST", body: JSON.stringify({ ids, action }) });
+        this.selectedRegistrarDomains = [];
+        this.message = "Bulk registrar action completed";
+        await this.loadRegistrarDashboard();
+      } catch (error) { this.message = error.message; }
+    },
+    registrarAssignableClients() {
+      const search = String(this.registrarAssignModal.search || "").trim().toLowerCase();
+      return this.clients.filter((client) => !search || [client.email, client.full_name, client.id].some((value) => String(value || "").toLowerCase().includes(search)));
+    },
+    openRegistrarAssignModal() {
+      const ids = this.selectedRegistrarDomains.filter((id) => id != null);
+      if (!ids.length) return;
+      this.registrarAssignModal = { open: true, ids, search: "", user_id: "", saving: false };
+    },
+    async submitRegistrarAssign() {
+      const modal = this.registrarAssignModal;
+      const userId = Number(modal.user_id);
+      if (!Number.isInteger(userId) || userId <= 0) { this.message = "Select a client user first"; return; }
+      modal.saving = true;
+      try {
+        await this.api("/api/admin/registrar-domain-records/bulk-manage", { method: "POST", body: JSON.stringify({ ids: modal.ids, action: "assign", user_id: userId }) });
+        modal.open = false;
+        this.selectedRegistrarDomains = [];
+        this.message = "Selected domains assigned to the client user";
+        await this.loadRegistrarDashboard();
+      } catch (error) { this.message = error.message; }
+      finally { modal.saving = false; }
     },
     async saveRegistrar() {
       try {

@@ -53,7 +53,8 @@ class Config:
         self.agent_mode = os.getenv("MP_AGENT_MODE", "simulate")
         self.agent_inline = os.getenv("MP_AGENT_INLINE", "true").lower() == "true"
         self.account_root = Path(os.getenv("MP_ACCOUNT_ROOT", self.user_files_dir / "accounts"))
-        self.public_host = os.getenv("MP_PUBLIC_HOST", "127.0.0.1")
+        default_public_host = "127.0.0.1" if self.env == "development" else "seeds.servermango.com"
+        self.public_host = os.getenv("MP_PUBLIC_HOST", default_public_host)
         if self.public_host == "0.0.0.0":
             self.public_host = "127.0.0.1"
         self.account_port_base = int(os.getenv("MP_ACCOUNT_PORT_BASE", "18000"))
@@ -507,4 +508,3 @@ FILEBROWSER_CUSTOM_JS = r"""(function () {
   }
 })();
 """
-

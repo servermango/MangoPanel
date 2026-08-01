@@ -446,8 +446,24 @@ def _cloudflare_payload(record, zone_name, proxied=False):
     else:
         payload["content"] = str(record["value"]).rstrip(".") if record_type in {"CNAME", "NS"} else str(record["value"])
     if record_type in {"A", "AAAA", "CNAME"}:
-        payload["proxied"] = True
+        # Preserve the record's Cloudflare routing mode. Imported DNS-only
+        # records must not be silently converted to proxied records (which
+        # Cloudflare rejects for loopback/private targets such as 127.0.0.1).
+        payload["proxied"] = bool(record.get("proxied", proxied))
     return payload
+
+
+def _cloudflare_record_key(record):
+    """Return a stable identity key for Cloudflare records.
+
+    The API omits priority for non-MX records (``None``), while locally
+    built payloads use an empty string. Those must still address the same
+    provider record during reconciliation.
+    """
+    priority = record.get("priority")
+    if priority is None and str(record.get("type", "")).upper() == "SRV":
+        priority = (record.get("data") or {}).get("priority")
+    return f"{record.get('type')}:{record.get('name')}:{'' if priority is None else priority}"
 
 
 def _cloudflare_record_matches(current, desired):
@@ -456,12 +472,26 @@ def _cloudflare_record_matches(current, desired):
         return False
     if str(current.get("name", "")).rstrip(".").lower() != str(desired.get("name", "")).rstrip(".").lower():
         return False
-    if current.get("priority") != desired.get("priority"):
+    if str(current.get("type", "")).upper() != "SRV" and (current.get("priority") if current.get("priority") is not None else "") != (desired.get("priority") if desired.get("priority") is not None else ""):
         return False
-    if desired.get("content") is not None and str(current.get("content", "")) != str(desired.get("content", "")):
+    current_content = str(current.get("content", ""))
+    desired_content = str(desired.get("content", ""))
+    if current.get("type") == "TXT":
+        def logical_txt(value):
+            return value[1:-1] if len(value) >= 2 and value.startswith('"') and value.endswith('"') else value
+        current_content = logical_txt(current_content)
+        desired_content = logical_txt(desired_content)
+    if desired.get("content") is not None and current_content != desired_content:
         return False
-    if desired.get("data") is not None and current.get("data") != desired.get("data"):
-        return False
+    if desired.get("data") is not None:
+        current_data = current.get("data") or {}
+        desired_data = desired.get("data") or {}
+        # Cloudflare omits SRV service/protocol/name fields from the API
+        # response because they are encoded in the record name. Compare the
+        # actual routing tuple instead of requiring those optional fields.
+        for field in ("priority", "weight", "port", "target"):
+            if str(current_data.get(field, "")).rstrip(".").lower() != str(desired_data.get(field, "")).rstrip(".").lower():
+                return False
     if "proxied" in desired and bool(current.get("proxied")) != bool(desired.get("proxied")):
         return False
     return True
@@ -575,13 +605,13 @@ class CloudflareDNSProvider(DNSProvider):
         desired_map = {}
         for record in payload["records"]:
             cf_payload = _cloudflare_payload(record, payload["zone_name"])
-            key = f"{cf_payload['type']}:{cf_payload['name']}:{cf_payload.get('priority', '')}"
+            key = _cloudflare_record_key(cf_payload)
             desired_map[key] = cf_payload
 
         current_records = self._request("GET", f"/zones/{zone_id}/dns_records", query={"per_page": 500}) or []
         current_by_key = {}
         for record in current_records:
-            key = f"{record.get('type')}:{record.get('name')}:{record.get('priority', '')}"
+            key = _cloudflare_record_key(record)
             current_by_key.setdefault(key, []).append(record)
 
         all_managed = dict(managed_records)

@@ -6,7 +6,8 @@ usage() {
 Usage: scripts/service mangopanel {start|stop|restart|status}
 
 Environment overrides:
-  MP_HOST, MP_CLIENT_PORT, MP_ADMIN_PORT, MP_ENV, MP_DEV_AUTH_TEST_MODE
+  MP_HOST, MP_CLIENT_PORT, MP_ADMIN_PORT, MP_ENV, MP_PUBLIC_HOST,
+  MP_DEV_AUTH_TEST_MODE
   MANGOPANEL_PID_FILE, MANGOPANEL_LOG_FILE, MANGOPANEL_PYTHON,
   MANGOPANEL_WORKER_PID_FILE, MANGOPANEL_WORKER_LOG_FILE
 
@@ -36,6 +37,7 @@ admin_port="${MP_ADMIN_PORT:-8001}"
 mp_env="${MP_ENV:-production}"
 dev_auth="${MP_DEV_AUTH_TEST_MODE:-false}"
 agent_mode="${MP_AGENT_MODE:-docker}"
+public_host="${MP_PUBLIC_HOST:-}"
 
 mkdir -p "$(dirname "$pid_file")" "$(dirname "$log_file")" "$(dirname "$worker_pid_file")" "$(dirname "$worker_log_file")"
 
@@ -60,6 +62,7 @@ start_service() {
     MP_AGENT_MODE="$agent_mode" \
     MP_AGENT_INLINE=false \
     MP_HOST="$host" \
+    MP_PUBLIC_HOST="$public_host" \
     MP_CLIENT_PORT="$client_port" \
     MP_ADMIN_PORT="$admin_port" \
     nohup "$python_bin" -m mangopanel.app >>"$log_file" 2>&1 &
