@@ -83,12 +83,25 @@
               <label>Backup location <input v-model="newPlan.backup_location" type="text" placeholder="Singapore"></label>
 
               <h3 class="section-subhead">DNS Policy</h3>
-              <label>DNS provider
-                <select v-model="newPlan.dns_default_provider">
-                  <option value="local_powerdns">Local DNS</option>
-                  <option value="cloudflare">Cloudflare</option>
+              <div class="plan-dns-provider-picker">
+                <span class="form-label">Allowed DNS providers</span>
+                <label v-for="provider in planDnsProviders()" :key="provider.key" class="checkbox-option">
+                  <input type="checkbox" :value="provider.key" v-model="newPlan.dns_allowed_providers" @change="ensurePlanDnsProviderChecked(provider.key)">
+                  <span>{{ provider.display_name }}</span>
+                </label>
+              </div>
+              <label>Default DNS provider
+                <select v-model="newPlan.dns_default_provider" @change="ensurePlanDefaultDnsProvider">
+                  <option v-for="provider in planDnsProviders()" :key="provider.key" :value="provider.key" :disabled="!newPlan.dns_allowed_providers.includes(provider.key)">{{ provider.display_name }}</option>
                 </select>
               </label>
+              <div v-if="newPlan.dns_allowed_providers.includes('cloudflare')" class="plan-dns-provider-picker">
+                <span class="form-label">Allowed Cloudflare accounts</span>
+                <label v-for="acct in cloudflareAccounts()" :key="acct.id" class="checkbox-option">
+                  <input type="checkbox" :value="acct.id" v-model="newPlan.dns_allowed_provider_account_ids" @change="ensurePlanDefaultAccountAllowed">
+                  <span>{{ acct.display_name }} ({{ acct.account_name || acct.external_account_id || 'no ID' }})</span>
+                </label>
+              </div>
               <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
               <label>Minimum TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
               

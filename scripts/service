@@ -66,14 +66,9 @@ start_service() {
     echo $! >"$pid_file"
   )
 
-  (
-    cd "$repo_root"
-    MP_ENV="$mp_env" \
-    MP_DEV_AUTH_TEST_MODE="$dev_auth" \
-    MP_AGENT_MODE="$agent_mode" \
-    nohup "$python_bin" scripts/dev_agent.py --watch >>"$worker_log_file" 2>&1 &
-    echo $! >"$worker_pid_file"
-  )
+  # mangopanel.app owns the queue worker thread. Starting a second external
+  # dev_agent here creates concurrent SQLite writers and can lock the control
+  # database, taking both HTTP panels down.
 
   sleep 1
   if is_running; then

@@ -89,37 +89,6 @@ CONFIG = load_config()
 
 
 FILEBROWSER_CUSTOM_JS = r"""(function () {
-  (function ensureAuth() {
-    function tryAutoLogin() {
-      try {
-        let jwt = localStorage.getItem('jwt');
-        if (!jwt) {
-          fetch('/files/api/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: '', password: '' })
-          })
-          .then(r => r.text())
-          .then(token => {
-            if (token && token.length > 20) {
-              localStorage.setItem('jwt', token.trim());
-              if (window.location.pathname.includes('/files/login') || window.location.pathname.endsWith('/login')) {
-                window.location.href = '/files/';
-              }
-            }
-          })
-          .catch(() => {});
-        } else if (window.location.pathname.includes('/files/login') || window.location.pathname.endsWith('/login')) {
-          window.location.href = '/files/';
-        }
-      } catch (e) {}
-    }
-    tryAutoLogin();
-    if (window.location.pathname.includes('/files/login') || window.location.pathname.endsWith('/login')) {
-      setInterval(tryAutoLogin, 500);
-    }
-  })();
-
   let activeZipPath = null;
 
   function formatStorageSize(mb) {
@@ -538,5 +507,4 @@ FILEBROWSER_CUSTOM_JS = r"""(function () {
   }
 })();
 """
-
 

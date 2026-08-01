@@ -838,17 +838,12 @@
                 <tbody>
                   <tr v-for="client in managedClients" :key="client.id">
                     <td>
-                      <div class="client-edit">
-                        <input v-model="client.edit.full_name" placeholder="Full name">
-                        <input v-model="client.edit.email" placeholder="client@example.com">
-                      </div>
+                      <strong>{{ client.full_name || client.email }}</strong>
+                      <small>{{ client.email }}</small>
                       <small>#{{ client.id }} · {{ client.created_at }}</small>
                     </td>
                     <td>
-                      <select v-model="client.edit.status">
-                        <option value="active">Active</option>
-                        <option value="suspended">Suspended</option>
-                      </select>
+                      <span class="pill" :class="client.status === 'suspended' ? 'pill-danger' : 'pill-success'">{{ client.status }}</span>
                     </td>
                     <td>
                       <div v-for="account in client.accounts" :key="account.id" class="account-manage-row" style="margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid var(--border-color,#e5e7eb);">
@@ -865,7 +860,9 @@
                             <option v-for="plan in plans" :key="plan.id" :value="plan.id">{{ plan.name }}</option>
                           </select>
                           <button @click="changeAccountPlan(client, account)" :disabled="Number(account.selected_plan_id) === Number(account.plan_id)">Update Plan</button>
-                          <button @click="toggleAccountStatus(client, account)">{{ account.status === "suspended" ? "Unsuspend" : "Suspend" }}</button>
+                          <button @click="openAccountDatabases(client, account)">Databases</button>
+                          <button @click="toggleAccountStatus(client, account)">{{ ['suspended', 'hard_suspended'].includes(account.status) ? "Unsuspend" : "Soft suspend" }}</button>
+                          <button v-if="!['suspended', 'hard_suspended'].includes(account.status)" class="danger-button" @click="hardSuspendAccount(client, account)">Hard suspend</button>
                         </div>
                         <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.35rem; background:var(--bg-subtle,#f9fafb); padding:0.4rem 0.6rem; border-radius:4px;">
                           <label style="font-size:0.8rem; margin:0; font-weight:500;">DNS Provider:
@@ -886,7 +883,7 @@
                       </div>
                     </td>
                     <td class="client-actions">
-                      <button class="primary-button" @click="updateClient(client)">Save</button>
+                      <button class="primary-button" @click="openClientProfile(client)">Edit Profile</button>
                       <button @click="loginAsClient(client)" :disabled="client.status !== 'active'">Login as Client</button>
                       <button class="danger-button" @click="deleteClient(client)">Delete</button>
                     </td>
@@ -2302,21 +2299,33 @@
                   <label>Backend frameworks <input v-model="newPlan.backend_frameworks"></label>
                   <label>Node.js versions <input v-model="newPlan.nodejs_versions"></label>
                   <label>Package managers <input v-model="newPlan.package_managers"></label>
-                  <label>DNS provider
-                    <select v-model="newPlan.dns_default_provider">
-                      <option value="local_powerdns">Local DNS</option>
-                      <option value="cloudflare">Cloudflare</option>
+                  <div class="plan-dns-provider-picker">
+                    <span class="form-label">Allowed DNS providers</span>
+                    <label v-for="provider in planDnsProviders()" :key="provider.key" class="checkbox-option">
+                      <input type="checkbox" :value="provider.key" v-model="newPlan.dns_allowed_providers" @change="ensurePlanDnsProviderChecked(provider.key)">
+                      <span>{{ provider.display_name }}</span>
+                    </label>
+                    <small class="form-help">Customers can switch each domain between the providers selected here.</small>
+                  </div>
+                  <label>Default DNS provider
+                    <select v-model="newPlan.dns_default_provider" @change="ensurePlanDefaultDnsProvider">
+                      <option v-for="provider in planDnsProviders()" :key="provider.key" :value="provider.key" :disabled="!newPlan.dns_allowed_providers.includes(provider.key)">{{ provider.display_name }}</option>
                     </select>
                   </label>
-                  <label v-if="newPlan.dns_default_provider === 'cloudflare'">
-                    Cloudflare account
-                    <select v-model.number="newPlan.dns_default_provider_account_id">
+                  <div v-if="newPlan.dns_allowed_providers.includes('cloudflare')" class="plan-dns-provider-picker">
+                    <span class="form-label">Allowed Cloudflare accounts</span>
+                    <label v-for="acct in cloudflareAccounts()" :key="acct.id" class="checkbox-option">
+                      <input type="checkbox" :value="acct.id" v-model="newPlan.dns_allowed_provider_account_ids" @change="ensurePlanDefaultAccountAllowed">
+                      <span>{{ acct.display_name }} ({{ acct.account_name || acct.external_account_id || 'no ID' }})</span>
+                    </label>
+                    <small v-if="!cloudflareAccounts().length" class="form-help">No Cloudflare accounts configured — add one in DNS Settings first.</small>
+                    <small v-else class="form-help">Leave all unchecked to allow every active Cloudflare account.</small>
+                  </div>
+                  <label v-if="newPlan.dns_default_provider === 'cloudflare'">Default Cloudflare account
+                    <select v-model.number="newPlan.dns_default_provider_account_id" @change="ensurePlanDefaultAccountAllowed">
                       <option value="">— select account —</option>
-                      <option v-for="acct in cloudflareAccounts()" :key="acct.id" :value="acct.id">
-                        {{ acct.display_name }} ({{ acct.account_name || acct.external_account_id || 'no ID' }})
-                      </option>
+                      <option v-for="acct in planCloudflareAccounts()" :key="acct.id" :value="acct.id">{{ acct.display_name }} ({{ acct.account_name || acct.external_account_id || 'no ID' }})</option>
                     </select>
-                    <small v-if="!cloudflareAccounts().length" style="color:var(--color-warning,#f59e0b)">No Cloudflare accounts configured — add one in DNS Settings first.</small>
                   </label>
                   <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
                   <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
@@ -3149,6 +3158,99 @@
                 <div v-if="newClientSecret" class="secret-box">
                   <span>Client TOTP secret — share securely</span>
                   <strong>{{ newClientSecret }}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-if="clientProfileModal.open" class="modal-overlay" @click.self="closeClientProfile">
+            <div class="modal-panel" style="max-width: 820px; width: 94%; max-height: 92vh; overflow:auto;">
+              <div class="modal-header">
+                <div>
+                  <h2>Client Profile</h2>
+                  <small v-if="clientProfileModal.client">Client #{{ clientProfileModal.client.id }}</small>
+                </div>
+                <button class="close-button" type="button" aria-label="Close profile" @click="closeClientProfile">×</button>
+              </div>
+              <div class="modal-body" v-if="!clientProfileModal.loading">
+                <form class="form-grid" @submit.prevent="saveClientProfile">
+                  <h3 style="grid-column:1/-1; margin:0;">Identity</h3>
+                  <label>Full name<input v-model="clientProfileModal.form.full_name" autocomplete="name" required></label>
+                  <label>Email<input v-model="clientProfileModal.form.email" type="email" autocomplete="email" required></label>
+                  <label>Status<select v-model="clientProfileModal.form.status"><option value="active">Active</option><option value="suspended">Suspended</option></select></label>
+                  <h3 style="grid-column:1/-1; margin:1rem 0 0;">Billing details</h3>
+                  <label>Billing email<input v-model="clientProfileModal.form.billing.billing_email" type="email" autocomplete="email"></label>
+                  <label>Company name<input v-model="clientProfileModal.form.billing.company_name" autocomplete="organization"></label>
+                  <label>Phone<input v-model="clientProfileModal.form.billing.phone" autocomplete="tel"></label>
+                  <label>Tax/VAT ID<input v-model="clientProfileModal.form.billing.tax_id"></label>
+                  <label>Address line 1<input v-model="clientProfileModal.form.billing.address_line1" autocomplete="address-line1"></label>
+                  <label>Address line 2<input v-model="clientProfileModal.form.billing.address_line2" autocomplete="address-line2"></label>
+                  <label>City<input v-model="clientProfileModal.form.billing.city" autocomplete="address-level2"></label>
+                  <label>State/Province<input v-model="clientProfileModal.form.billing.state" autocomplete="address-level1"></label>
+                  <label>Postal code<input v-model="clientProfileModal.form.billing.postal_code" autocomplete="postal-code"></label>
+                  <label>Country<input v-model="clientProfileModal.form.billing.country" autocomplete="country-name"></label>
+                  <h3 style="grid-column:1/-1; margin:1rem 0 0;">Admin authorization</h3>
+                  <p style="grid-column:1/-1; margin:0;" class="muted">Sensitive changes require your admin password and, when enabled, your current authenticator code.</p>
+                  <label>Admin password<input v-model="clientProfileModal.admin_password" type="password" autocomplete="current-password"></label>
+                  <label>Admin 2FA code<input v-model="clientProfileModal.admin_totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
+                  <div class="modal-footer" style="grid-column:1/-1;">
+                    <button type="button" @click="closeClientProfile">Cancel</button>
+                    <button class="primary-button" type="submit" :disabled="clientProfileModal.saving">{{ clientProfileModal.saving ? 'Saving…' : 'Save Profile' }}</button>
+                  </div>
+                </form>
+                <div style="border-top:1px solid var(--line); margin-top:1.5rem; padding-top:1.5rem;">
+                  <h3>Access security</h3>
+                  <div class="form-grid">
+                    <label>New client password<input v-model="clientProfileModal.new_password" type="password" autocomplete="new-password"></label>
+                    <label>Confirm new password<input v-model="clientProfileModal.confirm_password" type="password" autocomplete="new-password"></label>
+                    <button @click="resetClientPassword">Reset Client Password</button>
+                    <div>
+                      <strong>2FA: {{ clientProfileModal.form.has_2fa ? 'Enabled' : 'Disabled' }}</strong>
+                      <div style="display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.5rem;">
+                        <button @click="changeClient2FA('rotate')">Rotate 2FA</button>
+                        <button v-if="clientProfileModal.form.has_2fa" class="danger-button" @click="changeClient2FA('disable')">Disable 2FA</button>
+                        <button v-else @click="changeClient2FA('enable')">Enable 2FA</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-if="clientProfileModal.totp_secret" class="secret-box" style="margin-top:1rem;">
+                    <span>New client TOTP secret — share through a secure channel</span>
+                    <strong>{{ clientProfileModal.totp_secret }}</strong>
+                    <small style="word-break:break-all;">{{ clientProfileModal.totp_uri }}</small>
+                  </div>
+                </div>
+              </div>
+              <div class="modal-body" v-else>Loading profile…</div>
+            </div>
+          </div>
+          <div v-if="accountDatabasesModal.open" class="modal-overlay" @click.self="closeAccountDatabases">
+            <div class="modal-panel" style="max-width: 820px; width: 94%; max-height: 88vh; overflow:auto;">
+              <div class="modal-header">
+                <div>
+                  <h2>Account Databases</h2>
+                  <small v-if="accountDatabasesModal.account">
+                    {{ accountDatabasesModal.account.username }} · {{ accountDatabasesModal.account.client_email }}
+                  </small>
+                </div>
+                <button class="close-button" type="button" aria-label="Close databases" @click="closeAccountDatabases">×</button>
+              </div>
+              <div class="modal-body">
+                <p v-if="accountDatabasesModal.loading" class="muted">Loading databases…</p>
+                <div v-else-if="!accountDatabasesModal.databases.length" class="muted">No databases are registered for this hosting account.</div>
+                <div v-else class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Name</th><th>User</th><th>Status</th><th>Created by</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="database in accountDatabasesModal.databases" :key="database.id">
+                        <td><strong>{{ database.name }}</strong><small>#{{ database.id }}</small></td>
+                        <td>{{ database.username }}</td>
+                        <td><span class="pill">{{ database.status }}</span></td>
+                        <td>{{ database.created_by_name || database.created_by_email || 'System / legacy' }}</td>
+                        <td><button class="danger-button" @click="deleteAdminDatabase(database)" :disabled="accountDatabasesModal.deleting">Delete</button></td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>

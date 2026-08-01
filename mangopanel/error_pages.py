@@ -232,6 +232,13 @@ def generate_error_page_html(code: int, title: str, description: str, suggestion
 
 
 DEFAULT_ERROR_PAGES = {
+    "suspended": generate_error_page_html(
+        code=503,
+        title="Account Temporarily Unavailable",
+        description="This hosting account is temporarily unavailable while it is suspended.",
+        suggestion="Please contact the hosting provider or account administrator if you believe this is unexpected.",
+        icon="🛠️"
+    ),
     "403": generate_error_page_html(
         code=403,
         title="Access Forbidden",

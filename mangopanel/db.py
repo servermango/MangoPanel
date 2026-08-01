@@ -27,6 +27,22 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS user_profiles (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  billing_email TEXT NOT NULL DEFAULT '',
+  company_name TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  tax_id TEXT NOT NULL DEFAULT '',
+  address_line1 TEXT NOT NULL DEFAULT '',
+  address_line2 TEXT NOT NULL DEFAULT '',
+  city TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
+  postal_code TEXT NOT NULL DEFAULT '',
+  country TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS admins (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT NOT NULL UNIQUE,
@@ -175,6 +191,7 @@ CREATE TABLE IF NOT EXISTS websites (
   php_version TEXT NOT NULL DEFAULT '8.3',
   ssl_status TEXT NOT NULL DEFAULT 'missing',
   status TEXT NOT NULL DEFAULT 'active',
+  created_by_user_id INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -298,6 +315,7 @@ CREATE TABLE IF NOT EXISTS databases (
   username TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
   size_mb INTEGER NOT NULL DEFAULT 0,
+  created_by_user_id INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -799,6 +817,25 @@ def init_db(db_path):
 def ensure_schema(conn):
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS user_profiles (
+          user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          billing_email TEXT NOT NULL DEFAULT '',
+          company_name TEXT NOT NULL DEFAULT '',
+          phone TEXT NOT NULL DEFAULT '',
+          tax_id TEXT NOT NULL DEFAULT '',
+          address_line1 TEXT NOT NULL DEFAULT '',
+          address_line2 TEXT NOT NULL DEFAULT '',
+          city TEXT NOT NULL DEFAULT '',
+          state TEXT NOT NULL DEFAULT '',
+          postal_code TEXT NOT NULL DEFAULT '',
+          country TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS system_settings (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL,
@@ -1057,6 +1094,7 @@ def ensure_schema(conn):
             "package_managers": "TEXT NOT NULL DEFAULT 'npm (default), yarn and pnpm'",
             "dns_default_provider": "TEXT NOT NULL DEFAULT 'local_powerdns'",
             "dns_allowed_providers_json": "TEXT NOT NULL DEFAULT '[\"local_powerdns\"]'",
+            "dns_allowed_provider_accounts_json": "TEXT NOT NULL DEFAULT '[]'",
             "dns_default_provider_account_id": "INTEGER",
             "dns_customer_editable": "INTEGER NOT NULL DEFAULT 1",
             "dns_max_records_per_domain": "INTEGER NOT NULL DEFAULT 100",
@@ -1076,6 +1114,14 @@ def ensure_schema(conn):
             "index_enabled": "INTEGER NOT NULL DEFAULT 0",
             "modsec_enabled": "INTEGER NOT NULL DEFAULT 1",
             "analytics_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "created_by_user_id": "INTEGER REFERENCES users(id)",
+        },
+    )
+    ensure_table_columns(
+        conn,
+        "databases",
+        {
+            "created_by_user_id": "INTEGER REFERENCES users(id)",
         },
     )
     ensure_table_columns(
@@ -2262,4 +2308,3 @@ def set_system_setting(conn, key, value):
         """,
         (key, value),
     )
-

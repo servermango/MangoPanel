@@ -450,6 +450,23 @@ def _cloudflare_payload(record, zone_name, proxied=False):
     return payload
 
 
+def _cloudflare_record_matches(current, desired):
+    """Compare the mutable Cloudflare fields, ignoring the record ID and TTL."""
+    if str(current.get("type", "")).upper() != str(desired.get("type", "")).upper():
+        return False
+    if str(current.get("name", "")).rstrip(".").lower() != str(desired.get("name", "")).rstrip(".").lower():
+        return False
+    if current.get("priority") != desired.get("priority"):
+        return False
+    if desired.get("content") is not None and str(current.get("content", "")) != str(desired.get("content", "")):
+        return False
+    if desired.get("data") is not None and current.get("data") != desired.get("data"):
+        return False
+    if "proxied" in desired and bool(current.get("proxied")) != bool(desired.get("proxied")):
+        return False
+    return True
+
+
 class CloudflareDNSProvider(DNSProvider):
     provider_name = DNS_PROVIDER_CLOUDFLARE
 
@@ -565,21 +582,33 @@ class CloudflareDNSProvider(DNSProvider):
         current_by_key = {}
         for record in current_records:
             key = f"{record.get('type')}:{record.get('name')}:{record.get('priority', '')}"
-            current_by_key[key] = record
+            current_by_key.setdefault(key, []).append(record)
 
         all_managed = dict(managed_records)
-        for key, record in current_by_key.items():
-            if key not in all_managed and record.get("id"):
-                all_managed[key] = record["id"]
+        for key, records_for_key in current_by_key.items():
+            if key not in all_managed and records_for_key and records_for_key[0].get("id"):
+                all_managed[key] = records_for_key[0]["id"]
 
         published = {}
+        used_record_ids = set()
         for key, cf_payload in desired_map.items():
-            existing = current_by_key.get(key)
+            candidates = [item for item in current_by_key.get(key, []) if item.get("id") not in used_record_ids]
+            # Cloudflare permits multiple TXT records with the same name. Do
+            # not update an arbitrary same-name record when the exact desired
+            # value already exists, otherwise Cloudflare returns 81058
+            # ("An identical record already exists").
+            existing = next((item for item in candidates if _cloudflare_record_matches(item, cf_payload)), None)
             if existing:
+                result = existing
+            elif candidates:
+                existing = candidates[0]
                 result = self._request("PUT", f"/zones/{zone_id}/dns_records/{existing['id']}", payload=cf_payload)
             else:
                 result = self._request("POST", f"/zones/{zone_id}/dns_records", payload=cf_payload)
-            published[key] = result.get("id") if isinstance(result, dict) else None
+            record_id = result.get("id") if isinstance(result, dict) else existing.get("id") if existing else None
+            if record_id:
+                used_record_ids.add(record_id)
+            published[key] = record_id
 
         for key, record_id in all_managed.items():
             if key not in desired_map and record_id:

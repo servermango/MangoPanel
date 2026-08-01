@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from mangopanel.error_pages import DEFAULT_ERROR_PAGES, generate_error_page_html
-from mangopanel.stack import ensure_account_layout, render_ols_vhconf
+from mangopanel.stack import ensure_account_layout, render_ols_vhconf, sync_account_suspension_marker
 
 
 class TestErrorPages(unittest.TestCase):
@@ -33,6 +33,12 @@ class TestErrorPages(unittest.TestCase):
                 self.assertTrue(err_file.exists(), f"{code}.html should exist in errors dir")
                 content = err_file.read_text(encoding="utf-8")
                 self.assertIn(f"Error {code}", content)
+            self.assertFalse((Path(tmp) / ".mangopanel-suspended").exists())
+
+            sync_account_suspension_marker(account, True)
+            self.assertTrue((Path(tmp) / ".mangopanel-suspended").is_file())
+            sync_account_suspension_marker(account, False)
+            self.assertFalse((Path(tmp) / ".mangopanel-suspended").exists())
 
     def test_render_ols_vhconf_includes_errorpage_directives(self):
         account = {"id": 10, "username": "u000010", "base_path": "/tmp/u000010"}
@@ -46,6 +52,8 @@ class TestErrorPages(unittest.TestCase):
         self.assertIn("url                     /_mangopanel_errors/404.html", vhconf)
         self.assertIn("context /_mangopanel_errors/", vhconf)
         self.assertIn("location                /usr/local/lsws/mangopanel_errors/", vhconf)
+        self.assertIn(".mangopanel-suspended -f", vhconf)
+        self.assertIn("/_mangopanel_errors/suspended.html", vhconf)
 
 
 if __name__ == "__main__":

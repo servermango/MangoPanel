@@ -458,12 +458,28 @@
                 <li><a href="#dns-domain-setup">Domain &amp; Subdomain DNS</a></li>
             </ul>
 
+            <div class="nav-group-title">Panel Documentation</div>
+            <ul class="nav-menu">
+                <li><a href="#admin-panel-docs">Admin Panel Guide</a></li>
+                <li><a href="#admin-access-security">Admin Access &amp; Security</a></li>
+                <li><a href="#admin-client-profiles">Client Profiles</a></li>
+                <li><a href="#admin-suspension">Soft &amp; Hard Suspend</a></li>
+                <li><a href="#admin-account-recovery">Account Recovery</a></li>
+                <li><a href="#user-panel-docs">User Panel Guide</a></li>
+                <li><a href="#user-account-settings">Account Settings</a></li>
+                <li><a href="#user-files">Files &amp; Websites</a></li>
+                <li><a href="#user-dns-zone-actions">DNS Zone Editor</a></li>
+                <li><a href="#user-collaborators">Collaborators &amp; Accounts</a></li>
+                <li><a href="#user-suspension">Suspended Accounts</a></li>
+            </ul>
+
             <div class="nav-group-title">Architecture &amp; Data</div>
             <ul class="nav-menu">
                 <li><a href="#current-build">Current Build Features</a></li>
                 <li><a href="#how-it-works">How It Works</a></li>
                 <li><a href="#data-layout">Data Layout</a></li>
                 <li><a href="#service-command">Service Command</a></li>
+                <li><a href="#terminal-command-reference">Terminal Command Reference</a></li>
                 <li><a href="#server-migration">Server Migration</a></li>
                 <li><a href="#local-development">Local &amp; Docker Dev</a></li>
                 <li><a href="#thesis-direction">Thesis Integration</a></li>
@@ -808,6 +824,95 @@ make service ACTION=start
 make service ACTION=status</code></pre>
             </section>
 
+            <!-- TERMINAL COMMAND REFERENCE -->
+            <section id="terminal-command-reference" class="docs-section">
+                <span class="badge-pill">CLI Reference</span>
+                <h1>Terminal Command Reference</h1>
+                <p>Run these commands from the MangoPanel project root. Replace <code>python3</code> with your virtual-environment interpreter when applicable. Production commands should be run by an administrator and destructive commands should be reviewed before execution.</p>
+
+                <div class="callout callout-warning">
+                    <div class="callout-title">Before running commands</div>
+                    <p>Stop duplicate panel or worker processes before starting another one. <code>make dev-reset</code> deletes development data under <code>user_files/</code>, so never run it against a production database.</p>
+                </div>
+
+                <h2>Installation and service lifecycle</h2>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>bash scripts/install.sh</code></td><td>Install full MangoPanel prerequisites and runtime dependencies.</td></tr>
+                            <tr><td><code>bash scripts/install.sh --api-only</code></td><td>Install the API/panel-only setup without the full hosting stack.</td></tr>
+                            <tr><td><code>bash scripts/install.sh --full</code></td><td>Explicitly select the full hosting setup.</td></tr>
+                            <tr><td><code>bash scripts/service mangopanel start</code></td><td>Start the production panel and its internal queue worker in the background.</td></tr>
+                            <tr><td><code>bash scripts/service mangopanel status</code></td><td>Show whether the panel process is running.</td></tr>
+                            <tr><td><code>bash scripts/service mangopanel restart</code></td><td>Stop and start the panel process.</td></tr>
+                            <tr><td><code>bash scripts/service mangopanel stop</code></td><td>Stop the background panel process.</td></tr>
+                            <tr><td><code>make service ACTION=start|status|restart|stop</code></td><td>Makefile wrapper for the service commands.</td></tr>
+                            <tr><td><code>python3 -m mangopanel.app</code></td><td>Run the panel in the foreground; useful for development or live logs.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2>Development and testing</h2>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>make dev-init</code></td><td>Check Python, Docker availability, and development port 8000.</td></tr>
+                            <tr><td><code>make dev-up</code></td><td>Start the client and admin panels using simulated account stacks.</td></tr>
+                            <tr><td><code>make dev-up-docker</code></td><td>Start the panels with real per-account Docker containers.</td></tr>
+                            <tr><td><code>make dev-seed</code></td><td>Seed development users, plans, accounts, and sample data.</td></tr>
+                            <tr><td><code>make dev-agent</code></td><td>Process queued development jobs in simulated mode.</td></tr>
+                            <tr><td><code>make dev-agent-once</code></td><td>Process one queued development job and exit.</td></tr>
+                            <tr><td><code>python3 scripts/dev_agent.py --once</code></td><td>Process one queued job and exit.</td></tr>
+                            <tr><td><code>python3 scripts/dev_agent.py --watch</code></td><td>Continuously watch and process queued jobs until interrupted.</td></tr>
+                            <tr><td><code>python3 scripts/dev_agent.py --limit 25</code></td><td>Process up to 25 queued jobs in one batch.</td></tr>
+                            <tr><td><code>python3 scripts/dev_agent.py --apply-all</code></td><td>Regenerate and apply every hosting account stack.</td></tr>
+                            <tr><td><code>python3 scripts/dev_agent.py --down-all</code></td><td>Stop every generated hosting account stack.</td></tr>
+                            <tr><td><code>make dev-hosting-up</code></td><td>Seed data and apply all account stacks in Docker mode.</td></tr>
+                            <tr><td><code>make dev-hosting-down</code></td><td>Stop all development account stacks.</td></tr>
+                            <tr><td><code>make dev-smoke</code></td><td>Run authenticated panel/API smoke checks.</td></tr>
+                            <tr><td><code>make dev-hosting-smoke</code></td><td>Check website, Filebrowser, phpMyAdmin, and account hosting routes.</td></tr>
+                            <tr><td><code>make dev-e2e</code></td><td>Run the complete unittest discovery suite.</td></tr>
+                            <tr><td><code>make test</code></td><td>Run the project test suite.</td></tr>
+                            <tr><td><code>make dev-down</code></td><td>Print development shutdown guidance; stop a foreground server with Ctrl-C.</td></tr>
+                            <tr><td><code>make dev-reset</code></td><td><strong>Destructive:</strong> stop stacks, free dev ports, and delete development data.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2>Maintenance and recovery scripts</h2>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>python3 scripts/dev_free_ports.py</code></td><td>Stop processes using development ports 8000 and 8001.</td></tr>
+                            <tr><td><code>python3 scripts/dev_free_ports.py --port 8000 --port 8001</code></td><td>Stop processes on explicitly selected ports.</td></tr>
+                            <tr><td><code>sudo python3 scripts/admin_recovery.py --email admin@example.com --set-password</code></td><td>Reset an administrator password interactively.</td></tr>
+                            <tr><td><code>sudo python3 scripts/admin_recovery.py --email admin@example.com --set-password --password 'NewPassword'</code></td><td>Set an administrator password non-interactively; protect shell history.</td></tr>
+                            <tr><td><code>sudo python3 scripts/admin_recovery.py --email admin@example.com --enable-totp</code></td><td>Generate a fresh administrator TOTP secret.</td></tr>
+                            <tr><td><code>sudo python3 scripts/admin_recovery.py --email admin@example.com --disable-totp</code></td><td>Disable administrator TOTP recovery protection.</td></tr>
+                            <tr><td><code>python3 scripts/ensure_wordpress_htaccess.py</code></td><td>Scan managed WordPress sites and create a standard <code>.htaccess</code> only where missing.</td></tr>
+                            <tr><td><code>python3 scripts/sync_cloudflare_rules.py</code></td><td>Sync Cloudflare ACME/security rules for all websites.</td></tr>
+                            <tr><td><code>python3 scripts/sync_cloudflare_rules.py WEBSITE_ID</code></td><td>Sync Cloudflare ACME/security rules for one website.</td></tr>
+                            <tr><td><code>php scripts/domain_isolation_test.php</code></td><td>Run the PHP domain-isolation and runtime safety diagnostic.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2>Database and log diagnostics</h2>
+                <pre><code># Check the SQLite database without changing it
+sqlite3 user_files/data/mangopanel.sqlite3 "PRAGMA quick_check;"
+
+# Inspect recent jobs
+sqlite3 -header -column user_files/data/mangopanel.sqlite3 \
+  "SELECT id,type,status,attempts,created_at,updated_at FROM jobs ORDER BY id DESC LIMIT 20;"
+
+# Follow the foreground/service log
+tail -f var/mangopanel.log</code></pre>
+                <p>Take a database backup before repair or migration work. Do not delete WAL files, database rows, account directories, or job history as a first troubleshooting step.</p>
+            </section>
+
             <!-- HOW IT WORKS -->
             <section id="how-it-works" class="docs-section">
                 <span class="badge-pill">Internals</span>
@@ -881,6 +986,307 @@ make dev-smoke</code></pre>
                     <li><strong>Phase 2 (Implemented):</strong> Local PowerDNS adapter, ACME provider, and mail edge scaffolding.</li>
                     <li><strong>Phase 3 (Implemented):</strong> Hardening, auth validation, and client dashboard metrics integration.</li>
                 </ul>
+            </section>
+
+            <!-- ADMIN PANEL DOCUMENTATION -->
+            <section id="admin-panel-docs" class="docs-section">
+                <span class="badge-pill">Admin Panel</span>
+                <h1>Admin Panel Documentation</h1>
+                <p>The Admin Panel is the control surface for platform operators. It manages customers, hosting accounts, plans, DNS providers, infrastructure jobs, security settings, and system health. Administrative actions are audited and privileged changes require administrator permissions.</p>
+
+                <div class="callout callout-warning">
+                    <div class="callout-title">Production safety</div>
+                    <p>Administrative changes can affect live customer traffic. Review the target client and hosting account before applying a change, and use <strong>Hard suspend</strong> only when taking the entire account stack offline is intentional.</p>
+                </div>
+
+                <h2 id="admin-access-security">1. Admin Access &amp; Security</h2>
+                <p>Open the Admin Panel at <code>/admin</code> on the administrative panel port. Admin sessions use signed, short-lived tokens and two-factor authentication when configured.</p>
+                <h3>Administrator roles and permissions</h3>
+                <ul>
+                    <li><strong>Authentication:</strong> Sign in with the administrator email, password, and authenticator code.</li>
+                    <li><strong>Permissions:</strong> Scope checks protect client, plan, system, DNS, incident, and administrator-management operations.</li>
+                    <li><strong>Session revocation:</strong> Password, email, or 2FA changes invalidate existing sensitive sessions.</li>
+                    <li><strong>Audit trail:</strong> Account, profile, suspension, security, and infrastructure actions are recorded in the audit log.</li>
+                </ul>
+                <h3>Recommended security routine</h3>
+                <ol>
+                    <li>Use a unique administrator password stored in a password manager.</li>
+                    <li>Keep administrator TOTP enabled and store recovery material offline.</li>
+                    <li>Use the minimum administrator permission set required for each operator.</li>
+                    <li>Review audit entries after account status, password, or 2FA changes.</li>
+                </ol>
+
+                <h2 id="admin-dashboard">2. Dashboard &amp; System Monitoring</h2>
+                <p>The Admin Dashboard summarizes customer count, hosting accounts, resource use, jobs, incidents, and service health.</p>
+                <h3>What to inspect first</h3>
+                <ul>
+                    <li><strong>System status:</strong> Check service availability and active maintenance notices.</li>
+                    <li><strong>Jobs:</strong> Review queued, running, failed, and retried agent jobs.</li>
+                    <li><strong>Storage:</strong> Check disk and inode pressure before provisioning or rebuilding stacks.</li>
+                    <li><strong>Network and nodes:</strong> Confirm nodes are online before starting account operations.</li>
+                </ul>
+                <h3>Queued operations</h3>
+                <p>Most infrastructure changes are represented as jobs. The API records the requested state first, then the local agent applies files, container changes, and service configuration. A failed job should be investigated before retrying it.</p>
+
+                <h2 id="admin-client-profiles">3. Client Profiles, Billing &amp; Identity</h2>
+                <p>Use <strong>Clients &gt; Edit Profile</strong> to manage a customer identity without exposing stored secrets.</p>
+                <h3>Editable profile data</h3>
+                <ul>
+                    <li>Full name and login email.</li>
+                    <li>Billing email, company, phone, tax ID, and postal address.</li>
+                    <li>Account status where the operator has the required permission.</li>
+                </ul>
+                <h3>Password and 2FA controls</h3>
+                <p>Administrators can reset a client password or enable, disable, and rotate client 2FA. Sensitive actions require administrator re-authentication and invalidate the client’s active browser sessions.</p>
+
+                <h2 id="admin-hosting-accounts">4. Hosting Accounts &amp; Stack Lifecycle</h2>
+                <p>A hosting account represents an isolated customer stack, account directory, websites, databases, mail services, and generated runtime configuration.</p>
+                <h3>Account states</h3>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>State</th><th>Meaning</th><th>Typical next action</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>provisioning</code></td><td>Initial files and services are being prepared.</td><td>Wait for the provisioning job.</td></tr>
+                            <tr><td><code>active</code></td><td>Normal customer operation.</td><td>Manage plan, domains, services, or access.</td></tr>
+                            <tr><td><code>suspended</code></td><td>Soft suspended; web traffic is gated while the stack remains available.</td><td>Unsuspend or escalate to Hard suspend.</td></tr>
+                            <tr><td><code>hard_suspended</code></td><td>Entire account stack is stopped and web traffic is gated.</td><td>Unsuspend after the operational issue is resolved.</td></tr>
+                            <tr><td><code>rebuilding</code></td><td>Generated configuration or stack services are being reapplied.</td><td>Monitor the associated job.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2 id="admin-suspension">5. Soft Suspend and Hard Suspend</h2>
+                <p>MangoPanel provides two deliberate suspension levels. Both are account-level controls and both show a suspension message to the customer in the User Panel.</p>
+
+                <h3>Soft suspend</h3>
+                <p><strong>Soft suspend</strong> is the normal access restriction. It changes the hosting account state to <code>suspended</code> and creates a filesystem marker. The web server checks that marker and serves the MangoPanel “Account Temporarily Unavailable” page instead of the customer’s website.</p>
+                <ul>
+                    <li>The account’s containers remain running.</li>
+                    <li>Web requests are blocked at the document-root serving layer.</li>
+                    <li>The marker is checked from the filesystem, so normal web traffic does not query SQLite.</li>
+                    <li>Customer write operations are rejected by the panel while the account is suspended.</li>
+                    <li>Use this when access should be restricted without stopping mail, database, or other stack services.</li>
+                </ul>
+
+                <h3>Hard suspend</h3>
+                <p><strong>Hard suspend</strong> is an operational shutdown. It changes the state to <code>hard_suspended</code>, keeps the filesystem serving gate active, and queues a job that runs <code>docker compose down --remove-orphans</code> for the account’s complete stack.</p>
+                <ul>
+                    <li>The web, database, mail, Filebrowser, SFTP, cache, cron, and related account services are stopped.</li>
+                    <li>Existing account data and persistent volumes are retained; Hard suspend is not account deletion.</li>
+                    <li>The User Panel remains available for the customer to see the suspension notice, but account operations are restricted.</li>
+                    <li>Use this for severe abuse, non-payment escalation, incident containment, or a deliberate full shutdown.</li>
+                </ul>
+
+                <h3>How suspension is applied</h3>
+                <ol>
+                    <li>The Admin Panel writes the suspension state and creates the account marker immediately.</li>
+                    <li>Domain document roots receive a filesystem marker and a managed web-server gate.</li>
+                    <li>An agent job records the operation and applies the stack action.</li>
+                    <li>Failed jobs leave the account fail-closed and remain visible for investigation and retry.</li>
+                    <li>The public website returns the suspension page without loading WordPress or another customer application.</li>
+                </ol>
+
+                <h3>When to choose each option</h3>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>Situation</th><th>Recommended action</th><th>Reason</th></tr></thead>
+                        <tbody>
+                            <tr><td>Temporary billing or policy hold</td><td><strong>Soft suspend</strong></td><td>Restricts access while keeping services available for controlled recovery.</td></tr>
+                            <tr><td>Abuse investigation or active web compromise</td><td><strong>Hard suspend</strong></td><td>Stops the complete account stack and limits further activity.</td></tr>
+                            <tr><td>Planned maintenance requiring service downtime</td><td><strong>Hard suspend</strong></td><td>Provides a known stopped state before maintenance.</td></tr>
+                            <tr><td>Account deletion</td><td>Use the deletion workflow</td><td>Suspension never deletes customer files or persistent data.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2 id="admin-account-recovery">6. Unsuspend and Account Recovery</h2>
+                <p>Click <strong>Unsuspend</strong> after the reason for the hold has been resolved. For a soft suspension, the serving marker is removed after the account state is restored. For a hard suspension, the agent first brings the account stack back up and then clears the marker.</p>
+                <h3>Recovery checklist</h3>
+                <ol>
+                    <li>Confirm the customer, account username, and suspension reason.</li>
+                    <li>Review failed jobs, audit entries, and relevant security or billing notes.</li>
+                    <li>For Hard suspend, verify node capacity and Docker availability.</li>
+                    <li>Click <strong>Unsuspend</strong> and monitor the resulting agent job.</li>
+                    <li>Verify the website, database, mail, and Filebrowser routes after recovery.</li>
+                </ol>
+                <div class="callout callout-info">
+                    <div class="callout-title">Fail-closed recovery</div>
+                    <p>If the stack cannot be started, the account remains restricted instead of being marked fully active while services are unavailable. Investigate the job error and retry only after correcting the cause.</p>
+                </div>
+
+                <h2 id="admin-plans-dns">7. Plans, Domains, DNS &amp; SSL</h2>
+                <p>Plans define CPU, memory, storage, inode, website, database, mailbox, backup, and DNS policy limits. Domain and DNS tools apply records, nameserver assignments, provider migrations, and verification jobs. SSL issuance is tracked per website and normally runs asynchronously through the agent.</p>
+                <h3>Safe change order</h3>
+                <ol>
+                    <li>Update or validate the plan limits.</li>
+                    <li>Confirm the target account and current resource use.</li>
+                    <li>Apply the plan or DNS change.</li>
+                    <li>Watch the job result and verify the generated stack or DNS state.</li>
+                </ol>
+
+                <h2 id="admin-audit-maintenance">8. Audit, Jobs &amp; Maintenance</h2>
+                <p>Use the audit and job views to answer who changed what, when it changed, which account was affected, and whether the agent completed the requested operation. Keep failed jobs until their cause and recovery are documented.</p>
+                <ul>
+                    <li>Use job retry for transient infrastructure failures only.</li>
+                    <li>Use storage and quota views before large migrations or rebuilds.</li>
+                    <li>Use incident status tools to communicate platform-wide maintenance separately from account suspension.</li>
+                    <li>Do not manually delete account markers, compose files, or runtime directories as a substitute for the panel workflow.</li>
+                </ul>
+
+            </section>
+
+            <!-- USER PANEL DOCUMENTATION -->
+            <section id="user-panel-docs" class="docs-section">
+                <span class="badge-pill">User Panel</span>
+                <h1>User Panel Documentation</h1>
+                <p>The User Panel is the customer workspace for managing websites, domains, DNS, databases, mailboxes, files, backups, deployments, security, and account settings. Customers can manage only the hosting accounts and collaborator scopes assigned to them.</p>
+
+                <h2 id="user-access-security">1. Sign-in, 2FA &amp; Session Security</h2>
+                <p>Open the Client Portal at <code>/client</code> or the configured client-panel URL. Sign-in may require a TOTP authenticator code after the password is accepted.</p>
+                <ul>
+                    <li>Use <strong>Sign out</strong> when leaving a shared or administrative workstation.</li>
+                    <li>Changing the email, password, or 2FA settings requires sensitive-change verification.</li>
+                    <li>Changing a password or login email revokes existing sessions and requires a fresh login.</li>
+                    <li>Never share an API token or authenticator secret with support staff or collaborators.</li>
+                </ul>
+
+                <h2 id="user-dashboard">2. Dashboard &amp; Account Selection</h2>
+                <p>The dashboard displays the selected hosting account, websites, resource summaries, warnings, and recent account activity.</p>
+                <h3>Multiple accounts</h3>
+                <p>If you own multiple accounts or have collaborator access, use the account selector to switch the active scope. The selected account controls which websites, databases, files, mailboxes, and tools are displayed.</p>
+                <h3>Resource summary</h3>
+                <p>Disk, inode, CPU, and memory summaries are estimates based on the latest usage sample. A high value may require cleanup, a plan change, or administrator assistance.</p>
+
+                <h2 id="user-account-settings">3. Account Settings, Billing &amp; Identity</h2>
+                <p>Account Settings contains your identity and billing profile. You can update your name, billing email, company, phone, tax information, and address.</p>
+                <h3>Password and 2FA</h3>
+                <ul>
+                    <li>Use a long, unique password and confirm the current password before changing it.</li>
+                    <li>Keep TOTP enabled for accounts that manage production websites or email.</li>
+                    <li>Disabling or rotating 2FA requires current security verification and may sign you out.</li>
+                </ul>
+
+                <h2 id="user-files">4. Websites, Domains &amp; File Manager</h2>
+                <h3>Websites</h3>
+                <p>Create websites by selecting a domain, document root, and PHP version. The platform generates an isolated web-server virtual host for each website.</p>
+                <h3>Domains and DNS</h3>
+                <p>Use the Domains and DNS tools to inspect nameservers, manage permitted DNS records, verify propagation, and select the available DNS provider. DNS changes can take time to propagate outside MangoPanel.</p>
+
+                <h3 id="user-dns-zone-actions">DNS Zone Editor: Rebuild vs Verify</h3>
+                <p>DNS record changes normally queue a provider sync automatically. The two action buttons serve different purposes:</p>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Action</th>
+                                <th>What it does</th>
+                                <th>When to use it</th>
+                                <th>Does it change DNS?</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Rebuild</strong></td>
+                                <td>Reads the records saved in MangoPanel, rebuilds the authoritative zone, and publishes it to the selected provider.</td>
+                                <td>After a failed sync, provider change, imported-record cleanup, or when you need to republish the current saved zone.</td>
+                                <td>Yes. It queues a DNS synchronization job.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Verify</strong></td>
+                                <td>Performs a read-only public DNS check and compares the domain’s observed nameservers with the provider’s expected nameservers.</td>
+                                <td>After changing nameservers at the registrar, or when confirming that delegation has propagated.</td>
+                                <td>No. It does not edit records or nameservers.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h4>Recommended workflow</h4>
+                <ol>
+                    <li>Edit or add the DNS record. MangoPanel queues synchronization automatically.</li>
+                    <li>Use <strong>Rebuild</strong> only if you need to republish the saved zone or a sync failed.</li>
+                    <li>Copy the provider nameservers shown by MangoPanel into your registrar when using an authoritative provider such as Cloudflare.</li>
+                    <li>Wait for delegation to propagate, then click <strong>Verify</strong>.</li>
+                </ol>
+
+                <h4>DNS status meanings</h4>
+                <ul>
+                    <li><strong>Published / Active:</strong> The provider accepted the zone.</li>
+                    <li><strong>Pending nameserver:</strong> The zone was published, but public delegation has not yet been confirmed.</li>
+                    <li><strong>Provider failed:</strong> The provider rejected the operation or could not be reached. Read the displayed error, correct the provider/account or record issue, then use <strong>Rebuild</strong>.</li>
+                    <li><strong>DNS sync in progress:</strong> A queued job is currently applying the saved zone. Avoid repeated rebuilds until it finishes.</li>
+                </ul>
+
+                <h4>Switching the provider</h4>
+                <p>Use <strong>Switch DNS Provider</strong> to open the domain-scoped provider modal. The available providers and Cloudflare accounts come from the hosting plan. If multiple Cloudflare accounts are permitted, choose the account for that domain in the modal; changing it does not change other domains in the account.</p>
+
+                <h3>File Manager</h3>
+                <p>Use <strong>Access all files of domain</strong> for a domain-scoped file view. Use <strong>Access Root Filesystem of this hosting</strong> for account-level directories when your account permissions allow it. File edits are sent through the authenticated Filebrowser proxy; do not expose or reuse launch URLs.</p>
+                <div class="callout callout-warning">
+                    <div class="callout-title">File safety</div>
+                    <p>Editing <code>wp-config.php</code>, server rules, or application configuration can take a website offline. Download a backup or copy the original content before making changes.</p>
+                </div>
+
+                <h2 id="user-databases">5. Databases &amp; Database Users</h2>
+                <p>The User Panel supports MySQL and PostgreSQL database records, users, grants, and password changes subject to plan limits.</p>
+                <ul>
+                    <li>Create database names and users using the panel-generated account scope.</li>
+                    <li>Grant only the privileges required by the application.</li>
+                    <li>Store database credentials in the application’s secure configuration rather than in public files.</li>
+                    <li>Use phpMyAdmin or Adminer only through their authenticated account launch path.</li>
+                </ul>
+
+                <h2 id="user-mail-services">6. Mailboxes, Routing &amp; Webmail</h2>
+                <p>Create mailboxes, aliases, forwarders, and autoresponders under the active account. Mailbox quotas and daily sending limits are enforced by the hosting plan.</p>
+                <h3>Deliverability checklist</h3>
+                <ul>
+                    <li>Publish the required SPF, DKIM, and DMARC records for each sending domain.</li>
+                    <li>Use a valid mailbox password and avoid reusing the panel password.</li>
+                    <li>Check DNS status before troubleshooting remote delivery.</li>
+                </ul>
+
+                <h2 id="user-backups-deployments">7. Backups, Git &amp; SSL</h2>
+                <h3>Backups and restores</h3>
+                <p>Create backups before application upgrades or bulk file changes. Restores can overwrite current files and should be treated as a planned operation.</p>
+                <h3>Git deployments</h3>
+                <p>Configure a repository, branch, and deployment path, then use the deployment history to inspect commits and roll back when supported.</p>
+                <h3>SSL</h3>
+                <p>Issue or inspect SSL certificates from the website security tools. Confirm DNS points to the correct server before requesting a certificate.</p>
+
+                <h2 id="user-collaborators">8. Collaborators &amp; Account Switching</h2>
+                <p>Account owners can invite collaborators and assign scoped permissions. A collaborator may be restricted to selected websites or tools.</p>
+                <ul>
+                    <li>Switch accounts before performing an operation intended for another hosting account.</li>
+                    <li>Confirm the active username in the panel header before opening files or databases.</li>
+                    <li>Collaborator permissions are enforced by account and website scope, including Filebrowser paths.</li>
+                    <li>Revoke access when a collaborator no longer needs it.</li>
+                </ul>
+
+                <h2 id="user-suspension">9. Suspended Hosting Accounts</h2>
+                <p>When an administrator suspends the selected hosting account, the User Panel displays a clear suspension message. The panel remains available for account information and support communication, but hosting operations that modify the suspended account are blocked.</p>
+                <h3>Soft suspension</h3>
+                <p>Websites show the temporary-unavailability page while the account’s services remain running. You cannot use suspended-account operations to bypass the hold.</p>
+                <h3>Hard suspension</h3>
+                <p>The account’s complete hosting stack is turned off. Websites, databases, mail, Filebrowser, SFTP, and scheduled account services remain unavailable until an administrator unsuspends the account and the stack starts successfully.</p>
+                <h3>What to do</h3>
+                <ol>
+                    <li>Review the suspension notice in the User Panel.</li>
+                    <li>Contact the hosting administrator or support channel listed by your provider.</li>
+                    <li>Do not delete account files or attempt to change application configuration to work around the suspension.</li>
+                    <li>After administrator recovery, refresh the panel and verify the affected website and services.</li>
+                </ol>
+
+                <h2 id="user-api-security">10. API Tokens &amp; Troubleshooting</h2>
+                <p>API tokens are created under Account Settings and should be granted only the permissions required by an integration. Treat tokens like passwords, rotate them after suspected exposure, and revoke unused tokens.</p>
+                <h3>Common issues</h3>
+                <ul>
+                    <li><strong>Website unavailable:</strong> Check the dashboard warning, DNS nameservers, SSL status, and whether the account is suspended.</li>
+                    <li><strong>File Manager login screen:</strong> Reopen the tool from the User Panel so a fresh account-scoped launch token is generated.</li>
+                    <li><strong>Access denied:</strong> Confirm the active account and collaborator permissions.</li>
+                    <li><strong>Changes still processing:</strong> Check activity and job status before repeating the operation.</li>
+                </ul>
+            </section>
+
             <!-- CLIENT AREA API REFERENCE -->
             <section id="client-api" class="docs-section">
                 <span class="badge-pill">Developer API</span>

@@ -128,6 +128,90 @@ def account_paths(account):
     }
 
 
+ACCOUNT_SUSPENSION_MARKER = ".mangopanel-suspended"
+SUSPENSION_HTACCESS_BLOCK = (
+    "# BEGIN MangoPanel Suspension Gate\n"
+    "RewriteRule ^_mangopanel_errors/ - [L]\n"
+    "RewriteCond %{DOCUMENT_ROOT}/.mangopanel-suspended -f\n"
+    "RewriteRule ^ /_mangopanel_errors/suspended.html [L]\n"
+    "# END MangoPanel Suspension Gate\n"
+)
+
+
+def sync_account_suspension_marker(account, suspended=None):
+    """Synchronize filesystem-only suspension gates for an account and its sites."""
+    base_path = Path(account["base_path"])
+    marker = base_path / ACCOUNT_SUSPENSION_MARKER
+    account_status = account["status"] if "status" in account.keys() else None
+    is_suspended = suspended if suspended is not None else account_status in {"suspended", "hard_suspended"}
+    if is_suspended:
+        base_path.mkdir(parents=True, exist_ok=True)
+        marker.write_text("suspended\n", encoding="utf-8")
+        marker.chmod(0o644)
+    else:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+    # OpenLiteSpeed evaluates this marker relative to each vhost's document
+    # root. Keep these mirrors filesystem-only so every request is gated
+    # without a database lookup, including domains with independent caches.
+    domains_root = base_path / "domains"
+    if domains_root.is_dir():
+        for document_root in domains_root.glob("*/public_html"):
+            document_marker = document_root / ACCOUNT_SUSPENSION_MARKER
+            htaccess = document_root / ".htaccess"
+            if is_suspended:
+                document_root.mkdir(parents=True, exist_ok=True)
+                document_marker.write_text("suspended\n", encoding="utf-8")
+                document_marker.chmod(0o644)
+                try:
+                    htaccess_content = htaccess.read_text(encoding="utf-8") if htaccess.exists() else ""
+                    if SUSPENSION_HTACCESS_BLOCK not in htaccess_content:
+                        htaccess.write_text(SUSPENSION_HTACCESS_BLOCK + htaccess_content, encoding="utf-8")
+                except OSError:
+                    pass
+            else:
+                try:
+                    document_marker.unlink()
+                except FileNotFoundError:
+                    pass
+                try:
+                    if htaccess.exists():
+                        htaccess_content = htaccess.read_text(encoding="utf-8")
+                        if SUSPENSION_HTACCESS_BLOCK in htaccess_content:
+                            remaining = htaccess_content.replace(SUSPENSION_HTACCESS_BLOCK, "", 1)
+                            if remaining:
+                                htaccess.write_text(remaining, encoding="utf-8")
+                            else:
+                                htaccess.unlink()
+                except OSError:
+                    pass
+    # Migrate vhosts generated before the document-root marker rule was
+    # introduced. This is deliberately a small text migration and does not
+    # restart the account stack; the caller can reload the web worker when
+    # required by its deployment path.
+    vhosts_root = base_path / ".runtime" / "stack" / "vhosts"
+    if vhosts_root.is_dir():
+        old_condition = f"  RewriteCond             /home/{account['username']}/.mangopanel-suspended -f"
+        for vhconf in vhosts_root.glob("*/vhconf.conf"):
+            try:
+                content = vhconf.read_text(encoding="utf-8")
+                if old_condition in content:
+                    content = content.replace(
+                        "  RewriteCond             %{REQUEST_URI} !^/_mangopanel_errors/\n"
+                        + old_condition
+                        + "\n  RewriteRule             ^ /_mangopanel_errors/suspended.html [L]",
+                        "  RewriteRule             ^/_mangopanel_errors/ - [L]\n"
+                        "  RewriteCond             %{DOCUMENT_ROOT}/.mangopanel-suspended -f\n"
+                        "  RewriteRule             ^/(.*)$ /_mangopanel_errors/suspended.html [L]",
+                    )
+                    vhconf.write_text(content, encoding="utf-8")
+            except OSError:
+                continue
+    return marker
+
+
 def render_account_metadata(account, plan, node, websites, runtime):
     return {
         "account_id": account["id"],
@@ -325,6 +409,7 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     paths = account_paths(account)
     for key in ["base", "domains", "databases", "mail", "backups", "git", "ssl", "redis", "runtime", "stack"]:
         paths[key].mkdir(parents=True, exist_ok=True)
+    sync_account_suspension_marker(account)
         
     (paths["base"] / "pg_databases").mkdir(parents=True, exist_ok=True)
     (paths["mail"] / "mailboxes").mkdir(parents=True, exist_ok=True)
@@ -822,6 +907,7 @@ listener http {{
 
 def render_ols_vhconf(account, website):
     domain = website["domain"]
+    username = account["username"]
     safe_domain = domain.replace(".", "_").replace("-", "_")
 
     # Ensure PHP version is one of the supported versions (82, 83, 84)
@@ -866,6 +952,9 @@ errorlog {logs_dir}/error.log {{
 rewrite  {{
   enable                  1
   autoLoadHtaccess        1
+  RewriteRule             ^/_mangopanel_errors/ - [L]
+  RewriteCond             %{{DOCUMENT_ROOT}}/.mangopanel-suspended -f
+  RewriteRule             ^/(.*)$ /_mangopanel_errors/suspended.html [L]
 }}
 
 errorpage 403 {{
@@ -1031,7 +1120,7 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     entrypoint: ["/bin/sh", "-c", 'if [ ! -f /config/settings.json ]; then cp -a /defaults/settings.json /config/settings.json; fi; umask 0000; if [ ! -f /database/filebrowser.db ]; then /bin/filebrowser config init -d /database/filebrowser.db --auth.method noauth >/dev/null 2>&1; fi; /bin/filebrowser config set --auth.method noauth -d /database/filebrowser.db >/dev/null 2>&1 || true; exec /bin/filebrowser "$$@"', "--"]
-    command: ["--config", "/config/settings.json", "--noauth", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
+    command: ["--config", "/config/settings.json", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
     environment:
       FB_BRANDING_DISABLE_USED_PERCENTAGE: "false"
       FB_BRANDING_FILES: "/branding"
@@ -1041,20 +1130,23 @@ services:
       caddy.handle_path.0_rewrite: "* /api/public/tool-launch/filebrowser/auth{{uri}}"
       caddy.handle_path.1_reverse_proxy: "host.docker.internal:8000"
       caddy.route: "/files*"
-      caddy.route.0_forward_auth: "host.docker.internal:8000"
-      caddy.route.0_forward_auth.uri: "/api/public/auth-verify"
-      caddy.route.1_handle_path: "/files/custom.js"
-      caddy.route.1_handle_path.0_rewrite: "* /api/public/filebrowser/custom.js"
-      caddy.route.1_handle_path.1_reverse_proxy: "host.docker.internal:8000"
-      caddy.route.2_handle_path: "/files/api/extract"
-      caddy.route.2_handle_path.0_rewrite: "* /api/public/filebrowser/extract"
+      caddy.route.0_handle_path: "/files/api/login"
+      caddy.route.0_handle_path.0_rewrite: "* /api/public/filebrowser/proxy/api/login"
+      caddy.route.0_handle_path.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.1_forward_auth: "host.docker.internal:8000"
+      caddy.route.1_forward_auth.uri: "/api/public/auth-verify"
+      caddy.route.2_handle_path: "/files/custom.js"
+      caddy.route.2_handle_path.0_rewrite: "* /api/public/filebrowser/custom.js"
       caddy.route.2_handle_path.1_reverse_proxy: "host.docker.internal:8000"
-      caddy.route.3_handle_path: "/files/api/usage*"
-      caddy.route.3_handle_path.0_rewrite: "* /api/public/filebrowser/usage"
+      caddy.route.3_handle_path: "/files/api/extract"
+      caddy.route.3_handle_path.0_rewrite: "* /api/public/filebrowser/extract"
       caddy.route.3_handle_path.1_reverse_proxy: "host.docker.internal:8000"
-      caddy.route.4_handle: "*"
-      caddy.route.4_handle.0_rewrite: "* /api/public/filebrowser/proxy{{uri}}"
-      caddy.route.4_handle.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.4_handle_path: "/files/api/usage*"
+      caddy.route.4_handle_path.0_rewrite: "* /api/public/filebrowser/usage"
+      caddy.route.4_handle_path.1_reverse_proxy: "host.docker.internal:8000"
+      caddy.route.5_handle: "*"
+      caddy.route.5_handle.0_rewrite: "* /api/public/filebrowser/proxy{{uri}}"
+      caddy.route.5_handle.1_reverse_proxy: "host.docker.internal:8000"
     volumes:
       - {base_path}/domains:/srv/domains
       - {base_path}/databases:/srv/databases

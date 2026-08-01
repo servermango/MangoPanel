@@ -85,6 +85,26 @@ createApp({
       newAdminTotpCode: "",
       newAdminTotpMessage: "",
       adminPasswordModal: { open: false, admin: null, password: "", confirm: "" },
+      clientProfileModal: {
+        open: false,
+        loading: false,
+        saving: false,
+        client: null,
+        form: { id: null, full_name: "", email: "", status: "active", has_2fa: false, billing: {} },
+        admin_password: "",
+        admin_totp_code: "",
+        new_password: "",
+        confirm_password: "",
+        totp_secret: "",
+        totp_uri: "",
+      },
+      accountDatabasesModal: {
+        open: false,
+        loading: false,
+        deleting: false,
+        account: null,
+        databases: [],
+      },
       adminApiTokens: [],
       newAdminTokenName: "",
       newAdminTokenRaw: "",
@@ -158,6 +178,7 @@ createApp({
         package_managers: "npm (default), yarn and pnpm",
         dns_default_provider: "local_powerdns",
         dns_allowed_providers: ["local_powerdns"],
+        dns_allowed_provider_account_ids: [],
         dns_default_provider_account_id: "",
         dns_customer_editable: true,
         dns_max_records_per_domain: 100,
@@ -1568,6 +1589,7 @@ createApp({
           package_managers: "npm (default), yarn and pnpm",
           dns_default_provider: "local_powerdns",
           dns_allowed_providers: ["local_powerdns"],
+          dns_allowed_provider_account_ids: [],
           dns_default_provider_account_id: "",
           dns_customer_editable: true,
           dns_max_records_per_domain: 100,
@@ -1597,6 +1619,7 @@ createApp({
         ...this.newPlan,
         ...plan,
         dns_allowed_providers: typeof plan.dns_allowed_providers_json === "string" ? JSON.parse(plan.dns_allowed_providers_json) : plan.dns_allowed_providers,
+        dns_allowed_provider_account_ids: typeof plan.dns_allowed_provider_accounts_json === "string" ? JSON.parse(plan.dns_allowed_provider_accounts_json) : (plan.dns_allowed_provider_account_ids || []),
         dns_allowed_record_types: typeof plan.dns_allowed_record_types_json === "string" ? JSON.parse(plan.dns_allowed_record_types_json) : plan.dns_allowed_record_types,
         dns_default_provider_account_id: plan.dns_default_provider_account_id || "",
         dns_customer_editable: Boolean(plan.dns_customer_editable),
@@ -1624,6 +1647,7 @@ createApp({
         max_cron_jobs: Number(this.newPlan.max_cron_jobs), daily_email_limit: Number(this.newPlan.daily_email_limit), backup_retention_days: Number(this.newPlan.backup_retention_days),
         max_processes: Number(this.newPlan.max_processes), php_workers: Number(this.newPlan.php_workers), bandwidth_mb: Number(this.newPlan.bandwidth_mb),
         dns_default_provider_account_id: this.newPlan.dns_default_provider_account_id || null,
+        dns_allowed_provider_account_ids: (this.newPlan.dns_allowed_provider_account_ids || []).map((id) => Number(id)),
         dns_customer_editable: Boolean(this.newPlan.dns_customer_editable), dns_max_records_per_domain: Number(this.newPlan.dns_max_records_per_domain),
         dns_min_ttl: Number(this.newPlan.dns_min_ttl), dns_wildcard_records_allowed: Boolean(this.newPlan.dns_wildcard_records_allowed),
         dns_cloudflare_proxy_allowed: Boolean(this.newPlan.dns_cloudflare_proxy_allowed), dns_dnssec_allowed: Boolean(this.newPlan.dns_dnssec_allowed), dns_dnssec_required: Boolean(this.newPlan.dns_dnssec_required),
@@ -1700,6 +1724,112 @@ createApp({
         this.message = error.message;
       }
     },
+    async openClientProfile(client) {
+      this.clientProfileModal = {
+        ...this.clientProfileModal,
+        open: true,
+        loading: true,
+        client,
+        admin_password: "",
+        admin_totp_code: "",
+        new_password: "",
+        confirm_password: "",
+        totp_secret: "",
+        totp_uri: "",
+      };
+      try {
+        const payload = await this.api(`/api/admin/clients/${client.id}/profile`);
+        this.clientProfileModal.form = payload.profile;
+      } catch (error) {
+        this.message = error.message;
+        this.closeClientProfile();
+      } finally {
+        this.clientProfileModal.loading = false;
+      }
+    },
+    closeClientProfile() {
+      this.clientProfileModal.open = false;
+      this.clientProfileModal.client = null;
+    },
+    async saveClientProfile() {
+      const modal = this.clientProfileModal;
+      if (!modal.admin_password) {
+        this.message = "Enter your admin password to authorize this profile change.";
+        return;
+      }
+      modal.saving = true;
+      try {
+        const payload = await this.api(`/api/admin/clients/${modal.form.id}/profile`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            full_name: modal.form.full_name,
+            email: modal.form.email,
+            status: modal.form.status,
+            billing: modal.form.billing,
+            admin_password: modal.admin_password,
+            admin_totp_code: modal.admin_totp_code,
+          }),
+        });
+        this.message = "Client profile updated.";
+        modal.form = payload.profile;
+        modal.admin_password = "";
+        modal.admin_totp_code = "";
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        modal.saving = false;
+      }
+    },
+    async resetClientPassword() {
+      const modal = this.clientProfileModal;
+      if (!modal.new_password || modal.new_password !== modal.confirm_password) {
+        this.message = "Enter matching new passwords.";
+        return;
+      }
+      if (!modal.admin_password) {
+        this.message = "Enter your admin password to authorize this reset.";
+        return;
+      }
+      try {
+        await this.api(`/api/admin/clients/${modal.form.id}/password`, {
+          method: "POST",
+          body: JSON.stringify({
+            password: modal.new_password,
+            admin_password: modal.admin_password,
+            admin_totp_code: modal.admin_totp_code,
+          }),
+        });
+        this.message = "Client password reset; existing client sessions were revoked.";
+        modal.new_password = "";
+        modal.confirm_password = "";
+        modal.admin_password = "";
+        modal.admin_totp_code = "";
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async changeClient2FA(action) {
+      const modal = this.clientProfileModal;
+      if (!modal.admin_password) {
+        this.message = "Enter your admin password to authorize this 2FA change.";
+        return;
+      }
+      try {
+        const payload = await this.api(`/api/admin/clients/${modal.form.id}/2fa`, {
+          method: "POST",
+          body: JSON.stringify({ action, admin_password: modal.admin_password, admin_totp_code: modal.admin_totp_code }),
+        });
+        modal.form.has_2fa = Boolean(payload.enabled);
+        modal.totp_secret = payload.totp_secret || "";
+        modal.totp_uri = payload.totp_uri || "";
+        modal.admin_password = "";
+        modal.admin_totp_code = "";
+        this.message = action === "disable" ? "Client 2FA disabled; existing sessions were revoked." : "Client 2FA secret changed; share the new secret securely.";
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
     async loginAsClient(client) {
       this.message = "";
       try {
@@ -1748,6 +1878,44 @@ createApp({
         this.message = error.message;
       }
     },
+    async openAccountDatabases(client, account) {
+      this.accountDatabasesModal = {
+        ...this.accountDatabasesModal,
+        open: true,
+        loading: true,
+        account: { ...account, client_email: client.email },
+        databases: [],
+      };
+      try {
+        const payload = await this.api("/api/admin/hosting-accounts/" + account.id + "/databases");
+        this.accountDatabasesModal.databases = payload.databases || [];
+      } catch (error) {
+        this.message = error.message;
+        this.closeAccountDatabases();
+      } finally {
+        this.accountDatabasesModal.loading = false;
+      }
+    },
+    closeAccountDatabases() {
+      this.accountDatabasesModal.open = false;
+      this.accountDatabasesModal.account = null;
+      this.accountDatabasesModal.databases = [];
+    },
+    async deleteAdminDatabase(database) {
+      const account = this.accountDatabasesModal.account;
+      if (!account || !window.confirm("Delete database " + database.name + "? This cannot be undone.")) return;
+      this.accountDatabasesModal.deleting = true;
+      try {
+        const payload = await this.api("/api/admin/databases/" + database.id, { method: "DELETE" });
+        this.message = "Database " + database.name + " deleted. Cleanup job #" + payload.job_id + " queued.";
+        this.accountDatabasesModal.databases = this.accountDatabasesModal.databases.filter((item) => item.id !== database.id);
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.accountDatabasesModal.deleting = false;
+      }
+    },
     async updateAccountDnsProvider(client, account) {
       this.message = "";
       try {
@@ -1767,6 +1935,34 @@ createApp({
     providerLabel(key) {
       const provider = (this.dnsSettings.providers || []).find((item) => item.key === key);
       return provider ? provider.display_name : key;
+    },
+    planDnsProviders() {
+      return (this.dnsSettings.providers || []).filter((provider) => ["local_powerdns", "cloudflare"].includes(provider.key));
+    },
+    ensurePlanDefaultDnsProvider() {
+      if (!(this.newPlan.dns_allowed_providers || []).includes(this.newPlan.dns_default_provider)) {
+        this.newPlan.dns_allowed_providers = [...(this.newPlan.dns_allowed_providers || []), this.newPlan.dns_default_provider];
+      }
+      if (this.newPlan.dns_default_provider !== "cloudflare") this.newPlan.dns_default_provider_account_id = "";
+    },
+    ensurePlanDnsProviderChecked(providerKey) {
+      if (providerKey === this.newPlan.dns_default_provider && !(this.newPlan.dns_allowed_providers || []).includes(providerKey)) {
+        this.newPlan.dns_allowed_providers = [...(this.newPlan.dns_allowed_providers || []), providerKey];
+      }
+      if (!(this.newPlan.dns_allowed_providers || []).includes("cloudflare")) {
+        this.newPlan.dns_allowed_provider_account_ids = [];
+        this.newPlan.dns_default_provider_account_id = "";
+      }
+    },
+    planCloudflareAccounts() {
+      const allowed = this.newPlan.dns_allowed_provider_account_ids || [];
+      return this.cloudflareAccounts().filter((account) => !allowed.length || allowed.includes(account.id) || allowed.includes(String(account.id)));
+    },
+    ensurePlanDefaultAccountAllowed() {
+      const allowed = this.newPlan.dns_allowed_provider_account_ids || [];
+      if (this.newPlan.dns_default_provider_account_id && allowed.length && !allowed.includes(this.newPlan.dns_default_provider_account_id) && !allowed.includes(Number(this.newPlan.dns_default_provider_account_id))) {
+        this.newPlan.dns_default_provider_account_id = "";
+      }
     },
     cloudflareAccounts() {
       return (this.dnsSettings.accounts || []).filter((account) => account.provider_key === "cloudflare");
@@ -1992,13 +2188,29 @@ createApp({
     },
     async toggleAccountStatus(client, account) {
       this.message = "";
-      const action = account.status === "suspended" ? "unsuspend" : "suspend";
+      const suspended = ["suspended", "hard_suspended"].includes(account.status);
+      const action = suspended ? "unsuspend" : "suspend";
       try {
         const payload = await this.api(`/api/admin/hosting-accounts/${account.id}/${action}`, {
           method: "POST",
           body: "{}",
         });
         this.message = `${client.email} account ${payload.status}`;
+        await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async hardSuspendAccount(client, account) {
+      this.message = "";
+      const confirmed = window.confirm(`Hard suspend ${account.username}? This will stop the entire hosting stack and take all of its services offline.`);
+      if (!confirmed) return;
+      try {
+        const payload = await this.api(`/api/admin/hosting-accounts/${account.id}/hard-suspend`, {
+          method: "POST",
+          body: "{}",
+        });
+        this.message = `${client.email} account hard suspended; its stack is being stopped`;
         await this.load();
       } catch (error) {
         this.message = error.message;

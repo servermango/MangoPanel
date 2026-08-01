@@ -51,7 +51,7 @@ from .providers import (
     SharedMailEdgeProvider,
 )
 from .security import decrypt_secret
-from .stack import STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, stack_summary
+from .stack import STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, stack_summary, sync_account_suspension_marker
 
 
 class AgentError(Exception):
@@ -615,10 +615,38 @@ class Agent:
             return self.install_script(conn, job)
         if job_type == "suspend_account":
             conn.execute("UPDATE hosting_accounts SET status = 'suspended' WHERE id = ?", (job["target_id"],))
+            account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+            if account:
+                sync_account_suspension_marker(account, True)
             return {"account_id": job["target_id"], "status": "suspended"}
+        if job_type == "hard_suspend_account":
+            account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+            if not account:
+                raise AgentError("hosting_account_not_found")
+            # Keep the marker and DB state active before stopping anything so a partial
+            # stop cannot briefly expose the account through the web edge.
+            conn.execute("UPDATE hosting_accounts SET status = 'hard_suspended' WHERE id = ?", (job["target_id"],))
+            sync_account_suspension_marker(account, True)
+            stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (job["target_id"],)).fetchone()
+            if stack and stack["compose_path"]:
+                stop_result = self.compose_down(stack["compose_path"])
+                conn.execute("UPDATE account_stacks SET status = 'stopped', last_error = NULL WHERE account_id = ?", (job["target_id"],))
+            else:
+                stop_result = {"status": "not_started"}
+            return {"account_id": job["target_id"], "status": "hard_suspended", "stack": stop_result}
         if job_type == "unsuspend_account":
+            account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+            if not account:
+                raise AgentError("hosting_account_not_found")
+            stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (job["target_id"],)).fetchone()
+            start_result = {"status": "not_required"}
+            if account["status"] == "hard_suspended" and stack and stack["compose_path"]:
+                start_result = self.apply_stack(stack["compose_path"], account["username"])
+                conn.execute("UPDATE account_stacks SET status = ?, last_applied_at = CURRENT_TIMESTAMP, last_error = NULL WHERE account_id = ?", (start_result.get("status", "applied"), job["target_id"]))
             conn.execute("UPDATE hosting_accounts SET status = 'active' WHERE id = ?", (job["target_id"],))
-            return {"account_id": job["target_id"], "status": "active"}
+            if account:
+                sync_account_suspension_marker(account, False)
+            return {"account_id": job["target_id"], "status": "active", "stack": start_result}
         if job_type == "update_database":
             database = conn.execute("SELECT id, name, status FROM databases WHERE id = ?", (job["target_id"],)).fetchone()
             if not database:
@@ -1987,6 +2015,13 @@ class Agent:
         cron_jobs = rows_to_dicts(conn.execute("SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         ensure_cron_runtime_artifacts(row_to_dict(account), cron_jobs)
         apply_result = self.apply_stack(paths["compose"], account["username"])
+        if account["status"] == "hard_suspended":
+            # Maintenance jobs may still be queued when an account is hard
+            # suspended. They may regenerate the stack, but must never leave
+            # it running while the account remains hard suspended.
+            stop_result = self.compose_down(paths["compose"])
+            apply_result = dict(apply_result)
+            apply_result.update({"status": "stopped", "stack_stop": stop_result})
         self.sync_account_databases(conn, account_id)
         ssh_status = dict(account).get("ssh_access") or "disabled"
         try:
@@ -2100,6 +2135,16 @@ class Agent:
         raise AgentError("unknown_agent_mode: {}".format(self.config.agent_mode))
 
     def compose_down(self, compose_path):
+        if self.config.agent_mode == "simulate":
+            state_path = Path(compose_path).with_suffix(".agent-state.json")
+            state = {
+                "mode": "simulate",
+                "status": "stopped",
+                "compose_path": str(compose_path),
+                "updated_at": int(time.time()),
+            }
+            state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+            return {"compose_path": str(compose_path), "status": "stopped", "mode": "simulate", "state_path": str(state_path)}
         docker = shutil.which("docker")
         if not docker:
             raise AgentError("docker_not_found")
@@ -2259,9 +2304,18 @@ class Agent:
         if existing_db:
             database_id = existing_db["id"]
         else:
+            creator = conn.execute(
+                """
+                SELECT w.created_by_user_id
+                FROM script_installs si
+                JOIN websites w ON w.id = si.website_id
+                WHERE si.id = ?
+                """,
+                (install_id,),
+            ).fetchone()
             cur_db = conn.execute(
-                "INSERT INTO databases(account_id, name, username, status) VALUES (?, ?, ?, ?)",
-                (account["id"], db_name, db_user, "active"),
+                "INSERT INTO databases(account_id, name, username, status, created_by_user_id) VALUES (?, ?, ?, ?, ?)",
+                (account["id"], db_name, db_user, "active", creator["created_by_user_id"] if creator else None),
             )
             database_id = cur_db.lastrowid
             # Log and trigger job
@@ -2868,32 +2922,78 @@ class Agent:
         htaccess_snippet += "RewriteEngine On\n"
         for r in redirects:
             # Handle exact vs wildcard match types
-            path_pattern = r["source_path"]
+            source_path = r["source_path"] or "/"
+            path_pattern = source_path
             if r["match_type"] == "wildcard":
-                path_pattern = path_pattern.rstrip("/") + "/(.*)"
-                target = r["target_url"].rstrip("/") + "/$1"
+                prefix = source_path.strip("/")
+                if prefix:
+                    path_pattern = "^" + re.escape(prefix) + "/(.*)$"
+                    target = r["target_url"].rstrip("/") + "/$1"
+                else:
+                    path_pattern = "^$"
+                    target = r["target_url"].rstrip("/")
             else:
                 path_pattern = f"^{path_pattern.lstrip('/')}$"
                 target = r["target_url"]
+
+            if not re.match(r"^https?://", target, re.IGNORECASE):
+                target = "https://" + target.lstrip("/")
                 
             htaccess_snippet += f"RewriteRule {path_pattern} {target} [R={r['type']},L]\n"
+            if r["match_type"] == "wildcard" and not source_path.strip("/"):
+                htaccess_snippet += f"RewriteRule ^(.+)$ {target}/$1 [R={r['type']},L]\n"
         htaccess_snippet += "# END MangoPanel Redirects\n"
+
+        # Write the artifact in native/simulate mode too. Previously this was
+        # only written through docker exec, so a successful job could leave no
+        # redirect configuration on disk.
+        root = Path(website["document_root"])
+        root.mkdir(parents=True, exist_ok=True)
+        htaccess = root / ".htaccess"
+        current = htaccess.read_text(encoding="utf-8") if htaccess.exists() else ""
+        without_redirects = self.replace_managed_block(
+            current,
+            "# BEGIN MangoPanel Redirects",
+            "# END MangoPanel Redirects",
+            "",
+        )
+        updated = (
+            htaccess_snippet + ("\n" + without_redirects.lstrip() if without_redirects.strip() else "")
+            if redirects
+            else without_redirects
+        )
+        htaccess.write_text(updated, encoding="utf-8")
+        htaccess.chmod(0o644)
         
-        if self.config.agent_mode == "docker":
-            docker = shutil.which("docker")
-            if docker:
-                container = f"mp-{account['username']}-web"
+        docker = shutil.which("docker")
+        if docker:
+            container = f"mp-{account['username']}-web"
+            container_exists = subprocess.run(
+                [docker, "inspect", container],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode == 0
+            if container_exists:
+                container_doc_root = container_path(account, website["document_root"])
                 script = f"""
-                touch /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                chown www-data:www-data /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                sed -i '/# BEGIN MangoPanel Redirects/,/# END MangoPanel Redirects/d' /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
-                echo "{htaccess_snippet}" >> /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess
+                chown www-data:www-data {container_doc_root}/.htaccess
                 """
                 subprocess.run(
                     [docker, "exec", "-i", container, "bash", "-c", script],
                     check=False
                 )
-        return {"synced": True, "website_id": website_id, "redirects_count": len(redirects)}
+                # OpenLiteSpeed can cache the per-vhost rewrite state. Reload
+                # it after changing .htaccess so a newly-created redirect is
+                # effective immediately instead of waiting for a container
+                # restart.
+                subprocess.run(
+                    [docker, "exec", container, "/usr/local/lsws/bin/lswsctrl", "restart"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+        return {"synced": True, "website_id": website_id, "redirects_count": len(redirects), "artifact_path": str(htaccess)}
 
     def sync_website_modsec(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
@@ -4710,5 +4810,3 @@ def assign_account_ip(conn, account_id, ip_id):
 
     log_audit(conn, "system", 0, "assign_account_ip", "hosting_account", account_id, metadata={"account_id": account_id, "ip_id": ip_id, "active_ip": target_ip_str})
     return {"ok": True, "account_id": account_id, "ip_id": ip_id, "active_ip": target_ip_str}
-
-

@@ -260,6 +260,15 @@
 
         <div class="client-main-content">
 
+          <div v-if="home.hosting_account_suspended" class="panel warning-panel" style="background: rgba(220, 38, 38, 0.12); border-left: 4px solid #dc2626; margin-bottom: 1rem;">
+            <h2 style="color: #b91c1c; margin: 0; display: flex; align-items: center; gap: 8px;">
+              <app-icon name="warning"></app-icon> Hosting Account Suspended
+            </h2>
+            <p style="margin: 0.5rem 0 0; color: var(--color-text-body, #4b5563); font-size: 14px;">
+              {{ home.hosting_account_suspension_mode === 'hard' ? 'The hosting stack and its services are currently turned off.' : 'Websites and hosting services are currently unavailable.' }} Please contact support to restore access.
+            </p>
+          </div>
+
           <!-- ═══════════════════════════════════════════════════════════ DASHBOARD -->
           <section v-if="activePage === 'dashboard'" class="page-stack">
             <!-- Maintenance alert banner -->
@@ -416,8 +425,15 @@
               </div>
               <button class="primary-button" @click="openSiteWizard()"><app-icon name="plus"></app-icon><span>Add Website</span></button>
             </div>
+            <div class="website-table-toolbar">
+              <label class="website-table-search">
+                <app-icon name="search"></app-icon>
+                <input v-model="websiteTableSearchQuery" type="search" placeholder="Search websites, status, DNS, SSL, PHP…" aria-label="Search websites table">
+              </label>
+              <small v-if="websiteTableSearchQuery">Showing {{ filteredWebsites.length }} of {{ websites.length }}</small>
+            </div>
             <div class="table-wrap">
-              <table>
+              <table class="website-table">
                 <thead>
                   <tr>
                     <th>Domain</th>
@@ -429,17 +445,23 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="site in websites" :key="site.id">
+                  <tr v-for="site in filteredWebsites" :key="site.id">
                     <td class="site-info-cell">
                       <strong>{{ site.domain }}</strong>
                       <small class="truncate-path" :title="site.document_root">{{ site.document_root }}</small>
-                      <small v-if="(site.nameservers || []).length">NS: {{ site.nameservers.join(', ') }}</small>
-                      <small v-else-if="site.dns_status === 'provider_failed'" style="color:var(--color-danger,#ef4444)" :title="site.dns_last_error || 'DNS provider sync failed'">⚠ Cloudflare sync failed</small>
-                      <small v-else>{{ site.dns_provider_label || 'DNS' }} syncing</small>
                     </td>
-                    <td><span class="pill" :class="site.status">{{ site.status }}</span></td>
+                    <td>
+                      <span class="pill" :class="site.status">{{ site.status }}</span>
+                      <small v-if="site.dns_status === 'provider_failed'" class="website-status-detail website-status-error" :title="site.dns_last_error || 'DNS provider sync failed'">Cloudflare sync failed</small>
+                      <small v-else-if="!(site.nameservers || []).length" class="website-status-detail">{{ site.dns_provider_label || 'DNS' }} syncing</small>
+                    </td>
                     <td><span class="pill" :class="site.ssl_status">{{ site.ssl_status }}</span></td>
-                    <td><small :title="site.dns_last_error || undefined">{{ (site.nameservers || []).join(', ') || (site.dns_status === 'provider_failed' ? (site.dns_last_error ? '⚠ ' + site.dns_last_error.slice(0, 80) : 'Cloudflare provider failed') : (site.dns_provider_label === 'Cloudflare' ? 'Waiting for Cloudflare nameservers' : 'DNS pending')) }}</small></td>
+                    <td>
+                      <div v-if="(site.nameservers || []).length" class="nameserver-list">
+                        <small v-for="nameserver in site.nameservers" :key="nameserver">{{ nameserver }}</small>
+                      </div>
+                      <small v-else :title="site.dns_last_error || undefined">{{ site.dns_status === 'provider_failed' ? (site.dns_last_error ? '⚠ ' + site.dns_last_error.slice(0, 80) : 'Cloudflare provider failed') : (site.dns_provider_label === 'Cloudflare' ? 'Waiting for Cloudflare nameservers' : 'DNS pending') }}</small>
+                    </td>
                     <td>
                       <div class="php-switcher-cell">
                         <select
@@ -454,16 +476,16 @@
                       </div>
                     </td>
                     <td class="actions">
-                      <a class="small-button" :href="site.public_url" target="_blank" rel="noreferrer">Open</a>
-                      <button @click="issueSsl(site)">SSL</button>
-                      <button class="secondary-button" @click="migrateWebsiteDnsProvider(site)">{{ site.dns_provider_label === 'Cloudflare' ? 'To Local DNS' : 'To Cloudflare' }}</button>
-                      <button class="primary-button" @click="openConnectWizard(site)">Connect to hosting</button>
-                      <button @click="launch('files')">Files</button>
-                      <button @click="launch('phpmyadmin')">DB</button>
-                      <button class="danger-button" @click="deleteWebsite(site)"><app-icon name="trash"></app-icon></button>
+                      <a class="table-icon-button" :href="site.public_url" target="_blank" rel="noreferrer" data-tooltip="Open website" aria-label="Open website"><app-icon name="external"></app-icon></a>
+                      <button class="table-icon-button" @click="issueSsl(site)" data-tooltip="Issue or renew SSL" aria-label="Issue or renew SSL"><app-icon name="ssl"></app-icon></button>
+                      <button class="table-icon-button" @click="migrateWebsiteDnsProvider(site)" :data-tooltip="site.dns_provider_label === 'Cloudflare' ? 'Switch to Local DNS' : 'Switch to Cloudflare'" :aria-label="site.dns_provider_label === 'Cloudflare' ? 'Switch to Local DNS' : 'Switch to Cloudflare'"><app-icon name="dns"></app-icon></button>
+                      <button class="table-icon-button table-icon-button-primary" @click="openConnectWizard(site)" data-tooltip="Connect to hosting" aria-label="Connect to hosting"><app-icon name="link"></app-icon></button>
+                      <button class="table-icon-button" @click="launch('files', '/files')" data-tooltip="Open files" aria-label="Open files"><app-icon name="files"></app-icon></button>
+                      <button class="table-icon-button" @click="launch('phpmyadmin')" data-tooltip="Open database manager" aria-label="Open database manager"><app-icon name="phpmyadmin"></app-icon></button>
+                      <button class="table-icon-button table-icon-button-danger" @click="deleteWebsite(site)" data-tooltip="Delete website" aria-label="Delete website"><app-icon name="trash"></app-icon></button>
                     </td>
                   </tr>
-                  <tr v-if="!websites.length"><td colspan="6" class="empty-row">No websites yet. Add one above.</td></tr>
+                  <tr v-if="!filteredWebsites.length"><td colspan="6" class="empty-row">{{ websites.length ? 'No websites match your search.' : 'No websites yet. Add one above.' }}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -488,7 +510,7 @@
 
             <div class="files-cards-grid">
               <!-- Card 1: Root Filesystem (Hidden for restricted collaborators) -->
-              <div v-if="!isCollaboratorRestrictedWebsites" class="panel file-access-card" @click="launch('files')">
+              <div v-if="!isCollaboratorRestrictedWebsites" class="panel file-access-card" @click="launch('files', '/files')">
                 <div class="large-icon"><app-icon name="server"></app-icon></div>
                 <h3>Access Root Filesystem of this hosting</h3>
               </div>
@@ -2070,74 +2092,145 @@
 
           <!-- ═══════════════════════════════════════════════════════════ DNS ZONE EDITOR -->
           <section v-if="activePage === 'dns-zone-editor'" class="panel">
-            <div class="advanced-tool-header">
-              <app-icon name="dns"></app-icon>
-              <div>
-                <h2>DNS Zone Editor</h2>
-                <p>Manage DNS records for your domains. Changes propagate within 5 minutes on most resolvers.</p>
+            <div class="dns-editor-header">
+              <div class="dns-editor-title">
+                <span class="dns-editor-icon"><app-icon name="dns"></app-icon></span>
+                <div>
+                  <span class="eyebrow">Domains &amp; DNS</span>
+                  <h2>DNS Zone Editor</h2>
+                  <p>Create and manage records with provider-aware controls.</p>
+                </div>
               </div>
-            </div>
-
-            <div class="dns-domain-bar">
-              <label>
-                Select domain
+              <label class="dns-domain-picker">
+                <span>Manage domain</span>
                 <select v-model="selectedDomainId" @change="newDnsRecord.domain_id = selectedDomainId; loadDnsRecords()">
                   <option value="" disabled>Choose a domain</option>
                   <option v-for="domain in domains" :key="domain.id" :value="domain.id">{{ domain.name }}</option>
                 </select>
               </label>
             </div>
-            <div v-if="selectedDnsZone" class="info-box" style="margin-bottom: 1rem;">
-              <app-icon name="dns"></app-icon>
-              <p>Provider: <code>{{ selectedDomain?.dns_provider_label || selectedDnsZone.provider }}</code> · Status: {{ selectedDomain?.dns_status || selectedDnsZone.status }} · Serial {{ selectedDnsZone.serial }} · NS {{ (selectedDomain?.nameservers || selectedDnsZone.nameservers || []).join(', ') || 'pending provider sync' }}</p>
-              <div class="actions">
-                <button @click="rebuildDnsZone"><app-icon name="refresh"></app-icon><span>Rebuild</span></button>
-                <button :disabled="settingDefaultDns" @click="setDefaultDnsRecords">
+
+            <template v-if="selectedDomainId">
+              <div class="dns-zone-summary">
+                <div class="dns-zone-summary-main">
+                  <div class="dns-zone-domain"><app-icon name="website"></app-icon><strong>{{ selectedDomain?.name }}</strong></div>
+                  <div class="dns-zone-meta">
+                    <span class="dns-provider-badge" :class="{ cloudflare: isCloudflareDns }"><span class="dns-provider-dot"></span>{{ selectedDomain?.dns_provider_label || selectedDnsZone?.provider || 'DNS provider' }}</span>
+                    <span class="dns-state-badge" :class="selectedDomain?.dns_status">{{ selectedDomain?.dns_status || selectedDnsZone?.status || 'unknown' }}</span>
+                    <span v-if="selectedDnsZone?.serial">Serial {{ selectedDnsZone.serial }}</span>
+                  </div>
+                  <small class="dns-nameserver-summary">Nameservers: {{ (selectedDomain?.nameservers || selectedDnsZone?.nameservers || []).join(' · ') || 'Pending provider sync' }}</small>
+                </div>
+                <div class="dns-zone-actions">
+                  <button @click="rebuildDnsZone" data-tooltip="Rebuilds the saved DNS records and publishes the zone to the selected provider." aria-label="Rebuild and publish DNS zone"><app-icon name="refresh"></app-icon><span>Rebuild</span></button>
+                  <button :disabled="settingDefaultDns" @click="setDefaultDnsRecords">
                   <span v-if="settingDefaultDns" class="btn-spinner"></span>
                   <app-icon v-else name="plus"></app-icon>
                   <span>{{ settingDefaultDns ? 'Setting Defaults...' : 'Set Default Values' }}</span>
-                </button>
-                <button @click="verifyDnsZone"><app-icon name="check"></app-icon><span>Verify</span></button>
-                <button @click="exportDnsZone"><app-icon name="download"></app-icon><span>Export</span></button>
-                <button v-if="selectedDomain" @click="migrateDomainProvider(selectedDomain, selectedDomain.dns_provider === 'cloudflare' ? 'local_powerdns' : 'cloudflare')"><app-icon name="refresh"></app-icon><span>Switch Provider</span></button>
+                  </button>
+                  <button @click="verifyDnsZone" data-tooltip="Read-only check: verifies that your domain delegates to the expected nameservers. It does not change DNS records." aria-label="Verify DNS nameservers"><app-icon name="check"></app-icon><span>Verify</span></button>
+                  <button @click="exportDnsZone"><app-icon name="download"></app-icon><span>Export</span></button>
+                  <button v-if="isCloudflareDns" :disabled="dnsPulling" @click="pullDnsProviderRecords" data-tooltip="Imports records currently present in Cloudflare into this panel, then queues a sync." aria-label="Pull existing provider records"><app-icon name="download"></app-icon><span>{{ dnsPulling ? 'Pulling…' : 'Pull Existing' }}</span></button>
+                  <button v-if="selectedDomain" @click="openDnsProviderModal(selectedDomain)"><app-icon name="refresh"></app-icon><span>Switch DNS Provider</span></button>
+                </div>
               </div>
-            </div>
-            <div v-if="selectedDomain && selectedDomain.dns_warnings && selectedDomain.dns_warnings.length" class="info-box" style="margin-bottom: 1rem;">
+
+              <div v-if="dnsProviderModal.open" class="modal-overlay" @click.self="closeDnsProviderModal">
+                <div class="modal-panel dns-provider-switch-modal">
+                  <div class="modal-header">
+                    <div><h2>Switch DNS Provider</h2><p>{{ dnsProviderModal.domain?.name }}</p></div>
+                    <button class="close-button" type="button" aria-label="Close" @click="closeDnsProviderModal">×</button>
+                  </div>
+                  <div class="modal-body">
+                    <p class="muted">Choose the authoritative DNS provider for this domain. This setting applies only to this domain.</p>
+                    <label>Provider
+                      <select v-model="dnsProviderModal.provider_key" @change="onDnsProviderModalProviderChange">
+                        <option v-for="provider in dnsProviderOptions.providers" :key="provider.key" :value="provider.key">{{ provider.display_name }}</option>
+                      </select>
+                    </label>
+                    <label v-if="dnsProviderModal.provider_key === 'cloudflare'">Cloudflare account
+                      <select v-model="dnsProviderModal.provider_account_id">
+                        <option value="">— select account —</option>
+                        <option v-for="account in dnsProviderAccountsForModal()" :key="account.id" :value="account.id">{{ account.display_name }}{{ account.account_name ? ' — ' + account.account_name : '' }}</option>
+                      </select>
+                      <small v-if="!dnsProviderAccountsForModal().length" class="form-help">No permitted Cloudflare accounts are available for this plan.</small>
+                    </label>
+                  </div>
+                  <div class="modal-footer">
+                    <button class="ghost-button" type="button" @click="closeDnsProviderModal">Cancel</button>
+                    <button class="primary-button" type="button" @click="submitDnsProviderModal">Switch Provider</button>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="selectedDomain && selectedDomain.dns_warnings && selectedDomain.dns_warnings.length" class="info-box dns-zone-warning">
               <app-icon name="warning"></app-icon>
               <p>{{ selectedDomain.dns_warnings[0].message }}</p>
-            </div>
-
-            <div v-if="selectedDomainId" class="dns-add-form">
-              <h3>Add DNS Record</h3>
-              <div class="inline-form dns-form">
-                <select v-model="newDnsRecord.type">
-                  <option v-for="t in ['A','AAAA','CNAME','MX','TXT','NS','SRV','CAA']" :key="t">{{ t }}</option>
-                </select>
-                <input v-model="newDnsRecord.name" placeholder="Name (@ for root)">
-                <input v-model="newDnsRecord.value" placeholder="Value / Target">
-                <input v-model.number="newDnsRecord.ttl" type="number" min="60" placeholder="TTL" style="width:90px">
-                <button class="primary-button" @click="createDnsRecord"><app-icon name="plus"></app-icon><span>Add</span></button>
               </div>
-            </div>
 
-            <div v-if="selectedDomainId" class="table-wrap">
-              <table>
-                <thead><tr><th>Type</th><th>Name</th><th>Value</th><th>TTL</th><th>Actions</th></tr></thead>
+              <div class="dns-add-form">
+                <div class="dns-form-heading">
+                  <div><span class="eyebrow">Zone record</span><h3>Add DNS record</h3></div>
+                  <span class="dns-form-hint">{{ dnsRecordTypeMeta.description }}</span>
+                </div>
+                <div class="dns-form-grid">
+                  <label>Record type
+                    <select v-model="newDnsRecord.type" @change="handleDnsTypeChange">
+                      <option v-for="t in dnsRecordTypes" :key="t" :value="t">{{ t }} — {{ dnsRecordTypeMetaFor(t).label }}</option>
+                    </select>
+                  </label>
+                  <label>Name
+                    <input v-model.trim="newDnsRecord.name" placeholder="@ for root, or subdomain">
+                    <small>Use @ for the root domain.</small>
+                  </label>
+                  <label class="dns-value-field" :class="{ 'dns-value-field-wide': newDnsRecord.type === 'TXT' }">{{ dnsRecordTypeMeta.valueLabel }}
+                    <textarea v-if="newDnsRecord.type === 'TXT'" v-model.trim="newDnsRecord.value" rows="2" :placeholder="dnsRecordTypeMeta.placeholder"></textarea>
+                    <input v-else v-model.trim="newDnsRecord.value" :placeholder="dnsRecordTypeMeta.placeholder">
+                    <small>{{ dnsRecordTypeMeta.valueHelp }}</small>
+                  </label>
+                  <label v-if="['MX', 'SRV'].includes(newDnsRecord.type)">Priority
+                    <input v-model.number="newDnsRecord.priority" type="number" min="0" max="65535" placeholder="10">
+                    <small>{{ newDnsRecord.type === 'MX' ? 'Lower values are preferred.' : 'Service priority.' }}</small>
+                  </label>
+                  <label>TTL
+                    <select v-model.number="newDnsRecord.ttl">
+                      <option :value="300">5 minutes</option><option :value="600">10 minutes</option><option :value="1800">30 minutes</option><option :value="3600">1 hour</option><option :value="14400">4 hours</option><option :value="86400">1 day</option>
+                    </select>
+                  </label>
+                  <label v-if="isCloudflareDns && canProxyNewDnsRecord" class="dns-proxy-toggle">
+                    Cloudflare routing
+                    <button type="button" class="dns-toggle" :class="{ active: newDnsRecord.proxied }" role="switch" :aria-checked="newDnsRecord.proxied" @click="newDnsRecord.proxied = !newDnsRecord.proxied">
+                      <span class="dns-toggle-track"><span></span></span><strong>{{ newDnsRecord.proxied ? 'Proxied' : 'DNS only' }}</strong>
+                    </button>
+                    <small>{{ newDnsRecord.proxied ? 'Traffic passes through Cloudflare.' : 'DNS resolves directly to the origin.' }}</small>
+                  </label>
+                  <div v-else-if="isCloudflareDns" class="dns-proxy-note"><app-icon name="info"></app-icon><span>Cloudflare proxying is available for A, AAAA, and CNAME records only.</span></div>
+                  <button class="primary-button dns-add-button" @click="createDnsRecord"><app-icon name="plus"></app-icon><span>Add record</span></button>
+                </div>
+              </div>
+
+              <div class="dns-records-heading"><div><span class="eyebrow">Live zone</span><h3>DNS records</h3></div><span>{{ filteredDnsRecords.length }} record{{ filteredDnsRecords.length === 1 ? '' : 's' }}</span></div>
+              <div class="table-wrap dns-records-table">
+                <table>
+                <thead><tr><th>Type</th><th>Name</th><th>Content</th><th>TTL</th><th>Priority</th><th>Routing</th><th>Actions</th></tr></thead>
                 <tbody>
                   <tr v-for="record in filteredDnsRecords" :key="record.id">
                     <td><span class="pill dns-type-pill">{{ record.type }}</span></td>
                     <td><code>{{ record.name }}</code></td>
-                    <td><code class="dns-value">{{ record.value }}</code></td>
+                    <td><code class="dns-value" :title="record.value">{{ record.value }}</code></td>
                     <td>{{ record.ttl }}s</td>
+                    <td>{{ record.priority ?? '—' }}</td>
+                    <td><button v-if="isCloudflareDns && ['A', 'AAAA', 'CNAME'].includes(record.type) && !dnsRecordLocked(record)" class="dns-routing-pill dns-routing-toggle" :class="{ proxied: record.proxied }" :disabled="dnsProxySaving[record.id]" @click="toggleDnsProxy(record)"><span></span>{{ dnsProxySaving[record.id] ? 'Saving…' : (record.proxied ? 'Proxied' : 'DNS only') }}</button><span v-else-if="isCloudflareDns && ['A', 'AAAA', 'CNAME'].includes(record.type)" class="dns-routing-pill" :class="{ proxied: record.proxied }"><span></span>{{ record.proxied ? 'Proxied' : 'DNS only' }}</span><span v-else class="muted">—</span></td>
                     <td class="actions">
                       <span v-if="dnsRecordLocked(record)" class="pill">Locked</span>
-                      <button v-else class="danger-button" @click="deleteDnsRecord(record)"><app-icon name="trash"></app-icon></button>
+                      <button v-else class="danger-button" :disabled="dnsDeleteSaving[record.id]" @click="deleteDnsRecord(record)"><app-icon name="trash"></app-icon></button>
                     </td>
                   </tr>
-                  <tr v-if="!filteredDnsRecords.length"><td colspan="5" class="empty-row">No DNS records for this domain yet.</td></tr>
+                  <tr v-if="!filteredDnsRecords.length"><td colspan="7" class="empty-row">No DNS records for this domain yet.</td></tr>
                 </tbody>
               </table>
-            </div>
+              </div>
+            </template>
             <div v-if="!selectedDomainId && domains.length === 0" class="empty-state">
               <app-icon name="dns"></app-icon>
               <p>No domains available. Add a website first.</p>
@@ -2485,6 +2578,30 @@
             </div>
 
             <div class="cpanel-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;">
+              <!-- Profile and billing card -->
+              <div class="panel" style="padding: 1.5rem; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; grid-column: 1 / -1;">
+                <h3 style="margin-top: 0; margin-bottom: .5rem; color: var(--text);">Profile &amp; Billing</h3>
+                <p class="muted" style="margin-top:0;">Keep your contact and invoice details up to date. Email changes require your current password and authenticator code.</p>
+                <div v-if="profileLoading" class="muted">Loading profile…</div>
+                <form v-else class="form-grid" @submit.prevent="saveProfile">
+                  <label>Full name<input v-model="profileForm.full_name" autocomplete="name" required></label>
+                  <label>Login email<input v-model="profileForm.email" type="email" autocomplete="email" required></label>
+                  <label>Billing email<input v-model="profileForm.billing.billing_email" type="email" autocomplete="email"></label>
+                  <label>Company name<input v-model="profileForm.billing.company_name" autocomplete="organization"></label>
+                  <label>Phone<input v-model="profileForm.billing.phone" autocomplete="tel"></label>
+                  <label>Tax/VAT ID<input v-model="profileForm.billing.tax_id"></label>
+                  <label>Address line 1<input v-model="profileForm.billing.address_line1" autocomplete="address-line1"></label>
+                  <label>Address line 2<input v-model="profileForm.billing.address_line2" autocomplete="address-line2"></label>
+                  <label>City<input v-model="profileForm.billing.city" autocomplete="address-level2"></label>
+                  <label>State/Province<input v-model="profileForm.billing.state" autocomplete="address-level1"></label>
+                  <label>Postal code<input v-model="profileForm.billing.postal_code" autocomplete="postal-code"></label>
+                  <label>Country<input v-model="profileForm.billing.country" autocomplete="country-name"></label>
+                  <label>Current password <span class="muted">(email change only)</span><input v-model="settingsForm.current_password" type="password" autocomplete="current-password"></label>
+                  <label>Current 2FA code <span class="muted">(email change only)</span><input v-model="settingsForm.totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
+                  <button class="primary-button" type="submit" :disabled="profileSaving">{{ profileSaving ? 'Saving…' : 'Save Profile & Billing' }}</button>
+                </form>
+              </div>
+
               <!-- Password change card -->
               <div class="panel" style="padding: 1.5rem; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;">
                 <h3 style="margin-top: 0; margin-bottom: 1.2rem; color: var(--text); display: flex; align-items: center; gap: 8px;">
@@ -2499,6 +2616,9 @@
                   </label>
                   <label>Confirm New Password
                     <input v-model="settingsForm.confirm_password" type="password" placeholder="Confirm new password" autocomplete="new-password">
+                  </label>
+                  <label v-if="has2FA">Current 2FA code
+                    <input v-model="settingsForm.totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456">
                   </label>
                   <button class="primary-button" style="margin-top: 0.5rem;" @click="updatePassword" :disabled="isChangingPassword">
                     {{ isChangingPassword ? 'Updating…' : 'Change Password' }}
@@ -2864,10 +2984,11 @@
               
               <div style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid var(--border-color);">
                 <h3>Disable 2FA</h3>
-                <p style="margin: 0.5rem 0;">To disable 2FA, please enter a code from your authenticator app.</p>
+                <p style="margin: 0.5rem 0;">To disable 2FA, confirm your password and enter a code from your authenticator app.</p>
                 <div style="display: flex; gap: 1rem; align-items: center;">
+                  <input v-model="tfaDisablePassword" type="password" placeholder="Current password" autocomplete="current-password">
                   <input v-model="tfaDisableCode" type="text" placeholder="000000" maxlength="6" style="width: 150px; text-align: center; letter-spacing: 2px; font-size: 1.2rem;">
-                  <button class="danger-button" @click="disable2FA" :disabled="tfaDisableCode.length !== 6">Disable 2FA</button>
+                  <button class="danger-button" @click="disable2FA" :disabled="tfaDisableCode.length !== 6 || !tfaDisablePassword">Disable 2FA</button>
                 </div>
               </div>
             </div>
@@ -3926,6 +4047,6 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/client.js?v=1.0.8"></script>
+    <script src="/assets/client.js?v=1.0.10"></script>
   </body>
 </html>

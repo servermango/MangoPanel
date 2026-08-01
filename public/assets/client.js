@@ -290,6 +290,7 @@ const app = createApp({
       selectedWebsiteId: "",
       siteSwitcherOpen: false,
       siteSearchQuery: "",
+      websiteTableSearchQuery: "",
       searchQuery: "",
       userMenuOpen: false,
       collaborators: [],
@@ -422,10 +423,17 @@ const app = createApp({
       // DNS Zone Editor
       dnsRecords: [],
       dnsZones: [],
+      dnsDeleteSaving: {},
+      dnsDeleteQueues: {},
+      dnsProviderOptions: { providers: [], accounts: [], default_provider: "local_powerdns", default_provider_account_id: null, customer_editable: true },
+      dnsProviderModal: { open: false, domain: null, provider_key: "", provider_account_id: "" },
       selectedDomainId: "",
       settingDefaultDns: false,
+      dnsProxySaving: {},
+      dnsPulling: false,
       nameserverEditor: { domainId: null, source: "default", values: ["", ""] },
-      newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300 },
+      dnsRecordTypes: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
+      newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300, priority: null, proxied: false },
       // Cache Manager
       cacheStatus: { object_cache: "inactive", opcode_cache: "active", last_purged: null, opcode_cache_backend: "opcache", object_cache_backend: "redis" },
       cachePurging: false,
@@ -466,6 +474,27 @@ const app = createApp({
       has2FA: false,
       tfaSetup: { secret: null, uri: "", code: "" },
       tfaDisableCode: "",
+      tfaDisablePassword: "",
+      profileLoading: false,
+      profileSaving: false,
+      profileForm: {
+        id: null,
+        full_name: "",
+        email: "",
+        has_2fa: false,
+        billing: {
+          billing_email: "",
+          company_name: "",
+          phone: "",
+          tax_id: "",
+          address_line1: "",
+          address_line2: "",
+          city: "",
+          state: "",
+          postal_code: "",
+          country: "",
+        },
+      },
       // Account Settings and Themes
       activeTheme: localStorage.getItem("mp_theme") || "Default",
       isChangingPassword: false,
@@ -473,6 +502,7 @@ const app = createApp({
         current_password: "",
         new_password: "",
         confirm_password: "",
+        totp_code: "",
       },
     };
   },
@@ -574,6 +604,19 @@ const app = createApp({
       const query = this.siteSearchQuery.trim().toLowerCase();
       if (!query) return this.websites;
       return this.websites.filter((site) => `${site.domain} ${site.status} ${site.document_root}`.toLowerCase().includes(query));
+    },
+    filteredWebsites() {
+      const query = this.websiteTableSearchQuery.trim().toLowerCase();
+      if (!query) return this.websites;
+      return this.websites.filter((site) => {
+        const searchable = [
+          site.domain, site.document_root, site.status, site.ssl_status,
+          site.php_version, site.dns_status, site.dns_provider,
+          site.dns_provider_label, site.dns_last_error,
+          (site.nameservers || []).join(" "),
+        ].filter(Boolean).join(" ").toLowerCase();
+        return searchable.includes(query);
+      });
     },
     diskPercent() {
       const used = Number(this.home.resources.disk_used_mb || 0);
@@ -968,6 +1011,15 @@ const app = createApp({
       if (!this.selectedDomainId) return this.dnsRecords;
       return this.dnsRecords.filter((r) => String(r.domain_id) === String(this.selectedDomainId));
     },
+    isCloudflareDns() {
+      return this.selectedDomain?.dns_provider === "cloudflare" || this.selectedDomain?.dns_provider_label === "Cloudflare";
+    },
+    canProxyNewDnsRecord() {
+      return ["A", "AAAA", "CNAME"].includes(this.newDnsRecord.type);
+    },
+    dnsRecordTypeMeta() {
+      return this.dnsRecordTypeMetaFor(this.newDnsRecord.type);
+    },
   },
   methods: {
     async recalculateUsage() {
@@ -1210,12 +1262,18 @@ const app = createApp({
       try {
         this.featureStatuses = (await this.api("/api/client/feature-status")).features || {};
         this.home = await this.api("/api/client/home");
+        this.has2FA = this.home.has_2fa || false;
         if (this.hasHostingAccount) {
           const validAccount = this.home.accounts.find((a) => String(a.id) === String(this.selectedAccountId));
           if (!validAccount) {
             this.selectedAccountId = String(this.home.accounts[0].id);
             localStorage.setItem("mp_selected_account_id", this.selectedAccountId);
           }
+        }
+        if (this.home.hosting_account_suspended) {
+          this.websites = this.home.websites || [];
+          if (this.activePage === "settings") await this.loadProfile();
+          return;
         }
         this.websites = (await this.api("/api/client/websites")).websites;
         this.domains = (await this.api("/api/client/domains")).domains;
@@ -1244,7 +1302,7 @@ const app = createApp({
         this.ftpAccounts = (await this.api("/api/client/ftp-accounts")).ftp_accounts || [];
         const hotlinkPayload = await this.api("/api/client/hotlink-protection");
         this.hotlink = { ...this.hotlink, ...(hotlinkPayload.hotlink || {}) };
-        this.has2FA = this.home.has_2fa || false;
+        if (this.activePage === "settings") await this.loadProfile();
         await this.loadInstallerScripts();
         await this.fetchCollaborators();
         if (this.activePage === "services") {
@@ -1935,6 +1993,59 @@ const app = createApp({
         this.notify(error.message, "error");
       }
     },
+    async loadDnsProviderOptions() {
+      try {
+        const payload = await this.api("/api/client/dns/provider-options");
+        this.dnsProviderOptions = payload.dns_provider_options || this.dnsProviderOptions;
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async openDnsProviderModal(domain) {
+      if (!domain) return;
+      if (!this.dnsProviderOptions.providers.length) await this.loadDnsProviderOptions();
+      this.dnsProviderModal = {
+        open: true,
+        domain,
+        provider_key: domain.dns_provider || this.dnsProviderOptions.default_provider || "local_powerdns",
+        provider_account_id: domain.dns_provider_account_id || this.dnsProviderOptions.default_provider_account_id || "",
+      };
+      if (!this.dnsProviderModal.provider_key || !this.dnsProviderOptions.providers.some((provider) => provider.key === this.dnsProviderModal.provider_key)) {
+        this.dnsProviderModal.provider_key = this.dnsProviderOptions.default_provider || (this.dnsProviderOptions.providers[0] || {}).key || "";
+        this.onDnsProviderModalProviderChange();
+      }
+    },
+    closeDnsProviderModal() {
+      this.dnsProviderModal = { open: false, domain: null, provider_key: "", provider_account_id: "" };
+    },
+    dnsProviderAccountsForModal() {
+      return this.dnsProviderOptions.accounts || [];
+    },
+    onDnsProviderModalProviderChange() {
+      if (this.dnsProviderModal.provider_key !== "cloudflare") this.dnsProviderModal.provider_account_id = "";
+      else if (!this.dnsProviderModal.provider_account_id) this.dnsProviderModal.provider_account_id = this.dnsProviderOptions.default_provider_account_id || (this.dnsProviderAccountsForModal()[0] || {}).id || "";
+    },
+    async submitDnsProviderModal() {
+      const modal = this.dnsProviderModal;
+      if (!modal.domain || !modal.provider_key) return;
+      if (modal.provider_key === "cloudflare" && !modal.provider_account_id) {
+        this.notify("Select a Cloudflare account for this domain.", "error");
+        return;
+      }
+      try {
+        const payload = await this.api(`/api/client/domains/${modal.domain.id}/dns/migrate-provider`, {
+          method: "POST",
+          body: JSON.stringify({ dns_provider: modal.provider_key, dns_provider_account_id: modal.provider_key === "cloudflare" ? Number(modal.provider_account_id) : null }),
+        });
+        this.notify(`${modal.domain.name} DNS provider migration queued (job #${payload.job_id})`, "success");
+        this.closeDnsProviderModal();
+        const domainsRes = await this.api("/api/client/domains");
+        if (domainsRes && domainsRes.domains) this.domains = domainsRes.domains;
+        if (this.selectedDomainId) await this.loadDnsRecords();
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
     async createDnsRecord() {
       if (!this.newDnsRecord.domain_id || !this.newDnsRecord.value) {
         this.notify("Please select a domain and enter a value.", "error");
@@ -1948,21 +2059,66 @@ const app = createApp({
         this.dnsRecords = payload.dns_records || this.dnsRecords;
         this.dnsZones = payload.dns_zones || this.dnsZones;
         this.notify(`DNS record synced in development mode (job #${payload.job_id})`, "success");
-        this.newDnsRecord = { domain_id: this.newDnsRecord.domain_id, type: "A", name: "@", value: "", ttl: 300 };
+        this.newDnsRecord = { domain_id: this.newDnsRecord.domain_id, type: "A", name: "@", value: "", ttl: 300, priority: null, proxied: false };
       } catch (error) {
         this.notify(error.message, "error");
       }
     },
-    async deleteDnsRecord(record) {
-      if (!window.confirm(`Delete ${record.type} record "${record.name}"?`)) return;
+    dnsRecordTypeMetaFor(type) {
+      const metadata = {
+        A: { label: "IPv4 address", description: "Point a hostname to an IPv4 address.", valueLabel: "IPv4 address", placeholder: "203.0.113.10", valueHelp: "Example: 203.0.113.10" },
+        AAAA: { label: "IPv6 address", description: "Point a hostname to an IPv6 address.", valueLabel: "IPv6 address", placeholder: "2001:db8::10", valueHelp: "Example: 2001:db8::10" },
+        CNAME: { label: "Canonical name", description: "Alias one hostname to another hostname.", valueLabel: "Target hostname", placeholder: "target.example.com", valueHelp: "Use a hostname, not an IP address." },
+        MX: { label: "Mail server", description: "Choose where email for this domain is delivered.", valueLabel: "Mail server", placeholder: "mail.example.com", valueHelp: "Priority is required for mail delivery." },
+        TXT: { label: "Text", description: "Store verification, SPF, DKIM, or other text data.", valueLabel: "Text value", placeholder: "v=spf1 include:example.com ~all", valueHelp: "Keep the complete value on one line." },
+        NS: { label: "Nameserver", description: "Delegate a hostname to an authoritative nameserver.", valueLabel: "Nameserver hostname", placeholder: "ns1.example.com", valueHelp: "Use a fully qualified hostname." },
+        SRV: { label: "Service", description: "Publish the location of a network service.", valueLabel: "Service target", placeholder: "10 5 443 service.example.com", valueHelp: "Enter weight, port, and target separated by spaces." },
+        CAA: { label: "Certificate authority", description: "Control which certificate authorities may issue certificates.", valueLabel: "CAA value", placeholder: "0 issue letsencrypt.org", valueHelp: "Enter flags, tag, and value separated by spaces." },
+      };
+      return metadata[type] || metadata.A;
+    },
+    handleDnsTypeChange() {
+      if (!["MX", "SRV"].includes(this.newDnsRecord.type)) this.newDnsRecord.priority = null;
+      if (!this.canProxyNewDnsRecord) this.newDnsRecord.proxied = false;
+    },
+    async toggleDnsProxy(record) {
+      if (!this.isCloudflareDns || !["A", "AAAA", "CNAME"].includes(record.type) || this.dnsProxySaving[record.id]) return;
+      this.dnsProxySaving[record.id] = true;
       try {
-        const payload = await this.api(`/api/client/dns-records/${record.id}`, { method: "DELETE" });
-        this.dnsRecords = payload.dns_records || this.dnsRecords.filter((r) => r.id !== record.id);
+        const payload = await this.api(`/api/client/dns-records/${record.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ proxied: !record.proxied }),
+        });
+        this.dnsRecords = payload.dns_records || this.dnsRecords;
         this.dnsZones = payload.dns_zones || this.dnsZones;
-        this.notify(`DNS record removed from development zone (job #${payload.job_id})`, "success");
+        this.notify(`${record.name} is now ${record.proxied ? "DNS only" : "Cloudflare proxied"}.`, "success");
       } catch (error) {
         this.notify(error.message, "error");
+      } finally {
+        this.dnsProxySaving[record.id] = false;
       }
+    },
+    async deleteDnsRecord(record) {
+      if (!window.confirm(`Delete ${record.type} record "${record.name}"?`)) return;
+      const domainKey = String(record.domain_id || this.selectedDomainId || "all");
+      const previous = this.dnsDeleteQueues[domainKey] || Promise.resolve();
+      this.dnsDeleteSaving[record.id] = true;
+      const operation = previous.catch(() => {}).then(async () => {
+        try {
+          const payload = await this.api(`/api/client/dns-records/${record.id}`, { method: "DELETE" });
+          this.dnsRecords = payload.dns_records || this.dnsRecords.filter((r) => r.id !== record.id);
+          this.dnsZones = payload.dns_zones || this.dnsZones;
+          this.notify(`DNS record removed from development zone (job #${payload.job_id})`, "success");
+        } catch (error) {
+          this.notify(error.message, "error");
+        } finally {
+          this.dnsDeleteSaving[record.id] = false;
+        }
+      });
+      const cleanup = operation.finally(() => {
+        if (this.dnsDeleteQueues[domainKey] === cleanup) delete this.dnsDeleteQueues[domainKey];
+      });
+      this.dnsDeleteQueues[domainKey] = cleanup;
     },
     dnsRecordLocked(record) {
       return Boolean(record.locked || record.system_record || (record.type === "NS" && record.name === "@") || record.type === "SOA");
@@ -1976,6 +2132,19 @@ const app = createApp({
         await this.loadDnsRecords();
       } catch (error) {
         this.notify(error.message, "error");
+      }
+    },
+    async pullDnsProviderRecords() {
+      if (!this.selectedDomainId || this.dnsPulling) return;
+      this.dnsPulling = true;
+      try {
+        const payload = await this.api(`/api/client/domains/${this.selectedDomainId}/dns/pull-provider-records`, { method: "POST", body: "{}" });
+        await this.loadDnsRecords();
+        this.notify(`${payload.remote_record_count} provider record(s) found; ${payload.imported_count} new record(s) imported. Sync queued (job #${payload.job_id})`, "success");
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.dnsPulling = false;
       }
     },
     async verifyDnsZone() {
@@ -2507,11 +2676,17 @@ const app = createApp({
       try {
         await this.api("/api/client/2fa/disable", {
           method: "POST",
-          body: JSON.stringify({ code: this.tfaDisableCode })
+          body: JSON.stringify({
+            code: this.tfaDisableCode,
+            totp_code: this.tfaDisableCode,
+            current_password: this.tfaDisablePassword,
+          })
         });
         this.has2FA = false;
         this.tfaDisableCode = "";
+        this.tfaDisablePassword = "";
         this.notify("Two-Factor Authentication has been disabled.", "success");
+        this.handleSessionExpired();
       } catch (error) {
         this.notify(error.message, "error");
       }
@@ -3503,6 +3678,7 @@ const app = createApp({
         if (this.domains.length) this.selectedDomainId = this.domains[0].id;
         this.newDnsRecord.domain_id = this.selectedDomainId;
         this.loadDnsRecords();
+        this.loadDnsProviderOptions();
         if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }
       } else if (target === "account-sharing") {
         this.fetchCollaborators();
@@ -3531,11 +3707,25 @@ const app = createApp({
       }
     },
     async selectAccount(accountId) {
-      this.selectedAccountId = String(accountId);
-      localStorage.setItem("mp_selected_account_id", this.selectedAccountId);
-      this.accountSwitcherOpen = false;
-      this.userMenuOpen = false;
-      await this.load();
+      const nextAccountId = String(accountId);
+      if (nextAccountId === String(this.activeAccount && this.activeAccount.id)) {
+        this.accountSwitcherOpen = false;
+        this.userMenuOpen = false;
+        return;
+      }
+      try {
+        await this.api("/api/client/collaborators/switch-account", {
+          method: "POST",
+          body: JSON.stringify({ account_id: Number(accountId) }),
+        });
+        this.selectedAccountId = nextAccountId;
+        localStorage.setItem("mp_selected_account_id", nextAccountId);
+        this.accountSwitcherOpen = false;
+        this.userMenuOpen = false;
+        await this.load();
+      } catch (error) {
+        this.notify(error.message || "Failed to switch account", "error");
+      }
     },
     toggleSiteSwitcher() {
       this.siteSwitcherOpen = !this.siteSwitcherOpen;
@@ -3764,6 +3954,54 @@ const app = createApp({
       this.clearSessionState();
       window.location.href = "/login";
     },
+    async loadProfile() {
+      this.profileLoading = true;
+      try {
+        const payload = await this.api("/api/client/profile");
+        this.profileForm = payload.profile;
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.profileLoading = false;
+      }
+    },
+    async saveProfile() {
+      const emailChanged = String(this.profileForm.email || "").trim().toLowerCase() !== String(this.home?.user?.email || "").trim().toLowerCase();
+      if (emailChanged && !this.settingsForm.current_password) {
+        this.notify("Your current password is required to change the login email.", "error");
+        return;
+      }
+      if (emailChanged && this.has2FA && String(this.settingsForm.totp_code || "").trim().length !== 6) {
+        this.notify("Your current authenticator code is required to change the login email.", "error");
+        return;
+      }
+      this.profileSaving = true;
+      try {
+        const payload = await this.api("/api/client/profile", {
+          method: "PATCH",
+          body: JSON.stringify({
+            full_name: this.profileForm.full_name,
+            email: this.profileForm.email,
+            billing: this.profileForm.billing,
+            current_password: this.settingsForm.current_password,
+            totp_code: this.settingsForm.totp_code,
+          }),
+        });
+        this.profileForm = payload.profile;
+        if (this.home && this.home.user) {
+          this.home.user.full_name = payload.profile.full_name;
+          this.home.user.email = payload.profile.email;
+        }
+        this.settingsForm.current_password = "";
+        this.settingsForm.totp_code = "";
+        this.notify("Profile and billing details saved.", "success");
+        if (payload.reauth_required) this.handleSessionExpired();
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.profileSaving = false;
+      }
+    },
     switchTheme(themeName) {
       this.activeTheme = themeName;
       localStorage.setItem("mp_theme", themeName);
@@ -3787,6 +4025,10 @@ const app = createApp({
         appToast("New password must be at least 10 characters long.", "error");
         return;
       }
+      if (this.has2FA && String(form.totp_code || "").trim().length !== 6) {
+        appToast("Enter your current authenticator code to change the password.", "error");
+        return;
+      }
       this.isChangingPassword = true;
       try {
         const payload = await this.api("/api/client/settings/change-password", {
@@ -3794,6 +4036,7 @@ const app = createApp({
           body: JSON.stringify({
             current_password: form.current_password,
             new_password: form.new_password,
+            totp_code: form.totp_code,
           }),
         });
         if (payload.success) {
@@ -3801,6 +4044,8 @@ const app = createApp({
           form.current_password = "";
           form.new_password = "";
           form.confirm_password = "";
+          form.totp_code = "";
+          this.handleSessionExpired();
         }
       } catch (err) {
         appToast(err.message, "error");
@@ -3843,9 +4088,60 @@ const app = createApp({
       if (newVal === "php-info") {
         this.loadPhpInfo();
       }
+      if (newVal === "settings") {
+        this.loadProfile();
+      }
     }
   }
 });
+
+function setupClientTooltips() {
+  let tooltip = null;
+  let activeTarget = null;
+
+  const hide = () => {
+    if (tooltip) tooltip.remove();
+    tooltip = null;
+    activeTarget = null;
+  };
+
+  const show = (target) => {
+    const text = target.dataset.tooltip;
+    if (!text) return;
+    hide();
+    tooltip = document.createElement("div");
+    tooltip.className = "client-js-tooltip";
+    tooltip.textContent = text;
+    document.body.appendChild(tooltip);
+    activeTarget = target;
+    const rect = target.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(8, rect.left + (rect.width - tooltipRect.width) / 2),
+      window.innerWidth - tooltipRect.width - 8,
+    );
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${Math.max(8, rect.bottom + 8)}px`;
+  };
+
+  document.addEventListener("mouseover", (event) => {
+    const target = event.target.closest?.("[data-tooltip]");
+    if (target && target !== activeTarget) show(target);
+  });
+  document.addEventListener("mouseout", (event) => {
+    const target = event.target.closest?.("[data-tooltip]");
+    if (target && !target.contains(event.relatedTarget)) hide();
+  });
+  document.addEventListener("focusin", (event) => {
+    const target = event.target.closest?.("[data-tooltip]");
+    if (target) show(target);
+  });
+  document.addEventListener("focusout", (event) => {
+    if (!event.relatedTarget || !event.relatedTarget.closest?.("[data-tooltip]")) hide();
+  });
+  window.addEventListener("scroll", hide, true);
+  window.addEventListener("resize", hide);
+}
 
 async function initClientPortal() {
   const urlHashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -3873,8 +4169,8 @@ async function initClientPortal() {
   }
 
   const vm = app.mount("#client-app");
+  setupClientTooltips();
   window.appToast = function(msg, type) { vm.notify(msg, type); };
 }
 
 initClientPortal();
-
