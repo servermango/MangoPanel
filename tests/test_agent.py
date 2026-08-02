@@ -112,6 +112,8 @@ class AgentTests(unittest.TestCase):
             self.assertIn('"mail_host"', routing_text)
             self.assertNotIn('"mail_plane_url"', routing_text)
             generated_compose = compose_path.read_text(encoding="utf-8")
+            self.assertIn("context: ./web", generated_compose)
+            self.assertIn("image: mp-u000001-web:latest", generated_compose)
             self.assertIn("/snappymail/snappymail/v/2.38.2/themes/MangoPanel:ro", generated_compose)
             self.assertIn("mp-u000001-mailproxy", generated_compose)
             self.assertIn("mailserver-state:/var/mail-state", generated_compose)
@@ -1107,4 +1109,3 @@ class AgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

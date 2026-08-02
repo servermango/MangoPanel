@@ -242,6 +242,7 @@ const app = createApp({
       websites: [],
       domains: [],
       registeredDomains: [],
+      registeredDomainSort: { key: "expiry", direction: "asc" },
       registeredWhoisModal: { open: false, loading: false, domain: "", activeTab: "registrant", form: {}, currentNameservers: [], defaultNameservers: [], nameserverMode: "default", nameservers: ["", ""], saving: false },
       databases: [],
       databaseUsers: [],
@@ -258,6 +259,8 @@ const app = createApp({
       // PHP Config
       phpVersions: ["8.2", "8.3", "8.4"],
       phpSwitching: {},
+      phpSwitchCountdowns: {},
+      phpSwitchTimers: {},
       editingPhpIniSite: null,
       phpIniForm: {},
       phpIniSaving: false,
@@ -552,6 +555,22 @@ const app = createApp({
     },
     serverIp() {
       return (this.home && this.home.server_ip) || "157.15.203.66";
+    },
+    sortedRegisteredDomains() {
+      const direction = this.registeredDomainSort.direction === "desc" ? -1 : 1;
+      const key = this.registeredDomainSort.key;
+      return [...this.registeredDomains].sort((left, right) => {
+        if (key === "domain") {
+          return String(left.domain_name || "").localeCompare(String(right.domain_name || "")) * direction;
+        }
+        const leftDays = this.domainDaysRemaining(left);
+        const rightDays = this.domainDaysRemaining(right);
+        if (leftDays == null && rightDays != null) return 1;
+        if (leftDays != null && rightDays == null) return -1;
+        const leftValue = leftDays == null ? Number.POSITIVE_INFINITY : leftDays;
+        const rightValue = rightDays == null ? Number.POSITIVE_INFINITY : rightDays;
+        return (leftValue - rightValue) * direction || String(left.domain_name || "").localeCompare(String(right.domain_name || ""));
+      });
     },
     unreadNotificationsCount() {
       return this.notifications.filter(n => !n.read).length;
@@ -1329,6 +1348,39 @@ const app = createApp({
       } catch (error) {
         this.notify(error.message, "error");
       }
+    },
+    domainDaysRemaining(domain) {
+      const raw = domain && domain.expiry_at;
+      if (!raw) return null;
+      const value = String(raw).trim();
+      let expiryTimestamp;
+      const slashDate = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (slashDate) {
+        expiryTimestamp = Date.UTC(Number(slashDate[3]), Number(slashDate[1]) - 1, Number(slashDate[2]));
+      } else if (/^\d{9,13}(?:\.\d+)?$/.test(value)) {
+        const numeric = Number(value);
+        expiryTimestamp = numeric < 100000000000 ? numeric * 1000 : numeric;
+      } else {
+        const dateText = value.slice(0, 10);
+        const isoDate = new Date(`${dateText}T00:00:00Z`);
+        expiryTimestamp = isoDate.getTime();
+        if (Number.isNaN(expiryTimestamp)) expiryTimestamp = Date.parse(value);
+      }
+      if (Number.isNaN(expiryTimestamp) || expiryTimestamp == null) return null;
+      const today = new Date();
+      const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+      return Math.ceil((expiryTimestamp - todayUtc) / 86400000);
+    },
+    toggleRegisteredDomainSort(key) {
+      if (this.registeredDomainSort.key === key) {
+        this.registeredDomainSort.direction = this.registeredDomainSort.direction === "asc" ? "desc" : "asc";
+      } else {
+        this.registeredDomainSort = { key, direction: "asc" };
+      }
+    },
+    registeredDomainSortIndicator(key) {
+      if (this.registeredDomainSort.key !== key) return "↕";
+      return this.registeredDomainSort.direction === "asc" ? "↑" : "↓";
     },
     async renewRegisteredDomain(domain) {
       const years = Number(window.prompt(`Renew ${domain.domain_name} for how many year(s)?`, "1"));
@@ -2292,6 +2344,14 @@ const app = createApp({
     async switchPhpVersion(site, version) {
       if (site.php_version === version) return;
       this.phpSwitching = { ...this.phpSwitching, [site.id]: true };
+      this.phpSwitchCountdowns = { ...this.phpSwitchCountdowns, [site.id]: 60 };
+      if (this.phpSwitchTimers[site.id]) window.clearInterval(this.phpSwitchTimers[site.id]);
+      const timer = window.setInterval(() => {
+        const remaining = Number(this.phpSwitchCountdowns[site.id] || 0);
+        if (remaining <= 0) return;
+        this.phpSwitchCountdowns = { ...this.phpSwitchCountdowns, [site.id]: remaining - 1 };
+      }, 1000);
+      this.phpSwitchTimers = { ...this.phpSwitchTimers, [site.id]: timer };
       try {
         const payload = await this.api(`/api/client/websites/${site.id}`, {
           method: "PATCH",
@@ -2303,6 +2363,13 @@ const app = createApp({
       } catch (error) {
         this.notify(error.message, "error");
       } finally {
+        if (this.phpSwitchTimers[site.id]) window.clearInterval(this.phpSwitchTimers[site.id]);
+        const countdowns = { ...this.phpSwitchCountdowns };
+        delete countdowns[site.id];
+        this.phpSwitchCountdowns = countdowns;
+        const timers = { ...this.phpSwitchTimers };
+        delete timers[site.id];
+        this.phpSwitchTimers = timers;
         const s = { ...this.phpSwitching };
         delete s[site.id];
         this.phpSwitching = s;

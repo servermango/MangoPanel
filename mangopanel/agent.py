@@ -2120,7 +2120,7 @@ class Agent:
             if not docker:
                 raise AgentError("docker_not_found")
             result = subprocess.run(
-                [docker, "compose", "-f", str(compose_path), "up", "-d", "--remove-orphans", "--force-recreate"],
+                [docker, "compose", "-f", str(compose_path), "up", "-d", "--build", "--remove-orphans", "--force-recreate"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -2129,7 +2129,8 @@ class Agent:
             if result.returncode != 0:
                 raise AgentError(result.stderr.strip() or result.stdout.strip() or "docker_compose_failed")
             if username:
-                # No post‑compose actions needed – custom Docker image already includes required PHP binaries
+                # The compose file builds the account-specific image containing
+                # all admin-enabled PHP runtimes before recreating the stack.
                 pass
             return {"status": "applied", "mode": "docker", "output": result.stdout.strip()}
         raise AgentError("unknown_agent_mode: {}".format(self.config.agent_mode))

@@ -472,7 +472,9 @@
                         >
                           <option v-for="v in phpVersions" :key="v" :value="v">PHP {{ v }}</option>
                         </select>
-                        <span v-if="phpSwitching[site.id]" class="php-switching-indicator">…</span>
+                        <span v-if="phpSwitching[site.id]" class="php-switching-indicator" role="status">
+                          {{ phpSwitchCountdowns[site.id] > 0 ? phpSwitchCountdowns[site.id] + 's' : 'Finishing…' }}
+                        </span>
                       </div>
                     </td>
                     <td class="actions">
@@ -546,7 +548,7 @@
           <!-- ═══════════════════════════════════════════════════════════ DOMAINS -->
           <section v-if="activePage === 'domains'" class="panel">
             <div class="section-head"><div><h2>Domains Registered with Us</h2><p>Domains assigned to your client account by MangoPanel.</p></div></div>
-            <div class="table-wrap" v-if="registeredDomains.length"><table><thead><tr><th>Domain</th><th>Status</th><th>Expiry</th><th>Renewal</th><th>Transfer lock</th><th>Actions</th></tr></thead><tbody><tr v-for="domain in registeredDomains" :key="domain.domain_name"><td><strong>{{ domain.domain_name }}</strong><small>{{ domain.nameservers && domain.nameservers.length ? domain.nameservers.join(', ') : 'Nameservers pending' }}</small></td><td><span class="pill" :class="domain.status">{{ domain.status }}</span></td><td>{{ domain.expiry_at ? domain.expiry_at.slice(0, 10) : '—' }}</td><td>{{ domain.auto_renew ? 'Auto-renew on' : 'Manual' }}</td><td>{{ domain.transfer_lock ? 'Locked' : 'Unlocked' }}</td><td class="actions"><button class="secondary-button" @click="renewRegisteredDomain(domain)">Renew</button><button class="ghost-button" @click="showRegisteredWhois(domain)">WHOIS data</button><button class="ghost-button" @click="showRegisteredNameservers(domain)">Nameservers</button></td></tr></tbody></table></div>
+            <div class="table-wrap" v-if="registeredDomains.length"><table><thead><tr><th>Domain <button class="table-sort-button" type="button" @click="toggleRegisteredDomainSort('domain')" :aria-label="'Sort domains ' + registeredDomainSort.direction">{{ registeredDomainSortIndicator('domain') }}</button></th><th>Status</th><th><button class="table-sort-button" type="button" @click="toggleRegisteredDomainSort('expiry')">Expiry {{ registeredDomainSortIndicator('expiry') }}</button></th><th><button class="table-sort-button" type="button" @click="toggleRegisteredDomainSort('days')">Days remaining {{ registeredDomainSortIndicator('days') }}</button></th><th>Renewal</th><th>Transfer lock</th><th>Actions</th></tr></thead><tbody><tr v-for="domain in sortedRegisteredDomains" :key="domain.domain_name"><td><strong>{{ domain.domain_name }}</strong><small>{{ domain.nameservers && domain.nameservers.length ? domain.nameservers.join(', ') : 'Nameservers pending' }}</small></td><td><span class="pill" :class="domain.status">{{ domain.status }}</span></td><td>{{ domain.expiry_at ? domain.expiry_at.slice(0, 10) : '—' }}</td><td><span v-if="domainDaysRemaining(domain) != null" :class="{ 'expiry-danger': domainDaysRemaining(domain) < 0, 'expiry-warning': domainDaysRemaining(domain) >= 0 && domainDaysRemaining(domain) <= 30 }">{{ domainDaysRemaining(domain) < 0 ? 'Expired ' + Math.abs(domainDaysRemaining(domain)) + ' days ago' : domainDaysRemaining(domain) + ' days' }}</span><span v-else>—</span></td><td>{{ domain.auto_renew ? 'Auto-renew on' : 'Manual' }}</td><td>{{ domain.transfer_lock ? 'Locked' : 'Unlocked' }}</td><td class="actions"><button class="secondary-button" @click="renewRegisteredDomain(domain)">Renew</button><button class="ghost-button" @click="showRegisteredWhois(domain)">WHOIS data</button><button class="ghost-button" @click="showRegisteredNameservers(domain)">Nameservers</button></td></tr></tbody></table></div>
             <div v-else class="empty-state"><h3>No domains registered with us</h3><p>Domains assigned to your client account will appear here.</p></div>
           </section>
 
@@ -2048,6 +2050,10 @@
               <div>
                 <h2>PHP Configuration</h2>
                 <p>Select the PHP version for each website. Changes are applied on the next request.</p>
+                <div class="info-box php-switch-notice" role="status">
+                  <app-icon name="info"></app-icon>
+                  <p>PHP versions are set per domain. Applying a change briefly restarts this account's web container, so other domains in the same account may be temporarily unavailable.</p>
+                </div>
               </div>
             </div>
             <div class="php-version-list">
@@ -2068,6 +2074,9 @@
                       @click="switchPhpVersion(site, v)"
                     >PHP {{ v }}</button>
                   </div>
+                  <span v-if="phpSwitching[site.id]" class="php-switch-countdown" role="status">
+                    Applying · {{ phpSwitchCountdowns[site.id] > 0 ? phpSwitchCountdowns[site.id] + 's' : 'Finishing…' }}
+                  </span>
                 </div>
               </div>
               <div v-if="!websites.length" class="empty-state">

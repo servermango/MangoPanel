@@ -49,6 +49,19 @@ class TestErrorPages(unittest.TestCase):
         self.assertIn("errorpage 403", vhconf)
         self.assertIn("errorpage 404", vhconf)
         self.assertIn("errorpage 502", vhconf)
+
+    def test_render_ols_vhconf_uses_selected_php_runtime(self):
+        account = {"id": 10, "username": "u000010", "base_path": "/tmp/u000010"}
+        website = {
+            "domain": "example.com",
+            "document_root": "/tmp/u000010/domains/example.com/public_html",
+            "php_version": "8.4",
+        }
+
+        vhconf = render_ols_vhconf(account, website)
+
+        self.assertIn("path                    /usr/local/lsws/lsphp84/bin/lsphp", vhconf)
+        self.assertNotIn("/usr/local/lsws/lsphp82/bin/lsphp", vhconf)
         self.assertIn("url                     /_mangopanel_errors/404.html", vhconf)
         self.assertIn("context /_mangopanel_errors/", vhconf)
         self.assertIn("location                /usr/local/lsws/mangopanel_errors/", vhconf)

@@ -835,7 +835,6 @@ module cache {
     for website in websites:
         domain = website["domain"]
         safe_domain = domain.replace(".", "_").replace("-", "_")
-        PHP_VERSIONS = ["8.2", "8.3", "8.4"]
         supported_php = {"82", "83", "84"}
         php_raw = str(website.get("php_version", "8.2"))
         php_ver = php_raw.replace(".", "")
@@ -855,7 +854,7 @@ extprocessor lsphp_{safe_domain} {{
   persistConn             1
   respBuffer              0
   autoStart               1
-  path                    /usr/local/lsws/lsphp82/bin/lsphp
+  path                    /usr/local/lsws/lsphp{php_ver}/bin/lsphp
   backlog                 100
   instances               1
   priority                0
@@ -996,7 +995,7 @@ extprocessor lsphp_{safe_domain} {{
   persistConn             1
   respBuffer              0
   autoStart               1
-  path                    /usr/local/lsws/lsphp82/bin/lsphp
+  path                    /usr/local/lsws/lsphp{php_ver}/bin/lsphp
   backlog                 100
   instances               1
   priority                0
@@ -1084,7 +1083,9 @@ def render_compose(account, plan, websites, runtime):
     composed = """name: {project}
 services:
   web:
-    image: litespeedtech/openlitespeed:latest
+    build:
+      context: ./web
+    image: mp-{username}-web:latest
     container_name: mp-{username}-web
     restart: unless-stopped
     mem_limit: {memory}

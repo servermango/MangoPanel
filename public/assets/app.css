@@ -2540,6 +2540,48 @@ td small {
   overflow-y: auto;
 }
 
+.client-shell .tab-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 16px 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.client-shell .tab-row button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 600;
+  padding: 9px 12px;
+}
+
+.client-shell .tab-row button:hover,
+.client-shell .tab-row button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.client-shell .table-sort-button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 4px;
+}
+
+.client-shell .table-sort-button:hover {
+  color: var(--accent);
+}
+
+.client-shell .expiry-warning { color: #b45309; font-weight: 700; }
+.client-shell .expiry-danger { color: #dc2626; font-weight: 700; }
+
 .accent-button {
   background: var(--accent);
   color: white;
@@ -2844,8 +2886,22 @@ button:disabled:hover {
 
 .php-switching-indicator {
   color: var(--muted);
-  font-size: 18px;
-  animation: spin 1s linear infinite;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.php-switch-countdown {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.php-switch-notice {
+  margin-top: 10px;
+  max-width: 720px;
+  font-size: 13px;
 }
 
 .btn-spinner {
@@ -5807,6 +5863,8 @@ body.app-loaded #app-preloader {
 .registrar-card-actions { justify-content: flex-start; margin-top: 14px; }
 .metric-balance-list { display: flex; flex-direction: column; gap: 2px; }
 .metric-balance-list span { font-size: .95rem; line-height: 1.2; }
+.admin-shell .expiry-warning { color: #b45309; font-weight: 700; }
+.admin-shell .expiry-danger { color: #dc2626; font-weight: 700; }
 .registrar-empty-card { display: flex; flex-direction: column; justify-content: center; gap: 9px; color: var(--muted); }
 .registrar-empty-card strong { color: var(--text); font-size: 1rem; }
 .registrar-empty-card .primary-button { align-self: flex-start; }

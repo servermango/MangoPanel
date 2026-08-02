@@ -8202,24 +8202,38 @@ def registrar_dashboard_payload(conn, query=None):
         domains = [item for item in domains if str(item.get("provider_key", "")).lower() == provider_filter]
     if search:
         domains = [item for item in domains if search in str(item.get("domain_name", "")).lower() or search in str(item.get("owner_email", "")).lower() or search in str(item.get("account_label", "")).lower()]
+    today = datetime.now(timezone.utc).date()
+    expiring = 0
+    for item in domains:
+        try:
+            expiry_value = str(item.get("expiry_at") or "").strip()
+            slash_date = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})", expiry_value)
+            if slash_date:
+                expiry = datetime.strptime(slash_date.group(0), "%m/%d/%Y").date()
+            elif re.match(r"^\d{9,13}(?:\.\d+)?$", expiry_value):
+                timestamp = float(expiry_value)
+                if timestamp > 100000000000:
+                    timestamp /= 1000
+                expiry = datetime.fromtimestamp(timestamp, timezone.utc).date()
+            else:
+                expiry = datetime.fromisoformat(expiry_value.replace("Z", "+00:00")).date()
+            item["days_to_expiry"] = (expiry - today).days
+            if 0 <= item["days_to_expiry"] <= 30:
+                expiring += 1
+        except (TypeError, ValueError):
+            item["days_to_expiry"] = None
+
     reverse = direction == "desc"
     if sort == "domain":
         domains.sort(key=lambda item: str(item.get("domain_name", "")).lower(), reverse=reverse)
     elif sort == "provider":
         domains.sort(key=lambda item: (str(item.get("provider_name", "")).lower(), str(item.get("domain_name", "")).lower()), reverse=reverse)
     else:
-        domains.sort(key=lambda item: (item.get("expiry_at") or "9999-12-31", str(item.get("domain_name", "")).lower()), reverse=reverse)
-
-    today = datetime.now(timezone.utc).date()
-    expiring = 0
-    for item in domains:
-        try:
-            expiry = datetime.fromisoformat(str(item.get("expiry_at")).replace("Z", "+00:00")).date()
-            item["days_to_expiry"] = (expiry - today).days
-            if 0 <= item["days_to_expiry"] <= 30:
-                expiring += 1
-        except (TypeError, ValueError):
-            item["days_to_expiry"] = None
+        # Keep domains without an expiry date at the end in both directions.
+        sortable = [item for item in domains if item.get("days_to_expiry") is not None]
+        missing_expiry = [item for item in domains if item.get("days_to_expiry") is None]
+        sortable.sort(key=lambda item: (item.get("days_to_expiry"), str(item.get("domain_name", "")).lower()), reverse=reverse)
+        domains = sortable + missing_expiry
     # Balances are not additive across currencies. Keep each currency as an
     # independent total instead of presenting a misleading grand total.
     balance_totals = {}
