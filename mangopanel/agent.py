@@ -54,6 +54,7 @@ from .providers import (
     SharedMailEdgeProvider,
 )
 from .security import decrypt_secret
+from .backup_service import create_system_backup, backup_config
 from .stack import DEFAULT_SSH_MOTD, STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, render_modsecurity_rules, render_ols_vhconf, stack_summary, sync_account_suspension_marker
 
 
@@ -421,6 +422,7 @@ class Agent:
             apply_system_timezone(conn)
             self.enqueue_due_git_updates(conn)
             self.enqueue_due_automatic_backups(conn)
+            self.enqueue_due_system_backups(conn)
             # Do not carry the scheduler's write transaction into the job.
             conn.commit()
             job = self.claim_next_job(conn)
@@ -451,6 +453,34 @@ class Agent:
             conn.execute("UPDATE git_deployments SET status = 'updating', last_error = NULL WHERE id = ?", (deployment["id"],))
             create_job(conn, "git_deploy", "git_deployment", deployment["id"], {"scheduled": True, "interval_minutes": 5})
         return len(deployments)
+
+    def enqueue_due_system_backups(self, conn):
+        """Schedule the control-plane DB and user/file archives independently."""
+        cfg = backup_config(conn, self.config)
+        now = datetime.now(get_system_timezone(conn))
+        due = []
+        for kind, enabled, frequency, when in (("database", cfg["db_enabled"], cfg["db_frequency"], cfg["db_time"]), ("files", cfg["files_enabled"], cfg["files_frequency"], cfg["files_time"])):
+            if not enabled or frequency == "disabled":
+                continue
+            try:
+                hour, minute = [int(part) for part in when.split(":", 1)]
+            except (ValueError, AttributeError):
+                hour, minute = 2, 0
+            if (now.hour, now.minute) < (hour, minute):
+                continue
+            active = conn.execute("SELECT 1 FROM system_backup_runs WHERE status IN ('queued','running') AND kind LIKE ? LIMIT 1", (f"%{kind}%",)).fetchone()
+            if active:
+                continue
+            last = conn.execute("SELECT created_at FROM system_backup_runs WHERE kind = ? AND status = 'completed' ORDER BY id DESC LIMIT 1", (kind,)).fetchone()
+            if last and not self.backup_due(last["created_at"], frequency, now):
+                continue
+            due.append(kind)
+        if not due:
+            return 0
+        kinds = tuple(due)
+        cur = conn.execute("INSERT INTO system_backup_runs(kind, status) VALUES (?, 'queued')", ("+".join(kinds),))
+        create_job(conn, "system_backup", "system_backup", cur.lastrowid, {"kinds": kinds})
+        return 1
 
     def enqueue_due_automatic_backups(self, conn):
         """Queue exactly one automatic backup globally per worker pass.
@@ -710,6 +740,9 @@ class Agent:
             return self.manual_backup(conn, job["target_id"])
         if job_type == "automatic_backup":
             return self.manual_backup(conn, job["target_id"])
+        if job_type == "system_backup":
+            payload = self.job_payload(job)
+            return create_system_backup(conn, self.config, job["target_id"], tuple(payload.get("kinds") or ("database", "files")))
         if job_type == "restore_backup":
             return self.restore_backup(conn, job["target_id"], job.get("payload") or {})
         if job_type == "fix_file_ownership":
@@ -1363,6 +1396,7 @@ class Agent:
                     value=record["value"],
                     ttl=record["ttl"],
                     priority=record["priority"],
+                    proxied=bool(record["proxied"]) if "proxied" in record.keys() and record["proxied"] is not None else True,
                 )
                 for record in records
             ],

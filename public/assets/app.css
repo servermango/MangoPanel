@@ -6176,3 +6176,76 @@ body.app-loaded #app-preloader {
 .checkbox-grid input[type="checkbox"] {
   width: auto;
 }
+
+/* Compact, consistently aligned choice controls across admin and client panels. */
+input[type="checkbox"],
+input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 17px !important;
+  height: 17px !important;
+  min-width: 17px;
+  min-height: 17px !important;
+  margin: 0;
+  padding: 0 !important;
+  flex: 0 0 17px;
+  border: 1px solid #aab4bf !important;
+  border-radius: 4px !important;
+  background: #fff !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  vertical-align: middle;
+  display: inline-grid;
+  place-content: center;
+}
+
+input[type="checkbox"]::before {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) scale(0);
+  transition: transform .12s ease;
+  margin-top: -2px;
+}
+
+input[type="checkbox"]:checked {
+  background: var(--brand, #fdb528) !important;
+  border-color: var(--brand, #fdb528) !important;
+}
+
+input[type="checkbox"]:checked::before {
+  transform: rotate(-45deg) scale(1);
+}
+
+input[type="radio"] {
+  border-radius: 50% !important;
+}
+
+input[type="radio"]::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand, #fdb528);
+  transform: scale(0);
+  transition: transform .12s ease;
+}
+
+input[type="radio"]:checked::before {
+  transform: scale(1);
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand, #fdb528) 65%, transparent);
+  outline-offset: 2px;
+}
+
+label:has(> input[type="checkbox"]),
+label:has(> input[type="radio"]) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

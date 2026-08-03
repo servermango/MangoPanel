@@ -797,6 +797,31 @@ CREATE TABLE IF NOT EXISTS system_settings (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS system_backup_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  local_path TEXT,
+  remote_prefix TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS system_backup_artifacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES system_backup_runs(id) ON DELETE CASCADE,
+  artifact_kind TEXT NOT NULL,
+  user_id INTEGER REFERENCES users(id),
+  account_id INTEGER REFERENCES hosting_accounts(id),
+  website_id INTEGER REFERENCES websites(id),
+  local_path TEXT,
+  remote_key TEXT,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'created',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -834,6 +859,35 @@ def init_db(db_path):
 
 
 def ensure_schema(conn):
+    # Keep additive migrations here as well as in SCHEMA so already-created
+    # databases receive the backup tables without a destructive migration.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS system_backup_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'queued',
+          local_path TEXT,
+          remote_prefix TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          completed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS system_backup_artifacts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id INTEGER NOT NULL REFERENCES system_backup_runs(id) ON DELETE CASCADE,
+          artifact_kind TEXT NOT NULL,
+          user_id INTEGER REFERENCES users(id),
+          account_id INTEGER REFERENCES hosting_accounts(id),
+          website_id INTEGER REFERENCES websites(id),
+          local_path TEXT,
+          remote_key TEXT,
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'created',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS user_profiles (

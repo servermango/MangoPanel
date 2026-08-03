@@ -365,6 +365,20 @@
         opacity: 0.8;
         transition: opacity 0.15s;
       }
+      .backup-page-intro { max-width: 900px; }
+      .backup-layout { display: grid; gap: 1rem; }
+      .backup-card { background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 1.25rem; }
+      .backup-card h3 { margin: 0 0 .35rem; font-size: 1rem; }
+      .backup-card > p { margin: 0 0 1rem; color: var(--muted, #94a3b8); font-size: .84rem; line-height: 1.45; }
+      .backup-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+      .backup-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem; }
+      .backup-fields .full { grid-column: 1 / -1; }
+      .backup-toggle { display: flex; align-items: flex-start; gap: .65rem; padding: .75rem; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; background: rgba(0,0,0,.12); font-weight: 600; }
+      .backup-toggle input { width: auto; margin-top: .2rem; }
+      .backup-toggle small { display: block; color: var(--muted, #94a3b8); font-weight: 400; margin-top: .2rem; }
+      .backup-actions { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; padding-top: .25rem; }
+      .backup-last-run { margin: 0 0 0 auto; color: var(--muted, #94a3b8); font-size: .82rem; }
+      @media (max-width: 800px) { .backup-card-grid, .backup-fields { grid-template-columns: 1fr; } .backup-fields .full { grid-column: auto; } .backup-last-run { width: 100%; margin: .25rem 0 0; } }
       .admin-shell .nav-list button.active .nav-item-icon,
       .admin-shell .nav-list button:hover .nav-item-icon {
         opacity: 1;
@@ -503,7 +517,6 @@
               <div class="metric-grid">
                 <div class="metric metric-clickable" @click="goTo('clients')" title="View Clients & Accounts">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>Users</span>
                     <span style="font-size:0.75rem; color:#8c979e;">👥 Clients →</span>
                   </div>
                   <strong>{{ dashboard.counts.users }}</strong>
@@ -512,7 +525,6 @@
 
                 <div class="metric metric-clickable" @click="goTo('clients')" title="View Hosting Accounts">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>Accounts</span>
                     <span style="font-size:0.75rem; color:#8c979e;">📋 Accounts →</span>
                   </div>
                   <strong>{{ dashboard.counts.hosting_accounts }}</strong>
@@ -521,7 +533,6 @@
 
                 <div class="metric metric-clickable" @click="goTo('dns-domains')" title="View Domains & Websites">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>Websites</span>
                     <span style="font-size:0.75rem; color:#8c979e;">🌐 Domains →</span>
                   </div>
                   <strong>{{ dashboard.counts.websites }}</strong>
@@ -530,7 +541,6 @@
 
                 <div class="metric metric-clickable" @click="goTo('system')" title="View Compose Stacks">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>Stacks</span>
                     <span style="font-size:0.75rem; color:#8c979e;">⚙ System →</span>
                   </div>
                   <strong>{{ dashboard.counts.account_stacks }}</strong>
@@ -539,7 +549,6 @@
 
                 <div class="metric metric-clickable" @click="goTo('cpu')" title="View Live CPU Load">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>CPU Load</span>
                     <span style="font-size:0.75rem; color:#a855f7;">🖥 CPU →</span>
                   </div>
                   <strong :style="{ color: displayCpu.sys_cpu_pct >= 90 ? '#ef4444' : displayCpu.sys_cpu_pct >= 60 ? '#fdb528' : '#a855f7' }">{{ displayCpu.sys_cpu_pct.toFixed(1) }}%</strong>
@@ -548,7 +557,6 @@
 
                 <div class="metric metric-clickable" @click="goTo('ram')" title="View Live RAM Usage">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>RAM Usage</span>
                     <span style="font-size:0.75rem; color:#38bdf8;">🧠 RAM →</span>
                   </div>
                   <strong :style="{ color: displayRam.used_pct >= 90 ? '#ef4444' : displayRam.used_pct >= 75 ? '#fdb528' : '#38bdf8' }">{{ displayRam.used_pct.toFixed(1) }}%</strong>
@@ -557,7 +565,6 @@
 
                 <div class="metric metric-clickable" @click="goTo('storage')" title="View Storage Breakdown">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>Disk Capacity</span>
                     <span style="font-size:0.75rem; color:#72e128;">💾 Storage →</span>
                   </div>
                   <strong style="color:#72e128;">{{ storagePieChart.used_pct }}%</strong>
@@ -566,7 +573,6 @@
 
                 <div class="metric metric-clickable" @click="goTo('status')" title="View Public Status & Incidents">
                   <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>Incidents</span>
                     <span style="font-size:0.75rem; color:#8c979e;">📢 Status →</span>
                   </div>
                   <strong :style="{ color: dashboard.counts.open_incidents > 0 ? '#ef4444' : '#10b981' }">{{ dashboard.counts.open_incidents }}</strong>
@@ -3091,6 +3097,65 @@
                 <button v-if="defaultPageIsCustomized" type="button" style="background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer;" @click="resetDefaultPage">
                   Reset to Default
                 </button>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'system-backup'" class="panel">
+            <div class="section-head backup-page-intro"><div><h2>System Backup</h2><p>Protect the complete control-plane database and all generated user and website data. Website archives include MySQL and PostgreSQL database directories.</p></div></div>
+            <div class="backup-layout">
+              <div class="backup-card">
+                <h3>Backup schedules</h3>
+                <p>Each backup type can run on its own schedule and time.</p>
+                <div class="backup-card-grid">
+                  <div class="backup-card">
+                    <label class="backup-toggle"><input type="checkbox" v-model="systemBackup.db_enabled"><span>System database<small>Complete SQLite database backup.</small></span></label>
+                    <div class="backup-fields" style="margin-top:.85rem;">
+                      <label>Frequency<select v-model="systemBackup.db_frequency"><option value="disabled">Disabled</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label>
+                      <label>Run at <input type="time" v-model="systemBackup.db_time"></label>
+                    </div>
+                  </div>
+                  <div class="backup-card">
+                    <label class="backup-toggle"><input type="checkbox" v-model="systemBackup.files_enabled"><span>User and website archives<small>Per-user and per-website files plus databases.</small></span></label>
+                    <div class="backup-fields" style="margin-top:.85rem;">
+                      <label>Frequency<select v-model="systemBackup.files_frequency"><option value="disabled">Disabled</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label>
+                      <label>Run at <input type="time" v-model="systemBackup.files_time"></label>
+                    </div>
+                  </div>
+                </div>
+                <div class="backup-fields" style="margin-top:1rem; max-width:50%;"><label>Retention period (days)<input type="number" min="1" max="3650" v-model.number="systemBackup.retention_days"></label></div>
+              </div>
+
+              <div class="backup-card-grid">
+                <div class="backup-card">
+                  <h3>Local storage</h3><p>Keep archives on this server independently of offsite storage.</p>
+                  <label class="backup-toggle"><input type="checkbox" v-model="systemBackup.local_enabled"><span>Enable local backups<small>Write completed archives to the local path.</small></span></label>
+                  <label class="backup-toggle" style="margin-top:.65rem;"><input type="checkbox" v-model="systemBackup.local_remove_enabled"><span>Remove expired local backups<small>Use the retention period above.</small></span></label>
+                  <label style="margin-top:.85rem;">Local backup path<input v-model="systemBackup.local_path" placeholder="/var/lib/mangopanel/system-backups"></label>
+                </div>
+                <div class="backup-card">
+                  <h3>Offsite S3-compatible storage</h3><p>Upload archives to AWS S3, DigitalOcean Spaces, MinIO, or another compatible provider.</p>
+                  <label class="backup-toggle"><input type="checkbox" v-model="systemBackup.remote_enabled"><span>Enable offsite backups<small>Local and offsite storage may be enabled together.</small></span></label>
+                  <label class="backup-toggle" style="margin-top:.65rem;"><input type="checkbox" v-model="systemBackup.remote_remove_enabled"><span>Remove expired offsite backups<small>Delete remote objects after the retention period.</small></span></label>
+                  <div class="backup-fields" style="margin-top:.85rem;">
+                    <label class="full">Endpoint<input v-model="systemBackup.remote_endpoint" placeholder="https://s3.amazonaws.com"></label>
+                    <label>Bucket<input v-model="systemBackup.remote_bucket"></label><label>Region<input v-model="systemBackup.remote_region" placeholder="us-east-1"></label>
+                    <label>Access key<input v-model="systemBackup.remote_access_key" autocomplete="off"></label><label>Secret key<input v-model="systemBackup.remote_secret" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved secret"></label>
+                    <label class="full">Object prefix<input v-model="systemBackup.remote_prefix" placeholder="mangopanel"></label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="backup-card">
+                <h3>Actions</h3><p>Save settings before running a backup. Manual jobs use the same archive and storage configuration.</p>
+                <div class="backup-actions">
+                  <button class="primary-button" type="button" @click="saveSystemBackup" :disabled="systemBackupSaving">{{ systemBackupSaving ? 'Saving…' : 'Save Settings' }}</button>
+                  <button class="secondary-button" type="button" @click="testSystemBackupStorage" :disabled="systemBackupTesting">{{ systemBackupTesting ? 'Testing…' : 'Test Remote Credentials' }}</button>
+                  <button class="secondary-button" type="button" @click="runSystemBackup('database')" :disabled="systemBackupRunning">Run Database Backup</button>
+                  <button class="secondary-button" type="button" @click="runSystemBackup('files')" :disabled="systemBackupRunning">Run Files Backup</button>
+                  <button class="primary-button" type="button" @click="runSystemBackup('all')" :disabled="systemBackupRunning">Run Full Backup</button>
+                  <p v-if="systemBackup.last_run" class="backup-last-run">Last run: {{ systemBackup.last_run.status }} · {{ systemBackup.last_run.created_at }}</p>
+                </div>
               </div>
             </div>
           </section>

@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 const IS_RESELLER = Boolean(window.IS_RESELLER_PANEL);
 const ADMIN_ROUTE_PREFIX = IS_RESELLER ? "/reseller" : "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "traffic", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "configuration", "system", "admins", "api-tokens", "status", "security", "default-page"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "traffic", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "configuration", "system-backup", "system", "admins", "api-tokens", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
   let hash = window.location.hash.replace(/^#/, "");
@@ -69,6 +69,10 @@ createApp({
       modsecApplying: false,
       timezoneOptions: ["UTC", "Europe/London", "Europe/Paris", "Asia/Kolkata", "Asia/Dubai", "Asia/Tokyo", "America/New_York", "America/Los_Angeles", "Australia/Sydney"],
       configurationSaving: false,
+      systemBackup: { local_enabled: true, local_remove_enabled: true, remote_enabled: false, remote_remove_enabled: false, db_enabled: true, files_enabled: true, db_frequency: "daily", files_frequency: "daily", db_time: "02:00", files_time: "03:00", local_path: "", remote_endpoint: "", remote_bucket: "", remote_region: "us-east-1", remote_access_key: "", remote_secret: "", remote_prefix: "mangopanel", retention_days: 30, last_run: null },
+      systemBackupSaving: false,
+      systemBackupTesting: false,
+      systemBackupRunning: false,
       resellerPlans: [],
       resellerUsers: [],
       showResellerPlanModal: false,
@@ -463,6 +467,7 @@ createApp({
           label: "System",
           items: [
             { label: "Configuration", target: "configuration", description: "Platform-wide backup timing and future control-plane settings." },
+            { label: "System Backup", target: "system-backup", description: "Back up the control-plane database and every user and website archive locally or to S3-compatible storage." },
             { label: "Default Page", target: "default-page", description: "Default index.php template content for newly created websites." },
             { label: "Security Checklist", target: "security", description: "Server security audit, SSH hardening, firewall, SSL, and WAF status." },
             { label: "Stack & Jobs", target: "system", description: "Generated stacks, agent runs, recent jobs, and events." },
@@ -1254,6 +1259,21 @@ createApp({
         this.configurationSaving = false;
       }
     },
+    async loadSystemBackup() {
+      try { const result = await this.api("/api/admin/system-backup"); this.systemBackup = { ...this.systemBackup, ...(result.backup || {}) }; } catch (error) { this.message = error.message; }
+    },
+    async saveSystemBackup() {
+      this.systemBackupSaving = true;
+      try { const result = await this.api("/api/admin/system-backup", { method: "PATCH", body: JSON.stringify(this.systemBackup) }); this.systemBackup = { ...this.systemBackup, ...(result.backup || {}), remote_secret: "" }; this.message = "System backup settings saved"; } catch (error) { this.message = error.message; } finally { this.systemBackupSaving = false; }
+    },
+    async testSystemBackupStorage() {
+      this.systemBackupTesting = true;
+      try { const result = await this.api("/api/admin/system-backup/test", { method: "POST", body: "{}" }); this.message = `Remote storage test succeeded (${result.key})`; } catch (error) { this.message = error.message; } finally { this.systemBackupTesting = false; }
+    },
+    async runSystemBackup(kind = "all") {
+      this.systemBackupRunning = true;
+      try { const result = await this.api("/api/admin/system-backup/run", { method: "POST", body: JSON.stringify({ kind }) }); this.message = `Backup queued (job #${result.job_id})`; } catch (error) { this.message = error.message; } finally { this.systemBackupRunning = false; }
+    },
     async applyModsecRules() {
       this.modsecApplying = true;
       try {
@@ -1271,9 +1291,10 @@ createApp({
           totp_enabled: Boolean(admin.totp_enabled),
         }));
         await this.loadClients(this.clientPagination.page || 1);
-        const [plansRes, configRes, dnsRes, domsRes, regsRes, stacksRes, jobsRes] = await Promise.all([
+        const [plansRes, configRes, backupRes, dnsRes, domsRes, regsRes, stacksRes, jobsRes] = await Promise.all([
           this.api("/api/admin/plans"),
           this.api("/api/admin/configuration"),
+          this.api("/api/admin/system-backup"),
           this.api("/api/admin/dns-settings"),
           this.api("/api/admin/domains"),
           this.api("/api/admin/registrars"),
@@ -1282,6 +1303,7 @@ createApp({
         ]);
         this.plans = plansRes.plans;
         this.configuration = { ...this.configuration, ...(configRes.configuration || {}) };
+        this.systemBackup = { ...this.systemBackup, ...(backupRes.backup || {}) };
         this.modsecRuleset = this.configuration.modsecurity_ruleset || "baseline";
         this.dnsSettings = dnsRes.dns_settings;
         this.dnsDomains = domsRes.domains || [];

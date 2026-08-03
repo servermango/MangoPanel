@@ -455,7 +455,7 @@ const app = createApp({
       dnsPulling: false,
       nameserverEditor: { domainId: null, source: "default", values: ["", ""] },
       dnsRecordTypes: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
-      newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300, priority: null, proxied: false },
+      newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300, priority: null, proxied: true },
       // Cache Manager
       cacheStatus: { object_cache: "inactive", opcode_cache: "active", last_purged: null, opcode_cache_backend: "opcache", object_cache_backend: "redis" },
       cachePurging: false,
@@ -2310,7 +2310,7 @@ const app = createApp({
         this.dnsRecords = payload.dns_records || this.dnsRecords;
         this.dnsZones = payload.dns_zones || this.dnsZones;
         this.notify(`DNS record synced in development mode (job #${payload.job_id})`, "success");
-        this.newDnsRecord = { domain_id: this.newDnsRecord.domain_id, type: "A", name: "@", value: "", ttl: 300, priority: null, proxied: false };
+        this.newDnsRecord = { domain_id: this.newDnsRecord.domain_id, type: "A", name: "@", value: "", ttl: 300, priority: null, proxied: true };
       } catch (error) {
         this.notify(error.message, "error");
       }

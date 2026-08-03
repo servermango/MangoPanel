@@ -21,6 +21,9 @@ class DNSRecordIntent:
     value: str
     ttl: int = 300
     priority: int | None = None
+    # Cloudflare address records are proxied by default. An explicit false
+    # value is still preserved when a customer switches a record to DNS-only.
+    proxied: bool = True
 
     def payload(self):
         data = asdict(self)
@@ -412,7 +415,7 @@ def _cloudflare_record_name(name, zone_name):
     return _record_fqdn(name, zone_name).rstrip(".")
 
 
-def _cloudflare_payload(record, zone_name, proxied=False):
+def _cloudflare_payload(record, zone_name, proxied=True):
     record_type = str(record["type"]).upper()
     payload = {
         "type": record_type,

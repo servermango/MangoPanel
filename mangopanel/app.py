@@ -77,6 +77,7 @@ from .providers import (
 )
 from .registrars import RegistrarError, registrar_for
 from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, validate_git_branch, validate_git_repository_url, verify_jwt, verify_password, verify_totp
+from .backup_service import backup_config, test_remote
 from .snappymail import request_login_session
 from .stack import DEFAULT_SSH_MOTD, build_account_runtime, sync_account_suspension_marker
 
@@ -6406,6 +6407,48 @@ class MangoHandler(BaseHTTPRequestHandler):
     def admin_api(self, method, path, query, actor):
         path = path.rstrip("/")
         with connect(CONFIG.db_path) as conn:
+            if path == "/api/admin/system-backup" and method == "GET":
+                cfg = backup_config(conn, CONFIG)
+                cfg["remote_secret"] = "" if not cfg["remote_secret"] else "••••••••"
+                cfg["last_run"] = row_to_dict(conn.execute("SELECT * FROM system_backup_runs ORDER BY id DESC LIMIT 1").fetchone()) if conn.execute("SELECT 1 FROM system_backup_runs LIMIT 1").fetchone() else None
+                return self.json_response({"backup": cfg})
+            if path == "/api/admin/system-backup" and method in {"POST", "PATCH"}:
+                body = self.read_json()
+                bool_keys = {"local_enabled": "backup_local_enabled", "remote_enabled": "backup_remote_enabled", "db_enabled": "backup_db_enabled", "files_enabled": "backup_files_enabled", "local_remove_enabled": "backup_local_remove_enabled", "remote_remove_enabled": "backup_remote_remove_enabled"}
+                for field, key in bool_keys.items():
+                    if field in body:
+                        set_system_setting(conn, key, "1" if bool(body[field]) else "0")
+                text_fields = {"local_path": "backup_local_path", "remote_endpoint": "backup_s3_endpoint", "remote_bucket": "backup_s3_bucket", "remote_region": "backup_s3_region", "remote_access_key": "backup_s3_access_key", "remote_prefix": "backup_s3_prefix", "db_frequency": "backup_db_frequency", "files_frequency": "backup_files_frequency", "db_time": "backup_db_time", "files_time": "backup_files_time"}
+                for field, key in text_fields.items():
+                    if field in body:
+                        set_system_setting(conn, key, str(body[field] or "").strip())
+                if "remote_secret" in body and str(body.get("remote_secret") or "").strip() and "••••" not in str(body.get("remote_secret")):
+                    set_system_setting(conn, "backup_s3_secret_encrypted", encrypt_secret(str(body["remote_secret"]).strip(), CONFIG.jwt_secret))
+                try:
+                    retention = max(1, min(3650, int(body.get("retention_days", get_system_setting(conn, "backup_retention_days", "30")))))
+                except (TypeError, ValueError):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_backup_retention_days")
+                set_system_setting(conn, "backup_retention_days", str(retention))
+                for field in ("db_time", "files_time"):
+                    value = get_system_setting(conn, "backup_" + field, "02:00")
+                    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_backup_time")
+                response_config = backup_config(conn, CONFIG)
+                response_config["remote_secret"] = "" if not response_config["remote_secret"] else "••••••••"
+                return self.json_response({"backup": response_config})
+            if path == "/api/admin/system-backup/test" and method == "POST":
+                try:
+                    result = test_remote(backup_config(conn, CONFIG))
+                except Exception as exc:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
+                return self.json_response(result)
+            if path == "/api/admin/system-backup/run" and method == "POST":
+                body = self.read_json()
+                kind = str(body.get("kind") or "all").lower()
+                kinds = ("database",) if kind == "database" else (("files",) if kind == "files" else ("database", "files"))
+                cur = conn.execute("INSERT INTO system_backup_runs(kind, status) VALUES (?, 'queued')", ("+".join(kinds),))
+                job_id = enqueue_agent_job(conn, "system_backup", "system_backup", cur.lastrowid, {"kinds": kinds})
+                return self.json_response({"run_id": cur.lastrowid, "job_id": job_id, "status": "queued"}, HTTPStatus.CREATED)
             if path == "/api/admin/configuration" and method == "GET":
                 return self.json_response({"configuration": {
                     "backup_time": get_system_setting(conn, "backup_time", "02:00"),

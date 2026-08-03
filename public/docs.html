@@ -466,6 +466,7 @@
                 <li><a href="#admin-suspension">Soft &amp; Hard Suspend</a></li>
                 <li><a href="#admin-account-recovery">Account Recovery</a></li>
                 <li><a href="#user-panel-docs">User Panel Guide</a></li>
+                <li><a href="#wordpress-integration">WordPress Integration</a></li>
                 <li><a href="#user-account-settings">Account Settings</a></li>
                 <li><a href="#user-files">Files &amp; Websites</a></li>
                 <li><a href="#user-dns-zone-actions">DNS Zone Editor</a></li>
@@ -1297,6 +1298,61 @@ make dev-smoke</code></pre>
                     <li><strong>File Manager login screen:</strong> Reopen the tool from the User Panel so a fresh account-scoped launch token is generated.</li>
                     <li><strong>Access denied:</strong> Confirm the active account and collaborator permissions.</li>
                     <li><strong>Changes still processing:</strong> Check activity and job status before repeating the operation.</li>
+                </ul>
+            </section>
+
+            <!-- WORDPRESS INTEGRATION -->
+            <section id="wordpress-integration" class="docs-section">
+                <span class="badge-pill">Client Area</span>
+                <h1>WordPress Integration</h1>
+                <p>MangoPanel includes a dedicated WordPress workflow for websites created with the App Installer or Site Builder. The <strong>WordPress Manager</strong> keeps those sites together and provides a secure shortcut into each site’s WordPress administration area.</p>
+
+                <h2>WordPress Manager</h2>
+                <p>Open <strong>WordPress Manager</strong> from the Client Area sidebar. The manager lists WordPress websites belonging to the currently selected hosting account, along with the site title, installation status, and installation date.</p>
+                <ul>
+                    <li>Use <strong>Create new WordPress website</strong> to open MangoPanel’s existing website and WordPress installation wizard.</li>
+                    <li>Use <strong>Detect WordPress</strong> to scan hosted website document roots for existing WordPress files.</li>
+                    <li>Use <strong>Login to WordPress Admin</strong> to open the selected site’s WordPress dashboard.</li>
+                </ul>
+
+                <h2>Creating a WordPress website</h2>
+                <ol>
+                    <li>Open <strong>WordPress Manager</strong> and select <strong>Create new WordPress website</strong>.</li>
+                    <li>Choose WordPress in the installation flow, enter the domain and site details, and set the WordPress administrator credentials.</li>
+                    <li>Complete the website creation flow. MangoPanel queues the installation and prepares the database, WordPress files, and compatibility plugin.</li>
+                    <li>Wait for the installation status to become <strong>installed</strong> before opening WordPress Admin.</li>
+                </ol>
+                <div class="callout callout-info">
+                    <div class="callout-title">DNS and SSL</div>
+                    <p>The website must resolve to the hosting account before visitors can reach WordPress. Configure the domain’s DNS and issue or verify SSL from the website tools when required.</p>
+                </div>
+
+                <h2>Detecting an existing WordPress site</h2>
+                <p><strong>Detect WordPress</strong> is intended for WordPress sites already present in a hosted document root, including sites created outside the normal installation record. MangoPanel checks for the WordPress configuration and administration directories, registers matching sites, and installs or refreshes the MangoPanel compatibility plugin.</p>
+                <ul>
+                    <li>Detection does not overwrite WordPress content or database data.</li>
+                    <li>The detected administrator username and email are read from MangoPanel metadata in <code>wp-config.php</code> when available.</li>
+                    <li>If the site was moved manually and administrator metadata is unavailable, confirm the detected administrator account before using SSO.</li>
+                </ul>
+
+                <h2>Secure WordPress Admin login</h2>
+                <p>The login button creates a short-lived, signed launch token for the selected website. The compatibility plugin validates the token locally, establishes the WordPress administrator session, and redirects to <code>/wp-admin/</code>.</p>
+                <ul>
+                    <li>Each WordPress installation has its own randomly generated SSO secret.</li>
+                    <li>The secret is stored for that installation and written only to its <code>wp-config.php</code>; it is not part of the plugin source or Git repository.</li>
+                    <li>Launch tokens expire quickly and are scoped to the selected website and administrator account.</li>
+                    <li>Never copy launch URLs into tickets, logs, chat, or bookmarks. If a token may have been exposed, start a fresh login from WordPress Manager.</li>
+                </ul>
+
+                <h2>Dashboard shortcut</h2>
+                <p>When the dashboard’s selected website has a registered WordPress installation, the welcome panel displays <strong>Login to WP Admin</strong>. Change the selected website first if the shortcut is not shown.</p>
+
+                <h2>Troubleshooting</h2>
+                <ul>
+                    <li><strong>No site listed:</strong> Select the correct hosting account and run <strong>Detect WordPress</strong>.</li>
+                    <li><strong>Installation in progress:</strong> Wait for the queued installation job to complete before logging in.</li>
+                    <li><strong>Login does not complete:</strong> Confirm the domain resolves to MangoPanel, then run detection again to refresh the compatibility plugin.</li>
+                    <li><strong>Administrator not found:</strong> Verify the administrator username or email in WordPress and update the MangoPanel installation metadata before retrying.</li>
                 </ul>
             </section>
 
