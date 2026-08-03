@@ -1,5 +1,6 @@
 import crypt
 import json
+import re
 import secrets
 import subprocess
 import sys
@@ -13,6 +14,33 @@ from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_
 from .snappymail import SNAPPYMAIL_APP_VERSION, SNAPPYMAIL_IMAGE, ensure_snappymail_layout, load_snappymail_state
 
 
+DEFAULT_SSH_MOTD = "\n".join([
+    "        ", "        ", "        ",
+    "         -.         ............        ",
+    "      ...-           .............      ",
+    "   .--====  .........    ............   ",
+    ".:--=-:. ...............  ...........   ",
+    "       ..................  ..........   ",
+    "      ....................  .........   ",
+    "      ..................... ........    ",
+    "     .:...................  ........   ",
+    "     :::::::..............  .........   ",
+    "     .:::::::::::.......  ........::   ",
+    "   .  ::::::::::::::...  .::::::::::   ",
+    "   :  .:::::::::::::::.  :::::::::::   ",
+    "  .::  .::::::::::::::::. .:::::::::   ",
+    "  ::::   :::::::::::::::::  ::::::::   ",
+    "  :::::.   :::::::::::::::::  :::::::: ",
+    " .:::::::.    ..:::..     ::::::::::   ",
+    "   .::::::::..       ..:::::::::::::   ",
+    "       .:::::::::::::::::::::::::.     ",
+    "             ..::::::::::::::.         ",
+    "        ",
+    "WELCOME TO MangoPanel",
+    "",
+])
+
+
 STACK_SERVICES = [
     "web",
     "redis",
@@ -23,8 +51,6 @@ STACK_SERVICES = [
     "db",
     "pg",
     "adminer",
-    "cron",
-    "sftp",
 ]
 
 SHA512_CRYPT_SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./"
@@ -47,6 +73,9 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "phpmyadmin_port": slot + 2,
         "db_port": slot + 3,
         "sftp_port": slot + 4,
+        "ftp_port": 20000 + account_id,
+        "ftp_passive_min": 30000 + (account_id * 2),
+        "ftp_passive_max": 30001 + (account_id * 2),
         "smtp_port": 1587 + mail_port_offset if use_dev_mail_ports else 587,
         "smtp_tls_port": 1465 + mail_port_offset if use_dev_mail_ports else 465,
         "imap_port": 1143 + mail_port_offset if use_dev_mail_ports else 143,
@@ -575,8 +604,49 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         (errors_dir / f"{err_code}.html").write_text(err_html, encoding="utf-8")
 
     (paths["stack"] / "openlitespeed-httpd.conf").write_text(render_openlitespeed_httpd_config(account, websites), encoding="utf-8")
+    rules_path = paths["stack"] / "modsecurity-rules.conf"
+    existing_rules = rules_path.read_text(encoding="utf-8", errors="replace") if rules_path.exists() else ""
+    rules_text = render_modsecurity_rules(websites)
+    if "# OWASP CRS" in existing_rules:
+        rules_text += "\n" + existing_rules[existing_rules.index("# OWASP CRS"):]
+    rules_path.write_text(rules_text, encoding="utf-8")
     paths["apache_vhosts"].write_text(render_apache_vhosts(account, websites), encoding="utf-8")
     (paths["stack"] / "cron").write_text(render_crontab(account), encoding="utf-8")
+    (paths["stack"] / "cron").chmod(0o600)
+    try:
+        import os
+        os.chown(paths["stack"] / "cron", 0, 0)
+    except PermissionError:
+        pass
+    ftp_conf = paths["stack"] / "proftpd.conf"
+    ftp_conf.write_text(
+        "\n".join([
+            "ServerName MangoPanel FTP",
+            "ServerType standalone",
+            "DefaultServer on",
+            "Port 21",
+            "UseIPv6 off",
+            "Include /etc/proftpd/modules.conf",
+            "AuthOrder mod_auth_file.c",
+            "AuthUserFile /etc/proftpd/ftp.passwd",
+            "AuthPAM off",
+            "RequireValidShell off",
+            "MaxLoginAttempts 3",
+            "TimeoutLogin 60",
+            "DefaultRoot ~",
+            "PassivePorts {} {}".format(runtime["ftp_passive_min"], runtime["ftp_passive_max"]),
+            "MasqueradeAddress {}".format(runtime["public_host"]) if runtime["public_host"] not in {"127.0.0.1", "0.0.0.0", "localhost"} else "",
+            "<Limit LOGIN>",
+            "  AllowAll",
+            "</Limit>",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    ftp_passwd = paths["stack"] / "ftp.passwd"
+    if not ftp_passwd.exists():
+        ftp_passwd.write_text("", encoding="utf-8")
+    ftp_passwd.chmod(0o600)
     
     mysql_cnf = """[mysqld]
 """
@@ -601,9 +671,57 @@ PermitRootLogin no
 X11Forwarding no
 AllowTcpForwarding yes
 PasswordAuthentication yes
+KbdInteractiveAuthentication no
+UsePAM no
+MaxAuthTries 3
+LoginGraceTime 20
+MaxStartups 10:30:20
+PerSourceMaxStartups 3
+PerSourcePenalties yes
+AllowUsers {username}
+PrintMotd yes
 Subsystem sftp internal-sftp
-"""
+""".format(username=account["username"])
     sshd_config.write_text(sshd_config_content, encoding="utf-8")
+    motd_path = paths["stack"] / "motd"
+    if not motd_path.exists():
+        motd_path.write_text(DEFAULT_SSH_MOTD, encoding="utf-8")
+    ftp_access = str(account.get("ftp_access", "enabled") if hasattr(account, "get") else "enabled")
+    ssh_access = str(account.get("ssh_access", "disabled") if hasattr(account, "get") else "disabled")
+    ftp_marker = paths["stack"] / "ftp.enabled"
+    ssh_marker = paths["stack"] / "ssh.enabled"
+    ftp_marker.write_text("enabled\n" if ftp_access == "enabled" else "disabled\n", encoding="utf-8")
+    ssh_marker.write_text("enabled\n" if ssh_access == "enabled" else "disabled\n", encoding="utf-8")
+    service_runner = """#!/bin/sh
+set -eu
+mkdir -p /run/sshd
+if grep -q '^enabled' /etc/mangopanel/ssh.enabled; then
+  groupadd -g 1001 mpusers 2>/dev/null || true
+  # VS Code Remote-SSH installs its server under the login user's home.
+  # The account home is shared with the web stack, so prepare only this
+  # private directory for the SSH user instead of changing site ownership.
+  install -d -m 700 -o 1001 -g 1001 "/home/{username}/.vscode-server" 2>/dev/null || true
+  while IFS=: read -r login password uid gid home; do
+    case "$login" in ''|\\#*) continue ;; esac
+    # Only the primary account is an SSH/SFTP identity. FTP subaccounts
+    # share this file for legacy compatibility but must never receive shell access.
+    [ "$login" = "{username}" ] || continue
+    if ! id "$login" >/dev/null 2>&1; then
+      useradd -M -u "${uid:-1001}" -g 1001 -d "/home/{username}" -s /bin/sh "$login" 2>/dev/null || true
+    fi
+    printf '%s:%s\\n' "$login" "$password" | chpasswd 2>/dev/null || true
+  done < /etc/sftp/users.conf
+  ssh-keygen -A >/dev/null 2>&1 || true
+  nohup /usr/sbin/sshd -D -e >/var/log/sshd.log 2>&1 </dev/null &
+fi
+if grep -q '^enabled' /etc/mangopanel/ftp.enabled; then
+  nohup /usr/sbin/proftpd -n -c /etc/proftpd/mangopanel.conf >/var/log/proftpd-runtime.log 2>&1 </dev/null &
+fi
+exec /usr/sbin/cron -f
+""".replace("{username}", str(account["username"]))
+    runner_path = paths["stack"] / "services-entrypoint.sh"
+    runner_path.write_text(service_runner, encoding="utf-8")
+    runner_path.chmod(0o755)
 
     paths["compose"].write_text(
         render_compose(account, plan, websites, runtime),
@@ -618,6 +736,7 @@ RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     lsphp82-mysql lsphp83-mysql lsphp84-mysql \\
     lsphp82-curl lsphp83-curl lsphp84-curl \\
     lsphp82-opcache lsphp83-opcache lsphp84-opcache \\
+    proftpd-basic openssh-server \\
     && rm -rf /var/lib/apt/lists/*
 """
     (web_build_dir / "Dockerfile").write_text(dockerfile_content, encoding="utf-8")
@@ -632,6 +751,15 @@ RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
             subprocess.run(["chmod", "-R", "777", str(paths["stack"])], check=True)
         except Exception as e:
             print(f"Warning: failed to chown/chmod account base path: {e}")
+    for sensitive in ["ftp.passwd", "sftp_users.conf", "sshd_config"]:
+        try:
+            (paths["stack"] / sensitive).chmod(0o600)
+        except OSError:
+            pass
+    try:
+        (paths["stack"] / "proftpd.conf").chmod(0o644)
+    except OSError:
+        pass
         
     return paths
 
@@ -720,6 +848,12 @@ indexFiles                       index.html, index.php
 disableWebAdmin                  0
 useIpInProxyHeader               2
 extIpInHeader                    1
+
+module mod_security {
+    modsecurity                 on
+    modsecurity_rules_file      /etc/mangopanel/modsecurity-rules.conf
+    ls_enabled                  1
+}
 
 errorlog $SERVER_ROOT/logs/error.log {
     logLevel             DEBUG
@@ -904,6 +1038,30 @@ listener http {{
     return "\n\n".join(blocks) + "\n"
 
 
+def render_modsecurity_rules(websites):
+    """Render ModSecurity 3 rules and the per-website engine switches."""
+    lines = [
+        "# MangoPanel managed ModSecurity 3 rules",
+        "SecRuleEngine On",
+        "SecRequestBodyAccess On",
+    ]
+    for index, website in enumerate(websites):
+        domain = str(website["domain"]).replace(".", r"\.")
+        enabled = int(website.get("modsec_enabled", 1) if website.get("modsec_enabled") is not None else 1)
+        state = "On" if enabled else "Off"
+        lines.append(
+            f'SecRule SERVER_NAME "@rx ^(?:www\\.)?{domain}$" "id:{100000 + index},phase:1,pass,nolog,ctl:ruleEngine={state}"'
+        )
+    # The probe is harmless and gives the panel a deterministic enforcement
+    # check. The second rule blocks only high-confidence traversal/script URI
+    # patterns, avoiding broad application-specific false positives.
+    lines.extend([
+        'SecRule REQUEST_URI "@streq /__mangopanel_modsec_probe__" "id:1099990,phase:1,deny,status:403,log"',
+        'SecRule REQUEST_URI "@rx (?i)(?:\\.\\./|<script[^>]*>)" "id:1099991,phase:1,deny,status:403,log"',
+    ])
+    return "\n".join(lines) + "\n"
+
+
 def render_ols_vhconf(account, website):
     domain = website["domain"]
     username = account["username"]
@@ -919,6 +1077,55 @@ def render_ols_vhconf(account, website):
     base_dir = container_path(account, str(Path(website["document_root"]).parent))
     logs_dir = container_path(account, str(Path(website["document_root"]).parent / "logs"))
     analytics_enabled = int(website.get("analytics_enabled", 1) or 0) != 0
+    hotlink_lines = []
+    if int(website.get("hotlink_enabled", 0) or 0):
+        hotlink_lines.extend([
+            "  # BEGIN MangoPanel Hotlink",
+            r"  RewriteCond %{REQUEST_URI} \.(?:jpe?g|png|gif|webp|avif|svg|bmp|ico)$ [NC]",
+            r"  RewriteCond %{HTTP_REFERER} !^$ [NC]",
+        ])
+        allowed_domains = sorted({str(value).strip().lower() for value in (website.get("hotlink_domains") or []) if str(value).strip()})
+        for allowed_domain in allowed_domains:
+            escaped = re.escape(allowed_domain).replace(r"\.", r"\.")
+            hotlink_lines.append(
+                r"  RewriteCond %{{HTTP_REFERER}} !^https?://(?:[^/]+\.)?{}(?:/|$) [NC]".format(escaped)
+            )
+        hotlink_lines.extend([
+            "  RewriteRule ^ - [R=403,L]",
+            "  # END MangoPanel Hotlink",
+        ])
+    hotlink_block = "\n".join(hotlink_lines)
+    protected_realms = []
+    protected_contexts = []
+    for index, protected in enumerate(website.get("protected_directories") or []):
+        relative = str(protected.get("path") or "").strip().strip("/")
+        root_relative = str(Path(website["document_root"]).resolve().relative_to(Path(account["base_path"]).resolve())).strip("/")
+        if not relative or relative == root_relative or not relative.startswith(root_relative + "/"):
+            continue
+        uri = "/" + relative[len(root_relative):].strip("/") + "/"
+        realm_name = "mp_realm_{}_{}".format(safe_domain, index)
+        htpasswd = container_path(account, Path(account["base_path"]) / relative / ".htpasswd")
+        context_location = "$DOC_ROOT/" + str(Path(relative[len(root_relative):].strip("/"))) + "/"
+        protected_realms.append(
+            f"""realm {realm_name} {{
+  userDB {{
+    location              {htpasswd}
+    cacheTimeout          60
+    maxCacheSize          200
+  }}
+}}"""
+        )
+        protected_contexts.append(
+            f"""context {uri} {{
+  type                    static
+  location                {context_location}
+  allowBrowse             1
+  realm                   {realm_name}
+  authName                \"Protected Area\"
+  required                user {protected.get('username', '')}
+}}"""
+        )
+    protected_block = "\n\n".join(protected_realms + protected_contexts)
     accesslog_block = (
         f"""
 accesslog {logs_dir}/access.log {{
@@ -954,6 +1161,7 @@ rewrite  {{
   RewriteRule             ^/_mangopanel_errors/ - [L]
   RewriteCond             %{{DOCUMENT_ROOT}}/.mangopanel-suspended -f
   RewriteRule             ^/(.*)$ /_mangopanel_errors/suspended.html [L]
+{hotlink_block}
 }}
 
 errorpage 403 {{
@@ -976,6 +1184,8 @@ context /_mangopanel_errors/ {{
   location                /usr/local/lsws/mangopanel_errors/
   allowBrowse             1
 }}
+
+{protected_block}
 
 context / {{
   type                    NULL
@@ -1011,6 +1221,7 @@ scripthandler  {{
 
 phpIniOverride  {{
   php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
+  php_admin_value opcache.enable "{int(account.get('opcache_enabled', 1) or 0)}"
 }}
 
 module cache {{
@@ -1092,11 +1303,26 @@ services:
     cpus: "{cpu_count}"
     pids_limit: 256
     entrypoint: ["/bin/sh", "-c", 'groupadd -g {uid} {username} 2>/dev/null || true; usermod -aG {uid} nobody 2>/dev/null || true; exec /entrypoint.sh "$$@"', "--"]
+    command: ["/bin/sh", "/usr/local/bin/mangopanel-services.sh"]
+    ports:
+      - "0.0.0.0:{ftp_port}:21"
+      - "0.0.0.0:{ftp_passive_min}-{ftp_passive_max}:{ftp_passive_min}-{ftp_passive_max}"
+      - "0.0.0.0:{sftp_port}:22"
     labels:
       {labels_str}
     volumes:
       - {base_path}:/home/{username}
+      - {base_path}/.runtime/stack/cron:/var/spool/cron/crontabs/root
+      - {base_path}/.runtime/stack/proftpd.conf:/etc/proftpd/mangopanel.conf:ro
+      - {base_path}/.runtime/stack/ftp.passwd:/etc/proftpd/ftp.passwd:ro
+      - {base_path}/.runtime/stack/sftp_users.conf:/etc/sftp/users.conf:ro
+      - {base_path}/.runtime/stack/services-entrypoint.sh:/usr/local/bin/mangopanel-services.sh:ro
+      - {base_path}/.runtime/stack/ftp.enabled:/etc/mangopanel/ftp.enabled:ro
+      - {base_path}/.runtime/stack/ssh.enabled:/etc/mangopanel/ssh.enabled:ro
+      - {base_path}/.runtime/stack/sshd_config:/etc/ssh/sshd_config:ro
+      - {base_path}/.runtime/stack/motd:/etc/motd:ro
       - {base_path}/.runtime/stack/openlitespeed-httpd.conf:/usr/local/lsws/conf/httpd_config.conf:ro
+      - {base_path}/.runtime/stack/modsecurity-rules.conf:/etc/mangopanel/modsecurity-rules.conf:ro
       - {base_path}/.runtime/stack/vhosts:/usr/local/lsws/conf/vhosts:ro
       - {base_path}/.runtime/stack/errors:/usr/local/lsws/mangopanel_errors:ro
     networks:
@@ -1309,33 +1535,6 @@ services:
       - account
       - mangopanel-edge
 
-  cron:
-    image: alpine:3.20
-    container_name: mp-{username}-cron
-    restart: unless-stopped
-    command: ["crond", "-f", "-l", "8"]
-    mem_limit: 128m
-    volumes:
-      - {base_path}:/home/{username}
-      - {base_path}/.runtime/stack/cron:/etc/crontabs/root:ro
-    networks:
-      - account
-
-  sftp:
-    image: atmoz/sftp:alpine
-    container_name: mp-{username}-sftp
-    restart: unless-stopped
-    mem_limit: 128m
-    ports:
-      - "0.0.0.0:{sftp_port}:22"
-    volumes:
-      - {base_path}:/home/{username}
-      - {base_path}/.runtime/stack/sftp_users.conf:/etc/sftp/users.conf:ro
-      - {base_path}/.runtime/stack/sshd_config:/etc/ssh/sshd_config:ro
-    networks:
-      - account
-      - mangopanel-edge
-
 networks:
   account:
     name: mp-{username}-net
@@ -1371,6 +1570,9 @@ volumes:
         pg_port=runtime["pg_port"],
         adminer_port=runtime["adminer_port"],
         sftp_port=runtime["sftp_port"],
+        ftp_port=runtime["ftp_port"],
+        ftp_passive_min=runtime["ftp_passive_min"],
+        ftp_passive_max=runtime["ftp_passive_max"],
         smtp_port=runtime["smtp_port"],
         smtp_tls_port=runtime["smtp_tls_port"],
         imap_port=runtime["imap_port"],

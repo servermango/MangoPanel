@@ -1,4 +1,5 @@
 import json
+import crypt
 import ipaddress
 import calendar
 import re
@@ -9,6 +10,8 @@ import time
 import tarfile
 import os
 import shlex
+import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 
 def is_within_directory(directory, target):
@@ -30,7 +33,7 @@ import time
 from pathlib import Path
 
 from .config import load_config
-from .db import connect, get_system_setting, set_system_setting, log_audit, log_job_event, row_to_dict, rows_to_dicts
+from .db import apply_system_timezone, connect, create_job, get_system_setting, get_system_timezone, set_system_setting, log_audit, log_job_event, row_to_dict, rows_to_dicts
 from .default_page import DEFAULT_PAGE_CONTENT
 from .providers import (
     ACME_PROVIDER_LOCAL,
@@ -51,7 +54,7 @@ from .providers import (
     SharedMailEdgeProvider,
 )
 from .security import decrypt_secret
-from .stack import STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, stack_summary, sync_account_suspension_marker
+from .stack import DEFAULT_SSH_MOTD, STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, render_modsecurity_rules, render_ols_vhconf, stack_summary, sync_account_suspension_marker
 
 
 class AgentError(Exception):
@@ -72,6 +75,21 @@ CRON_SPECIAL_SCHEDULES = {
     "@yearly": "0 0 1 1 *",
     "@annually": "0 0 1 1 *",
 }
+
+# Cloudflare publishes these as the definitive proxy ranges.  We require a
+# request to originate in one of these ranges before trusting
+# CF-Connecting-IP; a direct client cannot spoof that header to bypass the
+# direct-IP rule.
+CLOUDFLARE_PROXY_RANGES = [
+    "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "104.16.0.0/13", "104.24.0.0/14", "108.162.192.0/18",
+    "131.0.72.0/22", "141.101.64.0/18", "162.158.0.0/15",
+    "172.64.0.0/13", "173.245.48.0/20", "188.114.96.0/20",
+    "190.93.240.0/20", "197.234.240.0/22", "198.41.128.0/17",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32",
+    "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29",
+    "2c0f:f248::/32",
+]
 
 
 def _parse_cron_field(field, minimum, maximum, *, day_of_week=False):
@@ -349,6 +367,11 @@ def ensure_cron_runtime_artifacts(account, cron_jobs):
     crontab_path = Path(account["base_path"]) / ".runtime" / "stack" / "cron"
     crontab_path.parent.mkdir(parents=True, exist_ok=True)
     crontab_path.write_text(render_crontab(account, managed_jobs), encoding="utf-8")
+    crontab_path.chmod(0o600)
+    try:
+        os.chown(crontab_path, 0, 0)
+    except PermissionError:
+        pass
     return runtime, managed_jobs, crontab_path
 
 
@@ -386,10 +409,122 @@ class Agent:
 
     def run_once(self):
         with connect(self.config.db_path) as conn:
+            apply_system_timezone(conn)
+            self.enqueue_due_git_updates(conn)
+            self.enqueue_due_automatic_backups(conn)
+            # Do not carry the scheduler's write transaction into the job.
+            conn.commit()
             job = self.claim_next_job(conn)
             if not job:
                 return None
+            # Claiming is a short database operation. Commit it before any
+            # filesystem, Docker, archive, or database work begins.
+            conn.commit()
             return self.run_claimed_job(conn, job)
+
+    def enqueue_due_git_updates(self, conn):
+        """Queue one pull per deployment once its five-minute interval elapses."""
+        deployments = conn.execute(
+            """SELECT gd.id
+               FROM git_deployments gd
+               JOIN hosting_accounts ha ON ha.id = gd.account_id
+               WHERE ha.status = 'active'
+                 AND (gd.last_deployed_at IS NULL OR gd.last_deployed_at <= datetime('now', '-5 minutes'))
+                 AND NOT EXISTS (
+                   SELECT 1 FROM jobs j
+                   WHERE j.type = 'git_deploy' AND j.target_type = 'git_deployment'
+                     AND j.target_id = gd.id AND j.status IN ('queued', 'running')
+                 )
+               ORDER BY COALESCE(gd.last_deployed_at, gd.created_at), gd.id
+               LIMIT 10"""
+        ).fetchall()
+        for deployment in deployments:
+            conn.execute("UPDATE git_deployments SET status = 'updating', last_error = NULL WHERE id = ?", (deployment["id"],))
+            create_job(conn, "git_deploy", "git_deployment", deployment["id"], {"scheduled": True, "interval_minutes": 5})
+        return len(deployments)
+
+    def enqueue_due_automatic_backups(self, conn):
+        """Queue exactly one automatic backup globally per worker pass.
+
+        The queue worker remains the only executor. This keeps scheduled work
+        isolated from web requests and guarantees that users and their domains
+        are processed sequentially in account/site order. A queued or running
+        automatic backup anywhere in the system blocks the scheduler from
+        adding another one.
+        """
+        now = datetime.now(get_system_timezone(conn))
+        backup_time = get_system_setting(conn, "backup_time", "02:00")
+        try:
+            hour, minute = [int(part) for part in str(backup_time).split(":", 1)]
+        except (ValueError, TypeError):
+            hour, minute = 2, 0
+        if (now.hour, now.minute) < (hour, minute):
+            return 0
+        if conn.execute(
+            "SELECT 1 FROM backups WHERE kind = 'automatic' AND status IN ('queued', 'running') LIMIT 1"
+        ).fetchone():
+            return 0
+        # Do not spin on a site that is currently over quota or otherwise
+        # failing immediately. A failed scheduled backup gets a cooldown so
+        # one bad site cannot fill the queue and consume the worker in a hot
+        # retry loop.
+        if conn.execute(
+            """SELECT 1 FROM backups
+               WHERE kind = 'automatic' AND status = 'failed'
+                 AND created_at >= datetime('now', '-15 minutes')
+               LIMIT 1"""
+        ).fetchone():
+            return 0
+        rows = conn.execute(
+            """
+            SELECT ha.id AS account_id, ha.plan_id, p.backup_schedule
+            FROM hosting_accounts ha JOIN plans p ON p.id = ha.plan_id
+            WHERE ha.status = 'active' AND p.backup_schedule IN ('daily','weekly','monthly','quarterly')
+            ORDER BY ha.id
+            """
+        ).fetchall()
+        created = 0
+        for account in rows:
+            sites = conn.execute("SELECT id FROM websites WHERE account_id = ? ORDER BY id", (account["account_id"],)).fetchall()
+            site_ids = [site["id"] for site in sites] or [None]
+            for website_id in site_ids:
+                active = conn.execute(
+                    """SELECT 1 FROM backups WHERE account_id = ? AND (website_id IS ? OR website_id = ?)
+                       AND status IN ('queued','running') LIMIT 1""",
+                    (account["account_id"], website_id, website_id),
+                ).fetchone()
+                if active:
+                    continue
+                last = conn.execute(
+                    """SELECT created_at FROM backups WHERE account_id = ? AND (website_id IS ? OR website_id = ?)
+                       AND kind = 'automatic' AND status = 'completed' ORDER BY id DESC LIMIT 1""",
+                    (account["account_id"], website_id, website_id),
+                ).fetchone()
+                if last and not self.backup_due(last["created_at"], account["backup_schedule"], now):
+                    continue
+                cur = conn.execute(
+                    "INSERT INTO backups(account_id, website_id, kind, includes_database, status) VALUES (?, ?, 'automatic', 1, 'queued')",
+                    (account["account_id"], website_id),
+                )
+                create_job(conn, "automatic_backup", "backup", cur.lastrowid, {"website_id": website_id})
+                return 1
+        return 0
+
+    @staticmethod
+    def backup_due(created_at, schedule, now):
+        try:
+            previous = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=timezone.utc)
+            previous = previous.astimezone(now.tzinfo)
+        except (TypeError, ValueError):
+            return True
+        if schedule == "daily":
+            return (now.date() - previous.date()).days >= 1
+        if schedule == "weekly":
+            return (now - previous).days >= 7
+        months = (now.year - previous.year) * 12 + now.month - previous.month
+        return months >= (3 if schedule == "quarterly" else 1)
 
     def run_all(self, limit=25):
         results = []
@@ -458,6 +593,9 @@ class Agent:
 
     def run_claimed_job(self, conn, job):
         log_job_event(conn, job["id"], "Agent claimed job", metadata={"type": job["type"]})
+        # A job may run for minutes. The claim/audit record must not keep a
+        # SQLite write transaction open for the duration of that work.
+        conn.commit()
         try:
             result = self.dispatch(conn, job)
             conn.execute(
@@ -468,6 +606,11 @@ class Agent:
                 """,
                 (json.dumps(result), job["id"]),
             )
+            if job["type"] == "restore_backup":
+                conn.execute(
+                    "UPDATE restore_history SET status = 'succeeded', completed_at = CURRENT_TIMESTAMP WHERE job_id = ?",
+                    (job["id"],),
+                )
             log_job_event(conn, job["id"], "Agent completed job", metadata=result)
             return {"job_id": job["id"], "status": "succeeded", "result": result}
         except Exception as exc:
@@ -500,6 +643,16 @@ class Agent:
                 """,
                 (json.dumps({"error": str(exc)}), job["id"]),
             )
+            if job["type"] == "git_deploy":
+                conn.execute(
+                    "UPDATE git_deployments SET status = 'failed', last_error = ? WHERE id = ?",
+                    (str(exc), job["target_id"]),
+                )
+            if job["type"] == "restore_backup":
+                conn.execute(
+                    "UPDATE restore_history SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP WHERE job_id = ?",
+                    (str(exc), job["id"]),
+                )
             log_job_event(conn, job["id"], "Agent failed job", level="error", metadata={"error": str(exc)})
             return {"job_id": job["id"], "status": "failed", "error": str(exc)}
 
@@ -546,10 +699,12 @@ class Agent:
             return self.sync_mailboxes(conn, job["target_id"])
         if job_type == "manual_backup":
             return self.manual_backup(conn, job["target_id"])
+        if job_type == "automatic_backup":
+            return self.manual_backup(conn, job["target_id"])
         if job_type == "restore_backup":
-            return self.restore_backup(conn, job["target_id"])
+            return self.restore_backup(conn, job["target_id"], job.get("payload") or {})
         if job_type == "fix_file_ownership":
-            return self.fix_file_ownership(conn, job["target_id"], job.get("payload"))
+            return self.fix_file_ownership(conn, job["target_id"], self.job_payload(job))
         if job_type == "sync_ip_rules":
             return self.sync_ip_rules(conn, job["target_id"])
         if job_type == "sync_website_index":
@@ -584,12 +739,24 @@ class Agent:
             return self.kill_all_processes(conn, job["target_id"])
         if job_type == "update_website_php":
             return self.update_website_php(conn, job["target_id"])
+        if job_type == "update_website_php_ini":
+            return self.update_website_php_ini(conn, job["target_id"])
         if job_type == "purge_cache":
             return self.purge_cache(conn, job)
         if job_type == "reset_opcache":
             return self.reset_opcache(conn, job)
         if job_type == "flush_object_cache":
             return self.flush_object_cache(conn, job)
+        if job_type == "set_cache_settings":
+            return self.set_cache_settings(conn, job)
+        if job_type == "apply_modsecurity_ruleset":
+            return self.apply_modsecurity_ruleset(conn, job)
+        if job_type == "apply_ssh_motd":
+            return self.apply_ssh_motd(conn, job)
+        if job_type == "migrate_access_services":
+            return self.migrate_access_services(conn)
+        if job_type == "refresh_access_services":
+            return self.refresh_access_services(conn)
         if job_type == "create_cron_job":
             cron = conn.execute("SELECT * FROM cron_jobs WHERE id = ?", (job["target_id"],)).fetchone()
             if not cron:
@@ -857,6 +1024,118 @@ class Agent:
                     commands.append({"php_binary": php_bin, "website_id": website["id"]})
         return commands
 
+    def set_cache_settings(self, conn, job):
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()
+        protected = [row_to_dict(row) for row in conn.execute("SELECT * FROM protected_directories WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()]
+        hotlink = conn.execute("SELECT * FROM hotlink_settings WHERE account_id = ?", (account["id"],)).fetchone()
+        hotlink_domains = sorted({w["domain"] for w in websites} | {x.strip() for x in (hotlink["allowed_domains"] if hotlink else "").splitlines() if x.strip()})
+        account_dict = row_to_dict(account)
+        for website in websites:
+            item = row_to_dict(website)
+            item["protected_directories"] = protected
+            item["hotlink_enabled"] = int(hotlink["enabled"]) if hotlink else 0
+            item["hotlink_domains"] = hotlink_domains
+            vhconf = Path(account["base_path"]) / ".runtime" / "stack" / "vhosts" / website["domain"] / "vhconf.conf"
+            vhconf.parent.mkdir(parents=True, exist_ok=True)
+            vhconf.write_text(render_ols_vhconf(account_dict, item), encoding="utf-8")
+        docker = shutil.which("docker") or "docker"
+        if self.config.agent_mode == "docker":
+            reload_result = subprocess.run([docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"], check=False, capture_output=True, text=True)
+            if reload_result.returncode != 0:
+                raise AgentError(reload_result.stderr.strip() or "cache_vhost_reload_failed")
+            stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
+            if stack:
+                action = "up" if int(account["object_cache_enabled"] or 0) else "stop"
+                args = [docker, "compose", "-f", stack["compose_path"], action]
+                if action == "up": args.extend(["-d", "redis"])
+                else: args.append("redis")
+                subprocess.run(args, check=False, capture_output=True, text=True)
+        return {"account_id": account["id"], "opcache_enabled": int(account["opcache_enabled"] or 0), "object_cache_enabled": int(account["object_cache_enabled"] or 0), "applied": True}
+
+    def apply_modsecurity_ruleset(self, conn, job):
+        payload = self.job_payload(job); ruleset = str(payload.get("ruleset") or "baseline").lower()
+        if ruleset not in {"baseline", "owasp"}: raise AgentError("invalid_modsecurity_ruleset")
+        extra = ""
+        crs_root = None
+        if ruleset == "owasp":
+            import urllib.request
+            archive = Path(self.config.data_dir) / "modsecurity-rulesets" / "coreruleset-v4.0.0.tar.gz"
+            extract_dir = archive.parent / "coreruleset-v4.0.0"
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            if not extract_dir.exists():
+                urllib.request.urlretrieve("https://github.com/coreruleset/coreruleset/archive/refs/tags/v4.0.0.tar.gz", archive)
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                with tarfile.open(archive) as tar: safe_extract(tar, extract_dir)
+            crs_root = next((p for p in extract_dir.iterdir() if p.is_dir()), extract_dir)
+        accounts = [conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()] if job["target_id"] else conn.execute("SELECT * FROM hosting_accounts WHERE status = 'active'").fetchall()
+        applied = []
+        for account in [a for a in accounts if a]:
+            extra = ""
+            if crs_root:
+                # CRS rules refer to companion .data files by relative name.
+                # Copy them into the account tree (already mounted in the
+                # existing web container) and use absolute paths in rules.
+                data_dir = Path(account["base_path"]) / ".runtime" / "stack" / "crs-data"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                for data_file in (crs_root / "rules").glob("*.data"):
+                    shutil.copy2(data_file, data_dir / data_file.name)
+                data_prefix = f"/home/{account['username']}/.runtime/stack/crs-data/"
+                def with_crs_data_paths(text):
+                    return re.sub(
+                        r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_-]+\.data)\b",
+                        lambda match: data_prefix + match.group(1),
+                        text,
+                    )
+                setup = crs_root / "crs-setup.conf.example"
+                if setup.exists():
+                    extra += "\n" + with_crs_data_paths(setup.read_text(encoding="utf-8"))
+                for rule in sorted((crs_root / "rules").glob("*.conf")):
+                    extra += "\n" + with_crs_data_paths(rule.read_text(encoding="utf-8", errors="replace"))
+            websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()
+            websites = [row_to_dict(w) for w in websites]
+            path = Path(account["base_path"]) / ".runtime" / "stack" / "modsecurity-rules.conf"
+            path.write_text(render_modsecurity_rules(websites) + extra, encoding="utf-8")
+            if self.config.agent_mode == "docker":
+                docker = shutil.which("docker") or "docker"
+                subprocess.run([docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"], check=False, capture_output=True, text=True)
+            applied.append(account["id"])
+        return {"ruleset": ruleset, "accounts": applied, "downloaded": ruleset == "owasp"}
+
+    def apply_ssh_motd(self, conn, job):
+        """Propagate the platform MOTD into every account's web container."""
+        payload = self.job_payload(job)
+        motd = str(payload.get("motd") or DEFAULT_SSH_MOTD)
+        if len(motd) > 32768:
+            raise AgentError("ssh_motd_too_long")
+        accounts = conn.execute("SELECT * FROM hosting_accounts WHERE status = 'active'").fetchall()
+        applied = []
+        for account in accounts:
+            stack_dir = Path(account["base_path"]) / ".runtime" / "stack"
+            stack_dir.mkdir(parents=True, exist_ok=True)
+            (stack_dir / "motd").write_text(motd, encoding="utf-8")
+            compose_path = stack_dir / "docker-compose.yml"
+            if compose_path.exists():
+                compose = compose_path.read_text(encoding="utf-8", errors="replace")
+                mount = "      - {}/.runtime/stack/motd:/etc/motd:ro".format(account["base_path"])
+                if "/etc/motd:ro" not in compose:
+                    marker = "      - {}/.runtime/stack/sshd_config:/etc/ssh/sshd_config:ro".format(account["base_path"])
+                    if marker in compose:
+                        compose = compose.replace(marker, marker + "\n" + mount, 1)
+                        compose_path.write_text(compose, encoding="utf-8")
+            if self.config.agent_mode == "docker":
+                docker = shutil.which("docker") or "docker"
+                result = subprocess.run(
+                    [docker, "restart", f"mp-{account['username']}-web"],
+                    check=False, capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    raise AgentError(result.stderr.strip() or "ssh_motd_web_container_update_failed")
+            applied.append(account["id"])
+        return {"accounts": applied, "motd_length": len(motd)}
+
     def flush_object_cache_backend(self, account):
         result = {"backend": "redis", "flushed": True, "mode": "filesystem"}
         if self.config.agent_mode == "docker":
@@ -893,7 +1172,10 @@ class Agent:
         pattern = re.compile(r"{}.*?{}\n?".format(re.escape(begin_marker), re.escape(end_marker)), re.S)
         if block:
             if pattern.search(content):
-                updated = pattern.sub(block, content)
+                # Use a callable replacement so backslashes in generated
+                # Apache/Rewrite rules are treated literally, not as
+                # replacement-template escapes.
+                updated = pattern.sub(lambda _match: block, content)
             else:
                 stripped = content.rstrip()
                 updated = block if not stripped else stripped + "\n\n" + block
@@ -1512,12 +1794,15 @@ class Agent:
         managed_domains.update(allowed)
         managed_domains = sorted(domain for domain in managed_domains if domain)
 
+        # OpenLiteSpeed does not consistently apply this feature from a
+        # per-directory .htaccess file. Keep that artifact for compatibility,
+        # but also render the native vhost rule which is the authoritative path.
+        account_dict = row_to_dict(account)
+        native_vhosts = []
+
         block_lines = [
             "# BEGIN MangoPanel Hotlink",
             "RewriteEngine On",
-            "RewriteCond %{REQUEST_FILENAME} -s [OR]",
-            "RewriteCond %{REQUEST_FILENAME} -d",
-            "RewriteRule ^ - [L]",
         ]
         if enabled:
             block_lines.append(r"RewriteCond %{REQUEST_URI} \.(?:jpe?g|png|gif|webp|avif|svg|bmp|ico)$ [NC]")
@@ -1546,6 +1831,25 @@ class Agent:
             elif htaccess.exists():
                 htaccess.unlink()
                 artifact_paths.append(str(htaccess))
+            website_dict = row_to_dict(website)
+            website_dict["hotlink_enabled"] = int(enabled)
+            website_dict["hotlink_domains"] = managed_domains
+            website_dict["protected_directories"] = [row_to_dict(item) for item in conn.execute("SELECT * FROM protected_directories WHERE account_id = ?", (account_id,)).fetchall()]
+            vhconf = Path(account["base_path"]) / ".runtime" / "stack" / "vhosts" / website["domain"] / "vhconf.conf"
+            vhconf.parent.mkdir(parents=True, exist_ok=True)
+            vhconf.write_text(render_ols_vhconf(account_dict, website_dict), encoding="utf-8")
+            native_vhosts.append(str(vhconf))
+
+        runtime = build_account_runtime(account_dict, self.config.public_host, self.config.account_port_base)
+        container_name = f"mp-{account['username']}-web"
+        docker = shutil.which("docker") or "docker"
+        if self.config.agent_mode == "docker":
+            restart = subprocess.run(
+                [docker, "exec", container_name, "/usr/local/lsws/bin/lswsctrl", "restart"],
+                check=False, capture_output=True, text=True,
+            )
+            if restart.returncode != 0:
+                raise AgentError(f"hotlink_vhost_reload_failed: {restart.stderr.strip()}")
 
         artifact_path = artifact_paths[0] if artifact_paths else str(Path(account["base_path"]) / ".htaccess")
         return {
@@ -1554,6 +1858,7 @@ class Agent:
             "enabled": enabled,
             "artifact_path": artifact_path,
             "artifacts": artifact_paths,
+            "native_vhosts": native_vhosts,
         }
 
     def install_site_builder(self, conn, job):
@@ -1799,10 +2104,12 @@ class Agent:
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return str(path)
 
-    def git_run(self, args, cwd=None):
-        env = dict(os.environ)
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        result = subprocess.run(args, cwd=cwd, check=False, capture_output=True, text=True, env=env)
+    def git_run(self, args, cwd=None, env=None):
+        run_env = dict(os.environ)
+        if env is not None:
+            run_env.update(env)
+        run_env["GIT_TERMINAL_PROMPT"] = "0"
+        result = subprocess.run(args, cwd=cwd, check=False, capture_output=True, text=True, env=run_env)
         if result.returncode != 0:
             raise AgentError(result.stderr.strip() or result.stdout.strip() or "git_operation_failed")
         return result
@@ -1821,42 +2128,60 @@ class Agent:
             raise AgentError("invalid_branch")
         deploy_path = Path(account["base_path"]) / deployment["deploy_path"]
 
-        deploy_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata = self.git_deploy_metadata(row_to_dict(account), deployment_id)
-        previous_commit = metadata.get("current_commit")
-        if deploy_path.exists() and (deploy_path / ".git").exists():
-            status = subprocess.run(["git", "-C", str(deploy_path), "status", "--porcelain"], check=False, capture_output=True, text=True)
-            if status.stdout.strip():
-                raise AgentError("dirty_worktree")
-            self.git_run(["git", "-C", str(deploy_path), "fetch", "--prune", "origin"])
-            self.git_run(["git", "-C", str(deploy_path), "checkout", deployment["branch"]])
-            self.git_run(["git", "-C", str(deploy_path), "reset", "--hard", f"origin/{deployment['branch']}"])
-        else:
-            if deploy_path.exists() and any(deploy_path.iterdir()):
-                raise AgentError("dirty_worktree")
-            self.git_run(["git", "clone", "--branch", deployment["branch"], "--single-branch", deployment["repository_url"], str(deploy_path)])
-        current_commit = subprocess.run(["git", "-C", str(deploy_path), "rev-parse", "HEAD"], check=False, capture_output=True, text=True)
-        if current_commit.returncode != 0:
-            raise AgentError(current_commit.stderr.strip() or current_commit.stdout.strip() or "git_head_lookup_failed")
-        current_commit = current_commit.stdout.strip()
-        report = self.write_git_deploy_metadata(
-            row_to_dict(account),
-            deployment_id,
-            {
-                "deployment_id": deployment_id,
-                "repository_url": deployment["repository_url"],
-                "branch": deployment["branch"],
-                "deploy_path": str(deploy_path),
-                "previous_commit": previous_commit,
-                "current_commit": current_commit,
-                "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            },
-        )
-        conn.execute(
-            "UPDATE git_deployments SET status = 'deployed', last_commit = ?, previous_commit = ?, last_deployed_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?",
-            (current_commit, previous_commit, deployment_id),
-        )
-        return {"deployment_id": deployment_id, "deploy_path": str(deploy_path), "current_commit": current_commit, "previous_commit": previous_commit, "artifact_path": report, "status": "deployed"}
+        access_key = decrypt_secret(deployment["access_key_encrypted"], self.config.jwt_secret) if "access_key_encrypted" in deployment.keys() else ""
+        askpass_path = None
+        git_env = {}
+        if access_key:
+            askpass = tempfile.NamedTemporaryFile("w", prefix="mango-git-askpass-", delete=False, encoding="utf-8")
+            askpass.write("#!/bin/sh\ncase \"$1\" in\n*Username*) echo x-access-token ;;\n*) echo \"$GIT_ACCESS_KEY\" ;;\nesac\n")
+            askpass.close()
+            os.chmod(askpass.name, 0o700)
+            askpass_path = askpass.name
+            git_env = {"GIT_ASKPASS": askpass_path, "GIT_ACCESS_KEY": access_key}
+
+        try:
+            deploy_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata = self.git_deploy_metadata(row_to_dict(account), deployment_id)
+            previous_commit = metadata.get("current_commit")
+            if deploy_path.exists() and (deploy_path / ".git").exists():
+                status = subprocess.run(["git", "-C", str(deploy_path), "status", "--porcelain"], check=False, capture_output=True, text=True)
+                if status.stdout.strip():
+                    raise AgentError("dirty_worktree")
+                self.git_run(["git", "-C", str(deploy_path), "fetch", "--prune", "origin"], env=git_env)
+                self.git_run(["git", "-C", str(deploy_path), "checkout", deployment["branch"]], env=git_env)
+                self.git_run(["git", "-C", str(deploy_path), "reset", "--hard", f"origin/{deployment['branch']}"], env=git_env)
+            else:
+                if deploy_path.exists() and any(deploy_path.iterdir()):
+                    raise AgentError("dirty_worktree")
+                self.git_run(["git", "clone", "--branch", deployment["branch"], "--single-branch", deployment["repository_url"], str(deploy_path)], env=git_env)
+            current_commit = subprocess.run(["git", "-C", str(deploy_path), "rev-parse", "HEAD"], check=False, capture_output=True, text=True)
+            if current_commit.returncode != 0:
+                raise AgentError(current_commit.stderr.strip() or current_commit.stdout.strip() or "git_head_lookup_failed")
+            current_commit = current_commit.stdout.strip()
+            report = self.write_git_deploy_metadata(
+                row_to_dict(account),
+                deployment_id,
+                {
+                    "deployment_id": deployment_id,
+                    "repository_url": deployment["repository_url"],
+                    "branch": deployment["branch"],
+                    "deploy_path": str(deploy_path),
+                    "previous_commit": previous_commit,
+                    "current_commit": current_commit,
+                    "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                },
+            )
+            conn.execute(
+                "UPDATE git_deployments SET status = 'deployed', last_commit = ?, previous_commit = ?, last_deployed_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?",
+                (current_commit, previous_commit, deployment_id),
+            )
+            return {"deployment_id": deployment_id, "deploy_path": str(deploy_path), "current_commit": current_commit, "previous_commit": previous_commit, "artifact_path": report, "status": "deployed"}
+        finally:
+            if askpass_path:
+                try:
+                    os.unlink(askpass_path)
+                except OSError:
+                    pass
 
     def rollback_git_repository(self, conn, deployment_id):
         deployment = conn.execute("SELECT * FROM git_deployments WHERE id = ?", (deployment_id,)).fetchone()
@@ -1945,13 +2270,24 @@ class Agent:
             "stack_status": summary.get("status"),
         }
 
-    def provision_hosting_account(self, conn, account_id, touched_website_id=None):
+    def provision_hosting_account(self, conn, account_id, touched_website_id=None, apply_stack=True):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
         plan = conn.execute("SELECT * FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
         node = conn.execute("SELECT * FROM nodes WHERE id = ?", (account["node_id"],)).fetchone()
         websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
+        hotlink_settings = conn.execute("SELECT * FROM hotlink_settings WHERE account_id = ?", (account_id,)).fetchone()
+        hotlink_allowed = [line.strip() for line in (hotlink_settings["allowed_domains"] if hotlink_settings else "").splitlines() if line.strip()]
+        hotlink_domains = sorted({w["domain"] for w in websites} | set(hotlink_allowed))
+        protected_dirs = [row_to_dict(row) for row in conn.execute("SELECT * FROM protected_directories WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()]
+        website_dicts = []
+        for website in websites:
+            item = row_to_dict(website)
+            item["hotlink_enabled"] = int(hotlink_settings["enabled"]) if hotlink_settings else 0
+            item["hotlink_domains"] = hotlink_domains
+            item["protected_directories"] = protected_dirs
+            website_dicts.append(item)
         mailboxes = rows_to_dicts(conn.execute("SELECT * FROM mailboxes WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         for mailbox in mailboxes:
             mailbox["password"] = decrypt_secret(mailbox.get("password_secret", ""), self.config.jwt_secret)
@@ -2005,7 +2341,7 @@ class Agent:
             row_to_dict(account),
             row_to_dict(plan),
             row_to_dict(node),
-            rows_to_dicts(websites),
+            website_dicts,
             runtime,
             mailboxes,
             mail_policy,
@@ -2014,7 +2350,7 @@ class Agent:
         mail_edge_provider = self.publish_mail_edge_state(conn, account, runtime, mailboxes, mail_policy)
         cron_jobs = rows_to_dicts(conn.execute("SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         ensure_cron_runtime_artifacts(row_to_dict(account), cron_jobs)
-        apply_result = self.apply_stack(paths["compose"], account["username"])
+        apply_result = self.apply_stack(paths["compose"], account["username"]) if apply_stack else {"status": "generated"}
         if account["status"] == "hard_suspended":
             # Maintenance jobs may still be queued when an account is hard
             # suspended. They may regenerate the stack, but must never leave
@@ -2024,10 +2360,11 @@ class Agent:
             apply_result.update({"status": "stopped", "stack_stop": stop_result})
         self.sync_account_databases(conn, account_id)
         ssh_status = dict(account).get("ssh_access") or "disabled"
-        try:
-            self.set_ssh_access(conn, account_id, ssh_status)
-        except Exception:
-            pass
+        if apply_stack:
+            try:
+                self.set_ssh_access(conn, account_id, ssh_status)
+            except Exception:
+                pass
         
 
         services_json = json.dumps(STACK_SERVICES)
@@ -2379,19 +2716,15 @@ class Agent:
         base_path = Path(account["base_path"])
         backup_dir = base_path / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
-        
-        usage = path_usage(base_path)
-        plan_dict = dict(plan) if plan else {}
-        storage_limit_bytes = (int(plan_dict.get("storage_mb")) if plan_dict.get("storage_mb") else 10000) * 1024 * 1024
-        inode_limit = int(plan_dict.get("inode_limit")) if plan_dict.get("inode_limit") else 500000
-        if usage["bytes"] > storage_limit_bytes:
-            conn.execute("UPDATE backups SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (backup_id,))
-            raise AgentError("storage_quota_exceeded")
-        if usage["inodes"] > inode_limit:
-            conn.execute("UPDATE backups SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (backup_id,))
-            raise AgentError("inode_quota_exceeded")
-            
-        artifact_path = backup_dir / f"backup-{backup_id}.tar.gz"
+        retention_days = int(plan["backup_retention_days"]) if plan and plan["backup_retention_days"] else 7
+        conn.execute("UPDATE backups SET status = 'running' WHERE id = ? AND status = 'queued'", (backup_id,))
+        conn.commit()
+
+        # Remove expired archives before reserving space for a new one. The
+        # archive contains the roots below, never the backup directory itself.
+        self.prune_expired_backups(conn, account["id"], retention_days)
+        conn.commit()
+
         roots = [
             "account.json",
             "domains",
@@ -2402,21 +2735,55 @@ class Agent:
             "pg_databases",
             ".runtime/stack",
         ]
-        with tarfile.open(artifact_path, "w:gz") as tar:
-            for rel in roots:
-                source = base_path / rel
-                if source.exists():
-                    tar.add(source, arcname=rel)
+        source_bytes = sum(path_usage(base_path / rel)["bytes"] for rel in roots if (base_path / rel).exists())
+        plan_dict = dict(plan) if plan else {}
+        storage_limit_bytes = (int(plan_dict.get("storage_mb")) if plan_dict.get("storage_mb") else 10000) * 1024 * 1024
+        inode_limit = int(plan_dict.get("inode_limit")) if plan_dict.get("inode_limit") else 500000
+        source_usage = path_usage(base_path / "domains") if (base_path / "domains").exists() else {"inodes": 0}
+        if source_bytes > storage_limit_bytes:
+            self.fail_backup(conn, backup_id)
+            raise AgentError("storage_quota_exceeded")
+        if int(source_usage.get("inodes", 0)) > inode_limit:
+            self.fail_backup(conn, backup_id)
+            raise AgentError("inode_quota_exceeded")
 
-        self.prune_expired_backups(conn, account["id"], int(plan["backup_retention_days"]))
-        
+        disk = shutil.disk_usage(base_path)
+        # Compression can be poor for already-compressed media and database
+        # files, so reserve approximately the full source size plus a hard
+        # safety margin. Never allow backup creation to consume the last 10%
+        # of the filesystem or less than 1 GiB.
+        safety_margin = max(1024 ** 3, int(disk.total * 0.10))
+        if disk.free < source_bytes + safety_margin or disk.free - source_bytes < safety_margin:
+            self.fail_backup(conn, backup_id)
+            raise AgentError("insufficient_disk_space_for_backup")
+
+        artifact_path = backup_dir / f"backup-{backup_id}.tar.gz"
+        try:
+            # Low compression keeps scheduled work bounded and avoids
+            # competing with web/database containers for CPU.
+            with tarfile.open(artifact_path, "w:gz", compresslevel=1) as tar:
+                for rel in roots:
+                    source = base_path / rel
+                    if source.exists():
+                        tar.add(source, arcname=rel)
+        except Exception:
+            if artifact_path.exists():
+                artifact_path.unlink()
+            self.fail_backup(conn, backup_id)
+            raise
+
         conn.execute(
             "UPDATE backups SET status = 'completed', artifact_path = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
             (str(artifact_path), backup_id),
         )
         return {"backup_id": backup_id, "artifact_path": str(artifact_path), "status": "completed"}
 
-    def restore_backup(self, conn, backup_id):
+    @staticmethod
+    def fail_backup(conn, backup_id):
+        conn.execute("UPDATE backups SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (backup_id,))
+        conn.commit()
+
+    def restore_backup(self, conn, backup_id, payload=None):
         backup = conn.execute("SELECT * FROM backups WHERE id = ?", (backup_id,)).fetchone()
         if not backup:
             raise AgentError("backup_not_found")
@@ -2430,6 +2797,7 @@ class Agent:
             raise AgentError("backup_artifact_missing")
             
         base_path = Path(account["base_path"])
+        include_database = bool((payload or {}).get("include_database", backup["includes_database"] if "includes_database" in backup.keys() else True))
         restore_roots = [
             base_path / "domains",
             base_path / "databases",
@@ -2441,7 +2809,17 @@ class Agent:
         ]
         try:
             with tarfile.open(artifact_path, "r:gz") as tar:
+                extracted_bytes = sum(max(0, int(member.size)) for member in tar.getmembers())
+                current_restore_bytes = sum(
+                    path_usage(target)["bytes"] for target in restore_roots if target.exists()
+                )
+                disk = shutil.disk_usage(base_path)
+                safety_margin = max(1024 ** 3, int(disk.total * 0.10))
+                if disk.free + current_restore_bytes < extracted_bytes + safety_margin:
+                    raise AgentError("insufficient_disk_space_for_restore")
                 for target in restore_roots:
+                    if target.name == "databases" and not include_database:
+                        continue
                     if target.exists():
                         self.clear_directory_contents(target)
                 account_json = base_path / "account.json"
@@ -2495,6 +2873,39 @@ class Agent:
             
         summary["php_version"] = website["php_version"]
         return summary
+
+    def update_website_php_ini(self, conn, website_id):
+        website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
+        if not website:
+            raise AgentError("website_not_found")
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (website["account_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+
+        php_ini_dict = json.loads(website["php_ini"] if website["php_ini"] else "{}")
+        ini_content = "".join(f"{key} = {value}\n" for key, value in php_ini_dict.items() if value not in (None, ""))
+        ini_path = Path(website["document_root"]) / ".user.ini"
+        if ini_content:
+            ini_path.parent.mkdir(parents=True, exist_ok=True)
+            ini_path.write_text(ini_content, encoding="utf-8")
+            ini_path.chmod(0o644)
+        elif ini_path.exists():
+            ini_path.unlink()
+
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker")
+            if docker:
+                subprocess.run(
+                    [docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"],
+                    check=False,
+                )
+
+        return {
+            "website_id": website_id,
+            "php_ini_applied": True,
+            "ini_path": str(ini_path),
+            "mode": self.config.agent_mode,
+        }
 
     def purge_cache(self, conn, job):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
@@ -2795,35 +3206,142 @@ class Agent:
         
         rules = conn.execute("SELECT * FROM ip_rules WHERE account_id = ?", (account_id,)).fetchall()
         
-        htaccess_snippet = "# BEGIN MangoPanel IP Rules\n"
-        if rules:
-            htaccess_snippet += "Order Allow,Deny\n"
-            for rule in rules:
-                directive = "Allow" if rule["type"] == "allow" else "Deny"
-                htaccess_snippet += f"{directive} from {rule['ip']}\n"
-            # Always allow everything else if we are just blocking, but if there's only allows, it defaults to deny.
-            # Actually, standard way is just append Deny from X, and Allow from Y. 
-            # But let's keep it simple: 
-            htaccess_snippet += "Allow from all\n"
-        htaccess_snippet += "# END MangoPanel IP Rules\n"
-        
-        if self.config.agent_mode == "docker":
-            docker = shutil.which("docker")
-            if docker:
-                # We need to insert this snippet into /var/www/vhosts/.htaccess
-                # We'll use a bash script to replace or append the block.
-                script = f"""
-                touch /var/www/vhosts/.htaccess
-                chown www-data:www-data /var/www/vhosts/.htaccess
-                sed -i '/# BEGIN MangoPanel IP Rules/,/# END MangoPanel IP Rules/d' /var/www/vhosts/.htaccess
-                echo "{htaccess_snippet}" >> /var/www/vhosts/.htaccess
-                """
-                subprocess.run(
-                    [docker, "exec", "-i", f"mp-{account['username']}-web", "bash", "-c", script],
-                    check=False
-                )
-                
+        block_rules = [rule for rule in rules if rule["type"] == "block"]
+        htaccess_lines = ["# BEGIN MangoPanel IP Rules", "RewriteEngine On"]
+        for rule in block_rules:
+            # Requests arrive through the edge proxy. Check both the direct
+            # address and the trusted X-Forwarded-For value it adds.
+            ip_text = str(rule["ip"]).strip()
+            if "/" in ip_text:
+                # Apache's access control handles CIDR ranges on direct
+                # connections; the exact-IP rewrite path below covers the
+                # normal proxy-facing rule used by the client UI.
+                htaccess_lines.append(f"Deny from {ip_text}")
+                continue
+            escaped = re.escape(ip_text)
+            htaccess_lines.extend([
+                f"RewriteCond %{{REMOTE_ADDR}} ^{escaped}$ [OR]",
+                f"RewriteCond %{{HTTP:X-Forwarded-For}} {escaped}",
+                "RewriteRule ^ - [F,L]",
+            ])
+        if any("Deny from" in line for line in htaccess_lines):
+            htaccess_lines.extend(["Order Allow,Deny", "Allow from all"])
+        htaccess_lines.append("# END MangoPanel IP Rules")
+        htaccess_snippet = "\n".join(htaccess_lines) + "\n"
+
+        websites = conn.execute("SELECT document_root FROM websites WHERE account_id = ?", (account_id,)).fetchall()
+        for website in websites:
+            root = Path(website["document_root"])
+            root.mkdir(parents=True, exist_ok=True)
+            htaccess = root / ".htaccess"
+            current = htaccess.read_text(encoding="utf-8") if htaccess.exists() else ""
+            updated = self.replace_managed_block(current, "# BEGIN MangoPanel IP Rules", "# END MangoPanel IP Rules", htaccess_snippet)
+            htaccess.write_text(updated, encoding="utf-8")
+            htaccess.chmod(0o644)
+
+        # The public domains are fronted by the shared Caddy edge proxy.  A
+        # request reaching OpenLiteSpeed has already been proxied, so enforce
+        # account IP blocks at the edge as well as in each site's .htaccess.
+        domains = [str(row["domain"]) for row in conn.execute(
+            "SELECT domain FROM websites WHERE account_id = ?", (account_id,)
+        ).fetchall()]
+        self.sync_caddy_ip_rules(account_id, domains, [str(rule["ip"]).strip() for rule in block_rules])
+
         return {"synced": True, "account_id": account["id"], "rules_count": len(rules)}
+
+    def sync_caddy_ip_rules(self, account_id, domains, blocked_ips):
+        """Install account IP blocks in the shared Caddy proxy, if present."""
+        if not domains:
+            return
+        valid_ranges = []
+        for value in blocked_ips:
+            try:
+                valid_ranges.append(str(ipaddress.ip_network(value, strict=False)))
+            except ValueError:
+                continue
+        if not valid_ranges:
+            valid_ranges = []
+        exact_client_ips = []
+        for value in blocked_ips:
+            try:
+                address = ipaddress.ip_address(value)
+            except ValueError:
+                continue
+            exact_client_ips.append(str(address))
+
+        container = "mangopanel-caddy"
+        try:
+            config_bytes = subprocess.check_output(
+                ["docker", "exec", container, "wget", "-qO-", "http://127.0.0.1:2019/config/"],
+                stderr=subprocess.STDOUT,
+                timeout=15,
+            )
+            config = json.loads(config_bytes.decode("utf-8"))
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            # Development/test stacks may not run Caddy.  The .htaccess rule
+            # above remains the enforcement path there.
+            return
+
+        servers = config.get("apps", {}).get("http", {}).get("servers", {})
+        route_prefix = f"mangopanel-ip-block-{int(account_id)}-"
+        for server in servers.values():
+            routes = server.get("routes", [])
+            server["routes"] = [route for route in routes if not str(route.get("@id", "")).startswith(route_prefix)]
+
+        if valid_ranges or exact_client_ips:
+            for server_name, server in servers.items():
+                routes = server.get("routes", [])
+                insert_at = next(
+                    (index for index, route in enumerate(routes)
+                     if any(domain in host for matcher in route.get("match", [])
+                            for host in matcher.get("host", []) for domain in domains)),
+                    len(routes),
+                )
+                handlers = [{
+                    "handler": "static_response",
+                    "status_code": 403,
+                    "body": "Forbidden\n",
+                }]
+                if valid_ranges:
+                    routes.insert(insert_at, {
+                        "@id": f"{route_prefix}{server_name}-direct",
+                        "match": [{"host": domains, "remote_ip": {"ranges": valid_ranges}}],
+                        "handle": handlers,
+                        "terminal": True,
+                    })
+                    insert_at += 1
+                if exact_client_ips:
+                    routes.insert(insert_at, {
+                        "@id": f"{route_prefix}{server_name}-cloudflare",
+                        "match": [{
+                            "host": domains,
+                            "remote_ip": {"ranges": CLOUDFLARE_PROXY_RANGES},
+                            "header": {"CF-Connecting-IP": exact_client_ips},
+                        }],
+                        "handle": handlers,
+                        "terminal": True,
+                    })
+
+        config_path = None
+        try:
+            route_id = f"mangopanel-ip-block-{int(account_id)}"
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+                json.dump(config, handle)
+                config_path = handle.name
+            subprocess.run(["docker", "cp", config_path, f"{container}:/tmp/{route_id}.json"], check=True, timeout=15)
+            subprocess.run([
+                "docker", "exec", container, "wget", "-qO-", "--post-file", f"/tmp/{route_id}.json",
+                "--header", "Content-Type: application/json", "http://127.0.0.1:2019/load",
+            ], check=True, timeout=20, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise AgentError(f"caddy_ip_rule_sync_failed: {exc}") from exc
+        finally:
+            if config_path:
+                try:
+                    os.unlink(config_path)
+                except OSError:
+                    pass
+            subprocess.run(["docker", "exec", container, "rm", "-f", f"/tmp/{route_id}.json"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def sync_website_index(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
@@ -2888,28 +3406,52 @@ class Agent:
                     htaccess_path.write_text(updated, encoding="utf-8")
                 else:
                     htaccess_path.unlink()
-            return {"synced": True, "path": relative_path, "removed": True, "artifact_path": str(host_path)}
+            removed = True
+        else:
+            removed = False
 
-        if not username or not password:
+        if not removed and (not username or not password):
             raise AgentError("credentials_required")
 
-        host_path.mkdir(parents=True, exist_ok=True)
-        htpasswd_path.write_text("{}:{}\n".format(username, self.htpasswd_hash(password)), encoding="utf-8")
-        htpasswd_path.chmod(0o640)
-        auth_name = f"Protected Area {relative_path}".replace('"', "'")
-        htaccess_block = (
-            "# BEGIN MangoPanel Auth\n"
-            "AuthType Basic\n"
-            f'AuthName "{auth_name}"\n'
-            f"AuthUserFile {container_path / '.htpasswd'}\n"
-            "Require valid-user\n"
-            "# END MangoPanel Auth\n"
-        )
-        current = htaccess_path.read_text(encoding="utf-8") if htaccess_path.exists() else ""
-        updated = self.replace_managed_block(current, "# BEGIN MangoPanel Auth", "# END MangoPanel Auth", htaccess_block)
-        htaccess_path.write_text(updated, encoding="utf-8")
-        htaccess_path.chmod(0o644)
-        return {"synced": True, "path": relative_path, "removed": False, "artifact_path": str(host_path)}
+        if not removed:
+            host_path.mkdir(parents=True, exist_ok=True)
+            htpasswd_path.write_text("{}:{}\n".format(username, self.htpasswd_hash(password)), encoding="utf-8")
+            # OLS runs as an unprivileged user and must be able to read the
+            # realm database; the .ht* filename is not served as a document.
+            htpasswd_path.chmod(0o644)
+            auth_name = f"Protected Area {relative_path}".replace('"', "'")
+            htaccess_block = (
+                "# BEGIN MangoPanel Auth\n"
+                "AuthType Basic\n"
+                f'AuthName "{auth_name}"\n'
+                f"AuthUserFile {container_path / '.htpasswd'}\n"
+                "Require valid-user\n"
+                "# END MangoPanel Auth\n"
+            )
+            current = htaccess_path.read_text(encoding="utf-8") if htaccess_path.exists() else ""
+            updated = self.replace_managed_block(current, "# BEGIN MangoPanel Auth", "# END MangoPanel Auth", htaccess_block)
+            htaccess_path.write_text(updated, encoding="utf-8")
+            htaccess_path.chmod(0o644)
+        # Native OLS contexts are required because this installation does not
+        # reliably enforce Auth directives loaded from .htaccess.
+        websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
+        protected = [row_to_dict(row) for row in conn.execute("SELECT * FROM protected_directories WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()]
+        account_dict = row_to_dict(account)
+        for website in websites:
+            item = row_to_dict(website)
+            item["protected_directories"] = protected
+            hotlink = conn.execute("SELECT * FROM hotlink_settings WHERE account_id = ?", (account_id,)).fetchone()
+            item["hotlink_enabled"] = int(hotlink["enabled"]) if hotlink else 0
+            item["hotlink_domains"] = sorted({w["domain"] for w in websites} | {x.strip() for x in (hotlink["allowed_domains"] if hotlink else "").splitlines() if x.strip()})
+            vhconf = Path(account["base_path"]) / ".runtime" / "stack" / "vhosts" / website["domain"] / "vhconf.conf"
+            vhconf.parent.mkdir(parents=True, exist_ok=True)
+            vhconf.write_text(render_ols_vhconf(account_dict, item), encoding="utf-8")
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker") or "docker"
+            restart = subprocess.run([docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"], check=False, capture_output=True, text=True)
+            if restart.returncode != 0:
+                raise AgentError(f"protected_directory_vhost_reload_failed: {restart.stderr.strip()}")
+        return {"synced": True, "path": relative_path, "removed": removed, "artifact_path": str(host_path)}
 
     def sync_redirects(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
@@ -3019,15 +3561,32 @@ class Agent:
         htaccess.write_text(updated, encoding="utf-8")
         htaccess.chmod(0o644)
 
+        all_websites = rows_to_dicts(conn.execute(
+            "SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)
+        ).fetchall())
+        rules_path = Path(account["base_path"]) / ".runtime" / "stack" / "modsecurity-rules.conf"
+        rules_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_rules = rules_path.read_text(encoding="utf-8", errors="replace") if rules_path.exists() else ""
+        rules_text = render_modsecurity_rules(all_websites)
+        if "# OWASP CRS" in existing_rules:
+            rules_text += "\n" + existing_rules[existing_rules.index("# OWASP CRS"):]
+        rules_path.write_text(rules_text, encoding="utf-8")
+
         if self.config.agent_mode == "docker":
             docker = shutil.which("docker")
             if docker:
-                script = f"chown www-data:www-data /var/www/vhosts/{website['domain']}/{website['document_root']}/.htaccess"
+                script = f"chown www-data:www-data /home/{account['username']}/domains/{website['domain']}/public_html/.htaccess"
                 subprocess.run(
                     [docker, "exec", "-i", f"mp-{account['username']}-web", "bash", "-c", script],
                     check=False
                 )
-        return {"synced": True, "website_id": website_id, "modsec_enabled": modsec_enabled, "artifact_path": str(htaccess)}
+                restart = subprocess.run(
+                    [docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"],
+                    check=False, capture_output=True, text=True,
+                )
+                if restart.returncode != 0:
+                    raise AgentError("modsecurity_runtime_reload_failed")
+        return {"synced": True, "website_id": website_id, "modsec_enabled": modsec_enabled, "artifact_path": str(htaccess), "rules_path": str(rules_path)}
 
     def sync_website_analytics(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
@@ -3090,6 +3649,24 @@ class Agent:
         sftp_conf = Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf"
         with open(sftp_conf, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+
+        # FTP accounts are served by ProFTPD in the account's web container.
+        # Keep virtual credentials separate from the SFTP configuration while
+        # mapping each login to its restricted account-relative directory.
+        ftp_lines = []
+        uid = 5000 + int(account["id"])
+        for fa in ftp_accounts:
+            _, rel_path = self.account_relative_path(account, fa["path"], require_subpath=True)
+            home = f"/home/{account['username']}/{rel_path}".rstrip("/")
+            password_hash = crypt.crypt(str(fa["password"]), crypt.mksalt(crypt.METHOD_SHA512))
+            ftp_lines.append(f"{fa['username']}:{password_hash}:{uid}:{uid}:MangoPanel FTP:{home}:/usr/sbin/nologin")
+        ftp_passwd = Path(account["base_path"]) / ".runtime" / "stack" / "ftp.passwd"
+        ftp_passwd.write_text("\n".join(ftp_lines) + ("\n" if ftp_lines else ""), encoding="utf-8")
+        ftp_passwd.chmod(0o600)
+        try:
+            os.chown(ftp_passwd, 0, 0)
+        except PermissionError:
+            pass
             
         return {"synced": True, "account_id": account_id, "count": len(ftp_accounts)}
 
@@ -3134,26 +3711,19 @@ class Agent:
             lines = [f"{account['username']}:{password}:1001:1001\n"]
             if sftp_conf.parent.exists():
                 sftp_conf.write_text("".join(lines), encoding="utf-8")
-            container_name = f"mp-{account['username']}-sftp"
-            if self.config.agent_mode == "docker":
-                docker = shutil.which("docker")
-                if docker:
-                    subprocess.run([docker, "start", container_name], check=False, capture_output=True)
-                    subprocess.run(
-                        [docker, "exec", "-i", container_name, "chpasswd"],
-                        input=f"{account['username']}:{password}\n",
-                        text=True,
-                        check=False,
-                        capture_output=True
-                    )
+            marker = Path(account["base_path"]) / ".runtime" / "stack" / "ssh.enabled"
+            marker.write_text("enabled\n", encoding="utf-8")
         else:
             if sftp_conf.parent.exists():
                 sftp_conf.write_text(f"# SSH/SFTP access disabled for {account['username']}\n", encoding="utf-8")
-            container_name = f"mp-{account['username']}-sftp"
-            if self.config.agent_mode == "docker":
-                docker = shutil.which("docker")
-                if docker:
-                    subprocess.run([docker, "stop", container_name], check=False, capture_output=True)
+            marker = Path(account["base_path"]) / ".runtime" / "stack" / "ssh.enabled"
+            marker.write_text("disabled\n", encoding="utf-8")
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker")
+            if docker:
+                result = subprocess.run([docker, "restart", f"mp-{account['username']}-web"], check=False, capture_output=True, text=True, timeout=120)
+                if result.returncode != 0:
+                    raise AgentError(result.stderr.strip() or "ssh_access_update_failed")
 
         return {
             "account_id": account_id,
@@ -3162,6 +3732,61 @@ class Agent:
             "port": runtime["sftp_port"],
             "user": account["username"],
         }
+
+    def set_ftp_access(self, conn, account_id, status):
+        if status not in {"enabled", "disabled"}:
+            raise AgentError("invalid_ftp_status")
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        conn.execute("UPDATE hosting_accounts SET ftp_access = ? WHERE id = ?", (status, account_id))
+        marker = Path(account["base_path"]) / ".runtime" / "stack" / "ftp.enabled"
+        marker.write_text(status + "\n", encoding="utf-8")
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker")
+            if docker:
+                result = subprocess.run([docker, "restart", f"mp-{account['username']}-web"], check=False, capture_output=True, text=True, timeout=120)
+                if result.returncode != 0:
+                    raise AgentError(result.stderr.strip() or "ftp_access_update_failed")
+        return {"account_id": account_id, "ftp_access": status, "enabled": status == "enabled"}
+
+    def migrate_access_services(self, conn):
+        """Move SSH/SFTP into each existing web container and retain account data."""
+        accounts = conn.execute("SELECT id FROM hosting_accounts WHERE status = 'active' ORDER BY id").fetchall()
+        migrated = []
+        docker = shutil.which("docker") or "docker"
+        for row in accounts:
+            account_id = row["id"]
+            account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+            old_sftp = f"mp-{account['username']}-sftp"
+            subprocess.run([docker, "rm", "-f", old_sftp], check=False, capture_output=True)
+            # Regenerate only the managed stack artifacts; website files and
+            # databases remain in their existing mounted volumes.
+            self.provision_hosting_account(conn, account_id, apply_stack=False)
+            stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account_id,)).fetchone()
+            if self.config.agent_mode == "docker" and stack:
+                result = subprocess.run([docker, "compose", "-f", stack["compose_path"], "up", "-d", "--build", "--no-deps", "web"], check=False, capture_output=True, text=True, timeout=600)
+                if result.returncode != 0:
+                    raise AgentError(result.stderr.strip() or "access_service_migration_failed")
+            migrated.append(account_id)
+        return {"migrated_accounts": migrated, "sftp_container": "web"}
+
+    def refresh_access_services(self, conn):
+        """Refresh managed access files without rebuilding images or site data."""
+        accounts = conn.execute("SELECT id, username FROM hosting_accounts WHERE status = 'active' ORDER BY id").fetchall()
+        refreshed = []
+        docker = shutil.which("docker") or "docker"
+        for row in accounts:
+            self.provision_hosting_account(conn, row["id"], apply_stack=False)
+            if self.config.agent_mode == "docker":
+                result = subprocess.run(
+                    [docker, "restart", f"mp-{row['username']}-web"],
+                    check=False, capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    raise AgentError(result.stderr.strip() or "access_service_refresh_failed")
+            refreshed.append(row["id"])
+        return {"refreshed_accounts": refreshed, "sftp_container": "web"}
 
     def set_ssh_password(self, conn, account_id, password):
         """Set the SSH/SFTP password for an account, update sftp_users.conf, and restart container."""
@@ -3176,7 +3801,7 @@ class Agent:
         ssh_status = dict(account).get("ssh_access") or "disabled"
         if ssh_status == "enabled" and sftp_conf.parent.exists():
             sftp_conf.write_text(f"{account['username']}:{password}:1001:1001\n", encoding="utf-8")
-            container_name = f"mp-{account['username']}-sftp"
+            container_name = f"mp-{account['username']}-web"
             if self.config.agent_mode == "docker":
                 docker = shutil.which("docker")
                 if docker:
@@ -3459,6 +4084,45 @@ def _parse_block_io_bytes(size_str):
     return int(val * units.get(unit, 1))
 
 
+_DOCKER_STATS_CACHE = {"time": 0.0, "rows": {}}
+_DOCKER_STATS_LOCK = threading.Lock()
+_DOCKER_STATS_TTL = 3.0
+
+
+def _docker_stats_snapshot():
+    """Return one shared, short-lived Docker metrics snapshot."""
+    now = time.time()
+    with _DOCKER_STATS_LOCK:
+        if now - _DOCKER_STATS_CACHE["time"] < _DOCKER_STATS_TTL:
+            return _DOCKER_STATS_CACHE["rows"]
+        try:
+            res = subprocess.run(
+                ["docker", "stats", "--no-stream", "--format",
+                 "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"],
+                capture_output=True, text=True, timeout=1,
+            )
+            if res.returncode != 0:
+                _DOCKER_STATS_CACHE["time"] = time.time()
+                return _DOCKER_STATS_CACHE["rows"]
+            rows = {}
+            for line in res.stdout.strip().splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 5:
+                    rows[parts[0].strip()] = {
+                        "cpu": parts[1].strip(), "mem": parts[2].strip(),
+                        "net": parts[3].strip(), "block": parts[4].strip(),
+                    }
+            _DOCKER_STATS_CACHE["rows"] = rows
+            # Start the TTL after the command completes.  Docker can take a
+            # couple of seconds on a busy host; timestamping before it would
+            # make every caller immediately launch another snapshot.
+            _DOCKER_STATS_CACHE["time"] = time.time()
+            return rows
+        except Exception:
+            _DOCKER_STATS_CACHE["time"] = time.time()
+            return _DOCKER_STATS_CACHE["rows"]
+
+
 def get_live_disk_io(conn=None, reseller_id=None):
     global _LAST_DISK_IO_SNAPSHOT
     now = time.time()
@@ -3488,25 +4152,13 @@ def get_live_disk_io(conn=None, reseller_id=None):
         pass
 
     container_stats = {}
-    try:
-        res = subprocess.run(
-            ["docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.BlockIO}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if res.returncode == 0:
-            for line in res.stdout.strip().splitlines():
-                parts = line.split("\t")
-                if len(parts) >= 2:
-                    cname = parts[0].strip()
-                    io_parts = parts[1].split("/")
-                    if len(io_parts) == 2:
-                        r_bytes = _parse_block_io_bytes(io_parts[0])
-                        w_bytes = _parse_block_io_bytes(io_parts[1])
-                        container_stats[cname] = {"read_bytes": r_bytes, "write_bytes": w_bytes}
-    except Exception:
-        pass
+    for cname, stats in _docker_stats_snapshot().items():
+        io_parts = stats.get("block", "").split("/")
+        if len(io_parts) == 2:
+            container_stats[cname] = {
+                "read_bytes": _parse_block_io_bytes(io_parts[0]),
+                "write_bytes": _parse_block_io_bytes(io_parts[1]),
+            }
 
     acct_map = {}
     if conn:
@@ -3664,30 +4316,16 @@ def get_live_cpu_io(conn=None, reseller_id=None):
 
     # --- Per-container CPU via docker stats ---
     container_cpu = {}
-    try:
-        res = subprocess.run(
-            ["docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if res.returncode == 0:
-            for line in res.stdout.strip().splitlines():
-                parts = line.split("\t")
-                if len(parts) >= 2:
-                    cname = parts[0].strip()
-                    cpu_str = parts[1].strip().replace("%", "")
-                    mem_str = parts[2].strip() if len(parts) >= 3 else ""
-                    try:
-                        cpu_val = float(cpu_str)
-                    except ValueError:
-                        cpu_val = 0.0
-                    container_cpu[cname] = {
-                        "cpu_pct": round(cpu_val, 2),
-                        "mem_str": mem_str,
-                    }
-    except Exception:
-        pass
+    for cname, stats in _docker_stats_snapshot().items():
+        cpu_str = stats.get("cpu", "").replace("%", "")
+        try:
+            cpu_val = float(cpu_str)
+        except ValueError:
+            cpu_val = 0.0
+        container_cpu[cname] = {
+            "cpu_pct": round(cpu_val, 2),
+            "mem_str": stats.get("mem", ""),
+        }
 
     # If docker unavailable, fall back to DB-sourced estimates
     if not container_cpu and conn:
@@ -4009,30 +4647,17 @@ def get_live_ram_io(conn=None, reseller_id=None):
     # Top RAM consumers by Docker container
     container_ram = {}
     try:
-        res = subprocess.run(
-            ["docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.MemUsage}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if res.returncode == 0:
-            for line in res.stdout.strip().splitlines():
-                parts = line.split("\t")
-                if len(parts) >= 2:
-                    cname = parts[0].strip()
-                    mem_str = parts[1].strip()
-                    raw_usage = mem_str.split("/")[0].strip()
-                    val_mb = 0.0
-                    if "GiB" in raw_usage or "GB" in raw_usage:
-                        val_mb = float(re.sub(r"[^\d\.]", "", raw_usage) or 0) * 1024.0
-                    elif "MiB" in raw_usage or "MB" in raw_usage:
-                        val_mb = float(re.sub(r"[^\d\.]", "", raw_usage) or 0)
-                    elif "KiB" in raw_usage or "KB" in raw_usage:
-                        val_mb = float(re.sub(r"[^\d\.]", "", raw_usage) or 0) / 1024.0
-                    container_ram[cname] = {
-                        "mem_mb": round(val_mb, 1),
-                        "mem_str": mem_str,
-                    }
+        for cname, stats in _docker_stats_snapshot().items():
+            mem_str = stats.get("mem", "")
+            raw_usage = mem_str.split("/")[0].strip()
+            val_mb = 0.0
+            if "GiB" in raw_usage or "GB" in raw_usage:
+                val_mb = float(re.sub(r"[^\d\.]", "", raw_usage) or 0) * 1024.0
+            elif "MiB" in raw_usage or "MB" in raw_usage:
+                val_mb = float(re.sub(r"[^\d\.]", "", raw_usage) or 0)
+            elif "KiB" in raw_usage or "KB" in raw_usage:
+                val_mb = float(re.sub(r"[^\d\.]", "", raw_usage) or 0) / 1024.0
+            container_ram[cname] = {"mem_mb": round(val_mb, 1), "mem_str": mem_str}
     except Exception:
         pass
 
@@ -4289,25 +4914,13 @@ def get_live_network_io(conn=None, reseller_id=None):
         pass
 
     container_net_stats = {}
-    try:
-        res = subprocess.run(
-            ["docker", "stats", "--no-stream", "--format", "{{.Name}}\t{{.NetIO}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if res.returncode == 0:
-            for line in res.stdout.strip().splitlines():
-                parts = line.split("\t")
-                if len(parts) >= 2:
-                    cname = parts[0].strip()
-                    net_parts = parts[1].split("/")
-                    if len(net_parts) == 2:
-                        r_bytes = _parse_block_io_bytes(net_parts[0])
-                        w_bytes = _parse_block_io_bytes(net_parts[1])
-                        container_net_stats[cname] = {"rx_bytes": r_bytes, "tx_bytes": w_bytes}
-    except Exception:
-        pass
+    for cname, stats in _docker_stats_snapshot().items():
+        net_parts = stats.get("net", "").split("/")
+        if len(net_parts) == 2:
+            container_net_stats[cname] = {
+                "rx_bytes": _parse_block_io_bytes(net_parts[0]),
+                "tx_bytes": _parse_block_io_bytes(net_parts[1]),
+            }
 
     acct_map = {}
     if conn:

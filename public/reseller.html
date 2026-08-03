@@ -1667,6 +1667,11 @@
                   <label>Cron jobs <input v-model.number="newPlan.max_cron_jobs" type="number" min="0"></label>
                   <label>Daily emails <input v-model.number="newPlan.daily_email_limit" type="number" min="0"></label>
                   <label>Backup retention days <input v-model.number="newPlan.backup_retention_days" type="number" min="1"></label>
+                  <label>Automatic backups
+                    <select v-model="newPlan.backup_schedule">
+                      <option value="disabled">Disabled</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option>
+                    </select>
+                  </label>
                   <label>Max processes <input v-model.number="newPlan.max_processes" type="number" min="0"></label>
                   <label>PHP workers <input v-model.number="newPlan.php_workers" type="number" min="0"></label>
                   <label>Bandwidth MB (0 = unlimited) <input v-model.number="newPlan.bandwidth_mb" type="number" min="0"></label>
@@ -2365,6 +2370,16 @@
             </div>
           </section>
 
+          <section v-if="activePage === 'configuration'" class="panel">
+            <div class="section-head"><div><h2>Configuration</h2><p>Platform-wide defaults. More control-plane settings can be added as tabs here.</p></div></div>
+            <div class="plan-form">
+              <div style="display:flex; gap:.5rem; margin-bottom:1rem;"><button class="primary-button" type="button">Backups</button><button class="secondary-button" type="button" disabled>More settings soon</button></div>
+              <label>Backup time <input type="time" v-model="configuration.backup_time"><small>Automatic backups start after this time using the queue worker.</small></label>
+              <label>System timezone <select v-model="configuration.timezone"><option v-if="configuration.timezone && !timezoneOptions.includes(configuration.timezone)" :value="configuration.timezone">{{ configuration.timezone }} (current)</option><option v-for="zone in timezoneOptions" :key="zone" :value="zone">{{ zone }}</option></select><small>The saved timezone is selected automatically and controls backup and job scheduling.</small></label>
+              <button class="primary-button plan-submit" type="button" @click="saveConfiguration" :disabled="configurationSaving">{{ configurationSaving ? 'Saving…' : 'Save Configuration' }}</button>
+            </div>
+          </section>
+
           <section v-if="activePage === 'system'" class="panel">
             <div class="section-head">
               <div>
@@ -2633,7 +2648,7 @@
 
     <script src="/assets/vue.global.prod.js"></script>
     <script>window.IS_RESELLER_PANEL = true;</script>
-    <script src="/assets/admin.js"></script>
+    <script src="/assets/admin.js?v=1.0.11"></script>
     <script>
       (function initAdminLoginInteraction() {
         function attachListeners() {

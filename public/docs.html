@@ -822,6 +822,19 @@ bash scripts/service mangopanel stop
 # Makefile wrapper equivalent
 make service ACTION=start
 make service ACTION=status</code></pre>
+
+                <div class="callout callout-warning">
+                    <div class="callout-title">Production startup</div>
+                    <p>On a production server, run the systemd service so the panel uses Docker mode and asynchronous agent jobs. This does not delete website content:</p>
+                    <pre><code>cd /root/MangoPanel
+sudo systemctl start mangopanel.service
+sudo systemctl status mangopanel.service --no-pager
+
+# The service must define:
+# MP_ENV=production
+# MP_AGENT_MODE=docker</code></pre>
+                    <p>Do not start a second manual <code>python -m mangopanel.app</code> process on ports 8000/8001.</p>
+                </div>
             </section>
 
             <!-- TERMINAL COMMAND REFERENCE -->

@@ -280,6 +280,9 @@
                 Your hosting account is currently being updated or rebuilt. Settings are being applied in the background — please try again in a few minutes.
               </p>
             </div>
+            <div v-if="backupInProgress" class="panel warning-panel" style="background: rgba(245, 158, 11, 0.12); border-left: 4px solid #f59e0b; margin-bottom: 1rem;">
+              <strong>Backup in progress</strong><p style="margin:.35rem 0 0;">Your backup is running in the background with limited resource usage.</p>
+            </div>
 
             <!-- Welcome banner -->
             <div class="dashboard-welcome">
@@ -577,6 +580,14 @@
           </section>
 
           <div v-if="registeredWhoisModal.open" class="modal-overlay" @click.self="registeredWhoisModal.open = false"><div class="modal-panel registrar-modal"><div class="modal-header"><div><span class="eyebrow">Domain information</span><h2>{{ registeredWhoisModal.activeTab === 'nameservers' ? 'Nameservers' : 'WHOIS data' }} · {{ registeredWhoisModal.domain }}</h2></div><button class="close-button" @click="registeredWhoisModal.open = false">×</button></div><div v-if="registeredWhoisModal.loading" class="loading-state"><div class="spinner"></div><p>Pulling fresh registration data…</p></div><template v-else><div v-if="registeredWhoisModal.activeTab !== 'nameservers'" class="tab-row"><button v-for="tab in ['registrant','administrative','technical','billing']" :key="tab" type="button" :class="{ active: registeredWhoisModal.activeTab === tab }" @click="registeredWhoisModal.activeTab = tab">{{ tab.charAt(0).toUpperCase() + tab.slice(1) }}</button></div><form v-if="registeredWhoisModal.activeTab !== 'nameservers'" class="form-grid" @submit.prevent="saveRegisteredWhois"><label>Full name<input v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].name" placeholder="Full name"></label><label>Organization<input v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].organization" placeholder="Organization"></label><label>Email<input type="email" v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].email" placeholder="name@example.com"></label><label>Phone<input v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].phone" placeholder="+1 555 123 4567"></label><label>Address<input v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].address" placeholder="Street address"></label><label>City<input v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].city" placeholder="City"></label><label>State / province<input v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].state" placeholder="State or province"></label><label>Postal code<input v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].postal_code" placeholder="Postal code"></label><label>Country<input v-model.trim="registeredWhoisModal.form[registeredWhoisModal.activeTab].country" placeholder="US"></label><div class="modal-actions"><button type="submit" class="primary-button" :disabled="registeredWhoisModal.saving">{{ registeredWhoisModal.saving ? 'Saving…' : 'Save ' + registeredWhoisModal.activeTab + ' details' }}</button></div></form><div v-else class="form-grid"><div class="registrar-note"><strong>Current nameservers</strong><span>{{ registeredWhoisModal.currentNameservers.length ? registeredWhoisModal.currentNameservers.join(', ') : 'No nameservers cached' }}</span></div><label>Nameserver mode<select v-model="registeredWhoisModal.nameserverMode"><option value="default">Use default nameservers</option><option value="custom">Use custom nameservers</option></select></label><div v-if="registeredWhoisModal.nameserverMode === 'default'" class="registrar-note"><strong>Default nameservers</strong><span>{{ registeredWhoisModal.defaultNameservers.join(', ') || 'No default nameservers configured' }}</span></div><template v-if="registeredWhoisModal.nameserverMode === 'custom'"><label>Nameserver 1<input v-model.trim="registeredWhoisModal.nameservers[0]" placeholder="ns1.example.com"></label><label>Nameserver 2<input v-model.trim="registeredWhoisModal.nameservers[1]" placeholder="ns2.example.com"></label></template><div class="modal-actions"><button type="button" class="primary-button" @click="saveRegisteredNameservers" :disabled="registeredWhoisModal.saving">{{ registeredWhoisModal.saving ? 'Saving…' : 'Save nameservers' }}</button></div></div></template></div></div>
+
+          <section v-if="activePage === 'subdomains'" class="panel">
+            <div class="section-head"><div><span class="eyebrow">Domains</span><h2>Subdomains</h2><p>Create a separate site or mount a subdomain inside an existing domain directory.</p></div><button class="primary-button" @click="openSubdomainWizard" :disabled="subdomainUsage.limit > 0 && subdomainUsage.used >= subdomainUsage.limit">Add subdomain</button></div>
+            <p class="muted">{{ subdomainUsage.used }} used<span v-if="subdomainUsage.limit > 0"> of {{ subdomainUsage.limit }}</span><span v-else> · unlimited</span></p>
+            <div class="table-wrap" v-if="subdomains.length"><table><thead><tr><th>Subdomain</th><th>Parent domain</th><th>Hosting</th><th>Directory</th><th>DNS</th><th>SSL</th><th>Actions</th></tr></thead><tbody><tr v-for="subdomain in subdomains" :key="subdomain.id"><td><strong>{{ subdomain.domain }}</strong></td><td>{{ subdomain.parent_domain || '—' }}</td><td>{{ subdomain.hosting_mode === 'inside' ? 'Inside existing domain' : 'Separate website' }}</td><td><code>{{ subdomain.document_root }}</code></td><td><span class="pill" :class="subdomain.dns_status">{{ subdomain.dns_provider || '—' }} · {{ subdomain.dns_status || 'pending' }}</span></td><td><span class="pill" :class="subdomain.ssl_status">{{ subdomain.ssl_status }}</span></td><td class="actions"><button class="secondary-button" @click="issueSubdomainSsl(subdomain)">Issue SSL</button><button class="ghost-button" @click="deleteSubdomain(subdomain)">Delete</button></td></tr></tbody></table></div>
+            <div v-else class="empty-state"><h3>No subdomains yet</h3><p>Add one to host a new site with minimal setup.</p></div>
+          </section>
+          <div v-if="subdomainWizard.open" class="modal-overlay" @click.self="closeSubdomainWizard"><div class="modal-panel"><div class="modal-header"><div><span class="eyebrow">Add website flow</span><h2>Add a subdomain</h2></div><button class="close-button" @click="closeSubdomainWizard">×</button></div><form class="form-grid" @submit.prevent="createSubdomain"><label>Subdomain label<input v-model.trim="subdomainWizard.label" required placeholder="app"></label><label>Existing domain<select v-model="subdomainWizard.parent_domain_id" required><option v-for="domain in subdomainDomains" :key="domain.id" :value="domain.id">{{ domain.name }}</option></select></label><label>Host it<select v-model="subdomainWizard.hosting_mode"><option value="separate">As a separate website</option><option value="inside">Inside the existing domain directory</option></select></label><label v-if="subdomainWizard.hosting_mode === 'inside'">Path inside public_html<input v-model.trim="subdomainWizard.path" placeholder="apps/my-app"><small>Relative to the selected domain’s public_html directory.</small></label><p v-if="subdomainWizard.error" class="form-error">{{ subdomainWizard.error }}</p><div class="modal-actions"><button type="button" class="ghost-button" @click="closeSubdomainWizard">Cancel</button><button type="submit" class="primary-button" :disabled="subdomainWizard.submitting">{{ subdomainWizard.submitting ? 'Creating…' : 'Create subdomain' }}</button></div></form></div></div>
 
           <!-- ═══════════════════════════════════════════════════════════ HOSTING PLAN -->
           <section v-if="activePage === 'hosting-plan'" class="page-stack hosting-plan-page">
@@ -1714,74 +1725,130 @@
           </div>
 
           <!-- ═══════════════════════════════════════════════════════════ CRON JOBS -->
-          <section v-if="activePage === 'cron-jobs'" class="panel">
-            <div class="section-head">
-              <div>
-                <h2>Cron Jobs</h2>
-                <p>{{ cronJobs.length }} scheduled task{{ cronJobs.length === 1 ? '' : 's' }}</p>
-              </div>
-              <div class="inline-form">
-                <input v-model="newCronJob.schedule" placeholder="*/15 * * * *">
-                <input v-model="newCronJob.command" placeholder="php /home/.../cron.php">
-                <button class="primary-button" @click="createCronJob"><app-icon name="plus"></app-icon><span>Add Job</span></button>
+          <section v-if="activePage === 'cron-jobs'" class="cron-page">
+            <div class="cron-create-card">
+              <div class="cron-card-heading"><h1>Create a new cron job</h1><p>Run a PHP script or custom command on a schedule for your hosting account.</p></div>
+              <div class="cron-form-body">
+                <div class="cron-mode-toggle" role="radiogroup" aria-label="Command type">
+                  <label><input type="radio" value="php" v-model="cronMode"><span class="cron-radio"></span>PHP</label>
+                  <label><input type="radio" value="custom" v-model="cronMode"><span class="cron-radio"></span>Custom</label>
+                </div>
+                <label class="cron-field-label">Command to run</label>
+                <div class="cron-command-field"><span v-if="cronMode === 'php'" class="cron-command-prefix">/usr/bin/php</span><input v-model="newCronJob.command" :placeholder="cronMode === 'php' ? 'domains/example.com/public_html/cron.php' : 'Enter a shell command'" @keyup.enter="createCronJob"></div>
+                <label class="cron-field-label">Common options</label>
+                <select class="cron-common-select" v-model="cronPreset"><option value="">— Common settings —</option><option value="* * * * *">Every minute</option><option value="*/5 * * * *">Every 5 minutes</option><option value="*/15 * * * *">Every 15 minutes</option><option value="0 * * * *">Every hour</option><option value="0 0 * * *">Every day at midnight</option></select>
+                <div class="cron-schedule-grid">
+                  <label>Minute<select v-model="cronSchedule.minute"><option value="*">Every minute</option><option v-for="n in 60" :value="String(n - 1)">{{ n - 1 }}</option></select></label>
+                  <label>Hour<select v-model="cronSchedule.hour"><option value="*">Every hour</option><option v-for="n in 24" :value="String(n - 1)">{{ n - 1 }}</option></select></label>
+                  <label>Day<select v-model="cronSchedule.day"><option value="*">Every day</option><option v-for="n in 31" :value="String(n)">{{ n }}</option></select></label>
+                  <label>Month<select v-model="cronSchedule.month"><option value="*">Every month</option><option v-for="n in 12" :value="String(n)">{{ n }}</option></select></label>
+                  <label>Weekday<select v-model="cronSchedule.weekday"><option value="*">Every weekday</option><option v-for="n in 7" :value="String(n - 1)">{{ n - 1 }}</option></select></label>
+                </div>
+                <div class="cron-form-footer"><code>{{ composedCronSchedule }}</code><button class="primary-button" @click="createCronJob"><app-icon name="plus"></app-icon><span>Save cron job</span></button></div>
               </div>
             </div>
-            <div class="table-wrap">
+            <div class="cron-list-heading"><div><h2>Scheduled cron jobs</h2><p>{{ cronJobs.length }} scheduled task{{ cronJobs.length === 1 ? '' : 's' }}</p></div></div>
+            <div class="table-wrap cron-table-wrap">
               <table>
-                <thead><tr><th>Schedule</th><th>Command</th><th>Next Run</th><th>Last Run</th><th>Status</th><th>Last Exit</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Schedule</th><th>Command to run</th><th>Next run</th><th>Last run</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   <tr v-for="job in cronJobs" :key="job.id">
-                    <td><code>{{ job.schedule }}</code></td>
-                    <td>
-                      <code>{{ job.command }}</code>
-                      <small class="muted" v-if="job.last_output">Last output: {{ job.last_output.slice(0, 80) }}</small>
-                      <small class="muted" v-else>No output yet</small>
-                    </td>
-                    <td><span class="pill">{{ job.next_run_at || 'pending' }}</span></td>
-                    <td><span class="pill">{{ job.last_run_at || 'never' }}</span></td>
-                    <td><span class="pill" :class="job.status">{{ job.status }}</span></td>
-                    <td><span class="pill" :class="{ ok: job.last_exit_code === 0 }">{{ job.last_exit_code === 0 ? 'OK' : 'Exit ' + job.last_exit_code }}</span></td>
-                    <td class="actions">
-                      <button @click="toggleCronStatus(job)">{{ job.status === 'disabled' ? 'Enable' : 'Disable' }}</button>
-                      <button class="danger-button" @click="deleteCronJob(job)"><app-icon name="trash"></app-icon></button>
-                    </td>
+                    <td><code>{{ job.schedule }}</code></td><td><code>{{ job.command }}</code><small class="muted" v-if="job.last_output">Last output: {{ job.last_output.slice(0, 80) }}</small><small class="muted" v-else>No output yet</small></td>
+                    <td><small>{{ job.next_run_at || 'pending' }}</small></td><td><small>{{ job.last_run_at || 'never' }}</small></td><td><span class="pill" :class="job.status">{{ job.status }}</span><small v-if="job.last_exit_code !== null && job.last_exit_code !== undefined">Exit {{ job.last_exit_code }}</small></td>
+                    <td class="actions"><button class="small-button" v-if="job.last_output" @click="viewCronOutput(job)">View output</button><button @click="toggleCronStatus(job)">{{ job.status === 'disabled' ? 'Enable' : 'Disable' }}</button><button class="danger-button" @click="deleteCronJob(job)"><app-icon name="trash"></app-icon></button></td>
                   </tr>
-                  <tr v-if="!cronJobs.length"><td colspan="7" class="empty-row">No cron jobs yet. Add one above.</td></tr>
+                  <tr v-if="!cronJobs.length"><td colspan="6" class="empty-row">No cron jobs yet. Create one above to automate a command.</td></tr>
                 </tbody>
               </table>
             </div>
+            <div v-if="cronOutputJob" class="cron-output-card"><div><h3>Output for {{ cronOutputJob.command }}</h3><button class="close-button" @click="cronOutputJob = null">×</button></div><pre>{{ cronOutputJob.last_output || 'No output recorded.' }}</pre></div>
           </section>
 
           <!-- ═══════════════════════════════════════════════════════════ BACKUPS -->
-          <section v-if="activePage === 'backups'" class="panel">
-            <div class="section-head">
-              <div>
-                <h2>Backups</h2>
-                <p>{{ backups.length }} backup record{{ backups.length === 1 ? '' : 's' }}</p>
+          <section v-if="activePage === 'backups'" class="backup-page">
+            <h1 class="backup-page-title">Backups</h1>
+
+            <div class="backup-tabs" role="tablist" aria-label="Backup sections">
+              <button :class="{ active: backupTab === 'manage' }" @click="backupTab = 'manage'">Manage backups</button>
+              <button :class="{ active: backupTab === 'restore' }" @click="backupTab = 'restore'">Restore and download</button>
+              <button :class="{ active: backupTab === 'history' }" @click="backupTab = 'history'">Restore history</button>
+            </div>
+
+            <template v-if="backupTab === 'manage'">
+              <div class="backup-notice">
+                <app-icon name="info"></app-icon>
+                <div><strong>Some files are not included in your backups</strong><p>Backup plugin archives, cache, and database export files are excluded to keep backups light.</p></div>
+                <span class="backup-notice-date">Starting from: <strong>{{ latestCompletedBackup?.created_at || 'No completed backup' }}</strong></span>
               </div>
-              <button class="primary-button" @click="openBackupWizard"><app-icon name="plus"></app-icon><span>Manual Backup</span></button>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Created</th><th>Artifact</th></tr></thead>
-                <tbody>
-                  <tr v-for="backup in backups" :key="backup.id">
-                    <td>#{{ backup.id }}</td>
-                    <td><span class="pill">{{ backup.kind }}</span></td>
-                    <td><span class="pill" :class="backup.status">{{ backup.status }}</span></td>
-                    <td><small>{{ backup.created_at }}</small></td>
-                    <td>
-                      <small>{{ backup.artifact_path || '—' }}</small>
-                      <div v-if="backup.status === 'completed'" class="actions" style="margin-top: 0.5rem;">
-                        <button class="small-button" @click="downloadBackup(backup.id)">Download</button>
-                        <button class="small-button" @click="restoreBackup(backup.id)">Restore</button>
-                      </div>
-                    </td>
-                  </tr>
-                  <tr v-if="!backups.length"><td colspan="5" class="empty-row">No backups yet. Click Manual Backup to create one.</td></tr>
-                </tbody>
-              </table>
-            </div>
+
+              <div v-if="backupInProgress" class="backup-notice backup-notice-warning"><app-icon name="info"></app-icon><p>A backup is in progress. Hosting services remain available while the backup runs in the background.</p></div>
+
+              <div class="backup-summary-card">
+                <div class="backup-card-icon backup-card-icon-gradient"><app-icon name="backup"></app-icon></div>
+                <div class="backup-summary-copy"><h2>Website backups</h2><p>Backups are saved copies of your website that help you restore it if needed.</p></div>
+                <div class="backup-latest">Latest backup: <strong>{{ latestCompletedBackup?.created_at || 'None yet' }}</strong></div>
+                <button class="backup-primary-button" @click="backupTab = 'restore'">View backups</button>
+              </div>
+
+              <div class="backup-card-grid">
+                <article class="backup-feature-card">
+                  <div class="backup-card-icon"><app-icon name="backup"></app-icon></div>
+                  <h3>Manual backups</h3>
+                  <p>Manual backups can be created on demand and are ideal before updates, new features, or major changes.</p>
+                  <button class="backup-outline-button" @click="openBackupWizard">Create backup</button>
+                </article>
+                <article class="backup-feature-card">
+                  <div class="backup-card-icon"><app-icon name="backup"></app-icon></div>
+                  <h3>Automated backups <span class="backup-schedule-badge">{{ activeAccount?.backup_schedule || 'Daily' }}</span></h3>
+                  <p>Automated backups are a reliable and easy way to protect websites that aren’t updated often.</p>
+                  <div class="backup-next">Next backup: <strong>{{ activeAccount?.backup_schedule ? 'Scheduled by your plan' : 'Daily' }}</strong></div>
+                </article>
+              </div>
+            </template>
+
+            <template v-else-if="backupTab === 'history'">
+              <div class="backup-list-header">
+                <div><h2>Restore history</h2><p>{{ restoreHistory.length }} restore event{{ restoreHistory.length === 1 ? '' : 's' }}</p></div>
+              </div>
+              <div class="table-wrap backup-table-wrap">
+                <table>
+                  <thead><tr><th>Status</th><th>Website</th><th>Backup</th><th>Database</th><th>Requested</th><th>Completed</th></tr></thead>
+                  <tbody>
+                    <tr v-for="restore in restoreHistory" :key="restore.id">
+                      <td><span class="pill" :class="restore.status">{{ restore.status }}</span><small v-if="restore.error" class="restore-error">{{ restore.error }}</small></td>
+                      <td><strong>{{ restore.website_domain || 'Account' }}</strong></td>
+                      <td>#{{ restore.backup_id }} <small>{{ restore.backup_created_at }}</small></td>
+                      <td>{{ restore.include_database ? 'Included' : 'Files only' }}</td>
+                      <td><small>{{ restore.created_at }}</small></td>
+                      <td><small>{{ restore.completed_at || '—' }}</small></td>
+                    </tr>
+                    <tr v-if="!restoreHistory.length"><td colspan="6" class="empty-row">No restore events yet. Completed backups can be restored from Restore and download.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <template v-else>
+              <div class="backup-list-header">
+                <div><h2>{{ backupTab === 'history' ? 'Restore history' : 'Restore and download' }}</h2><p>{{ filteredBackups.length }} backup record{{ filteredBackups.length === 1 ? '' : 's' }}</p></div>
+                <button class="backup-primary-button" @click="openBackupWizard"><app-icon name="backup"></app-icon>Backup entire account</button>
+              </div>
+              <label class="backup-site-filter">Site
+                <select v-model="backupSiteId"><option value="all">All sites</option><option v-for="site in websites" :key="site.id" :value="String(site.id)">{{ site.domain }}</option></select>
+              </label>
+              <div class="table-wrap backup-table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Created</th><th>Artifact / actions</th></tr></thead>
+                  <tbody>
+                    <tr v-for="backup in filteredBackups" :key="backup.id">
+                      <td>#{{ backup.id }}</td><td><span class="pill">{{ backup.kind }}</span></td><td><span class="pill" :class="backup.status">{{ backup.status }}</span></td>
+                      <td><strong>{{ backup.website_domain || 'Account' }}</strong><small>{{ backup.created_at }}</small></td>
+                      <td><small>{{ backup.artifact_path || '—' }}</small><div v-if="backup.status === 'completed'" class="actions" style="margin-top:.5rem;"><button class="small-button" @click="downloadBackup(backup.id)">Download</button><button class="small-button" @click="restoreBackup(backup.id)">Restore</button></div></td>
+                    </tr>
+                    <tr v-if="!filteredBackups.length"><td colspan="5" class="empty-row">{{ backupSiteId === 'all' ? 'No backups yet. Click Create backup to create one.' : 'No backups are available for this site yet.' }}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
           </section>
 
           <!-- ═══════════════════════════════════════════════════════════ GIT -->
@@ -1790,27 +1857,33 @@
               <div>
                 <h2>Git Deployments</h2>
                 <p>{{ gitDeployments.length }} connected repositor{{ gitDeployments.length === 1 ? 'y' : 'ies' }}</p>
+                <p class="muted-note">Updates are pulled automatically every 5 minutes. You can also click Update / Pull to run one immediately. The last successful pull time is shown below.</p>
               </div>
             </div>
-            <div class="inline-form" style="margin-bottom: 1rem;">
-              <input v-model="newGitDeployment.repository_url" placeholder="https://github.com/user/repo.git">
-              <input v-model="newGitDeployment.branch" placeholder="main">
-              <button class="primary-button" @click="createGitDeployment"><app-icon name="plus"></app-icon><span>Connect</span></button>
+            <div class="git-deploy-form" style="margin-bottom: 1rem;">
+              <label>Website to deploy<select v-model="newGitDeployment.website_id"><option value="" disabled>Select a website</option><option v-for="site in websites" :key="site.id" :value="String(site.id)">{{ site.domain }}</option></select></label>
+              <label>Repository URL<input v-model.trim="newGitDeployment.repository_url" placeholder="https://github.com/user/repo.git"></label>
+              <label>Branch<input v-model.trim="newGitDeployment.branch" placeholder="main"></label>
+              <label>Private repository access key / token <input v-model="newGitDeployment.access_key" type="password" autocomplete="new-password" placeholder="Leave empty for public repositories"><small>Stored encrypted and never shown again.</small></label>
+              <label>Deploy path <input v-model.trim="newGitDeployment.deploy_path" placeholder="Selected site's public_html (default)"><small>Leave empty to deploy into the selected site's document root.</small></label>
+              <div class="git-deploy-form-actions"><button class="primary-button" @click="createGitDeployment" :disabled="!newGitDeployment.website_id || !newGitDeployment.repository_url"><app-icon name="plus"></app-icon><span>Connect and deploy</span></button></div>
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Repository</th><th>Branch</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Repository</th><th>Website</th><th>Branch</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   <tr v-for="dep in gitDeployments" :key="dep.id">
-                    <td><strong>{{ dep.repository_url }}</strong><small>{{ dep.deploy_path }}</small><small v-if="dep.last_commit">Last commit: {{ dep.last_commit.slice(0, 10) }}</small></td>
+                    <td><strong>{{ dep.repository_url }}</strong><small>{{ dep.deploy_path }}</small><small v-if="dep.last_commit">Last commit: {{ dep.last_commit.slice(0, 10) }}</small><small>Last pull (server UTC): {{ dep.last_deployed_at || 'Never' }}</small></td>
+                    <td>{{ dep.website_domain || 'Account path' }}</td>
                     <td><code>{{ dep.branch }}</code></td>
                     <td><span class="pill" :class="dep.status">{{ dep.status }}</span></td>
                     <td class="actions">
+                      <button class="secondary-button" @click="updateGitDeployment(dep)" :disabled="dep.status === 'updating'">Update / Pull</button>
                       <button class="secondary-button" @click="rollbackGitDeployment(dep)" :disabled="!dep.last_commit">Rollback</button>
                       <button class="danger-button" @click="deleteGitDeployment(dep)"><app-icon name="trash"></app-icon></button>
                     </td>
                   </tr>
-                  <tr v-if="!gitDeployments.length"><td colspan="4" class="empty-row">No deployments yet. Connect a repository above.</td></tr>
+                  <tr v-if="!gitDeployments.length"><td colspan="5" class="empty-row">No deployments yet. Connect a repository above.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1818,7 +1891,7 @@
 
           <!-- ═══════════════════════════════════════════════════════════ SSH / SFTP ACCESS -->
           <section v-if="activePage === 'ssh-access' || activePage === 'ssh-sftp-access'" class="panel">
-            <div class="advanced-tool-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+              <div class="advanced-tool-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
               <div style="display: flex; align-items: center; gap: 12px;">
                 <app-icon name="terminal"></app-icon>
                 <div>
@@ -2319,6 +2392,7 @@
                   <span class="pill">{{ cacheStatus.opcode_cache }}</span>
                 </div>
                 <small>PHP bytecode caching</small>
+                <button class="secondary-button compact" @click="toggleCache('opcache', !cacheStatus.opcache_enabled)">{{ cacheStatus.opcache_enabled ? 'Turn off' : 'Turn on' }}</button>
               </div>
               <div class="cache-status-card" :class="cacheStatus.object_cache">
                 <app-icon name="databases"></app-icon>
@@ -2327,6 +2401,7 @@
                   <span class="pill">{{ cacheStatus.object_cache }}</span>
                 </div>
                 <small>Redis / Memcached</small>
+                <button class="secondary-button compact" @click="toggleCache('object', !cacheStatus.object_cache_enabled)">{{ cacheStatus.object_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
               </div>
               <div class="cache-status-card">
                 <app-icon name="activity"></app-icon>
@@ -2618,6 +2693,19 @@
                 </form>
               </div>
 
+              <div class="panel" style="padding: 1.5rem; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;">
+                <h3 style="margin-top: 0;">Time zone</h3>
+                <p class="muted">Activity and account timestamps are displayed in this time zone.</p>
+                <div class="form-grid">
+                  <label>Account time zone
+                    <select v-model="accountTimezone">
+                      <option v-for="tz in ['UTC','Asia/Kolkata','Europe/London','America/New_York','America/Los_Angeles','Asia/Dubai','Asia/Singapore','Australia/Sydney']" :value="tz">{{ tz }}</option>
+                    </select>
+                  </label>
+                  <button class="primary-button" @click="saveTimezone" :disabled="timezoneSaving">{{ timezoneSaving ? 'Saving…' : 'Save time zone' }}</button>
+                </div>
+              </div>
+
               <!-- Password change card -->
               <div class="panel" style="padding: 1.5rem; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;">
                 <h3 style="margin-top: 0; margin-bottom: 1.2rem; color: var(--text); display: flex; align-items: center; gap: 8px;">
@@ -2844,7 +2932,7 @@
             
             <div class="info-box" style="margin-top: 1rem;">
               <app-icon name="info"></app-icon>
-              <p>Disabling ModSecurity may resolve issues with certain scripts but leaves your site vulnerable to attacks. Only disable it if absolutely necessary.</p>
+              <p>ModSecurity is enabled per website. On this server, a warmed 50-request comparison measured approximately <strong>0 ms additional median latency</strong> (about 3 ms average variation) versus ModSecurity disabled. Actual application latency can vary. Disabling ModSecurity may resolve issues with certain scripts but leaves your site vulnerable to attacks.</p>
             </div>
           </section>
 
@@ -3065,6 +3153,7 @@
                         <th>Collaborator</th>
                         <th>Invited Email</th>
                         <th>Website Scope</th>
+                        <th>Subdomain Scope</th>
                         <th>Database Scope</th>
                         <th>Status</th>
                         <th style="text-align: right;">Actions</th>
@@ -3080,6 +3169,11 @@
                           <span v-if="c.permissions.all_websites !== false" class="status-badge success">All Websites</span>
                           <span v-else-if="c.permissions.website_ids && c.permissions.website_ids.length" class="status-badge info">{{ c.permissions.website_ids.length }} Website(s)</span>
                           <span v-else class="status-badge warning">No Websites</span>
+                        </td>
+                        <td>
+                          <span v-if="c.permissions.all_subdomains === true" class="status-badge success">All Subdomains</span>
+                          <span v-else-if="c.permissions.subdomain_ids && c.permissions.subdomain_ids.length" class="status-badge info">{{ c.permissions.subdomain_ids.length }} Subdomain(s)</span>
+                          <span v-else class="status-badge warning">No Subdomains</span>
                         </td>
                         <td>
                           <span v-if="c.permissions.all_databases !== false" class="status-badge success">All Databases</span>
@@ -3160,6 +3254,19 @@
                     </div>
                     <small v-if="emailCheckStatus === 'found'" class="text-success" style="display: block; margin-top: 0.35rem;">✓ User exists: {{ existingUserData.full_name }} ({{ existingUserData.email }})</small>
                     <small v-if="emailCheckStatus === 'not_found'" class="text-warning" style="display: block; margin-top: 0.35rem;">⚠️ No user found with this email. You can create a new user account for them below.</small>
+                  </div>
+
+                  <!-- Subdomain Scope -->
+                  <div class="form-group">
+                    <label style="font-weight: 600; margin-bottom: 0.35rem; display: block;">Subdomain Scope</label>
+                    <div style="display: flex; gap: 1.5rem; margin-bottom: 0.5rem;">
+                      <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;"><input type="radio" :value="true" v-model="shareForm.all_subdomains"><span>All Subdomains</span></label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;"><input type="radio" :value="false" v-model="shareForm.all_subdomains"><span>Specific Subdomains</span></label>
+                    </div>
+                    <div v-if="!shareForm.all_subdomains" style="display: flex; flex-direction: column; gap: 0.4rem; max-height: 140px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 0.75rem; border-radius: 8px;">
+                      <div v-if="!subdomains || subdomains.length === 0" class="muted text-xs">No subdomains created yet.</div>
+                      <label v-for="subdomain in subdomains" :key="subdomain.id" style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;"><input type="checkbox" :value="subdomain.id" v-model="shareForm.subdomain_ids"><span>{{ subdomain.domain }}</span></label>
+                    </div>
                   </div>
 
                   <div class="form-group">
@@ -3253,6 +3360,18 @@
                         <span>Allow Create Websites</span>
                       </label>
                       <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_create_subdomains">
+                        <span>Allow Create Subdomains</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_edit_subdomains">
+                        <span>Allow Manage Subdomains</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
+                        <input type="checkbox" v-model="shareForm.can_delete_subdomains">
+                        <span>Allow Delete Subdomains</span>
+                      </label>
+                      <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; cursor: pointer;">
                         <input type="checkbox" v-model="shareForm.can_delete_websites">
                         <span>Allow Delete Websites</span>
                       </label>
@@ -3291,64 +3410,30 @@
           </section>
 
           <!-- ═══════════════════════════════════════════════════════════ FTP ACCOUNTS -->
-          <section v-if="activePage === 'ftp-accounts'" class="panel">
-            <div class="advanced-tool-header">
-              <app-icon name="ftp"></app-icon>
-              <div>
-                <h2>FTP Accounts</h2>
-                <p>Create and manage virtual FTP accounts for specific directories.</p>
+          <section v-if="activePage === 'ftp-accounts'" class="ftp-page">
+            <div class="ftp-access-card">
+              <div class="ftp-card-heading" style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;"><div><h1>FTP access</h1><p>Connect an FTP client to upload and manage files for this hosting account.</p></div><div style="display:flex; align-items:center; gap:.75rem;"><span class="status-badge" :class="ftpState.enabled ? 'badge-success' : 'badge-disabled'">{{ ftpState.enabled ? 'Enabled' : 'Disabled' }}</span><button class="primary-button" :style="ftpState.enabled ? 'background:#dc2626;border-color:#dc2626;' : ''" @click="toggleFtpAccess" :disabled="ftpState.toggling">{{ ftpState.toggling ? 'Updating...' : (ftpState.enabled ? 'Disable FTP' : 'Enable FTP') }}</button></div></div>
+              <div v-if="!ftpState.enabled" class="info-box" style="margin:1rem 30px; border-color:#f97316; background:rgba(249,115,22,.08);"><strong>FTP access is disabled</strong><p style="margin:.25rem 0 0; font-size:13px;">Enable FTP access before connecting an FTP client. SFTP remains separately controlled from SSH / SFTP Access.</p></div>
+              <div class="ftp-detail-list">
+                <div class="ftp-detail-row"><span>FTP host</span><strong>{{ ftpInfo.host }} <button class="ftp-copy-button" @click="copyValue(ftpInfo.host)" title="Copy host">⧉</button></strong></div>
+                <div class="ftp-detail-row"><span>FTP port</span><strong>{{ ftpInfo.port }}</strong></div>
+                <div class="ftp-detail-row"><span>Passive ports</span><strong>{{ ftpInfo.passiveMin }}–{{ ftpInfo.passiveMax }}</strong></div>
+                <div class="ftp-detail-row"><span>Security</span><strong>FTP with explicit TLS supported</strong></div>
               </div>
             </div>
-            
-            <div class="settings-layout">
-              <!-- Left Column: Add FTP Account -->
-              <div class="settings-card">
-                <h3>Add FTP Account</h3>
-                <p class="text-sm muted mb-4">Create a new SFTP user. Passwords must be secure.</p>
-                
-                <form @submit.prevent="createFtpAccount" class="modern-form">
-                  <div class="form-group">
-                    <label>Username</label>
-                    <div class="input-with-prefix">
-                      <span class="input-prefix">{{ currentUserEmail.split('@')[0] }}_</span>
-                      <input v-model="newFtpUsername" type="text" required pattern="[a-zA-Z0-9_]+" placeholder="user" />
-                    </div>
-                  </div>
-                  <div class="form-group">
-                    <label>Password</label>
-                    <input v-model="newFtpPassword" type="password" required minlength="8" />
-                  </div>
-                  <div class="form-group">
-                    <label>Directory Path (relative to your home)</label>
-                    <input v-model="newFtpPath" type="text" required placeholder="public_html/..." />
-                  </div>
-                  <div class="form-actions">
-                    <button type="submit" class="primary-btn">Create FTP Account</button>
-                  </div>
-                </form>
-              </div>
-
-              <!-- Right Column: Existing Accounts -->
-              <div class="settings-card">
-                <h3>Existing FTP Accounts</h3>
-                <div v-if="ftpAccounts.length === 0" class="empty-state">
-                  <p>No additional FTP accounts have been created yet.</p>
-                </div>
-                <div v-else class="domain-list">
-                  <div v-for="ftp in ftpAccounts" :key="ftp.id" class="domain-row">
-                    <div class="domain-info">
-                      <strong>{{ ftp.username }}</strong>
-                      <span class="domain-path"><app-icon name="folder"></app-icon> /home/{{ currentUserEmail.split('@')[0] }}/{{ ftp.path }}</span>
-                    </div>
-                    <div class="domain-actions">
-                      <button class="icon-button danger" @click="deleteFtpAccount(ftp.id)" title="Delete FTP Account">
-                        <app-icon name="trash"></app-icon>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+            <div class="ftp-help-grid">
+              <article class="ftp-help-card"><h2>How to connect</h2><p>Use the host, port, username, and password below in FileZilla, Cyberduck, or another FTP client. Select passive transfer mode.</p><button class="ftp-outline-button" @click="copyValue(`ftp://${ftpInfo.host}:${ftpInfo.port}`)">Copy connection URL</button></article>
+              <article class="ftp-help-card"><h2>Common connection errors</h2><p>Use the external host and port shown above. If passive transfers fail, allow the displayed passive port range through your firewall.</p><span class="ftp-help-note">Never share your FTP password.</span></article>
             </div>
+            <div class="ftp-create-card">
+              <div class="ftp-card-heading"><h2>Create a new FTP account</h2><p>Create a login restricted to one directory. The account prefix is added automatically.</p></div>
+              <form @submit.prevent="createFtpAccount" class="ftp-form-body">
+                <label>Directory</label><div class="ftp-path-field"><span>/home/{{ activeAccount?.username || 'account' }}/</span><input v-model="newFtpPath" type="text" required placeholder="domains/example.com/public_html" /></div>
+                <div class="ftp-form-grid"><div><label>Username</label><input v-model="newFtpUsername" type="text" required pattern="[a-zA-Z0-9_]+" placeholder="user" /></div><div><label>Password</label><input v-model="newFtpPassword" type="password" required minlength="8" placeholder="At least 8 characters" /></div></div>
+                <div class="ftp-form-footer"><span>FTP accounts: {{ ftpAccounts.length }}</span><button type="submit" class="primary-button"><app-icon name="plus"></app-icon>Create FTP account</button></div>
+              </form>
+            </div>
+            <div class="ftp-list-card"><div class="ftp-card-heading"><h2>Your FTP accounts</h2><p>Each account can access only its configured directory.</p></div><div v-if="ftpAccounts.length" class="ftp-account-list"><div v-for="ftp in ftpAccounts" :key="ftp.id" class="ftp-account-row"><div><strong>{{ ftp.username }}</strong><small>/home/{{ activeAccount?.username || 'account' }}/{{ ftp.path }}</small></div><button class="danger-button" @click="deleteFtpAccount(ftp.id)" title="Delete FTP account"><app-icon name="trash"></app-icon></button></div></div><div v-else class="ftp-empty-state">No FTP accounts have been created yet.</div></div>
           </section>
 
 
@@ -3829,7 +3914,7 @@
           <div v-if="backupWizard.isOpen" class="modal-overlay" @click.self="!backupWizard.isRunning && closeBackupWizard()">
             <div class="modal-panel" style="max-width: 600px;">
               <div class="modal-header">
-                <h2>Create Manual Backup</h2>
+                <h2>Back Up Entire Account</h2>
                 <button class="close-button" @click="closeBackupWizard" :disabled="backupWizard.isRunning">×</button>
               </div>
               
@@ -3837,8 +3922,8 @@
                 <div class="info-box" style="margin-bottom: 1.5rem; background: var(--brand-tint); border-color: var(--brand); color: var(--brand-ink);">
                   <app-icon name="backup"></app-icon>
                   <div>
-                    <strong style="font-size: 16px;">Backup Details & Destination</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">Review the target folders, databases, and the storage destination below before proceeding.</p>
+                    <strong style="font-size: 16px;">Account backup and restore point</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">This includes all websites, account files, mail, and databases. You can restore it later from the completed backup row.</p>
                   </div>
                 </div>
                 
@@ -3881,7 +3966,7 @@
 
               <div class="modal-footer" v-if="backupWizard.step === 1">
                 <button class="ghost-button" @click="closeBackupWizard">Cancel</button>
-                <button class="primary-button" style="padding: 0 24px;" @click="startBackupWizard"><app-icon name="backup"></app-icon><span>Start Backup</span></button>
+                <button class="primary-button" style="padding: 0 24px;" @click="startBackupWizard"><app-icon name="backup"></app-icon><span>Start Account Backup</span></button>
               </div>
               <div class="modal-footer" v-if="backupWizard.step === 2 && !backupWizard.isRunning">
                 <button class="primary-button" @click="closeBackupWizard">Done</button>
@@ -4064,6 +4149,6 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/client.js?v=1.0.15"></script>
+    <script src="/assets/client.js?v=1.0.19"></script>
   </body>
 </html>

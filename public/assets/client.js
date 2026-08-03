@@ -79,17 +79,12 @@ function normalizedClientTarget(target) {
 const AppIcon = {
   props: ["name"],
   computed: {
-    unreadNotificationsCount() {
-      return this.notifications.filter(n => !n.read).length;
-    },
-    activeToasts() {
-      return this.notifications.filter(n => n.toastVisible);
-    },
     svgContent() {
       // Each icon is a full SVG inner HTML string — allows mixing path/circle/rect/polyline etc.
       const icons = {
         // ── Navigation / Shell ───────────────────────────────────
         dashboard: `<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>`,
+        home: `<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-6h6v6"/>`,
         bell: `<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path>`,
         download: `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>`,
         refresh: `<path d="M21 12a9 9 0 1 1-3.03-6.7"/><polyline points="21 3 21 9 15 9"/>`,
@@ -217,7 +212,6 @@ const app = createApp({
         { id: "phpmyadmin", name: "phpMyAdmin", icon: "phpmyadmin", description: "Web-based database management." },
         { id: "filebrowser", name: "File Manager", icon: "folder", description: "Web-based file manager interface." },
         { id: "sftp", name: "SFTP Service", icon: "sftp", description: "Secure FTP access." },
-        { id: "cron", name: "Cron Daemon", icon: "cron", description: "Scheduled task execution engine." },
       ],
       activePage: pageFromLocation(),
       login: {
@@ -240,6 +234,10 @@ const app = createApp({
       },
       featureStatuses: {},
       websites: [],
+      subdomains: [],
+      subdomainDomains: [],
+      subdomainUsage: { used: 0, limit: 0 },
+      subdomainWizard: { open: false, label: "", parent_domain_id: "", hosting_mode: "separate", path: "", submitting: false, error: "" },
       domains: [],
       registeredDomains: [],
       registeredDomainSort: { key: "expiry", direction: "asc" },
@@ -326,10 +324,15 @@ const app = createApp({
         enableTotp: false,
         all_websites: true,
         website_ids: [],
+        all_subdomains: false,
+        subdomain_ids: [],
         all_databases: true,
         database_ids: [],
         allowed_menus: ["websites", "files", "databases", "ftp", "mail", "dns", "cron", "ssl", "analytics"],
         can_create_websites: false,
+        can_create_subdomains: false,
+        can_edit_subdomains: true,
+        can_delete_subdomains: false,
         can_edit_websites: true,
         can_delete_websites: false,
         can_create_databases: false,
@@ -370,6 +373,7 @@ const app = createApp({
       siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], dnsCheckResult: null, dnsAction: 'keep', isCheckingDns: false, isSubmitting: false, isBuilding: false, errorMessage: '', dnsTab: 'records' },
       connectWizard: { isOpen: false, website: null, method: 'nameservers', auto_update_dns: false, checking: false, result: null },
       sshState: { enabled: false, toggling: false, loaded: false, hasPassword: false, settingPassword: false, newPassword: null, passwordModal: false, passwordInput: "", passwordError: "" },
+      ftpState: { enabled: true, toggling: false, loaded: false },
       sslModal: { isOpen: false, website_id: "", crt: "", key: "", isSubmitting: false, errorMessage: "" },
       issuingSsl: {},
       mailboxes: [],
@@ -422,9 +426,16 @@ const app = createApp({
       mailboxEditor: { isOpen: false, isSaving: false, mailboxId: null, email: "", quota_mb: 1024, status: "active", password: "", confirm_password: "" },
       cronJobs: [],
       newCronJob: { schedule: "*/15 * * * *", command: "" },
+      cronMode: "php",
+      cronPreset: "*/15 * * * *",
+      cronSchedule: { minute: "*/15", hour: "*", day: "*", month: "*", weekday: "*" },
+      cronOutputJob: null,
       backups: [],
+      restoreHistory: [],
+      backupSiteId: "all",
+      backupTab: "manage",
       gitDeployments: [],
-      newGitDeployment: { repository_url: "", branch: "main", deploy_path: "" },
+      newGitDeployment: { website_id: "", repository_url: "", branch: "main", access_key: "", deploy_path: "" },
       // DNS Zone Editor
       dnsRecords: [],
       dnsZones: [],
@@ -482,6 +493,8 @@ const app = createApp({
       tfaDisablePassword: "",
       profileLoading: false,
       profileSaving: false,
+      accountTimezone: "UTC",
+      timezoneSaving: false,
       profileForm: {
         id: null,
         full_name: "",
@@ -540,6 +553,20 @@ const app = createApp({
     if (this.resourcePoll) window.clearInterval(this.resourcePoll);
   },
   computed: {
+    backupInProgress() {
+      return this.backups.some((backup) => ["queued", "running"].includes(backup.status));
+    },
+    filteredBackups() {
+      return this.backups;
+    },
+    latestCompletedBackup() {
+      return this.backups
+        .filter((backup) => backup.status === "completed")
+        .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))[0] || null;
+    },
+    composedCronSchedule() {
+      return [this.cronSchedule.minute, this.cronSchedule.hour, this.cronSchedule.day, this.cronSchedule.month, this.cronSchedule.weekday].join(" ");
+    },
     isCollaboratorRestrictedWebsites() {
       const scope = this.home?.collaborator_scope;
       return Boolean(scope && scope.is_collaborator && Array.isArray(scope.allowed_website_ids));
@@ -663,7 +690,8 @@ const app = createApp({
           {
             label: "Domains",
             items: [
-              { label: "Domains", target: "domains", icon: "domains", description: "Domains and DNS status." },
+          { label: "Domains", target: "domains", icon: "domains", description: "Domains and DNS status." },
+          { label: "Subdomains", target: "subdomains", icon: "domains", description: "Create and manage hosted subdomains." },
               { label: "DNS Zone Editor", target: "dns-zone-editor", icon: "dns", description: "DNS records and zones." },
             ],
           },
@@ -684,6 +712,7 @@ const app = createApp({
           items: [
             { label: "Website", target: "website", icon: "website", description: "Websites, PHP versions, SSL, and actions." },
             { label: "Domains", target: "domains", icon: "domains", description: "Domains and DNS status." },
+            { label: "Subdomains", target: "subdomains", icon: "domains", description: "Create and manage hosted subdomains." },
             { label: "Redirects", target: "redirects", icon: "redirects", description: "Forwarding and redirect rules." },
             { label: "DNS Zone Editor", target: "dns-zone-editor", icon: "dns", description: "DNS records and zones." },
             { label: "Site Builder", target: "site-builder", icon: "site-builder", description: "Template-based website creation." },
@@ -738,7 +767,7 @@ const app = createApp({
       }
 
       const menuMap = {
-        websites: ["website", "redirects", "site-builder", "installer", "php-configuration", "php-info", "cache-manager", "folder-index-manager", "services", "api-tokens"],
+        websites: ["website", "subdomains", "redirects", "site-builder", "installer", "php-configuration", "php-info", "cache-manager", "folder-index-manager", "services", "api-tokens"],
         files: ["files", "disk-usage", "password-protect-directories", "fix-file-ownership", "backups", "git", "images"],
         databases: ["databases", "mysql-database-wizard", "remote-mysql", "postgresql-databases", "postgresql-database-wizard", "phppgadmin"],
         ftp: ["ftp-accounts", "ssh-access"],
@@ -928,6 +957,7 @@ const app = createApp({
         // Domains
         { label: "Site Builder", target: "site-builder", icon: "site-builder", color: "#8b5cf6", group: "Domains" },
         { label: "Domains", target: "domains", icon: "domains", color: "#8b5cf6", group: "Domains" },
+        { label: "Subdomains", target: "subdomains", icon: "domains", color: "#8b5cf6", group: "Domains" },
         { label: "Redirects", target: "redirects", icon: "redirects", color: "#8b5cf6", group: "Domains" },
         { label: "DNS Zone Editor", target: "dns-zone-editor", icon: "dns", color: "#8b5cf6", group: "Domains" },
 
@@ -1019,6 +1049,16 @@ const app = createApp({
         port: runtime.sftp_port || 18104,
         user: runtime.sftp_user || (account?.username || "—"),
         path: account?.base_path || "/home/user",
+      };
+    },
+    ftpInfo() {
+      const account = this.activeAccount || this.home.accounts?.[0] || {};
+      const runtime = account?.runtime || {};
+      return {
+        host: runtime.ftp_host || runtime.public_host || account.node_ip || window.location.hostname,
+        port: runtime.ftp_port || 21,
+        passiveMin: runtime.ftp_passive_min || "—",
+        passiveMax: runtime.ftp_passive_max || "—",
       };
     },
     selectedDomain() {
@@ -1247,6 +1287,15 @@ const app = createApp({
         if (isHomeReq) this.isHomeLoading = false;
       }
     },
+    async loadBackups() {
+      const suffix = this.backupSiteId !== "all" ? `?website_id=${encodeURIComponent(this.backupSiteId)}` : "";
+      const payload = await this.api(`/api/client/backups${suffix}`);
+      this.backups = payload.backups || [];
+    },
+    async loadRestoreHistory() {
+      const payload = await this.api("/api/client/restores");
+      this.restoreHistory = payload.restores || [];
+    },
     async startLogin() {
       this.notify("", "success");
       try {
@@ -1297,6 +1346,12 @@ const app = createApp({
           return;
         }
         this.websites = this.hasHostingAccount ? (await this.api("/api/client/websites")).websites : [];
+        if (this.hasHostingAccount) {
+          const subdomainPayload = await this.api("/api/client/subdomains");
+          this.subdomains = subdomainPayload.subdomains || [];
+          this.subdomainDomains = subdomainPayload.domains || [];
+          this.subdomainUsage = { used: Number(subdomainPayload.usage || 0), limit: Number(subdomainPayload.limit || 0) };
+        }
         const domainsPayload = await this.api("/api/client/domains");
         this.domains = domainsPayload.domains || [];
         this.registeredDomains = domainsPayload.registered_domains || [];
@@ -1309,6 +1364,7 @@ const app = createApp({
         await this.loadResourceUsage();
         await this.loadAnalytics();
         await this.loadSshState();
+        await this.loadFtpState();
         this.activity = (await this.api("/api/client/activity")).activity;
         await this.loadSyncJobs();
         if (this.activePage === "php-info") {
@@ -1320,7 +1376,8 @@ const app = createApp({
         this.mailboxes = (await this.api("/api/client/mailboxes")).mailboxes || [];
         await this.loadMailRouting();
         this.cronJobs = (await this.api("/api/client/cron-jobs")).cron_jobs || [];
-        this.backups = (await this.api("/api/client/backups")).backups || [];
+        await this.loadBackups();
+        await this.loadRestoreHistory();
         this.gitDeployments = (await this.api("/api/client/git-deployments")).git_deployments || [];
         this.ipRules = (await this.api("/api/client/ip-rules")).ip_rules || [];
         this.protectedDirs = (await this.api("/api/client/protected-directories")).protected_dirs || [];
@@ -1466,10 +1523,15 @@ const app = createApp({
         enableTotp: false,
         all_websites: true,
         website_ids: [],
+        all_subdomains: false,
+        subdomain_ids: [],
         all_databases: true,
         database_ids: [],
         allowed_menus: ["websites", "files", "databases", "ftp", "mail", "dns", "cron", "ssl", "analytics"],
         can_create_websites: false,
+        can_create_subdomains: false,
+        can_edit_subdomains: true,
+        can_delete_subdomains: false,
         can_edit_websites: true,
         can_delete_websites: false,
         can_create_databases: false,
@@ -1528,10 +1590,15 @@ const app = createApp({
           permissions: {
             all_websites: this.shareForm.all_websites,
             website_ids: this.shareForm.website_ids,
+            all_subdomains: this.shareForm.all_subdomains,
+            subdomain_ids: this.shareForm.subdomain_ids,
             all_databases: this.shareForm.all_databases,
             database_ids: this.shareForm.database_ids,
             allowed_menus: this.shareForm.allowed_menus,
             can_create_websites: this.shareForm.can_create_websites,
+            can_create_subdomains: this.shareForm.can_create_subdomains,
+            can_edit_subdomains: this.shareForm.can_edit_subdomains,
+            can_delete_subdomains: this.shareForm.can_delete_subdomains,
             can_edit_websites: this.shareForm.can_edit_websites,
             can_delete_websites: this.shareForm.can_delete_websites,
             can_create_databases: this.shareForm.can_create_databases,
@@ -1595,10 +1662,15 @@ const app = createApp({
         enableTotp: false,
         all_websites: perms.all_websites !== false,
         website_ids: perms.website_ids || [],
+        all_subdomains: perms.all_subdomains === true,
+        subdomain_ids: perms.subdomain_ids || [],
         all_databases: perms.all_databases !== false,
         database_ids: perms.database_ids || [],
         allowed_menus: perms.allowed_menus || ["websites", "files", "databases", "ftp", "mail", "dns", "cron", "ssl", "analytics"],
         can_create_websites: !!perms.can_create_websites,
+        can_create_subdomains: !!perms.can_create_subdomains,
+        can_edit_subdomains: perms.can_edit_subdomains !== false,
+        can_delete_subdomains: !!perms.can_delete_subdomains,
         can_edit_websites: perms.can_edit_websites !== false,
         can_delete_websites: !!perms.can_delete_websites,
         can_create_databases: !!perms.can_create_databases,
@@ -2421,6 +2493,15 @@ const app = createApp({
         this.cachePurging = false;
       }
     },
+    async toggleCache(type, enabled) {
+      this.cachePurging = true;
+      try {
+        const payload = await this.api("/api/client/cache/toggle", { method: "POST", body: JSON.stringify({ type, enabled }) });
+        this.cacheStatus = { ...this.cacheStatus, [type === "opcache" ? "opcache_enabled" : "object_cache_enabled"]: enabled, [type === "opcache" ? "opcode_cache" : "object_cache"]: enabled ? "pending" : "off" };
+        this.notify(`${type === "opcache" ? "OPcache" : "Object cache"} ${enabled ? "enable" : "disable"} queued (job #${payload.job_id})`, "success");
+      } catch (error) { this.notify(error.message, "error"); }
+      finally { this.cachePurging = false; }
+    },
     // IP Manager
     async createIpRule() {
       if (!this.newIpRule.ip) return;
@@ -2683,6 +2764,9 @@ const app = createApp({
         this.notify(error.message, "error");
       }
     },
+    copyValue(value) {
+      navigator.clipboard.writeText(String(value)).then(() => this.notify("Copied to clipboard", "success"));
+    },
     // 2FA
     async loadSiteBuilderTemplates() {
       try {
@@ -2886,6 +2970,48 @@ const app = createApp({
       if (major >= 8) return "php-badge php-badge--8";
       if (major === 7) return "php-badge php-badge--7";
       return "php-badge";
+    },
+    openSubdomainWizard() {
+      this.subdomainWizard = { open: true, label: "", parent_domain_id: this.subdomainDomains[0]?.id || "", hosting_mode: "separate", path: "", submitting: false, error: "" };
+    },
+    closeSubdomainWizard() {
+      if (!this.subdomainWizard.submitting) this.subdomainWizard.open = false;
+    },
+    async createSubdomain() {
+      const form = this.subdomainWizard;
+      if (form.submitting) return;
+      form.submitting = true;
+      form.error = "";
+      try {
+        await this.api("/api/client/subdomains", { method: "POST", body: JSON.stringify({
+          subdomain: form.label,
+          parent_domain_id: form.parent_domain_id,
+          hosting_mode: form.hosting_mode,
+          path: form.path,
+        }) });
+        form.open = false;
+        this.notify(`Subdomain ${form.label} created, DNS queued, and SSL issuance started`, "success");
+        await this.load();
+      } catch (error) {
+        form.error = error.message || String(error);
+        this.notify(form.error, "error");
+      } finally {
+        form.submitting = false;
+      }
+    },
+    async deleteSubdomain(subdomain) {
+      if (!window.confirm(`Delete subdomain ${subdomain.domain}? Its hosted files will be removed by the normal website cleanup flow.`)) return;
+      try {
+        await this.api(`/api/client/subdomains/${subdomain.id}`, { method: "DELETE" });
+        this.notify(`${subdomain.domain} deleted`, "success");
+        await this.load();
+      } catch (error) { this.notify(error.message, "error"); }
+    },
+    async issueSubdomainSsl(subdomain) {
+      try {
+        await this.api("/api/client/ssl/issue", { method: "POST", body: JSON.stringify({ website_id: subdomain.id }) });
+        this.notify(`SSL issuance queued for ${subdomain.domain}`, "success");
+      } catch (error) { this.notify(error.message, "error"); }
     },
     // Website Creation Wizard
     openSiteWizard() {
@@ -3514,7 +3640,8 @@ const app = createApp({
     },
     async createBackup() {
       try {
-        const payload = await this.api("/api/client/backups", { method: "POST", body: "{}" });
+        const body = this.backupSiteId !== "all" ? { website_id: Number(this.backupSiteId) } : {};
+        const payload = await this.api("/api/client/backups", { method: "POST", body: JSON.stringify(body) });
         this.notify(`Backup #${payload.backup_id} queued`, "success");
         await this.load();
       } catch (error) {
@@ -3552,8 +3679,9 @@ const app = createApp({
     },
     async restoreBackup(backupId) {
       if (!confirm("Are you sure you want to restore this backup? This will overwrite your current files and databases.")) return;
+      const includeDatabase = confirm("Restore the databases from this backup too? Choose Cancel to restore website files only.");
       try {
-        const payload = await this.api(`/api/client/backups/${backupId}/restore`, { method: "POST", body: "{}" });
+        const payload = await this.api(`/api/client/backups/${backupId}/restore`, { method: "POST", body: JSON.stringify({ include_database: includeDatabase }) });
         this.notify(`Restore job #${payload.job_id} queued`, "success");
         setTimeout(() => this.load(), 2000);
       } catch (err) {
@@ -3707,16 +3835,20 @@ const app = createApp({
     async createCronJob() {
       if (!this.newCronJob.command) return;
       try {
+        const command = this.cronMode === "php" ? `php ${this.newCronJob.command.trim()}` : this.newCronJob.command.trim();
         await this.api("/api/client/cron-jobs", {
           method: "POST",
-          body: JSON.stringify(this.newCronJob),
+          body: JSON.stringify({ schedule: this.composedCronSchedule, command }),
         });
         this.notify("Cron job created", "success");
-        this.newCronJob = { schedule: "*/15 * * * *", command: "" };
+        this.newCronJob = { schedule: this.composedCronSchedule, command: "" };
         this.cronJobs = (await this.api("/api/client/cron-jobs")).cron_jobs || [];
       } catch (error) {
         this.notify(error.message, "error");
       }
+    },
+    viewCronOutput(job) {
+      this.cronOutputJob = job;
     },
     async toggleCronStatus(job) {
       const newStatus = job.status === "disabled" ? "enabled" : "disabled";
@@ -3743,14 +3875,24 @@ const app = createApp({
     },
     // Git deployment methods
     async createGitDeployment() {
-      if (!this.newGitDeployment.repository_url) return;
+      if (!this.newGitDeployment.repository_url || !this.newGitDeployment.website_id) return;
       try {
         await this.api("/api/client/git-deployments", {
           method: "POST",
           body: JSON.stringify(this.newGitDeployment),
         });
         this.notify(`Repository ${this.newGitDeployment.repository_url} connected`, "success");
-        this.newGitDeployment = { repository_url: "", branch: "main", deploy_path: "" };
+        this.newGitDeployment = { website_id: "", repository_url: "", branch: "main", access_key: "", deploy_path: "" };
+        this.gitDeployments = (await this.api("/api/client/git-deployments")).git_deployments || [];
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async updateGitDeployment(dep) {
+      try {
+        dep.status = "updating";
+        await this.api(`/api/client/git-deployments/${dep.id}/update`, { method: "POST" });
+        this.notify(`Update queued for ${dep.repository_url}`, "success");
         this.gitDeployments = (await this.api("/api/client/git-deployments")).git_deployments || [];
       } catch (error) {
         this.notify(error.message, "error");
@@ -3893,6 +4035,32 @@ const app = createApp({
         this.sshState.loaded = true;
       } catch (err) {
         console.error("Failed to load SSH state:", err);
+      }
+    },
+    async loadFtpState() {
+      try {
+        const payload = await this.api("/api/client/ftp-access");
+        this.ftpState.enabled = !!payload.enabled;
+        this.ftpState.loaded = true;
+      } catch (err) {
+        console.error("Failed to load FTP state:", err);
+      }
+    },
+    async toggleFtpAccess() {
+      if (this.ftpState.toggling) return;
+      this.ftpState.toggling = true;
+      const targetState = !this.ftpState.enabled;
+      try {
+        const payload = await this.api("/api/client/ftp-access/toggle", {
+          method: "POST",
+          body: JSON.stringify({ enabled: targetState }),
+        });
+        this.ftpState.enabled = !!payload.enabled;
+        this.notify(targetState ? "FTP access enabled" : "FTP access disabled", "success");
+      } catch (err) {
+        this.notify(err.message || String(err), "error");
+      } finally {
+        this.ftpState.toggling = false;
       }
     },
     async toggleSshAccess() {
@@ -4085,11 +4253,22 @@ const app = createApp({
       try {
         const payload = await this.api("/api/client/profile");
         this.profileForm = payload.profile;
+        const timezone = await this.api("/api/client/settings/timezone");
+        this.accountTimezone = timezone.timezone || "UTC";
       } catch (error) {
         this.notify(error.message, "error");
       } finally {
         this.profileLoading = false;
       }
+    },
+    async saveTimezone() {
+      this.timezoneSaving = true;
+      try {
+        await this.api("/api/client/settings/timezone", { method: "PATCH", body: JSON.stringify({ timezone: this.accountTimezone }) });
+        this.notify("Account timezone saved.", "success");
+        await this.loadActivity();
+      } catch (error) { this.notify(error.message, "error"); }
+      finally { this.timezoneSaving = false; }
     },
     async saveProfile() {
       const emailChanged = String(this.profileForm.email || "").trim().toLowerCase() !== String(this.home?.user?.email || "").trim().toLowerCase();
@@ -4181,6 +4360,14 @@ const app = createApp({
     },
   },
   watch: {
+    cronPreset(newVal) {
+      if (!newVal) return;
+      const [minute, hour, day, month, weekday] = newVal.split(" ");
+      this.cronSchedule = { minute, hour, day, month, weekday };
+    },
+    backupSiteId() {
+      if (this.token && this.hasHostingAccount) this.loadBackups();
+    },
     "login.code"(newVal) {
       const clean = String(newVal || "").trim();
       if (clean.length === 6 && this.challengeToken) {

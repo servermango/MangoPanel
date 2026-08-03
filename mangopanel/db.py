@@ -3,6 +3,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .mail import dkim_dns_value, ensure_mailbox_storage, generate_dkim_material, mailbox_storage_path, recommended_dmarc_record, recommended_spf_record, split_mailbox_address
 from .providers import ACME_PROVIDER_LOCAL, DNS_PROVIDER_CLOUDFLARE, DNS_PROVIDER_LOCAL, DNS_PROVIDER_LOCAL_POWERDNS, MAIL_EDGE_PROVIDER_SHARED
@@ -92,11 +93,13 @@ CREATE TABLE IF NOT EXISTS plans (
   storage_mb INTEGER NOT NULL,
   inode_limit INTEGER NOT NULL,
   max_websites INTEGER NOT NULL,
+  max_subdomains INTEGER NOT NULL DEFAULT 10,
   max_databases INTEGER NOT NULL,
   max_mailboxes INTEGER NOT NULL,
   max_cron_jobs INTEGER NOT NULL,
   daily_email_limit INTEGER NOT NULL,
   backup_retention_days INTEGER NOT NULL,
+  backup_schedule TEXT NOT NULL DEFAULT 'daily',
   max_processes INTEGER NOT NULL DEFAULT 120,
   php_workers INTEGER NOT NULL DEFAULT 60,
   bandwidth_limit_gb INTEGER NOT NULL DEFAULT 0,
@@ -403,9 +406,24 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
 CREATE TABLE IF NOT EXISTS backups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  website_id INTEGER REFERENCES websites(id),
   kind TEXT NOT NULL,
+  includes_database INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'queued',
   artifact_path TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS restore_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  backup_id INTEGER NOT NULL REFERENCES backups(id),
+  job_id INTEGER REFERENCES jobs(id),
+  website_id INTEGER REFERENCES websites(id),
+  include_database INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'queued',
+  error TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TEXT
 );
@@ -997,6 +1015,7 @@ def ensure_schema(conn):
         {
             "ssh_access": "TEXT NOT NULL DEFAULT 'disabled'",
             "ssh_password": "TEXT",
+            "ftp_access": "TEXT NOT NULL DEFAULT 'enabled'",
             "inodes_used": "INTEGER NOT NULL DEFAULT 0",
             "storage_used_mb": "REAL NOT NULL DEFAULT 0",
             "dedicated_ip_id": "INTEGER REFERENCES server_ips(id)",
@@ -1082,6 +1101,8 @@ def ensure_schema(conn):
         conn,
         "plans",
         {
+            "max_subdomains": "INTEGER NOT NULL DEFAULT 10",
+            "backup_schedule": "TEXT NOT NULL DEFAULT 'daily'",
             "max_processes": "INTEGER NOT NULL DEFAULT 120",
             "php_workers": "INTEGER NOT NULL DEFAULT 60",
             "bandwidth_mb": "INTEGER NOT NULL DEFAULT 0",
@@ -1108,8 +1129,20 @@ def ensure_schema(conn):
     )
     ensure_table_columns(
         conn,
+        "backups",
+        {
+            "website_id": "INTEGER REFERENCES websites(id)",
+            "includes_database": "INTEGER NOT NULL DEFAULT 1",
+        },
+    )
+    ensure_table_columns(
+        conn,
         "websites",
         {
+            "is_subdomain": "INTEGER NOT NULL DEFAULT 0",
+            "parent_domain_id": "INTEGER REFERENCES domains(id)",
+            "hosting_mode": "TEXT NOT NULL DEFAULT 'separate'",
+            "subdomain_path": "TEXT",
             "php_ini": "TEXT NOT NULL DEFAULT '{}'",
             "index_enabled": "INTEGER NOT NULL DEFAULT 0",
             "modsec_enabled": "INTEGER NOT NULL DEFAULT 1",
@@ -1227,6 +1260,8 @@ def ensure_schema(conn):
         conn,
         "git_deployments",
         {
+            "website_id": "INTEGER REFERENCES websites(id)",
+            "access_key_encrypted": "TEXT NOT NULL DEFAULT ''",
             "last_commit": "TEXT",
             "previous_commit": "TEXT",
             "last_deployed_at": "TEXT",
@@ -1824,6 +1859,9 @@ def ensure_dns_provider_schema(conn):
     ensure_table_columns(conn, "hosting_accounts", {
         "dns_provider": "TEXT",
         "dns_provider_account_id": "INTEGER",
+        "opcache_enabled": "INTEGER NOT NULL DEFAULT 1",
+        "object_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
+        "timezone": "TEXT NOT NULL DEFAULT 'UTC'",
     })
 
 
@@ -2374,6 +2412,37 @@ def get_system_setting(conn, key, default=None):
     if row is not None and row["value"] is not None:
         return row["value"]
     return default
+
+
+def get_system_timezone(conn):
+    """Return the configured IANA timezone, falling back safely to UTC."""
+    name = get_system_setting(conn, "system_timezone", default_system_timezone_name()) or "UTC"
+    try:
+        return ZoneInfo(str(name))
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def default_system_timezone_name():
+    configured = os.environ.get("TZ", "").strip()
+    if configured:
+        return configured
+    try:
+        system_timezone = Path("/etc/timezone").read_text(encoding="utf-8").strip()
+        if system_timezone:
+            return system_timezone
+    except OSError:
+        pass
+    return "UTC"
+
+
+def apply_system_timezone(conn):
+    """Apply the configured timezone to this process for local time APIs."""
+    timezone = get_system_timezone(conn)
+    os.environ["TZ"] = getattr(timezone, "key", "UTC")
+    if hasattr(time, "tzset"):
+        time.tzset()
+    return timezone
 
 
 def set_system_setting(conn, key, value):

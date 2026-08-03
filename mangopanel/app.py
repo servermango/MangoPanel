@@ -14,6 +14,7 @@ import threading
 import time
 import socket
 import ssl
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,6 +52,8 @@ from .mail import build_mail_message_bytes, dkim_dns_value, ensure_mailbox_stora
 from .db import (
     connect,
     create_job,
+    apply_system_timezone,
+    default_system_timezone_name,
     get_system_setting,
     init_db,
     log_activity,
@@ -75,7 +78,7 @@ from .providers import (
 from .registrars import RegistrarError, registrar_for
 from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, validate_git_branch, validate_git_repository_url, verify_jwt, verify_password, verify_totp
 from .snappymail import request_login_session
-from .stack import build_account_runtime, sync_account_suspension_marker
+from .stack import DEFAULT_SSH_MOTD, build_account_runtime, sync_account_suspension_marker
 
 
 CONFIG = load_config()
@@ -2665,6 +2668,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "reauth_required": email_changed,
                     })
                 raise ApiError(HTTPStatus.NOT_FOUND, "unknown_profile_method")
+            if path == "/api/client/settings/timezone":
+                require_account(account)
+                if method == "GET":
+                    return self.json_response({"timezone": account["timezone"] or "UTC"})
+                if method == "PATCH":
+                    body = self.read_json(); value = str(body.get("timezone") or "UTC").strip()
+                    try: ZoneInfo(value)
+                    except ZoneInfoNotFoundError: raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_timezone")
+                    conn.execute("UPDATE hosting_accounts SET timezone = ? WHERE id = ?", (value, account["id"]))
+                    log_activity(conn, actor["id"], "account_timezone_changed", {"timezone": value})
+                    return self.json_response({"timezone": value})
+                raise ApiError(HTTPStatus.NOT_FOUND, "unknown_timezone_method")
             if path == "/api/client/home" and method == "GET":
                 user_id = account["user_id"] if account else actor["id"]
                 active_account_id = account["id"] if account else None
@@ -2729,6 +2744,106 @@ class MangoHandler(BaseHTTPRequestHandler):
                 _analytics_website_id = optional_positive_int(query.get("website_id", [""])[0])
                 _analytics_filter_key = str(query.get("filter", ["top-countries"])[0] or "top-countries")
                 return self.json_response(client_analytics_payload(conn, account["id"], _analytics_website_id, _analytics_filter_key))
+            if path == "/api/client/subdomains" and method == "GET":
+                require_account(account)
+                rows = conn.execute(
+                    """
+                    SELECT w.*, d.name AS parent_domain, d.dns_provider, d.dns_status,
+                           d.id AS parent_domain_id
+                    FROM websites w
+                    LEFT JOIN domains d ON d.id = w.parent_domain_id
+                    WHERE w.account_id = ? AND w.is_subdomain = 1
+                    ORDER BY w.id DESC
+                    """, (account["id"],)
+                ).fetchall()
+                scope = get_collaborator_scope(conn, actor["id"], account["id"])
+                if scope.get("is_collaborator") and scope.get("allowed_subdomain_ids") is not None:
+                    allowed_ids = scope["allowed_subdomain_ids"]
+                    rows = [row for row in rows if row["id"] in allowed_ids]
+                plan = conn.execute("SELECT max_subdomains FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+                return self.json_response({
+                    "subdomains": rows_to_dicts(rows),
+                    "domains": rows_to_dicts(conn.execute("SELECT id, name, dns_provider, dns_status FROM domains WHERE account_id = ? ORDER BY name", (account["id"],)).fetchall()),
+                    "usage": len(rows),
+                    "limit": int(plan["max_subdomains"] if plan else 0),
+                })
+            if path == "/api/client/subdomains" and method == "POST":
+                require_active_account(account)
+                require_collaborator_permission(conn, actor["id"], account["id"], "can_create_subdomains")
+                require_plan_capacity(conn, account["id"], "subdomains", "max_subdomains", "subdomain_limit_reached")
+                require_inode_capacity(conn, account["id"])
+                body = self.read_json()
+                parent_id = positive_int(body.get("parent_domain_id"), "invalid_parent_domain_id")
+                parent = conn.execute("SELECT * FROM domains WHERE id = ? AND account_id = ?", (parent_id, account["id"])).fetchone()
+                if not parent:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "parent_domain_not_found")
+                label = str(body.get("subdomain") or body.get("label") or "").strip().lower().rstrip(".")
+                if not label or len(label) > 253 or any(part == "" or len(part) > 63 or not re.match(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$", part) for part in label.split(".")):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_subdomain")
+                domain = sanitize_domain(f"{label}.{parent['name']}")
+                if conn.execute("SELECT id FROM websites WHERE account_id = ? AND domain = ?", (account["id"], domain)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "subdomain_already_exists")
+                mode = str(body.get("hosting_mode") or "separate").strip().lower()
+                if mode not in {"separate", "inside"}:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_subdomain_hosting_mode")
+                parent_site = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (parent["linked_website_id"], account["id"])).fetchone() if parent["linked_website_id"] else None
+                if mode == "inside" and not parent_site:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "parent_domain_has_no_website")
+                relative_path = str(body.get("path") or body.get("subdomain_path") or f"subdomains/{label}").strip().strip("/")
+                if mode == "inside" and (not relative_path or relative_path.startswith(".") or any(part in {"", ".", ".."} for part in relative_path.split("/")) or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/" for ch in relative_path)):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_subdomain_path")
+                if mode == "inside":
+                    document_root = str((Path(parent_site["document_root"]).resolve() / relative_path).resolve())
+                    try:
+                        Path(document_root).relative_to(Path(parent_site["document_root"]).resolve())
+                    except ValueError:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_subdomain_path")
+                else:
+                    relative_path = ""
+                    document_root = f"{account['base_path']}/domains/{domain}/public_html"
+                cur = conn.execute(
+                    """INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status, created_by_user_id, is_subdomain, parent_domain_id, hosting_mode, subdomain_path)
+                       VALUES (?, ?, ?, ?, 'missing', 'active', ?, 1, ?, ?, ?)""",
+                    (account["id"], domain, document_root, body.get("php_version", "8.3"), actor["id"], parent_id, mode, relative_path or None),
+                )
+                website_id = cur.lastrowid
+                public_ip = get_host_public_ip(conn)
+                dns_job_id = None
+                dns_record_id = None
+                managed_provider = parent["dns_provider"] in {DNS_PROVIDER_LOCAL, DNS_PROVIDER_LOCAL_POWERDNS, DNS_PROVIDER_CLOUDFLARE}
+                if managed_provider:
+                    record_name = label
+                    record = conn.execute("SELECT id, system_record, value FROM dns_records WHERE domain_id = ? AND type = 'A' AND name = ?", (parent_id, record_name)).fetchone()
+                    if record:
+                        if not int(record["system_record"] or 0) and str(record["value"]) != str(public_ip):
+                            conn.execute("DELETE FROM websites WHERE id = ?", (website_id,))
+                            raise ApiError(HTTPStatus.CONFLICT, "subdomain_dns_record_conflict")
+                        dns_record_id = record["id"]
+                        if int(record["system_record"] or 0):
+                            conn.execute("UPDATE dns_records SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (public_ip, dns_record_id))
+                    else:
+                        dns_record_id = conn.execute("INSERT INTO dns_records(domain_id, type, name, value, ttl, system_record, locked) VALUES (?, 'A', ?, ?, 300, 1, 1)", (parent_id, record_name, public_ip)).lastrowid
+                    dns_job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", parent_id, {"reason": "subdomain_created", "record_id": dns_record_id})
+                job_id = enqueue_agent_job(conn, "create_website", "website", website_id, {"domain": domain, "subdomain": True})
+                ssl_job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "local-dev"})
+                log_activity(conn, actor["id"], "subdomain_created", {"website_id": website_id, "domain": domain, "parent_domain": parent["name"], "hosting_mode": mode})
+                return self.json_response({"subdomain": row_to_dict(conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()), "job_id": job_id, "ssl_job_id": ssl_job_id, "dns_job_id": dns_job_id, "dns_record_id": dns_record_id}, HTTPStatus.CREATED)
+            match = re.match(r"^/api/client/subdomains/(\d+)$", path)
+            if match and method == "DELETE":
+                require_active_account(account)
+                website_id = int(match.group(1))
+                website = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ? AND is_subdomain = 1", (website_id, account["id"])).fetchone()
+                if not website:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "subdomain_not_found")
+                require_collaborator_permission(conn, actor["id"], account["id"], "can_delete_subdomains", resource_type="subdomain", resource_id=website_id)
+                parent_id = website["parent_domain_id"]
+                label = website["domain"][:-len(conn.execute("SELECT name FROM domains WHERE id = ?", (parent_id,)).fetchone()["name"]) - 1] if parent_id else website["domain"]
+                if parent_id:
+                    conn.execute("DELETE FROM dns_records WHERE domain_id = ? AND name = ? AND system_record = 1", (parent_id, label))
+                    enqueue_agent_job(conn, "sync_dns_zone", "domain", parent_id, {"reason": "subdomain_deleted"})
+                job_id = delete_client_website(conn, account, website)
+                log_activity(conn, actor["id"], "subdomain_deleted", {"website_id": website_id, "domain": website["domain"]})
+                return self.json_response({"deleted": True, "job_id": job_id})
             if path == "/api/client/websites" and method == "GET":
                 def check_domain_tls_handshake(domain):
                     try:
@@ -3029,6 +3144,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                     job_id = None
                     if "php_version" in body:
                         job_id = enqueue_agent_job(conn, "update_website_php", "website", website_id, {"php_version": php_version})
+                    elif "php_ini" in body:
+                        job_id = enqueue_agent_job(conn, "update_website_php_ini", "website", website_id, {})
                     if "index_enabled" in body:
                         job_id = enqueue_agent_job(conn, "sync_website_index", "website", website_id, {})
                     if "modsec_enabled" in body:
@@ -3500,6 +3617,19 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "path": account["base_path"],
                     "has_password": bool(acc_dict.get("ssh_password")),
                 })
+            if path == "/api/client/ftp-access" and method == "GET":
+                require_active_account(account)
+                enabled = (dict(account).get("ftp_access") or "enabled") == "enabled"
+                runtime = build_account_runtime(dict(account), CONFIG.public_host, CONFIG.account_port_base)
+                return self.json_response({"enabled": enabled, "ftp_access": "enabled" if enabled else "disabled", "host": runtime.get("public_host") or CONFIG.public_host, "port": runtime["ftp_port"], "passive_min": runtime["ftp_passive_min"], "passive_max": runtime["ftp_passive_max"]})
+            if path == "/api/client/ftp-access/toggle" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                enabled = bool(body.get("enabled", False))
+                new_status = "enabled" if enabled else "disabled"
+                res = Agent(CONFIG).set_ftp_access(conn, account["id"], new_status)
+                log_activity(conn, actor["id"], f"ftp_access_{new_status}", {"account_id": account["id"]})
+                return self.json_response(res)
             if path == "/api/client/ssh/toggle" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -3543,6 +3673,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 website = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone()
                 if not website:
                     raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                if int(website["is_subdomain"] or 0):
+                    require_collaborator_permission(conn, actor["id"], account["id"], "can_edit_subdomains", resource_type="subdomain", resource_id=website_id)
                 job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "local-dev"})
                 refreshed = conn.execute("SELECT ssl_status FROM websites WHERE id = ?", (website_id,)).fetchone()
                 order = conn.execute(
@@ -4294,6 +4426,21 @@ class MangoHandler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
                 self.record_access_log(HTTPStatus.OK, len(data))
                 return
+            if path == "/api/client/restores" and method == "GET":
+                require_account(account)
+                rows = conn.execute(
+                    """
+                    SELECT rh.*, b.kind AS backup_kind, b.created_at AS backup_created_at,
+                           w.domain AS website_domain
+                    FROM restore_history rh
+                    JOIN backups b ON b.id = rh.backup_id
+                    LEFT JOIN websites w ON w.id = rh.website_id
+                    WHERE rh.account_id = ?
+                    ORDER BY rh.id DESC LIMIT 100
+                    """,
+                    (account["id"],),
+                ).fetchall()
+                return self.json_response({"restores": rows_to_dicts(rows)})
             if path == "/api/client/restores" and method == "POST":
                 require_active_account(account)
                 job_id = enqueue_agent_job(conn, "restore_backup", "hosting_account", account["id"], self.read_json())
@@ -4319,10 +4466,17 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/git-deployments" and method == "GET":
                 require_account(account)
                 rows = conn.execute(
-                    "SELECT * FROM git_deployments WHERE account_id = ? ORDER BY id",
+                    """SELECT gd.*, w.domain AS website_domain
+                       FROM git_deployments gd
+                       LEFT JOIN websites w ON w.id = gd.website_id
+                       WHERE gd.account_id = ? ORDER BY gd.id""",
                     (account["id"],),
                 ).fetchall()
-                return self.json_response({"git_deployments": rows_to_dicts(rows)})
+                deployments = rows_to_dicts(rows)
+                for deployment in deployments:
+                    deployment["has_access_key"] = bool(deployment.get("access_key_encrypted"))
+                    deployment.pop("access_key_encrypted", None)
+                return self.json_response({"git_deployments": deployments})
             if path == "/api/client/git-deployments" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -4334,18 +4488,58 @@ class MangoHandler(BaseHTTPRequestHandler):
                 branch = clean_text(body.get("branch", "main"), "main")
                 if not validate_git_branch(branch):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_branch")
+                website_id = body.get("website_id")
+                if website_id in (None, ""):
+                    first_website = conn.execute(
+                        "SELECT id FROM websites WHERE account_id = ? ORDER BY id LIMIT 1", (account["id"],)
+                    ).fetchone()
+                    website_id = first_website["id"] if first_website else None
+                else:
+                    try:
+                        website_id = int(website_id)
+                    except (TypeError, ValueError) as exc:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_website") from exc
+                    website = conn.execute(
+                        "SELECT id FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])
+                    ).fetchone()
+                    if not website:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_website")
                 deploy_text = str(body.get("deploy_path") or "").strip()
                 if not deploy_text:
-                    repo_slug = re.sub(r"\.git$", "", repository_url.rstrip("/").split("/")[-1])
-                    deploy_text = f"git/{repo_slug or 'deployment'}"
+                    if website_id:
+                        target_website = conn.execute("SELECT document_root FROM websites WHERE id = ?", (website_id,)).fetchone()
+                        target_root = Path(target_website["document_root"]).resolve()
+                        account_root = Path(account["base_path"]).resolve()
+                        try:
+                            deploy_text = target_root.relative_to(account_root).as_posix()
+                        except ValueError as exc:
+                            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_website_root") from exc
+                    else:
+                        repo_slug = re.sub(r"\.git$", "", repository_url.rstrip("/").split("/")[-1])
+                        deploy_text = f"git/{repo_slug or 'deployment'}"
 
                 deploy_path, _ = normalize_account_relative_path(account, deploy_text, label="deploy_path")
+                access_key = str(body.get("access_key") or "").strip()
                 cur = conn.execute(
-                    "INSERT INTO git_deployments(account_id, repository_url, branch, deploy_path, status) VALUES (?, ?, ?, ?, ?)",
-                    (account["id"], repository_url, branch, str(deploy_path), "configured"),
+                    """INSERT INTO git_deployments
+                       (account_id, website_id, repository_url, branch, deploy_path, access_key_encrypted, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (account["id"], website_id, repository_url, branch, str(deploy_path), encrypt_secret(access_key, CONFIG.jwt_secret), "configured"),
                 )
                 job_id = enqueue_agent_job(conn, "git_deploy", "git_deployment", cur.lastrowid, {})
                 return self.json_response({"git_deployment_id": cur.lastrowid, "job_id": job_id}, HTTPStatus.CREATED)
+            if path.startswith("/api/client/git-deployments/") and path.endswith("/update") and method == "POST":
+                require_active_account(account)
+                deployment_id = path_int_id(path.replace("/update", ""), "/api/client/git-deployments/")
+                deployment = conn.execute(
+                    "SELECT id FROM git_deployments WHERE id = ? AND account_id = ?", (deployment_id, account["id"])
+                ).fetchone()
+                if not deployment:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "git_deployment_not_found")
+                conn.execute("UPDATE git_deployments SET status = 'updating', last_error = NULL WHERE id = ?", (deployment_id,))
+                job_id = enqueue_agent_job(conn, "git_deploy", "git_deployment", deployment_id, {})
+                log_activity(conn, actor["id"], "git_deployment_updated", {"deployment_id": deployment_id})
+                return self.json_response({"job_id": job_id, "status": "queued"})
             if path.startswith("/api/client/git-deployments/") and path.endswith("/rollback") and method == "POST":
                 require_active_account(account)
                 deployment_id = path_int_id(path.replace("/rollback", ""), "/api/client/git-deployments/")
@@ -4633,7 +4827,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id",
                     (account["id"],),
                 ).fetchall()
-                return self.json_response({"cron_jobs": decorate_cron_jobs(account, rows_to_dicts(rows))})
+                cron_payload = decorate_cron_jobs(account, rows_to_dicts(rows))
+                return self.json_response({"cron_jobs": localize_client_rows(cron_payload, account["timezone"] if "timezone" in account.keys() else "UTC")})
             if path == "/api/client/cron-jobs" and method == "POST":
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "cron_jobs", "max_cron_jobs", "cron_job_limit_reached")
@@ -4693,7 +4888,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 service_name = body.get("service")
                 if not service_name:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "service_required")
-                valid_services = ["web", "db", "filebrowser", "phpmyadmin", "cron", "sftp"]
+                valid_services = ["web", "db", "filebrowser", "phpmyadmin"]
                 if service_name not in valid_services:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_service")
                 job_id = enqueue_agent_job(conn, "restart_service", "hosting_account", account["id"], {"service": service_name})
@@ -4704,7 +4899,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_account(account)
                 service_name = query.get("service", [""])[0].strip()
                 if service_name:
-                    valid_services = ["web", "db", "filebrowser", "phpmyadmin", "cron", "sftp"]
+                    valid_services = ["web", "db", "filebrowser", "phpmyadmin"]
                     if service_name not in valid_services:
                         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_service")
                 stack = conn.execute(
@@ -4724,16 +4919,37 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             if path == "/api/client/backups" and method == "GET":
                 require_account(account)
+                website_filter = query.get("website_id", [""])[0].strip()
+                backup_params = [account["id"]]
+                website_clause = ""
+                if website_filter and website_filter != "all":
+                    website_id = optional_positive_int(website_filter)
+                    if not conn.execute("SELECT id FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone():
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                    website_clause = " AND b.website_id = ?"
+                    backup_params.append(website_id)
                 rows = conn.execute(
-                    "SELECT * FROM backups WHERE account_id = ? ORDER BY id DESC LIMIT 50",
-                    (account["id"],),
+                    "SELECT b.*, w.domain AS website_domain FROM backups b LEFT JOIN websites w ON w.id = b.website_id WHERE b.account_id = ?" + website_clause + " ORDER BY b.id DESC LIMIT 100",
+                    backup_params,
                 ).fetchall()
-                return self.json_response({"backups": rows_to_dicts(rows)})
+                active = conn.execute(
+                    "SELECT COUNT(*) AS count FROM backups WHERE account_id = ? AND status IN ('queued','running')",
+                    (account["id"],),
+                ).fetchone()["count"]
+                return self.json_response({"backups": rows_to_dicts(rows), "backup_in_progress": bool(active)})
             if path == "/api/client/backups" and method == "POST":
                 require_active_account(account)
+                body = self.read_json() if self.headers.get("Content-Length", "0") != "0" else {}
+                website_id = body.get("website_id")
+                if website_id not in (None, "", "all"):
+                    website_id = optional_positive_int(website_id)
+                    if not conn.execute("SELECT id FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone():
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                else:
+                    website_id = None
                 cur = conn.execute(
-                    "INSERT INTO backups(account_id, kind, status) VALUES (?, ?, ?)",
-                    (account["id"], "manual", "queued"),
+                    "INSERT INTO backups(account_id, website_id, kind, includes_database, status) VALUES (?, ?, ?, ?, ?)",
+                    (account["id"], website_id, "manual", 1, "queued"),
                 )
                 job_id = enqueue_agent_job(conn, "manual_backup", "backup", cur.lastrowid, {})
                 backup = conn.execute("SELECT * FROM backups WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -4746,7 +4962,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                     raise ApiError(HTTPStatus.NOT_FOUND, "backup_not_found")
                 if backup["status"] != "completed":
                     raise ApiError(HTTPStatus.BAD_REQUEST, "backup_not_completed")
-                job_id = enqueue_agent_job(conn, "restore_backup", "backup", backup_id, {})
+                body = self.read_json() if self.headers.get("Content-Length", "0") != "0" else {}
+                include_database = bool(body.get("include_database", True))
+                job_id = enqueue_agent_job(conn, "restore_backup", "backup", backup_id, {"include_database": include_database})
+                conn.execute(
+                    """
+                    INSERT INTO restore_history
+                      (account_id, backup_id, job_id, website_id, include_database, status)
+                    VALUES (?, ?, ?, ?, ?, 'queued')
+                    """,
+                    (account["id"], backup_id, job_id, backup["website_id"], int(include_database)),
+                )
                 return self.json_response({"restoring": True, "backup_id": backup_id, "job_id": job_id})
             if path == "/api/client/fix-ownership" and method == "POST":
                 require_active_account(account)
@@ -5039,10 +5265,22 @@ class MangoHandler(BaseHTTPRequestHandler):
                 }, HTTPStatus.CREATED)
             if path == "/api/client/activity" and method == "GET":
                 rows = conn.execute("SELECT * FROM activity_logs WHERE user_id = ? ORDER BY id DESC LIMIT 50", (actor["id"],)).fetchall()
-                return self.json_response({"activity": rows_to_dicts(rows)})
+                return self.json_response({"activity": localize_client_rows(rows_to_dicts(rows), account["timezone"] if account and "timezone" in account.keys() else "UTC")})
             if path == "/api/client/cache/status" and method == "GET":
                 require_account(account)
                 return self.json_response(client_cache_status(conn, account))
+            if path == "/api/client/cache/toggle" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                cache_type = str(body.get("type") or "").strip().lower()
+                if cache_type not in {"opcache", "object"}:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_cache_type")
+                enabled = 1 if bool(body.get("enabled")) else 0
+                column = "opcache_enabled" if cache_type == "opcache" else "object_cache_enabled"
+                conn.execute(f"UPDATE hosting_accounts SET {column} = ? WHERE id = ?", (enabled, account["id"]))
+                job_id = enqueue_agent_job(conn, "set_cache_settings", "hosting_account", account["id"], {"type": cache_type, "enabled": enabled})
+                log_activity(conn, actor["id"], "cache_setting_changed", {"type": cache_type, "enabled": enabled})
+                return self.json_response({"job_id": job_id, "status": "queued", "type": cache_type, "enabled": bool(enabled)})
             if path == "/api/client/cache/purge" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -5752,8 +5990,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 cur = conn.execute(
                     """
                     INSERT INTO plans(
-                      name, cpu_limit, memory_mb, storage_mb, inode_limit, max_websites,
-                      max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days,
+                      name, cpu_limit, memory_mb, storage_mb, inode_limit, max_websites, max_subdomains,
+                      max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days, backup_schedule,
                       max_processes, php_workers, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
                       frontend_frameworks, backend_frameworks, nodejs_versions, package_managers,
                       dns_default_provider, dns_allowed_providers_json, dns_allowed_provider_accounts_json, dns_default_provider_account_id,
@@ -5765,7 +6003,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (
                         plan["name"], plan["cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"],
                         plan["max_websites"], plan["max_databases"], plan["max_mailboxes"], plan["max_cron_jobs"],
-                        plan["daily_email_limit"], plan["backup_retention_days"], plan["max_processes"], plan["php_workers"],
+                        plan["daily_email_limit"], plan["backup_retention_days"], plan["backup_schedule"], plan["max_processes"], plan["php_workers"],
                         plan["bandwidth_mb"], plan["nameserver_1"], plan["nameserver_2"], plan["backup_location"],
                         plan["frontend_frameworks"], plan["backend_frameworks"], plan["nodejs_versions"], plan["package_managers"],
                         plan["dns_default_provider"], plan["dns_allowed_providers_json"], plan["dns_allowed_provider_accounts_json"], plan["dns_default_provider_account_id"],
@@ -6021,6 +6259,52 @@ class MangoHandler(BaseHTTPRequestHandler):
     def admin_api(self, method, path, query, actor):
         path = path.rstrip("/")
         with connect(CONFIG.db_path) as conn:
+            if path == "/api/admin/configuration" and method == "GET":
+                return self.json_response({"configuration": {
+                    "backup_time": get_system_setting(conn, "backup_time", "02:00"),
+                    "timezone": get_system_setting(conn, "system_timezone", default_system_timezone_name()),
+                    "modsecurity_ruleset": get_system_setting(conn, "modsecurity_ruleset", "baseline"),
+                    "ssh_motd": get_system_setting(conn, "ssh_motd", DEFAULT_SSH_MOTD),
+                }})
+            if path == "/api/admin/modsecurity/rulesets" and method == "GET":
+                return self.json_response({"rulesets": [{"id": "baseline", "name": "MangoPanel baseline", "description": "Managed high-confidence protection."}, {"id": "owasp", "name": "OWASP CRS 4.0.0", "description": "Downloaded from the official OWASP Core Rule Set release."}]})
+            if path == "/api/admin/modsecurity/rulesets/apply" and method == "POST":
+                body = self.read_json(); ruleset = str(body.get("ruleset") or "baseline").lower()
+                if ruleset not in {"baseline", "owasp"}: raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_modsecurity_ruleset")
+                # Persist the selected ruleset before queueing the apply job;
+                # otherwise the UI falls back to baseline after a refresh.
+                set_system_setting(conn, "modsecurity_ruleset", ruleset)
+                log_audit(conn, "admin", actor["id"], "update_modsecurity_ruleset", "system_settings", 0, metadata={"ruleset": ruleset})
+                account_id = optional_positive_int(body.get("account_id") or "")
+                job_id = enqueue_agent_job(conn, "apply_modsecurity_ruleset", "hosting_account" if account_id else "system", account_id or 0, {"ruleset": ruleset})
+                return self.json_response({"job_id": job_id, "status": "queued", "ruleset": ruleset})
+            if path == "/api/admin/configuration" and method in {"POST", "PATCH"}:
+                body = self.read_json()
+                backup_time = str(body.get("backup_time", "02:00") or "02:00").strip()
+                if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", backup_time):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_backup_time")
+                timezone_name = str(body.get("timezone", body.get("system_timezone", get_system_setting(conn, "system_timezone", default_system_timezone_name()))) or default_system_timezone_name()).strip()
+                try:
+                    ZoneInfo(timezone_name)
+                except (ZoneInfoNotFoundError, ValueError):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_timezone")
+                set_system_setting(conn, "backup_time", backup_time)
+                set_system_setting(conn, "system_timezone", timezone_name)
+                ruleset = str(body.get("modsecurity_ruleset", get_system_setting(conn, "modsecurity_ruleset", "baseline")) or "baseline").lower()
+                if ruleset not in {"baseline", "owasp"}:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_modsecurity_ruleset")
+                set_system_setting(conn, "modsecurity_ruleset", ruleset)
+                current_motd = get_system_setting(conn, "ssh_motd", DEFAULT_SSH_MOTD)
+                motd = str(body.get("ssh_motd", current_motd) or "")
+                if len(motd) > 32768:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "ssh_motd_too_long")
+                motd_job_id = None
+                if motd != current_motd:
+                    set_system_setting(conn, "ssh_motd", motd)
+                    motd_job_id = enqueue_agent_job(conn, "apply_ssh_motd", "system", 0, {"motd": motd})
+                apply_system_timezone(conn)
+                log_audit(conn, "admin", actor["id"], "update_configuration", "system_settings", 0, metadata={"backup_time": backup_time, "timezone": timezone_name})
+                return self.json_response({"configuration": {"backup_time": backup_time, "timezone": timezone_name, "modsecurity_ruleset": ruleset, "ssh_motd": motd}, "ssh_motd_job_id": motd_job_id})
             # Reseller Plans API
             if path == "/api/admin/reseller-plans" and method == "GET":
                 plans = rows_to_dicts(conn.execute("SELECT * FROM reseller_plans ORDER BY id DESC").fetchall())
@@ -6239,12 +6523,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 try:
-                    for _ in range(100):
+                    for _ in range(120):
                         data = get_live_disk_io(conn)
                         msg = f"data: {json.dumps(data)}\n\n"
                         self.wfile.write(msg.encode("utf-8"))
                         self.wfile.flush()
-                        time.sleep(0.3)
+                        time.sleep(1.0)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
                 return
@@ -6278,12 +6562,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 try:
-                    for _ in range(100):
+                    for _ in range(120):
                         data = get_live_network_io(conn)
                         msg = f"data: {json.dumps(data)}\n\n"
                         self.wfile.write(msg.encode("utf-8"))
                         self.wfile.flush()
-                        time.sleep(0.3)
+                        time.sleep(1.0)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
                 return
@@ -6326,12 +6610,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 try:
-                    for _ in range(200):
+                    for _ in range(120):
                         data = get_live_cpu_io(conn)
                         msg = f"data: {json.dumps(data)}\n\n"
                         self.wfile.write(msg.encode("utf-8"))
                         self.wfile.flush()
-                        time.sleep(0.3)
+                        time.sleep(1.0)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
                 return
@@ -6350,12 +6634,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 try:
-                    for _ in range(200):
+                    for _ in range(120):
                         data = get_live_ram_io(conn)
                         msg = f"data: {json.dumps(data)}\n\n"
                         self.wfile.write(msg.encode("utf-8"))
                         self.wfile.flush()
-                        time.sleep(0.3)
+                        time.sleep(1.0)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
                 return
@@ -7371,7 +7655,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_min_ttl, dns_wildcard_records_allowed, dns_cloudflare_proxy_allowed,
                       dns_dnssec_allowed, dns_dnssec_required, allow_api_access,
                       is_reseller, max_clients, max_reseller_subplans
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         plan["name"],
@@ -7380,11 +7664,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["storage_mb"],
                         plan["inode_limit"],
                         plan["max_websites"],
+                        plan["max_subdomains"],
                         plan["max_databases"],
                         plan["max_mailboxes"],
                         plan["max_cron_jobs"],
                         plan["daily_email_limit"],
                         plan["backup_retention_days"],
+                        plan["backup_schedule"],
                         plan["max_processes"],
                         plan["php_workers"],
                         plan["bandwidth_mb"],
@@ -7434,8 +7720,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 conn.execute(
                     """
                     UPDATE plans SET
-                      name = ?, cpu_limit = ?, memory_mb = ?, storage_mb = ?, inode_limit = ?, max_websites = ?,
-                      max_databases = ?, max_mailboxes = ?, max_cron_jobs = ?, daily_email_limit = ?, backup_retention_days = ?,
+                      name = ?, cpu_limit = ?, memory_mb = ?, storage_mb = ?, inode_limit = ?, max_websites = ?, max_subdomains = ?,
+                      max_databases = ?, max_mailboxes = ?, max_cron_jobs = ?, daily_email_limit = ?, backup_retention_days = ?, backup_schedule = ?,
                       max_processes = ?, php_workers = ?, bandwidth_mb = ?, nameserver_1 = ?, nameserver_2 = ?, backup_location = ?,
                       frontend_frameworks = ?, backend_frameworks = ?, nodejs_versions = ?, package_managers = ?,
                       dns_default_provider = ?, dns_allowed_providers_json = ?, dns_allowed_provider_accounts_json = ?, dns_default_provider_account_id = ?,
@@ -7446,8 +7732,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                     WHERE id = ?
                     """,
                     (
-                        plan["name"], plan["cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"], plan["max_websites"],
+                        plan["name"], plan["cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"], plan["max_websites"], plan["max_subdomains"],
                         plan["max_databases"], plan["max_mailboxes"], plan["max_cron_jobs"], plan["daily_email_limit"], plan["backup_retention_days"],
+                        plan["backup_schedule"],
                         plan["max_processes"], plan["php_workers"], plan["bandwidth_mb"], plan["nameserver_1"], plan["nameserver_2"], plan["backup_location"],
                         plan["frontend_frameworks"], plan["backend_frameworks"], plan["nodejs_versions"], plan["package_managers"],
                         plan["dns_default_provider"], plan["dns_allowed_providers_json"], plan["dns_allowed_provider_accounts_json"], plan["dns_default_provider_account_id"],
@@ -8299,12 +8586,14 @@ def require_plan_capacity(conn, account_id, resource_table, plan_column, error):
         "databases": "databases",
         "mailboxes": "mailboxes",
         "cron_jobs": "cron_jobs",
+        "subdomains": "websites",
     }
     allowed_columns = {
         "max_websites": "max_websites",
         "max_databases": "max_databases",
         "max_mailboxes": "max_mailboxes",
         "max_cron_jobs": "max_cron_jobs",
+        "max_subdomains": "max_subdomains",
     }
     table = allowed_tables.get(resource_table)
     column = allowed_columns.get(plan_column)
@@ -8316,6 +8605,7 @@ def require_plan_capacity(conn, account_id, resource_table, plan_column, error):
         FROM hosting_accounts ha
         JOIN plans p ON p.id = ha.plan_id
         LEFT JOIN {table} r ON r.account_id = ha.id
+          {"AND r.is_subdomain = 1" if resource_table == "subdomains" else ""}
         WHERE ha.id = ?
         GROUP BY ha.id
         """,
@@ -9636,14 +9926,45 @@ def account_runtime(conn, account_id):
     return parse_json_field(row["runtime_json"], {}) if row else {}
 
 
+def localize_client_rows(rows, timezone_name):
+    try:
+        zone = ZoneInfo(timezone_name or "UTC")
+    except ZoneInfoNotFoundError:
+        zone = timezone.utc
+    for row in rows:
+        for key, value in list(row.items()):
+            if not isinstance(value, str) or not value or not (key.endswith("_at") or key in {"created_at", "updated_at"}):
+                continue
+            try:
+                raw = value.replace("Z", "+00:00")
+                parsed = datetime.fromisoformat(raw)
+                if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=timezone.utc)
+                row[key] = parsed.astimezone(zone).isoformat(timespec="seconds")
+            except ValueError:
+                pass
+    return rows
+
+
 def client_cache_status(conn, account):
     runtime = account_runtime(conn, account["id"])
     report_path = Path(account["base_path"]) / ".runtime" / "cache" / "last_action.json"
     report = parse_json_field(report_path.read_text(encoding="utf-8"), {}) if report_path.exists() else {}
+    opcache_enabled = int(account["opcache_enabled"] if "opcache_enabled" in account.keys() and account["opcache_enabled"] is not None else 1)
+    object_enabled = int(account["object_cache_enabled"] if "object_cache_enabled" in account.keys() and account["object_cache_enabled"] is not None else 1)
+    redis_running = False
+    docker = shutil.which("docker")
+    if docker:
+        probe = subprocess.run([docker, "exec", f"mp-{account['username']}-redis", "redis-cli", "PING"], capture_output=True, text=True, check=False)
+        redis_running = probe.returncode == 0 and probe.stdout.strip().upper() == "PONG"
+    opcache_state = "active" if opcache_enabled else "off"
+    object_state = "active" if object_enabled and redis_running else "off"
     return {
         "cache_status": {
-            "opcode_cache": "active" if runtime.get("opcode_cache_backend") else "inactive",
-            "object_cache": "active" if runtime.get("object_cache_backend") else "inactive",
+            "opcode_cache": opcache_state,
+            "object_cache": object_state,
+            "opcache_enabled": bool(opcache_enabled),
+            "object_cache_enabled": bool(object_enabled),
+            "object_cache_reachable": redis_running,
             "opcode_cache_backend": runtime.get("opcode_cache_backend", "opcache"),
             "object_cache_backend": runtime.get("object_cache_backend", "redis"),
             "last_purged": report.get("purged_at"),
@@ -10387,7 +10708,8 @@ def docker_resource_usage(account):
     docker = shutil.which("docker")
     if not docker:
         return None
-    containers = [f"mp-{username}-{service}" for service in ["web", "filebrowser", "phpmyadmin", "db", "cron", "sftp"]]
+    # FTP and SSH/SFTP run inside the existing web container.
+    containers = [f"mp-{username}-{service}" for service in ["web", "filebrowser", "phpmyadmin", "db"]]
     try:
         result = subprocess.run(
             [docker, "stats", "--no-stream", "--format", "{{json .}}", *containers],
@@ -11528,11 +11850,15 @@ def validate_plan_payload(body):
     storage_mb = positive_int(body.get("storage_mb"), "invalid_storage_mb", minimum=100, maximum=104857600)
     inode_limit = positive_int(body.get("inode_limit"), "invalid_inode_limit", minimum=1000, maximum=1000000000)
     max_websites = positive_int(body.get("max_websites"), "invalid_max_websites", minimum=1, maximum=10000)
+    max_subdomains = positive_int(body.get("max_subdomains", 10), "invalid_max_subdomains", minimum=0, maximum=10000)
     max_databases = positive_int(body.get("max_databases"), "invalid_max_databases", minimum=0, maximum=10000)
     max_mailboxes = positive_int(body.get("max_mailboxes"), "invalid_max_mailboxes", minimum=0, maximum=10000)
     max_cron_jobs = positive_int(body.get("max_cron_jobs"), "invalid_max_cron_jobs", minimum=0, maximum=10000)
     daily_email_limit = positive_int(body.get("daily_email_limit"), "invalid_daily_email_limit", minimum=0, maximum=10000000)
     backup_retention_days = positive_int(body.get("backup_retention_days"), "invalid_backup_retention_days", minimum=1, maximum=3650)
+    backup_schedule = str(body.get("backup_schedule", "daily") or "daily").strip().lower()
+    if backup_schedule not in {"disabled", "daily", "weekly", "monthly", "quarterly"}:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_backup_schedule")
     cpu_limit = normalize_cpu_limit(body.get("cpu_limit", "1"))
     max_processes = positive_int(body.get("max_processes", 120), "invalid_max_processes", minimum=0, maximum=10000)
     php_workers = positive_int(body.get("php_workers", 60), "invalid_php_workers", minimum=0, maximum=1000)
@@ -11608,11 +11934,13 @@ def validate_plan_payload(body):
         "storage_mb": storage_mb,
         "inode_limit": inode_limit,
         "max_websites": max_websites,
+        "max_subdomains": max_subdomains,
         "max_databases": max_databases,
         "max_mailboxes": max_mailboxes,
         "max_cron_jobs": max_cron_jobs,
         "daily_email_limit": daily_email_limit,
         "backup_retention_days": backup_retention_days,
+        "backup_schedule": backup_schedule,
         "max_processes": max_processes,
         "php_workers": php_workers,
         "bandwidth_mb": bandwidth_mb,
@@ -12187,9 +12515,13 @@ def get_collaborator_scope(conn, user_id, account_id):
         return {
             "is_collaborator": False,
             "allowed_website_ids": None,
+            "allowed_subdomain_ids": None,
             "allowed_database_ids": None,
             "allowed_menus": None,
             "can_create_websites": True,
+            "can_create_subdomains": True,
+            "can_edit_subdomains": True,
+            "can_delete_subdomains": True,
             "can_edit_websites": True,
             "can_delete_websites": True,
             "can_create_databases": True,
@@ -12205,9 +12537,13 @@ def get_collaborator_scope(conn, user_id, account_id):
         return {
             "is_collaborator": False,
             "allowed_website_ids": None,
+            "allowed_subdomain_ids": None,
             "allowed_database_ids": None,
             "allowed_menus": None,
             "can_create_websites": True,
+            "can_create_subdomains": True,
+            "can_edit_subdomains": True,
+            "can_delete_subdomains": True,
             "can_edit_websites": True,
             "can_delete_websites": True,
             "can_create_databases": True,
@@ -12234,11 +12570,16 @@ def get_collaborator_scope(conn, user_id, account_id):
         return {
             "is_collaborator": True,
             "allowed_website_ids": [],
+            "allowed_subdomain_ids": [],
             "allowed_database_ids": [],
             "owned_website_ids": [],
+            "owned_subdomain_ids": [],
             "owned_database_ids": [],
             "allowed_menus": [],
             "can_create_websites": False,
+            "can_create_subdomains": False,
+            "can_edit_subdomains": False,
+            "can_delete_subdomains": False,
             "can_edit_websites": False,
             "can_delete_websites": False,
             "can_create_databases": False,
@@ -12255,6 +12596,9 @@ def get_collaborator_scope(conn, user_id, account_id):
     all_ws = perms.get("all_websites", True)
     ws_ids = [int(x) for x in perms.get("website_ids", []) if str(x).isdigit()] if not all_ws else None
 
+    all_subdomains = perms.get("all_subdomains", False)
+    subdomain_ids = [int(x) for x in perms.get("subdomain_ids", []) if str(x).isdigit()] if not all_subdomains else None
+
     all_db = perms.get("all_databases", True)
     db_ids = [int(x) for x in perms.get("database_ids", []) if str(x).isdigit()] if not all_db else None
 
@@ -12268,6 +12612,12 @@ def get_collaborator_scope(conn, user_id, account_id):
     ).fetchall()]
     if ws_ids is not None:
         ws_ids = sorted(set(ws_ids).union(owned_ws))
+    owned_subdomains = [r["id"] for r in conn.execute(
+        "SELECT id FROM websites WHERE account_id = ? AND is_subdomain = 1 AND created_by_user_id = ?",
+        (account_id, user_id),
+    ).fetchall()]
+    if subdomain_ids is not None:
+        subdomain_ids = sorted(set(subdomain_ids).union(owned_subdomains))
     if db_ids is not None:
         db_ids = sorted(set(db_ids).union(owned_db))
 
@@ -12278,11 +12628,16 @@ def get_collaborator_scope(conn, user_id, account_id):
         "collaborator_id": collab["id"],
         "permissions": perms,
         "allowed_website_ids": ws_ids,
+        "allowed_subdomain_ids": subdomain_ids,
         "allowed_database_ids": db_ids,
         "owned_website_ids": owned_ws,
+        "owned_subdomain_ids": owned_subdomains,
         "owned_database_ids": owned_db,
         "allowed_menus": list(menus) if menus is not None else None,
         "can_create_websites": perms.get("can_create_websites", False),
+        "can_create_subdomains": perms.get("can_create_subdomains", False),
+        "can_edit_subdomains": perms.get("can_edit_subdomains", True),
+        "can_delete_subdomains": perms.get("can_delete_subdomains", False),
         "can_edit_websites": perms.get("can_edit_websites", True),
         "can_delete_websites": perms.get("can_delete_websites", False),
         "can_create_databases": perms.get("can_create_databases", False),
@@ -12297,7 +12652,7 @@ def get_collaborator_scope(conn, user_id, account_id):
 def require_collaborator_permission(conn, actor_id, account_id, perm_key, err_msg=None, resource_type=None, resource_id=None):
     scope = get_collaborator_scope(conn, actor_id, account_id)
     if scope.get("is_collaborator"):
-        owned_key = {"website": "owned_website_ids", "database": "owned_database_ids"}.get(resource_type)
+        owned_key = {"website": "owned_website_ids", "subdomain": "owned_subdomain_ids", "database": "owned_database_ids"}.get(resource_type)
         if owned_key and resource_id is not None and int(resource_id) in scope.get(owned_key, []):
             return scope
         if not scope.get(perm_key):
@@ -12314,7 +12669,7 @@ def client_home(conn, user_id, active_account_id=None):
             """
             SELECT DISTINCT ha.*,
                    p.name AS plan_name, p.cpu_limit, p.memory_mb, p.storage_mb,
-                   p.inode_limit, p.max_websites, p.max_databases, p.max_mailboxes,
+                   p.inode_limit, p.max_websites, p.max_subdomains, p.max_databases, p.max_mailboxes,
                    p.max_cron_jobs, p.daily_email_limit, p.backup_retention_days,
                    p.max_processes, p.php_workers, p.bandwidth_limit_gb * 1024 AS bandwidth_mb,
                    p.nameserver1 AS nameserver_1, p.nameserver2 AS nameserver_2, 
@@ -12680,6 +13035,8 @@ def run():
     CONFIG.data_dir.mkdir(parents=True, exist_ok=True)
     CONFIG.account_root.mkdir(parents=True, exist_ok=True)
     init_db(CONFIG.db_path)
+    with connect(CONFIG.db_path) as conn:
+        apply_system_timezone(conn)
     if CONFIG.env == "development":
         seed_dev_data(CONFIG.db_path, CONFIG.account_root)
         agent = Agent(CONFIG)

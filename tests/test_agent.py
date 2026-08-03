@@ -47,6 +47,8 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(compose_path.exists())
             compose_text = compose_path.read_text(encoding="utf-8")
             self.assertIn("mp-u000001-web", compose_text)
+            self.assertNotIn("  sftp:\n", compose_text)
+            self.assertIn('"0.0.0.0:18014:22"', compose_text)
             self.assertIn("mp-u000001-redis", compose_text)
             self.assertIn("mp-u000001-mailserver", compose_text)
             self.assertIn("djmaze/snappymail:latest@sha256:", compose_text)
@@ -58,6 +60,7 @@ class AgentTests(unittest.TestCase):
             self.assertIn('mangopanel.backup_retention_days: "7"', compose_text)
             self.assertTrue((config.account_root / "u000001" / "account.json").exists())
             web_dockerfile = (config.account_root / "u000001" / ".runtime" / "stack" / "web" / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn("openssh-server", web_dockerfile)
             self.assertIn("lsphp83-opcache", web_dockerfile)
             self.assertIn("lsphp82-opcache", web_dockerfile)
             self.assertIn("lsphp84-opcache", web_dockerfile)
@@ -134,6 +137,26 @@ class AgentTests(unittest.TestCase):
                 route_manifest = json.loads(route["manifest_json"])
                 self.assertEqual(route_manifest["edge_host"], "mail.mango.test")
                 self.assertTrue(route_manifest["mailboxes"])
+
+    def test_php_ini_job_writes_user_ini_without_reprovisioning_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.account_root = root / "accounts"
+            config.data_dir = root
+            config.agent_mode = "simulate"
+            seed_dev_data(config.db_path, config.account_root)
+            with connect(config.db_path) as conn:
+                website = conn.execute("SELECT * FROM websites WHERE id = 1").fetchone()
+                conn.execute("UPDATE websites SET php_ini = ? WHERE id = ?", ('{"memory_limit":"192M"}', website["id"]))
+                job_id = create_job(conn, "update_website_php_ini", "website", website["id"], {})
+                conn.commit()
+                result = Agent(config).run_job_by_id(job_id)
+
+            self.assertEqual(result["status"], "succeeded")
+            ini_path = Path(website["document_root"]) / ".user.ini"
+            self.assertEqual(ini_path.read_text(encoding="utf-8"), "memory_limit = 192M\n")
 
     def test_simulated_sync_jobs_write_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -595,6 +618,35 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(res["user"], account["username"])
             sftp_conf = (Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf").read_text(encoding="utf-8")
             self.assertIn(f"{account['username']}:NewSecurePass123!:1001:1001\n", sftp_conf)
+
+    def test_access_services_share_web_container_and_ftp_toggle_is_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+
+            seed_dev_data(config.db_path, config.account_root)
+            Agent(config).run_all()
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                result = Agent(config).set_ftp_access(conn, account["id"], "disabled")
+                conn.commit()
+
+                stored = conn.execute("SELECT ftp_access FROM hosting_accounts WHERE id = ?", (account["id"],)).fetchone()
+                compose = (Path(account["base_path"]) / ".runtime" / "stack" / "docker-compose.yml").read_text(encoding="utf-8")
+                runner = (Path(account["base_path"]) / ".runtime" / "stack" / "services-entrypoint.sh").read_text(encoding="utf-8")
+
+            self.assertEqual(result["ftp_access"], "disabled")
+            self.assertEqual(stored["ftp_access"], "disabled")
+            self.assertEqual((Path(account["base_path"]) / ".runtime" / "stack" / "ftp.enabled").read_text(), "disabled\n")
+            self.assertIn("mp-u000001-web", compose)
+            self.assertNotIn("  sftp:\n", compose)
+            self.assertIn("/usr/sbin/proftpd", runner)
+            self.assertIn("/usr/sbin/sshd", runner)
 
     def test_hotlink_sync_writes_real_htaccess_and_removes_it_on_disable(self):
         with tempfile.TemporaryDirectory() as tmp:

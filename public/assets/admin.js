@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 const IS_RESELLER = Boolean(window.IS_RESELLER_PANEL);
 const ADMIN_ROUTE_PREFIX = IS_RESELLER ? "/reseller" : "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "system", "admins", "api-tokens", "status", "security", "default-page"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "configuration", "system", "admins", "api-tokens", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
   let hash = window.location.hash.replace(/^#/, "");
@@ -60,6 +60,11 @@ createApp({
       selectedClientId: "",
       showClientModal: false,
       plans: [],
+      configuration: { backup_time: "02:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "" },
+      modsecRuleset: "baseline",
+      modsecApplying: false,
+      timezoneOptions: ["UTC", "Europe/London", "Europe/Paris", "Asia/Kolkata", "Asia/Dubai", "Asia/Tokyo", "America/New_York", "America/Los_Angeles", "Australia/Sydney"],
+      configurationSaving: false,
       resellerPlans: [],
       resellerUsers: [],
       showResellerPlanModal: false,
@@ -173,11 +178,13 @@ createApp({
         storage_mb: 10240,
         inode_limit: 100000,
         max_websites: 10,
+        max_subdomains: 10,
         max_databases: 10,
         max_mailboxes: 10,
         max_cron_jobs: 10,
         daily_email_limit: 250,
         backup_retention_days: 7,
+        backup_schedule: "daily",
         max_processes: 120,
         php_workers: 60,
         bandwidth_mb: 0,
@@ -274,7 +281,7 @@ createApp({
       }
     }
     if (this.token) {
-      this.load();
+      await this.load();
       this.goTo(adminPageFromLocation());
     }
     window.addEventListener("popstate", () => {
@@ -325,6 +332,10 @@ createApp({
   },
   unmounted() {
     if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
+    this.stopNetworkLiveStream();
+    this.stopCpuLiveStream();
+    this.stopRamLiveStream();
+    this.stopStorageLiveStream();
   },
   computed: {
     managedClients() {
@@ -441,6 +452,7 @@ createApp({
         {
           label: "System",
           items: [
+            { label: "Configuration", target: "configuration", description: "Platform-wide backup timing and future control-plane settings." },
             { label: "Default Page", target: "default-page", description: "Default index.php template content for newly created websites." },
             { label: "Security Checklist", target: "security", description: "Server security audit, SSH hardening, firewall, SSL, and WAF status." },
             { label: "Stack & Jobs", target: "system", description: "Generated stacks, agent runs, recent jobs, and events." },
@@ -683,7 +695,7 @@ createApp({
           const net = await this.api("/api/admin/network/live");
           if (net) this.setNetworkTarget(net);
         } catch (e) {}
-      }, 300);
+      }, 1000);
     },
     stopNetworkLiveStream() {
       if (this.networkLiveEs) {
@@ -748,7 +760,7 @@ createApp({
             if (this.cpuHistory.length > 60) this.cpuHistory.shift();
           }
         } catch (e) {}
-      }, 500);
+      }, 1000);
     },
     stopCpuLiveStream() {
       if (this.cpuLiveEs) {
@@ -833,7 +845,7 @@ createApp({
           const data = await this.api(apiPrefix);
           if (data) this.setRamTarget(data);
         } catch (e) {}
-      }, 300);
+      }, 1000);
     },
     stopRamLiveStream() {
       this.ramLiveActive = false;
@@ -1004,7 +1016,7 @@ createApp({
         if (this.storageLiveActive && (this.activePage === "storage" || this.activePage === "overview")) {
           this.fetchStorageLiveOnce();
         }
-      }, 300);
+      }, 1000);
     },
     stopStorageLiveStream() {
       if (this.storageLiveEs) {
@@ -1164,6 +1176,29 @@ createApp({
         this.securityAudit.loading = false;
       }
     },
+    async saveConfiguration() {
+      this.configurationSaving = true;
+      try {
+        const result = await this.api("/api/admin/configuration", { method: "PATCH", body: JSON.stringify(this.configuration) });
+        // Keep the selected value if an older/cached backend response omits
+        // newly added configuration fields.
+        this.configuration = { ...this.configuration, ...(result.configuration || {}) };
+        this.message = result.ssh_motd_job_id ? `Configuration saved; SSH message update queued (job #${result.ssh_motd_job_id})` : "Configuration saved";
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.configurationSaving = false;
+      }
+    },
+    async applyModsecRules() {
+      this.modsecApplying = true;
+      try {
+        const result = await this.api("/api/admin/modsecurity/rulesets/apply", { method: "POST", body: JSON.stringify({ ruleset: this.modsecRuleset }) });
+        this.configuration.modsecurity_ruleset = result.ruleset || this.modsecRuleset;
+        this.message = `Ruleset queued (job #${result.job_id})`;
+      } catch (error) { this.message = error.message; }
+      finally { this.modsecApplying = false; }
+    },
     async load() {
       try {
         this.dashboard = await this.api("/api/admin/dashboard");
@@ -1184,8 +1219,9 @@ createApp({
             account.selected_dns_account_id = account.dns_provider_account_id || "";
           }
         }
-        const [plansRes, dnsRes, domsRes, regsRes, stacksRes, jobsRes] = await Promise.all([
+        const [plansRes, configRes, dnsRes, domsRes, regsRes, stacksRes, jobsRes] = await Promise.all([
           this.api("/api/admin/plans"),
+          this.api("/api/admin/configuration"),
           this.api("/api/admin/dns-settings"),
           this.api("/api/admin/domains"),
           this.api("/api/admin/registrars"),
@@ -1193,6 +1229,8 @@ createApp({
           this.api("/api/admin/job-events"),
         ]);
         this.plans = plansRes.plans;
+        this.configuration = { ...this.configuration, ...(configRes.configuration || {}) };
+        this.modsecRuleset = this.configuration.modsecurity_ruleset || "baseline";
         this.dnsSettings = dnsRes.dns_settings;
         this.dnsDomains = domsRes.domains || [];
         this.registrars = regsRes.registrars || [];
@@ -1734,11 +1772,13 @@ createApp({
           storage_mb: 10240,
           inode_limit: 100000,
           max_websites: 10,
+          max_subdomains: 10,
           max_databases: 10,
           max_mailboxes: 10,
           max_cron_jobs: 10,
           daily_email_limit: 250,
           backup_retention_days: 7,
+          backup_schedule: "daily",
           max_processes: 120,
           php_workers: 60,
           bandwidth_mb: 0,
@@ -1805,7 +1845,7 @@ createApp({
       return {
         ...this.newPlan,
         memory_mb: Number(this.newPlan.memory_mb), storage_mb: Number(this.newPlan.storage_mb), inode_limit: Number(this.newPlan.inode_limit),
-        max_websites: Number(this.newPlan.max_websites), max_databases: Number(this.newPlan.max_databases), max_mailboxes: Number(this.newPlan.max_mailboxes),
+        max_websites: Number(this.newPlan.max_websites), max_subdomains: Number(this.newPlan.max_subdomains), max_databases: Number(this.newPlan.max_databases), max_mailboxes: Number(this.newPlan.max_mailboxes),
         max_cron_jobs: Number(this.newPlan.max_cron_jobs), daily_email_limit: Number(this.newPlan.daily_email_limit), backup_retention_days: Number(this.newPlan.backup_retention_days),
         max_processes: Number(this.newPlan.max_processes), php_workers: Number(this.newPlan.php_workers), bandwidth_mb: Number(this.newPlan.bandwidth_mb),
         dns_default_provider_account_id: this.newPlan.dns_default_provider_account_id || null,
