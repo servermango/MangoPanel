@@ -821,7 +821,7 @@
             <div class="section-head" style="margin-bottom: 1rem;">
               <div>
                 <h2>Storage Engine &amp; Quotas</h2>
-                <p>Monitor filesystem capacity, live disk I/O streams, WHM quota breakdowns, and path utilization.</p>
+                <p>Monitor filesystem capacity, live disk I/O streams, MangoPanel Host Manager quota breakdowns, and path utilization.</p>
               </div>
               <div class="actions" style="display: flex; gap: 0.5rem; align-items: center;">
                 <button class="primary-button" :disabled="loadingStorage" @click="loadStorage">
@@ -1029,7 +1029,7 @@
               </div>
             </div>
 
-            <!-- WHM Hosting Control Plane Backend Suite -->
+            <!-- MangoPanel Host Manager Hosting Control Plane Backend Suite -->
             <div class="two-column">
               <!-- Account Disk Quotas -->
               <div class="panel">
@@ -1082,7 +1082,7 @@
                 <div class="section-head">
                   <div>
                     <h2>System Directory Size Analyzer & Cleaner</h2>
-                    <p>Disk footprint of system components and 1-click WHM storage maintenance tools.</p>
+                    <p>Disk footprint of system components and 1-click MangoPanel Host Manager storage maintenance tools.</p>
                   </div>
                 </div>
 
@@ -1099,7 +1099,7 @@
                   </li>
                 </ul>
 
-                <h3 style="font-size:1rem; margin-bottom:0.5rem; color:#fff;">WHM Storage Maintenance & Cleanup</h3>
+                <h3 style="font-size:1rem; margin-bottom:0.5rem; color:#fff;">MangoPanel Host Manager Storage Maintenance & Cleanup</h3>
                 <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem;">
                   <button class="secondary-button" @click="runStorageCleanup('docker')" :disabled="storageCleanupRunning">
                     🧹 Prune Docker Cache

@@ -383,6 +383,15 @@ def sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def database_grant_sql_privileges(value):
+    privilege_map = {
+        "ALL": "ALL PRIVILEGES",
+        "READ": "SELECT",
+        "READ_WRITE": "SELECT, INSERT, UPDATE, DELETE",
+    }
+    return privilege_map.get(str(value).upper(), str(value))
+
+
 def git_runtime_dir(account):
     return Path(account["base_path"]) / ".runtime" / "git"
 
@@ -871,7 +880,7 @@ class Agent:
             database = conn.execute("SELECT account_id, name FROM databases WHERE id = ?", (grant["database_id"],)).fetchone()
             db_user = conn.execute("SELECT username FROM database_users WHERE id = ?", (grant["user_id"],)).fetchone()
             if database and db_user:
-                priv = "ALL PRIVILEGES" if grant["privileges"] == "ALL" else grant["privileges"]
+                priv = database_grant_sql_privileges(grant["privileges"])
                 sql = [
                     f"GRANT {priv} ON `{database['name']}`.* TO {sql_literal(db_user['username'])}@'%';",
                     "FLUSH PRIVILEGES;",
@@ -885,7 +894,7 @@ class Agent:
             database = conn.execute("SELECT account_id, name FROM databases WHERE id = ?", (grant["database_id"],)).fetchone()
             db_user = conn.execute("SELECT username FROM database_users WHERE id = ?", (grant["user_id"],)).fetchone()
             if database and db_user:
-                priv = "ALL PRIVILEGES" if grant["privileges"] == "ALL" else grant["privileges"]
+                priv = database_grant_sql_privileges(grant["privileges"])
                 sql = [
                     f"GRANT {priv} ON `{database['name']}`.* TO {sql_literal(db_user['username'])}@'%';",
                     "FLUSH PRIVILEGES;",
@@ -2427,7 +2436,7 @@ class Agent:
         ).fetchall()
 
         for grant in grants:
-            priv = "ALL PRIVILEGES" if grant["privileges"] == "ALL" else grant["privileges"]
+            priv = database_grant_sql_privileges(grant["privileges"])
             sql.append(f"GRANT {priv} ON `{grant['database_name']}`.* TO {sql_literal(grant['username'])}@'%';")
 
         if sql:
@@ -3925,6 +3934,35 @@ def run_agent_all(config=None, limit=25):
 
 
 _PATH_USAGE_CACHE = {}
+_STORAGE_SCAN_CACHE = {}
+_STORAGE_SCAN_CACHE_TTL = 15 * 60
+_STORAGE_SCAN_CACHE_LOCK = threading.Lock()
+
+
+def _cached_storage_scan(cache_key):
+    """Cache expensive storage scans shared by the admin and overview panels."""
+    def decorator(func):
+        def wrapped(*args, **kwargs):
+            now = time.time()
+            with _STORAGE_SCAN_CACHE_LOCK:
+                cached = _STORAGE_SCAN_CACHE.get(cache_key)
+                if cached and now - cached[0] < _STORAGE_SCAN_CACHE_TTL:
+                    return cached[1]
+                # Keep the lock during the scan so concurrent panel requests
+                # do not start duplicate recursive filesystem walks.
+                result = func(*args, **kwargs)
+                _STORAGE_SCAN_CACHE[cache_key] = (time.time(), result)
+                return result
+        wrapped.__name__ = func.__name__
+        wrapped.__doc__ = func.__doc__
+        return wrapped
+    return decorator
+
+
+def invalidate_storage_scan_cache():
+    with _STORAGE_SCAN_CACHE_LOCK:
+        _STORAGE_SCAN_CACHE.clear()
+        _PATH_USAGE_CACHE.clear()
 
 
 def path_usage(root):
@@ -3980,6 +4018,7 @@ def path_usage(root):
     return res
 
 
+@_cached_storage_scan("df")
 def get_df_storage():
     filesystems = []
     bytes_map = {}
@@ -4087,6 +4126,7 @@ def _parse_block_io_bytes(size_str):
 _DOCKER_STATS_CACHE = {"time": 0.0, "rows": {}}
 _DOCKER_STATS_LOCK = threading.Lock()
 _DOCKER_STATS_TTL = 3.0
+_DOCKER_STATS_TIMEOUT = 10.0
 
 
 def _docker_stats_snapshot():
@@ -4099,7 +4139,7 @@ def _docker_stats_snapshot():
             res = subprocess.run(
                 ["docker", "stats", "--no-stream", "--format",
                  "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"],
-                capture_output=True, text=True, timeout=1,
+                capture_output=True, text=True, timeout=_DOCKER_STATS_TIMEOUT,
             )
             if res.returncode != 0:
                 _DOCKER_STATS_CACHE["time"] = time.time()
@@ -5046,6 +5086,7 @@ def get_live_network_io(conn=None, reseller_id=None):
     return result
 
 
+@_cached_storage_scan("quotas")
 def get_account_storage_quotas(conn, config=None):
     if not config:
         config = load_config()
@@ -5087,6 +5128,7 @@ def get_account_storage_quotas(conn, config=None):
     return {"accounts": accounts}
 
 
+@_cached_storage_scan("paths")
 def get_path_size_breakdown(config=None):
     if not config:
         config = load_config()
@@ -5171,6 +5213,7 @@ def run_storage_cleanup(clean_docker=True, clean_logs=True, clean_tmp=True):
         except Exception as e:
             cleaned.append({"item": "Temp Files", "status": "error", "details": str(e)})
 
+    invalidate_storage_scan_cache()
     return {
         "ok": True,
         "reclaimed_bytes": reclaimed_bytes,

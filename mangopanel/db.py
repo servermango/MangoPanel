@@ -607,6 +607,7 @@ CREATE TABLE IF NOT EXISTS wordpress_installs (
   site_title TEXT NOT NULL,
   admin_username TEXT NOT NULL,
   admin_email TEXT NOT NULL,
+  sso_secret TEXT,
   status TEXT NOT NULL DEFAULT 'installing',
   installed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -898,6 +899,7 @@ def ensure_schema(conn):
           site_title TEXT NOT NULL,
           admin_username TEXT NOT NULL,
           admin_email TEXT NOT NULL,
+          sso_secret TEXT,
           status TEXT NOT NULL DEFAULT 'installing',
           installed_at TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1270,6 +1272,7 @@ def ensure_schema(conn):
     )
     ensure_table_columns(conn, "users", {"totp_secret": "TEXT"})
     ensure_table_columns(conn, "admins", {"totp_secret": "TEXT"})
+    ensure_table_columns(conn, "wordpress_installs", {"sso_secret": "TEXT"})
     ensure_table_columns(conn, "plans", {"allow_api_access": "INTEGER NOT NULL DEFAULT 0"})
     conn.execute(
         """

@@ -167,7 +167,7 @@
             <span class="search-icon-wrap">
               <app-icon name="search"></app-icon>
             </span>
-            <input v-model="searchQuery" placeholder="Search pages, sites, databases…" class="search-input" autocomplete="off" spellcheck="false">
+            <input ref="globalSearchInput" v-model="searchQuery" placeholder="Search pages, sites, databases…" class="search-input" autocomplete="off" spellcheck="false">
             <kbd class="search-kbd">⌘K</kbd>
             <div v-if="searchResults.length" class="search-results">
               <button v-for="result in searchResults" :key="`${result.type}-${result.label}-${result.detail}`" @click="chooseSearchResult(result)">
@@ -292,6 +292,7 @@
               </div>
               <div class="welcome-actions">
                 <button class="primary-button" @click="openSiteWizard()"><app-icon name="plus"></app-icon>Add Website</button>
+                <button v-if="selectedWebsiteWordPress" class="primary-button" @click="loginToWordPress(selectedWebsiteWordPress)"><app-icon name="wordpress"></app-icon>Login to WP Admin</button>
               </div>
             </div>
 
@@ -361,24 +362,24 @@
               </ul>
             </section>
 
-            <!-- cPanel-style icon grid -->
-            <div class="cpanel-section-wrap">
-              <div v-for="(tiles, group) in cpanelGroups" :key="group" class="cpanel-group">
-                <h3 class="cpanel-group-title">{{ group }}</h3>
-                <div class="cpanel-grid">
+            <!-- MangoPanel-style icon grid -->
+            <div class="mangopanel-section-wrap">
+              <div v-for="(tiles, group) in mangopanelGroups" :key="group" class="mangopanel-group">
+                <h3 class="mangopanel-group-title">{{ group }}</h3>
+                <div class="mangopanel-grid">
                   <button
                     v-for="tile in tiles"
                     :key="tile.label"
-                    class="cpanel-tile"
+                    class="mangopanel-tile"
                     :class="{ disabled: isFeatureDisabled(tile.target) }"
                     :disabled="isFeatureDisabled(tile.target)"
                     :style="{ '--tile-color': tile.color }"
                     @click="tileCick(tile)"
                   >
-                    <div class="cpanel-tile-icon">
+                    <div class="mangopanel-tile-icon">
                       <app-icon :name="tile.icon"></app-icon>
                     </div>
-                    <span class="cpanel-tile-label">{{ tile.label }}</span>
+                    <span class="mangopanel-tile-label">{{ tile.label }}</span>
                   </button>
                 </div>
               </div>
@@ -1055,6 +1056,11 @@
               </div>
             </div>
 
+            <div v-if="dbTab === 'databases'" class="premium-card" style="display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:1rem;">
+              <div><h3 style="margin:0;">Database Wizard</h3><p class="muted" style="margin:4px 0 0;">Create a database, user, password, and access grant in one step.</p></div>
+              <button class="primary-button" @click="openDatabaseWizard"><app-icon name="plus"></app-icon>Open Wizard</button>
+            </div>
+
             <!-- Sub-tabs for clean layout -->
             <div class="pill-tabs">
               <button :class="{ active: dbTab === 'databases' }" @click="dbTab = 'databases'">
@@ -1070,7 +1076,7 @@
 
             <div class="database-crud-grid">
               <!-- Tab 1: Databases -->
-              <div v-if="dbTab === 'databases'" class="premium-card">
+              <div v-if="dbTab === 'databases'" class="database-table-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                   <div>
                     <h3 style="margin:0;"><app-icon name="databases"></app-icon>Databases</h3>
@@ -1106,7 +1112,7 @@
               </div>
 
               <!-- Tab 2: Users -->
-              <div v-if="dbTab === 'users'" class="premium-card">
+              <div v-if="dbTab === 'users'" class="database-table-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                   <div>
                     <h3 style="margin:0;"><app-icon name="user"></app-icon>Database Users</h3>
@@ -1137,7 +1143,7 @@
               </div>
 
               <!-- Tab 3: Grants -->
-              <div v-if="dbTab === 'grants'" class="premium-card">
+              <div v-if="dbTab === 'grants'" class="database-table-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                   <div>
                     <h3 style="margin:0;"><app-icon name="lock"></app-icon>User Access Grants</h3>
@@ -2668,7 +2674,7 @@
               </div>
             </div>
 
-            <div class="cpanel-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;">
+            <div class="mangopanel-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;">
               <!-- Profile and billing card -->
               <div class="panel" style="padding: 1.5rem; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; grid-column: 1 / -1;">
                 <h3 style="margin-top: 0; margin-bottom: .5rem; color: var(--text);">Profile &amp; Billing</h3>
@@ -3235,8 +3241,8 @@
             </div>
 
             <!-- Share Access Modal -->
-            <div v-if="shareModalOpen" class="modal-backdrop" @click.self="closeShareModal">
-              <div class="modal-card" style="max-width: 680px; width: 90%; max-height: 90vh; overflow-y: auto;">
+            <div v-if="shareModalOpen" class="modal-overlay collaborator-modal-overlay" @click.self="closeShareModal">
+              <div class="modal-panel collaborator-modal-panel" style="max-width: 680px; width: 90%; max-height: 90vh; overflow-y: auto;">
                 <div class="modal-header">
                   <h3>{{ editingCollabId ? 'Edit Collaborator Permissions' : 'Share Account Access' }}</h3>
                   <button class="modal-close" @click="closeShareModal">×</button>
@@ -3437,6 +3443,18 @@
           </section>
 
 
+          <!-- WordPress Manager -->
+          <section v-if="activePage === 'wordpress-manager'" class="panel">
+            <div class="advanced-tool-header" style="display:flex; justify-content:space-between; align-items:center; gap:1rem;">
+              <div style="display:flex; gap:1rem; align-items:center;"><app-icon name="wordpress"></app-icon><div><h2>WordPress Manager</h2><p>Manage WordPress websites installed through MangoPanel.</p></div></div>
+              <div style="display:flex; gap:.75rem; flex-wrap:wrap;"><button class="primary-button" @click="openWordPressInstaller"><app-icon name="plus"></app-icon>Create new WordPress website</button><button class="ghost-button" @click="detectWordPress" :disabled="wordpressDetecting"><span v-if="wordpressDetecting" class="sw-spinner"></span>{{ wordpressDetecting ? 'Detecting…' : 'Detect WordPress' }}</button></div>
+            </div>
+            <div class="table-wrap" style="margin-top:1.5rem;"><table><thead><tr><th>Website</th><th>Title</th><th>Status</th><th>Installed</th><th>Actions</th></tr></thead><tbody>
+              <tr v-for="site in wordpressSites" :key="site.website_id"><td><strong>{{ site.domain }}</strong></td><td>{{ site.site_title || 'WordPress' }}</td><td><span class="pill" :class="site.status === 'installed' ? 'active' : 'warning'">{{ site.status }}</span></td><td>{{ site.installed_at || '—' }}</td><td><button class="primary-button" @click="loginToWordPress(site)" :disabled="site.status === 'installing'"><app-icon name="wordpress"></app-icon>Login to WordPress Admin</button></td></tr>
+              <tr v-if="wordpressManagerLoading"><td colspan="5" class="empty-row">Loading WordPress sites…</td></tr><tr v-else-if="!wordpressSites.length"><td colspan="5" class="empty-row">No WordPress sites found. Create one or use Detect WordPress.</td></tr>
+            </tbody></table></div>
+          </section>
+
           <!-- App Installer Module -->
           <section v-if="activePage === 'installer'" class="panel">
             <div class="advanced-tool-header">
@@ -3447,18 +3465,18 @@
               </div>
             </div>
             
-            <div class="cpanel-grid" style="margin-top: 1.5rem;">
+            <div class="mangopanel-grid" style="margin-top: 1.5rem;">
               <button
                 v-for="script in installer.scripts"
                 :key="script.id"
-                class="cpanel-tile"
+                class="mangopanel-tile"
                 style="--tile-color: var(--brand);"
                 @click="openInstallerModal(script)"
               >
-                <div class="cpanel-tile-icon">
+                <div class="mangopanel-tile-icon">
                   <app-icon :name="script.icon"></app-icon>
                 </div>
-                <span class="cpanel-tile-label">{{ script.name }}</span>
+                <span class="mangopanel-tile-label">{{ script.name }}</span>
               </button>
             </div>
           </section>
@@ -3856,19 +3874,20 @@
                       v-if="siteWizard.step === 1 || (siteWizard.step === 2 && siteWizard.type !== 'blank')"
                       class="sw-btn sw-btn-primary"
                       @click="nextSiteWizardStep"
-                      :disabled="siteWizard.step === 2 && !siteWizard.domain"
+                      :disabled="siteWizard.step === 2 && (!siteWizard.domain || siteWizard.isCheckingDns)"
                     >
-                      Continue
+                      <span class="sw-spinner" v-if="siteWizard.step === 2 && siteWizard.isCheckingDns"></span>
+                      {{ siteWizard.step === 2 && siteWizard.isCheckingDns ? 'Checking DNS…' : 'Continue' }}
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
                     </button>
                     <button
                       v-if="(siteWizard.step === 2 && siteWizard.type === 'blank') || (siteWizard.step === 3 && siteWizard.type !== 'blank')"
                       class="sw-btn sw-btn-primary"
                       @click="finishSiteWizard"
-                      :disabled="siteWizard.isSubmitting || (siteWizard.step === 2 && !siteWizard.domain) || (siteWizard.step === 3 && (!siteWizard.site_title || !siteWizard.admin_username || !siteWizard.admin_email || !siteWizard.admin_password || siteWizard.admin_password.length < 8))"
+                      :disabled="siteWizard.isSubmitting || siteWizard.isCheckingDns || (siteWizard.step === 2 && !siteWizard.domain) || (siteWizard.step === 3 && (!siteWizard.site_title || !siteWizard.admin_username || !siteWizard.admin_email || !siteWizard.admin_password || siteWizard.admin_password.length < 8))"
                     >
-                      <span class="sw-spinner" v-if="siteWizard.isSubmitting"></span>
-                      {{ siteWizard.isSubmitting ? 'Creating…' : 'Create Website' }}
+                      <span class="sw-spinner" v-if="siteWizard.isSubmitting || (siteWizard.step === 2 && siteWizard.isCheckingDns)"></span>
+                      {{ siteWizard.isCheckingDns ? 'Checking DNS…' : (siteWizard.isSubmitting ? 'Creating…' : 'Create Website') }}
                     </button>
                     <button v-if="siteWizard.step === 4" class="sw-btn sw-btn-primary" @click="closeSiteWizard">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -4019,12 +4038,24 @@
                 <h2 v-if="dbModal === 'database'">Create Database</h2>
                 <h2 v-if="dbModal === 'user'">Create Database User</h2>
                 <h2 v-if="dbModal === 'grant'">Grant Access</h2>
+                <h2 v-if="dbModal === 'wizard'">Database Wizard</h2>
                 <h2 v-if="dbModal === 'edit_database'">Edit Database</h2>
                 <h2 v-if="dbModal === 'change_password'">Reset Database Password</h2>
                 <h2 v-if="dbModal === 'edit_grant'">Edit Database Privileges</h2>
                 <button class="close-button" @click="closeDbModal">×</button>
               </div>
               
+              <!-- Create Database -->
+              <div class="modal-body" v-if="dbModal === 'wizard'">
+                <p class="muted">Set up the database and its first user together. The selected privileges apply to this user on this database.</p>
+                <div class="form-grid">
+                  <label>Database Name <input v-model="databaseWizard.name" placeholder="u000001_app" autocomplete="off"></label>
+                  <label>Database User <input v-model="databaseWizard.username" placeholder="u000001_app" autocomplete="off"></label>
+                  <label>Password <input v-model="databaseWizard.password" type="password" placeholder="At least 8 characters" autocomplete="new-password"></label>
+                  <fieldset style="grid-column:1 / -1;"><legend>Privileges</legend><div class="checkbox-grid"><label v-for="privilege in databasePrivilegeOptions" :key="'wizard-' + privilege"><input type="checkbox" :value="privilege" v-model="databaseWizard.selectedPrivileges" @change="normalizePrivilegeSelection(databaseWizard, privilege)"> {{ privilege === 'ALL' ? 'All privileges' : privilege }}</label></div></fieldset>
+                </div>
+              </div>
+
               <!-- Create Database -->
               <div class="modal-body" v-if="dbModal === 'database'">
                 <div class="form-grid">
@@ -4056,13 +4087,7 @@
                       <option v-for="user in databaseUsers" :key="user.id" :value="user.id">{{ user.username }}</option>
                     </select>
                   </label>
-                  <label>Privileges
-                    <select v-model="newDatabaseGrant.privileges">
-                      <option value="ALL">All privileges</option>
-                      <option value="READ_WRITE">Read/write</option>
-                      <option value="READ">Read only</option>
-                    </select>
-                  </label>
+                  <fieldset style="grid-column:1 / -1;"><legend>Privileges</legend><div class="checkbox-grid"><label v-for="privilege in databasePrivilegeOptions" :key="'grant-' + privilege"><input type="checkbox" :value="privilege" v-model="newDatabaseGrant.selectedPrivileges" @change="normalizePrivilegeSelection(newDatabaseGrant, privilege)"> {{ privilege === 'ALL' ? 'All privileges' : privilege }}</label></div></fieldset>
                 </div>
               </div>
 
@@ -4098,13 +4123,7 @@
                 <div class="form-grid">
                   <label>Database: <strong>{{ editingDatabaseGrant.database_name }}</strong></label>
                   <label>User: <strong>{{ editingDatabaseGrant.username }}</strong></label>
-                  <label>Privileges
-                    <select v-model="editingDatabaseGrant.privileges">
-                      <option value="ALL">All privileges</option>
-                      <option value="READ_WRITE">Read/write</option>
-                      <option value="READ">Read only</option>
-                    </select>
-                  </label>
+                  <fieldset style="grid-column:1 / -1;"><legend>Privileges</legend><div class="checkbox-grid"><label v-for="privilege in databasePrivilegeOptions" :key="'edit-grant-' + privilege"><input type="checkbox" :value="privilege" v-model="editingDatabaseGrant.selectedPrivileges" @change="normalizePrivilegeSelection(editingDatabaseGrant, privilege)"> {{ privilege === 'ALL' ? 'All privileges' : privilege }}</label></div></fieldset>
                   <label>Status
                     <select v-model="editingDatabaseGrant.status">
                       <option value="active">Active</option>
@@ -4119,6 +4138,10 @@
                 <button v-if="dbModal === 'database'" class="primary-button" @click="createDatabase" :disabled="!newDatabase.name || dbSubmitting">
                   <span v-if="dbSubmitting" class="btn-spinner"></span>
                   <span>{{ dbSubmitting ? 'Creating Database...' : 'Create Database' }}</span>
+                </button>
+                <button v-if="dbModal === 'wizard'" class="primary-button" @click="submitDatabaseWizard" :disabled="!databaseWizard.name || !databaseWizard.username || !databaseWizard.password || dbSubmitting">
+                  <span v-if="dbSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbSubmitting ? 'Creating Database...' : 'Create Database Setup' }}</span>
                 </button>
                 <button v-if="dbModal === 'user'" class="primary-button" @click="createDatabaseUser" :disabled="!newDatabaseUser.username || !newDatabaseUser.password || dbSubmitting">
                   <span v-if="dbSubmitting" class="btn-spinner"></span>

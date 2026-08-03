@@ -718,9 +718,9 @@ code {
 
 .search-results button {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: minmax(58px, auto) minmax(0, 1fr);
   grid-template-rows: auto auto;
-  column-gap: 10px;
+  column-gap: 12px;
   align-items: center;
   width: 100%;
   min-height: 42px;
@@ -741,8 +741,10 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
+  min-width: 58px;
+  width: auto;
   height: 26px;
+  padding: 0 7px;
   border-radius: 6px;
   background: var(--brand-tint);
   color: var(--brand-strong);
@@ -750,6 +752,9 @@ code {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 
@@ -759,6 +764,8 @@ code {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .search-results button small {
@@ -1730,6 +1737,16 @@ small {
 .database-crud-grid {
   display: grid;
   gap: 20px;
+}
+
+.database-table-card {
+  width: 100%;
+  min-width: 0;
+}
+
+.database-table-card .table-wrap {
+  width: 100%;
+  overflow-x: auto;
 }
 
 .premium-card {
@@ -2721,6 +2738,14 @@ td small {
   overflow-y: auto;
 }
 
+.client-shell .collaborator-modal-panel > .modal-body {
+  padding: 24px;
+}
+
+.client-shell .collaborator-modal-panel > .modal-footer {
+  padding: 0 24px 24px;
+}
+
 .client-shell .tab-row {
   display: flex;
   gap: 6px;
@@ -2925,13 +2950,13 @@ button:disabled:hover {
   font-size: 12px;
 }
 
-/* ─── cPanel Icon Grid ───────────────────────────────────── */
-.cpanel-section-wrap {
+/* ─── MangoPanel Icon Grid ───────────────────────────────────── */
+.mangopanel-section-wrap {
   display: grid;
   gap: 24px;
 }
 
-.cpanel-group-title {
+.mangopanel-group-title {
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
@@ -2942,13 +2967,13 @@ button:disabled:hover {
   border-bottom: 1px solid var(--line);
 }
 
-.cpanel-grid {
+.mangopanel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 10px;
 }
 
-.cpanel-tile {
+.mangopanel-tile {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2962,13 +2987,13 @@ button:disabled:hover {
   min-height: 90px;
 }
 
-.cpanel-tile:hover {
+.mangopanel-tile:hover {
   transform: translateY(-2px);
   box-shadow: 0 8px 24px rgba(0,0,0,0.1);
   border-color: var(--tile-color, var(--brand));
 }
 
-.cpanel-tile-icon {
+.mangopanel-tile-icon {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2979,12 +3004,12 @@ button:disabled:hover {
   color: var(--tile-color, var(--brand));
 }
 
-.cpanel-tile-icon .icon {
+.mangopanel-tile-icon .icon {
   width: 22px;
   height: 22px;
 }
 
-.cpanel-tile-label {
+.mangopanel-tile-label {
   font-size: 11.5px;
   font-weight: 500;
   text-align: center;
@@ -2993,7 +3018,7 @@ button:disabled:hover {
 }
 
 .feature-status-badge,
-.cpanel-tile-status {
+.mangopanel-tile-status {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3010,7 +3035,7 @@ button:disabled:hover {
   font-size: 10.5px;
 }
 
-.cpanel-tile-status {
+.mangopanel-tile-status {
   min-height: 18px;
   padding: 0 7px;
   font-size: 9.5px;
@@ -3040,12 +3065,12 @@ button:disabled:hover {
   color: #6b7280;
 }
 
-.cpanel-tile.disabled {
+.mangopanel-tile.disabled {
   cursor: not-allowed;
   opacity: 0.62;
 }
 
-.cpanel-tile.disabled:hover {
+.mangopanel-tile.disabled:hover {
   transform: none;
   box-shadow: none;
   border-color: var(--line);
@@ -4235,7 +4260,7 @@ body.app-loaded #app-preloader {
   box-shadow: 0 0 0 3px rgba(253,181,40,0.18);
 }
 
-.sw-type-card > div:nth-child(2) {
+.sw-type-card > div:nth-child(3) {
   flex: 1;
 }
 
@@ -5643,17 +5668,74 @@ body.app-loaded #app-preloader {
   min-width: min(480px, 100%);
 }
 
+.admin-shell .client-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 6px 0 20px;
+}
+
+.admin-shell .client-toolbar label {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-shell .client-search-field {
+  flex: 1 1 360px;
+  min-width: min(360px, 100%);
+}
+
+.admin-shell .client-result-count {
+  padding-bottom: 10px;
+}
+
 /* ── Account manage row ───────────────────────────────────────────── */
 .admin-shell .account-manage-row {
-  display: grid;
-  grid-template-columns: minmax(150px, 1.2fr) minmax(160px, 1fr) auto auto;
-  gap: 8px;
-  align-items: center;
+  display: block;
   padding: 10px 0;
 }
 
 .admin-shell .account-manage-row + .account-manage-row {
   border-top: 1px solid #f1f3f5;
+}
+
+.admin-shell .account-manage-row > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-shell .account-manage-row > div:first-child small {
+  flex-basis: 100%;
+}
+
+.admin-shell .account-actions,
+.admin-shell .account-dns-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.admin-shell .account-dns-controls {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.admin-shell .account-delete-button {
+  margin-left: auto;
+}
+
+.admin-shell .client-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
 }
 
 /* ── Client / action cells ────────────────────────────────────────── */
@@ -5948,6 +6030,14 @@ body.app-loaded #app-preloader {
   .admin-shell .metric-grid {
     grid-template-columns: 1fr 1fr;
   }
+
+  .admin-shell .client-search-field {
+    min-width: 100%;
+  }
+
+  .admin-shell .account-delete-button {
+    margin-left: 0;
+  }
 }
 
 /* ── Panel Max-Height, Scrolling & Minimizable Controls ───────────────────── */
@@ -6069,3 +6159,20 @@ body.app-loaded #app-preloader {
 .registrar-check { display: flex; align-items: center; gap: 8px; min-height: 38px; }
 @media (max-width: 900px) { .registrar-assign-grid { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .registrar-toolbar { align-items: stretch; flex-direction: column; } .registrar-filters { justify-content: flex-start; } .registrar-note { flex-direction: column; } }
+.checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+
+.checkbox-grid label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.checkbox-grid input[type="checkbox"] {
+  width: auto;
+}

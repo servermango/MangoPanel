@@ -717,6 +717,9 @@ fi
 if grep -q '^enabled' /etc/mangopanel/ftp.enabled; then
   nohup /usr/sbin/proftpd -n -c /etc/proftpd/mangopanel.conf >/var/log/proftpd-runtime.log 2>&1 </dev/null &
 fi
+# Keep legacy applications that use localhost:3306 working inside the web
+# container while preserving the normal db:3306 Docker-network path.
+nohup /bin/sh -c 'while ! /usr/bin/socat TCP-LISTEN:3306,bind=127.0.0.1,reuseaddr,fork TCP:db:3306; do sleep 2; done' >/var/log/mysql-loopback-proxy.log 2>&1 </dev/null &
 exec /usr/sbin/cron -f
 """.replace("{username}", str(account["username"]))
     runner_path = paths["stack"] / "services-entrypoint.sh"
@@ -736,7 +739,7 @@ RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     lsphp82-mysql lsphp83-mysql lsphp84-mysql \\
     lsphp82-curl lsphp83-curl lsphp84-curl \\
     lsphp82-opcache lsphp83-opcache lsphp84-opcache \\
-    proftpd-basic openssh-server \\
+    proftpd-basic openssh-server socat \\
     && rm -rf /var/lib/apt/lists/*
 """
     (web_build_dir / "Dockerfile").write_text(dockerfile_content, encoding="utf-8")
@@ -1408,7 +1411,7 @@ services:
       PMA_USER: {db_user}
       PMA_PASSWORD: {db_password}
       PMA_ABSOLUTE_URI: "/db/"
-      UPLOAD_LIMIT: 256M
+      UPLOAD_LIMIT: 1G
     networks:
       - account
       - mangopanel-edge

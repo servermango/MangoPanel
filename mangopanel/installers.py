@@ -89,6 +89,7 @@ class WordPressInstaller(BaseInstaller):
         site_title = payload.get("site_title", "My Site")
         admin_username = payload.get("admin_username", "admin")
         admin_email = payload.get("admin_email", "admin@example.com")
+        sso_secret = payload.get("sso_secret", "")
         
         config_content = f"""<?php
 // MangoPanel WordPress Configuration
@@ -103,6 +104,7 @@ define('DB_COLLATE', '');
 define('WP_SITE_TITLE', '{site_title}');
 define('WP_ADMIN_USER', '{admin_username}');
 define('WP_ADMIN_EMAIL', '{admin_email}');
+define('MANGOPANEL_SSO_SECRET', '{sso_secret}');
 
 define('AUTH_KEY', 'put your unique phrase here');
 define('SECURE_AUTH_KEY', 'put your unique phrase here');
@@ -165,7 +167,7 @@ require_once(ABSPATH . 'wp-settings.php');
             mu_dir = document_root / "wp-content" / "mu-plugins"
             mu_dir.mkdir(parents=True, exist_ok=True)
             (mu_dir / "mangopanel-compat.php").write_text(
-                "<?php\n// MangoPanel Compatibility Plugin\nadd_filter('wp_signature_hosts', '__return_empty_array', 999);\n",
+                _compat_plugin(sso_secret),
                 encoding="utf-8"
             )
         except Exception:
@@ -203,6 +205,29 @@ require_once(ABSPATH . 'wp-settings.php');
             "UPDATE wordpress_installs SET status = 'installed', installed_at = CURRENT_TIMESTAMP WHERE id = ?",
             (install_id,)
         )
+
+
+def _compat_plugin(secret):
+    return f'''<?php
+// MangoPanel Compatibility Plugin
+add_filter('wp_signature_hosts', '__return_empty_array', 999);
+add_action('init', function () {{
+    if (empty($_GET['mangopanel_sso']) || !defined('MANGOPANEL_SSO_SECRET')) return;
+    $parts = explode('.', (string) $_GET['mangopanel_sso']);
+    if (count($parts) !== 3) return;
+    $expected = rtrim(strtr(base64_encode(hash_hmac('sha256', $parts[0] . '.' . $parts[1], MANGOPANEL_SSO_SECRET, true)), '+/', '-_'), '=');
+    if (!hash_equals($expected, $parts[2])) return;
+    $decode = function ($value) {{ $value .= str_repeat('=', (4 - strlen($value) % 4) % 4); return json_decode(base64_decode(strtr($value, '-_', '+/')), true); }};
+    $payload = $decode($parts[1]);
+    if (!is_array($payload) || ($payload['purpose'] ?? '') !== 'wordpress_sso' || (int) ($payload['exp'] ?? 0) < time()) return;
+    $user = get_user_by('login', (string) ($payload['admin_username'] ?? ''));
+    if (!$user && !empty($payload['admin_email'])) $user = get_user_by('email', (string) $payload['admin_email']);
+    if (!$user) return;
+    wp_set_auth_cookie($user->ID, true, is_ssl());
+    wp_safe_redirect(admin_url());
+    exit;
+}});
+'''
 
 class JoomlaInstaller(BaseInstaller):
     id = "joomla"

@@ -225,7 +225,7 @@ main.main-content {
 /* ─── Panels / Cards ────────────────────────────────────────── */
 .panel,
 .premium-card,
-.cpanel-tile,
+.mangopanel-tile,
 .info-box,
 .metric {
   background: #ffffff !important;
@@ -494,21 +494,21 @@ table a:hover {
   font-weight: 700 !important;
 }
 
-/* ─── cpanel Tiles ──────────────────────────────────────────── */
-.cpanel-tile {
+/* ─── mangopanel Tiles ──────────────────────────────────────────── */
+.mangopanel-tile {
   border: 1px solid #d5dbdb !important;
   background: #ffffff !important;
   transition: background 0.12s, border-color 0.12s !important;
   box-shadow: none !important;
 }
-.cpanel-tile:hover {
+.mangopanel-tile:hover {
   background: #f0f3f5 !important;
   border-color: #879596 !important;
 }
-.cpanel-tile .icon {
+.mangopanel-tile .icon {
   color: #ec7211 !important;
 }
-.cpanel-tile-label {
+.mangopanel-tile-label {
   font-size: 12px !important;
   font-weight: 700 !important;
   color: #0d1117 !important;

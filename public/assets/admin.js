@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 const IS_RESELLER = Boolean(window.IS_RESELLER_PANEL);
 const ADMIN_ROUTE_PREFIX = IS_RESELLER ? "/reseller" : "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "configuration", "system", "admins", "api-tokens", "status", "security", "default-page"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "traffic", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "configuration", "system", "admins", "api-tokens", "status", "security", "default-page"]);
 
 function adminPageFromLocation() {
   let hash = window.location.hash.replace(/^#/, "");
@@ -58,6 +58,10 @@ createApp({
       stacks: [],
       clients: [],
       selectedClientId: "",
+      clientSearch: "",
+      clientPagination: { page: 1, page_size: 25, total: 0, total_pages: 1 },
+      clientSearchTimer: null,
+      clientsLoading: false,
       showClientModal: false,
       plans: [],
       configuration: { backup_time: "02:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "" },
@@ -73,6 +77,7 @@ createApp({
       resellerUserForm: { id: null, email: "", password: "", full_name: "", reseller_plan_id: "", status: "active" },
       recalculatingUsage: false,
       showPlanModal: false,
+      planSaving: false,
       editingPlanId: null,
       applyPlanToExistingAccounts: false,
       migratePlanDomains: false,
@@ -143,6 +148,9 @@ createApp({
       networkLive: { rx_rate_kbs: 0, tx_rate_kbs: 0, rx_rate_mbs: 0, tx_rate_mbs: 0, total_rx_human: "0 MB", total_tx_human: "0 MB", top_network_users: [], sample_interval_sec: 0.3 },
       networkLiveActive: true,
       networkLiveTimer: null,
+      trafficData: { current: [], history: [], live_window_minutes: 5, history_days: 30, updated_at: "" },
+      trafficLoading: false,
+      trafficTimer: null,
       cpuLive: { sys_cpu_pct: 0, num_cpus: 1, load_avg_1m: 0, load_avg_5m: 0, load_avg_15m: 0, top_cpu_users: [], sample_interval_sec: 0.3 },
       cpuLiveActive: true,
       cpuLiveTimer: null,
@@ -336,6 +344,7 @@ createApp({
     this.stopCpuLiveStream();
     this.stopRamLiveStream();
     this.stopStorageLiveStream();
+    this.stopTrafficPolling();
   },
   computed: {
     managedClients() {
@@ -428,7 +437,8 @@ createApp({
             { label: "Overview", target: "overview", description: "Resource counts, node health, and service summary." },
             { label: "Clients", target: "clients", description: "Customer profiles, account status, and package moves." },
             { label: "Plans", target: "plans", description: "Hosting packages, resource limits, and DNS policy." },
-            { label: "Storage", target: "storage", description: "Disk capacity graph (df -h), SSE live read/write rates, WHM quotas, path sizes, and cleanup." },
+            { label: "Traffic", target: "traffic", description: "Current and historical website traffic by domain." },
+            { label: "Storage", target: "storage", description: "Disk capacity graph (df -h), SSE live read/write rates, MangoPanel Host Manager quotas, path sizes, and cleanup." },
             { label: "Networking", target: "networking", description: "Public IP addresses, interface topology, IP aliases, and client dedicated IP assignment." },
             { label: "CPU", target: "cpu", description: "Live CPU utilization, load averages, and per-container CPU breakdown." },
             { label: "RAM", target: "ram", description: "Live RAM utilization, swap usage, and per-container RAM breakdown." },
@@ -481,36 +491,49 @@ createApp({
       if (target === "storage") {
         this.stopNetworkLiveStream();
         this.stopCpuLiveStream();
+        this.stopTrafficPolling();
         this.loadStorage();
+      } else if (target === "traffic") {
+        this.stopStorageLiveStream();
+        this.stopNetworkLiveStream();
+        this.stopCpuLiveStream();
+        this.stopRamLiveStream();
+        this.startTrafficPolling();
       } else if (target === "networking") {
+        this.stopTrafficPolling();
         this.stopStorageLiveStream();
         this.stopCpuLiveStream();
         this.loadNetworking();
       } else if (target === "cpu") {
+        this.stopTrafficPolling();
         this.stopStorageLiveStream();
         this.stopNetworkLiveStream();
         this.stopRamLiveStream();
         this.startCpuLiveStream();
         this.loadCpuHistory();
       } else if (target === "ram") {
+        this.stopTrafficPolling();
         this.stopStorageLiveStream();
         this.stopNetworkLiveStream();
         this.stopCpuLiveStream();
         this.startRamLiveStream();
         this.loadRamHistory();
       } else if (target === "overview") {
+        this.stopTrafficPolling();
         this.loadStorage();
         this.loadNetworking();
         this.startCpuLiveStream();
         this.startRamLiveStream();
         this.startNetworkLiveStream();
       } else if (target === "status") {
+        this.stopTrafficPolling();
         this.stopStorageLiveStream();
         this.stopNetworkLiveStream();
         this.stopCpuLiveStream();
         this.stopRamLiveStream();
         this.loadStatusData();
       } else {
+        this.stopTrafficPolling();
         this.stopStorageLiveStream();
         this.stopNetworkLiveStream();
         this.stopCpuLiveStream();
@@ -575,6 +598,21 @@ createApp({
       }
       return path;
     },
+    formatTrafficBytes(value) {
+      let bytes = Number(value) || 0;
+      if (bytes < 1024) return `${bytes.toFixed(0)} B`;
+      const units = ["KB", "MB", "GB", "TB"];
+      let unit = -1;
+      do {
+        bytes /= 1024;
+        unit += 1;
+      } while (bytes >= 1024 && unit < units.length - 1);
+      return `${bytes.toFixed(bytes >= 100 ? 0 : 2)} ${units[unit]}`;
+    },
+    formatTrafficRate(bytes, windowMinutes) {
+      const seconds = Math.max(1, Number(windowMinutes || 5) * 60);
+      return `${this.formatTrafficBytes((Number(bytes) || 0) / seconds)}/s`;
+    },
     async loadNetworking() {
       try {
         this.networkOverview = await this.api("/api/admin/network/overview");
@@ -582,6 +620,29 @@ createApp({
         this.startNetworkLiveStream();
       } catch (error) {
         console.error("Networking load error:", error);
+      }
+    },
+    async loadTraffic() {
+      this.trafficLoading = true;
+      try {
+        this.trafficData = await this.api("/api/admin/traffic");
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.trafficLoading = false;
+      }
+    },
+    startTrafficPolling() {
+      this.stopTrafficPolling();
+      this.loadTraffic();
+      this.trafficTimer = setInterval(() => {
+        if (this.activePage === "traffic") this.loadTraffic();
+      }, 10000);
+    },
+    stopTrafficPolling() {
+      if (this.trafficTimer) {
+        clearInterval(this.trafficTimer);
+        this.trafficTimer = null;
       }
     },
     setCpuTarget(data) {
@@ -966,6 +1027,10 @@ createApp({
     },
     async loadStorage() {
       this.loadingStorage = true;
+      // Start live I/O independently of the recursive quota/path scans below.
+      // Those scans can take a long time on a busy host, but they should not
+      // delay the top writers/readers table or its first SSE samples.
+      this.startStorageLiveStream();
       try {
         const [dfRes, quotasRes, pathsRes, alertsRes] = await Promise.all([
           this.api("/api/admin/storage/df"),
@@ -977,7 +1042,6 @@ createApp({
         this.storageQuotas = quotasRes.accounts || [];
         this.storagePaths = pathsRes;
         this.storageAlerts = alertsRes;
-        this.startStorageLiveStream();
       } catch (error) {
         console.error("Storage load error:", error);
       } finally {
@@ -1206,19 +1270,7 @@ createApp({
           ...admin,
           totp_enabled: Boolean(admin.totp_enabled),
         }));
-        this.clients = (await this.api("/api/admin/clients")).clients;
-        for (const client of this.clients) {
-          client.edit = {
-            full_name: client.full_name,
-            email: client.email,
-            status: client.status,
-          };
-          for (const account of client.accounts) {
-            account.selected_plan_id = account.plan_id;
-            account.selected_dns_provider = account.dns_provider || "";
-            account.selected_dns_account_id = account.dns_provider_account_id || "";
-          }
-        }
+        await this.loadClients(this.clientPagination.page || 1);
         const [plansRes, configRes, dnsRes, domsRes, regsRes, stacksRes, jobsRes] = await Promise.all([
           this.api("/api/admin/plans"),
           this.api("/api/admin/configuration"),
@@ -1253,6 +1305,35 @@ createApp({
       } catch (error) {
         this.message = error.message;
       }
+    },
+    async loadClients(page = 1) {
+      this.clientsLoading = true;
+      try {
+        const params = new URLSearchParams({ search: this.clientSearch.trim(), page: String(page), page_size: String(this.clientPagination.page_size || 25) });
+        const payload = await this.api(`/api/admin/clients?${params.toString()}`);
+        this.clients = payload.clients || [];
+        this.clientPagination = { ...this.clientPagination, ...(payload.pagination || {}), page: Number(payload.pagination?.page || page) };
+        for (const client of this.clients) {
+          client.edit = { full_name: client.full_name, email: client.email, status: client.status };
+          for (const account of client.accounts || []) {
+            account.selected_plan_id = account.plan_id;
+            account.selected_dns_provider = account.dns_provider || "";
+            account.selected_dns_account_id = account.dns_provider_account_id || "";
+          }
+        }
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.clientsLoading = false;
+      }
+    },
+    scheduleClientSearch() {
+      if (this.clientSearchTimer) clearTimeout(this.clientSearchTimer);
+      this.clientSearchTimer = setTimeout(() => this.loadClients(1), 250);
+    },
+    goToClientPage(page) {
+      const target = Math.max(1, Math.min(Number(page), Number(this.clientPagination.total_pages || 1)));
+      if (target !== this.clientPagination.page) this.loadClients(target);
     },
     async loadResellerPlans() {
       try {
@@ -1536,7 +1617,7 @@ createApp({
         await this.api(`/api/admin/registrar-domain-records/${modal.record.id}/manage`, { method: "POST", body: JSON.stringify({ user_id: modal.user_id || null, nameservers: modal.nameservers.filter((item) => String(item || "").trim()) }) });
         modal.open = false;
         this.message = "Registrar domain association updated";
-        await this.loadRegistrarDashboard();
+        this.loadRegistrarDashboard();
       } catch (error) { this.message = error.message; }
       finally { modal.saving = false; }
     },
@@ -1758,6 +1839,7 @@ createApp({
     },
     async createPlan() {
       this.message = "";
+      this.planSaving = true;
       try {
         const payload = await this.api("/api/admin/plans", {
           method: "POST",
@@ -1805,15 +1887,19 @@ createApp({
         await this.load();
       } catch (error) {
         this.message = error.message;
+      } finally {
+        this.planSaving = false;
       }
     },
     openPlanModal() {
+      this.planSaving = false;
       this.editingPlanId = null;
       this.applyPlanToExistingAccounts = false;
       this.migratePlanDomains = false;
       this.showPlanModal = true;
     },
     editPlan(plan) {
+      this.planSaving = false;
       this.editingPlanId = plan.id;
       this.applyPlanToExistingAccounts = false;
       this.migratePlanDomains = false;
@@ -1861,6 +1947,7 @@ createApp({
     },
     async updatePlan() {
       this.message = "";
+      this.planSaving = true;
       try {
         const payload = await this.api(`/api/admin/plans/${this.editingPlanId}`, {
           method: "PATCH",
@@ -1879,9 +1966,11 @@ createApp({
         }
         this.message = msg;
         this.closePlanModal();
-        await this.load();
+        this.load();
       } catch (error) {
         this.message = error.message;
+      } finally {
+        this.planSaving = false;
       }
     },
     async recalculateUsage() {
@@ -2420,12 +2509,23 @@ createApp({
     },
     async deleteClient(client) {
       this.message = "";
-      const confirmed = window.confirm(`Delete ${client.email} and all panel records for their hosting accounts?`);
+      const confirmed = window.confirm(`Delete customer ${client.email}? This permanently deletes the customer and ALL of their hosting accounts and panel data.`);
       if (!confirmed) return;
       try {
         await this.api(`/api/admin/clients/${client.id}`, { method: "DELETE" });
         this.message = `Client ${client.email} deleted`;
         await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async deleteHostingAccount(client, account) {
+      const confirmed = window.confirm(`Delete hosting account ${account.username} for ${client.email}? This removes only this hosting account and its panel data. The customer and other accounts will remain.`);
+      if (!confirmed) return;
+      try {
+        const payload = await this.api(`/api/admin/hosting-accounts/${account.id}`, { method: "DELETE" });
+        this.message = `Hosting account ${payload.username || account.username} deleted; the customer was kept.`;
+        await this.loadClients(this.clientPagination.page);
       } catch (error) {
         this.message = error.message;
       }

@@ -5,6 +5,7 @@ const CLIENT_ROUTE_PREFIX = "/client";
 
 const CLIENT_PAGE_TARGETS = new Set([
   "dashboard",
+  "wordpress-manager",
   "installer",
   "hosting-plan",
   "performance",
@@ -346,7 +347,9 @@ const app = createApp({
       dbSubmitting: false,
       newDatabase: { name: "", username: "" },
       newDatabaseUser: { username: "", password: "" },
-      newDatabaseGrant: { database_id: "", user_id: "", privileges: "ALL" },
+      newDatabaseGrant: { database_id: "", user_id: "", selectedPrivileges: ["ALL"] },
+      databaseWizard: { name: "", username: "", password: "", selectedPrivileges: ["ALL"] },
+      databasePrivilegeOptions: ["ALL", "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX", "REFERENCES", "EXECUTE", "TRIGGER", "CREATE VIEW", "SHOW VIEW", "EVENT", "CREATE ROUTINE", "ALTER ROUTINE", "CREATE TEMPORARY TABLES", "LOCK TABLES"],
       editingDatabase: null,
       editingDatabaseUser: null,
       editingDatabaseGrant: null,
@@ -370,6 +373,9 @@ const app = createApp({
           allow_overwrite: false,
         }
       },
+      wordpressSites: [],
+      wordpressManagerLoading: false,
+      wordpressDetecting: false,
       siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], dnsCheckResult: null, dnsAction: 'keep', isCheckingDns: false, isSubmitting: false, isBuilding: false, errorMessage: '', dnsTab: 'records' },
       connectWizard: { isOpen: false, website: null, method: 'nameservers', auto_update_dns: false, checking: false, result: null },
       sshState: { enabled: false, toggling: false, loaded: false, hasPassword: false, settingPassword: false, newPassword: null, passwordModal: false, passwordInput: "", passwordError: "" },
@@ -544,6 +550,7 @@ const app = createApp({
       window.location.href = "/login";
       return;
     }
+    this.focusSearchBar();
     this.load();
     window.addEventListener("popstate", () => {
       this.activePage = pageFromLocation();
@@ -619,6 +626,10 @@ const app = createApp({
     },
     selectedWebsiteLabel() {
       return this.selectedWebsiteId && this.selectedWebsite ? this.selectedWebsite.domain : "All sites";
+    },
+    selectedWebsiteWordPress() {
+      if (!this.selectedWebsiteId) return null;
+      return this.wordpressSites.find((site) => String(site.website_id) === String(this.selectedWebsiteId)) || null;
     },
     hasHostingAccount() {
       return Array.isArray(this.home.accounts) && this.home.accounts.length > 0;
@@ -717,6 +728,7 @@ const app = createApp({
             { label: "DNS Zone Editor", target: "dns-zone-editor", icon: "dns", description: "DNS records and zones." },
             { label: "Site Builder", target: "site-builder", icon: "site-builder", description: "Template-based website creation." },
             { label: "App Installer", target: "installer", icon: "wordpress", description: "Install WordPress, Joomla, and other apps." },
+            { label: "WordPress Manager", target: "wordpress-manager", icon: "wordpress", description: "Manage WordPress sites and admin access." },
             { label: "PHP Configuration", target: "php-configuration", icon: "php", description: "PHP version and runtime options." },
             { label: "PHP Info", target: "php-info", icon: "info", description: "PHP runtime information." },
           ],
@@ -808,14 +820,29 @@ const app = createApp({
       const add = (type, label, detail, action) => items.push({ type, label, detail, action });
 
       for (const item of this.menuItems) add("Function", item.label, item.group || "Client panel", () => this.goTo(item.target));
+      // The dashboard tool grid contains launchable tools that are not sidebar
+      // entries (for example phpMyAdmin and phpPgAdmin). Keep the global index
+      // in sync with that complete catalog as well.
+      for (const tile of this.mangopanelTiles) {
+        add("Tool", tile.label, tile.group || "Client panel", () => tile.action ? tile.action() : this.goTo(tile.target));
+      }
+      for (const script of this.installer.scripts || []) {
+        add("App", script.name, "App Installer", () => this.openInstallerModal(script));
+      }
       for (const site of this.websites) add("Site", site.domain, site.status, () => this.goTo("website"));
       for (const domain of this.domains) add("Domain", domain.name, domain.status, () => this.goTo("domains"));
       for (const database of this.databases) add("Database", database.name, database.username, () => this.goTo("databases"));
       for (const user of this.databaseUsers) add("Database user", user.username, user.status, () => this.goTo("databases"));
+      for (const site of this.wordpressSites || []) add("WordPress", site.domain, site.site_title || "WordPress Manager", () => this.goTo("wordpress-manager"));
+      for (const mailbox of this.mailboxes || []) add("Mailbox", mailbox.email, mailbox.status, () => this.goTo("email"));
+      for (const ftp of this.ftpAccounts || []) add("FTP account", ftp.username, ftp.path || "FTP Accounts", () => this.goTo("ftp-accounts"));
+      for (const job of this.cronJobs || []) add("Cron job", job.command, job.schedule || "Cron Jobs", () => this.goTo("cron-jobs"));
+      for (const subdomain of this.subdomains || []) add("Subdomain", subdomain.domain, subdomain.status, () => this.goTo("website"));
       for (const item of this.activity) add("Activity", item.action, item.created_at, () => this.goTo("activity"));
 
       return items
         .filter((item) => `${item.type} ${item.label} ${item.detail || ""}`.toLowerCase().includes(query))
+        .filter((item, index, all) => all.findIndex((candidate) => `${candidate.type}|${candidate.label}|${candidate.detail}` === `${item.type}|${item.label}|${item.detail}`) === index)
         .slice(0, 8);
     },
     menuItems() {
@@ -932,8 +959,8 @@ const app = createApp({
         return { ...metric, percent, tone, value, meta };
       });
     },
-    // cPanel dashboard icon grid — all features
-    cpanelTiles() {
+    // MangoPanel dashboard icon grid — all features
+    mangopanelTiles() {
       const tiles = [
         // Files
         { label: "File Manager", target: "files", icon: "files", color: "#f59e0b", group: "Files" },
@@ -1024,9 +1051,9 @@ const app = createApp({
       if (this.hasHostingAccount) return tiles;
       return tiles.filter((tile) => tile.group === "Domains");
     },
-    cpanelGroups() {
+    mangopanelGroups() {
       const groups = {};
-      for (const tile of this.cpanelTiles) {
+      for (const tile of this.mangopanelTiles) {
         if (!groups[tile.group]) groups[tile.group] = [];
         groups[tile.group].push(tile);
       }
@@ -1388,6 +1415,7 @@ const app = createApp({
         this.hotlink = { ...this.hotlink, ...(hotlinkPayload.hotlink || {}) };
         if (this.activePage === "settings") await this.loadProfile();
         await this.loadInstallerScripts();
+        await this.loadWordPressSites();
         await this.fetchCollaborators();
         if (this.activePage === "services") {
           await this.loadServicesStatus();
@@ -1747,6 +1775,46 @@ const app = createApp({
         this.installer.scripts = payload.scripts || [];
       } catch (err) {
         console.error("Failed to load scripts:", err);
+      }
+    },
+    async loadWordPressSites() {
+      if (!this.hasHostingAccount) {
+        this.wordpressSites = [];
+        return;
+      }
+      this.wordpressManagerLoading = true;
+      try {
+        const payload = await this.api("/api/client/wordpress/installs");
+        this.wordpressSites = payload.sites || [];
+      } catch (error) {
+        console.error("Failed to load WordPress sites:", error);
+      } finally {
+        this.wordpressManagerLoading = false;
+      }
+    },
+    openWordPressInstaller() {
+      this.openSiteWizard();
+      this.siteWizard.type = "wordpress";
+    },
+    async detectWordPress() {
+      if (this.wordpressDetecting) return;
+      this.wordpressDetecting = true;
+      try {
+        const payload = await this.api("/api/client/wordpress/detect", { method: "POST", body: JSON.stringify({}) });
+        this.notify(payload.detected ? `Detected ${payload.detected} WordPress site${payload.detected === 1 ? "" : "s"}.` : "No WordPress sites were detected.", payload.detected ? "success" : "info");
+        await this.loadWordPressSites();
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.wordpressDetecting = false;
+      }
+    },
+    async loginToWordPress(site) {
+      try {
+        const payload = await this.api(`/api/client/wordpress/${site.website_id}/launch`);
+        if (payload.launch_url) window.open(payload.launch_url, "_blank", "noopener,noreferrer");
+      } catch (error) {
+        this.notify(error.message, "error");
       }
     },
     async loadMailRouting() {
@@ -3094,6 +3162,7 @@ const app = createApp({
       }
     },
     async nextSiteWizardStep() {
+      if (this.siteWizard.isCheckingDns) return;
       if (this.siteWizard.step === 2) {
         if (!this.siteWizard.domain) return;
         const ok = await this.checkDomainDns();
@@ -3118,7 +3187,7 @@ const app = createApp({
       this.siteWizard.step--;
     },
     async finishSiteWizard() {
-      if (this.siteWizard.isSubmitting) return;
+      if (this.siteWizard.isSubmitting || this.siteWizard.isCheckingDns) return;
       if (this.siteWizard.step === 2) {
         const ok = await this.checkDomainDns();
         if (!ok) return;
@@ -3214,7 +3283,7 @@ const app = createApp({
       this.dbModal = type;
       this.newDatabase = { name: "", username: "" };
       this.newDatabaseUser = { username: "", password: "" };
-      this.newDatabaseGrant = { database_id: "", user_id: "", privileges: "ALL" };
+      this.newDatabaseGrant = { database_id: "", user_id: "", selectedPrivileges: ["ALL"] };
     },
     closeDbModal() {
       if (this.dbSubmitting) return;
@@ -3280,7 +3349,7 @@ const app = createApp({
     },
     openEditGrantModal(grant) {
       this.dbSubmitting = false;
-      this.editingDatabaseGrant = { ...grant };
+      this.editingDatabaseGrant = { ...grant, selectedPrivileges: this.privilegeSelection(grant.privileges) };
       this.dbModal = 'edit_grant';
     },
     async saveEditGrant() {
@@ -3290,7 +3359,7 @@ const app = createApp({
         await this.api(`/api/client/database-grants/${this.editingDatabaseGrant.id}`, {
           method: "PATCH",
           body: JSON.stringify({
-            privileges: this.editingDatabaseGrant.privileges,
+            privileges: this.serializeDatabasePrivileges(this.editingDatabaseGrant.selectedPrivileges),
             status: this.editingDatabaseGrant.status
           })
         });
@@ -3423,7 +3492,7 @@ const app = createApp({
       if (!this.newDatabaseGrant.database_id || !this.newDatabaseGrant.user_id || this.dbSubmitting) return;
       this.dbSubmitting = true;
       try {
-        await this.api("/api/client/database-grants", { method: "POST", body: JSON.stringify(this.newDatabaseGrant) });
+        await this.api("/api/client/database-grants", { method: "POST", body: JSON.stringify({ ...this.newDatabaseGrant, privileges: this.serializeDatabasePrivileges(this.newDatabaseGrant.selectedPrivileges) }) });
         this.notify("Privileges granted successfully", "success");
         this.dbSubmitting = false;
         this.closeDbModal();
@@ -3431,6 +3500,45 @@ const app = createApp({
       } catch (err) {
         this.dbSubmitting = false;
         this.notify(String(err), "error");
+      }
+    },
+    privilegeSelection(value) {
+      const raw = String(value || "ALL").toUpperCase();
+      if (raw === "ALL") return ["ALL"];
+      if (raw === "READ") return ["SELECT"];
+      if (raw === "READ_WRITE") return ["SELECT", "INSERT", "UPDATE", "DELETE"];
+      return raw.split(",").map((item) => item.trim()).filter(Boolean);
+    },
+    serializeDatabasePrivileges(selected) {
+      const values = Array.isArray(selected) ? selected.filter(Boolean) : [];
+      return values.includes("ALL") || !values.length ? "ALL" : values.join(", ");
+    },
+    normalizePrivilegeSelection(form, changedPrivilege) {
+      if (!Array.isArray(form.selectedPrivileges)) form.selectedPrivileges = [];
+      if (changedPrivilege && changedPrivilege !== "ALL" && form.selectedPrivileges.includes("ALL")) {
+        form.selectedPrivileges = [changedPrivilege];
+      } else if (form.selectedPrivileges.includes("ALL") && form.selectedPrivileges.length > 1) {
+        form.selectedPrivileges = form.selectedPrivileges.filter((item) => item === "ALL");
+      }
+    },
+    openDatabaseWizard() {
+      this.dbSubmitting = false;
+      this.databaseWizard = { name: "", username: "", password: "", selectedPrivileges: ["ALL"] };
+      this.dbModal = "wizard";
+    },
+    async submitDatabaseWizard() {
+      const form = this.databaseWizard;
+      if (!form.name || !form.username || !form.password || this.dbSubmitting) return;
+      this.dbSubmitting = true;
+      try {
+        await this.api("/api/client/database-wizard", { method: "POST", body: JSON.stringify({ name: form.name, username: form.username, password: form.password, privileges: this.serializeDatabasePrivileges(form.selectedPrivileges) }) });
+        this.notify("Database, user, and access grant created successfully", "success");
+        this.closeDbModal();
+        await this.refresh();
+      } catch (err) {
+        this.notify(String(err), "error");
+      } finally {
+        this.dbSubmitting = false;
       }
     },
     // DB Wizard
@@ -3956,6 +4064,12 @@ const app = createApp({
       }
       window.history.pushState({}, "", pageUrl(target));
     },
+    focusSearchBar() {
+      this.$nextTick(() => {
+        const searchInput = this.$refs.globalSearchInput;
+        if (searchInput) searchInput.focus();
+      });
+    },
     chooseSearchResult(result) {
       result.action();
       this.searchQuery = "";
@@ -4382,6 +4496,7 @@ const app = createApp({
       }
     },
     activePage(newVal) {
+      this.focusSearchBar();
       const newUrl = pageUrl(newVal);
       if (window.location.pathname !== newUrl) {
         window.history.pushState(null, "", newUrl);

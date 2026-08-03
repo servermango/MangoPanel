@@ -15,7 +15,7 @@ import time
 import socket
 import ssl
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -86,6 +86,7 @@ PUBLIC_DIR = Path(__file__).resolve().parent.parent / "public"
 SERVICE_VAR_DIR = Path(__file__).resolve().parent.parent / "var"
 FEATURE_STATUS = {
     "dashboard": {"status": "functional", "label": "Functional"},
+    "wordpress-manager": {"status": "functional", "label": "Functional"},
     "installer": {"status": "functional", "label": "Functional"},
     "hosting-plan": {"status": "functional", "label": "Functional"},
     "performance": {"status": "read_only", "label": "Read only"},
@@ -1345,12 +1346,38 @@ class MangoHandler(BaseHTTPRequestHandler):
                         except Exception:
                             pass
 
+            # Extraction can leave files with archive-provided modes or
+            # ownership. Queue the canonical ownership/permission repair for
+            # the website containing public_html (including nested folders).
+            permission_fix_job_id = None
+            destination = Path(dest_dir).resolve()
+            websites = conn.execute(
+                "SELECT id, document_root FROM websites WHERE account_id = ?",
+                (account["id"],),
+            ).fetchall()
+            for website in websites:
+                document_root = Path(website["document_root"])
+                if not document_root.is_absolute():
+                    document_root = (Path(account["base_path"]) / document_root).resolve()
+                else:
+                    document_root = document_root.resolve()
+                if destination == document_root or str(destination).startswith(str(document_root) + os.sep):
+                    permission_fix_job_id = enqueue_agent_job(
+                        conn,
+                        "fix_file_ownership",
+                        "hosting_account",
+                        account["id"],
+                        {"website_id": website["id"]},
+                    )
+                    break
+
             actor_id = actor["id"] if actor else account["user_id"]
             log_activity(conn, actor_id, "archive_extracted", {"account_id": account["id"], "path": rel_path, "items_extracted": extracted_count})
             return self.json_response({
                 "success": True,
                 "message": f"Successfully extracted {archive_name} ({extracted_count} items)",
-                "extracted_count": extracted_count
+                "extracted_count": extracted_count,
+                "permission_fix_job_id": permission_fix_job_id,
             })
 
     def webmail_session_context(self):
@@ -2960,6 +2987,23 @@ class MangoHandler(BaseHTTPRequestHandler):
                 domain = sanitize_domain(body.get("domain", ""))
                 dns_action = body.get("dns_action") or body.get("dns_choice", "keep")
 
+                # A domain is a panel-wide resource. Check ownership before
+                # provider-specific DNS handling so a domain hosted by another
+                # client cannot be claimed through Cloudflare or local DNS.
+                other_website = conn.execute(
+                    "SELECT id FROM websites WHERE domain = ? AND account_id != ?",
+                    (domain, account["id"]),
+                ).fetchone()
+                other_domain = conn.execute(
+                    "SELECT id FROM domains WHERE name = ? AND account_id != ?",
+                    (domain, account["id"]),
+                ).fetchone()
+                if other_website or other_domain:
+                    raise ApiError(
+                        HTTPStatus.CONFLICT,
+                        "This website can't be added to this account because it already exists on another account on this hosting. It must be removed from the other account first. If you think this is an error, please contact support.",
+                    )
+
                 dns_check = check_domain_dns_provider(conn, account, domain)
                 if dns_check.get("exists") and dns_check.get("blocked"):
                     raise ApiError(HTTPStatus.CONFLICT, dns_check["error_message"])
@@ -4181,6 +4225,37 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_active_account(account)
                 require_plan_capacity(conn, account["id"], "websites", "max_websites", "website_limit_reached")
                 require_inode_capacity(conn, account["id"])
+            if path == "/api/client/database-wizard" and method == "POST":
+                require_active_account(account)
+                require_collaborator_permission(conn, actor["id"], account["id"], "can_create_databases")
+                require_plan_capacity(conn, account["id"], "databases", "max_databases", "database_limit_reached")
+                require_inode_capacity(conn, account["id"])
+                body = self.read_json()
+                name = validate_db_identifier(body.get("name"), "invalid_database_name")
+                username = validate_db_identifier(body.get("username"), "invalid_database_username")
+                password = validate_db_password(body.get("password"))
+                privileges = validate_db_privileges(body.get("privileges", "ALL"))
+                if conn.execute("SELECT id FROM databases WHERE name = ?", (name,)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "database_name_already_exists")
+                if conn.execute("SELECT id FROM database_users WHERE username = ?", (username,)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "database_user_already_exists")
+                db_cur = conn.execute(
+                    "INSERT INTO databases(account_id, name, username, status, created_by_user_id) VALUES (?, ?, ?, ?, ?)",
+                    (account["id"], name, username, "active", actor["id"]),
+                )
+                user_cur = conn.execute(
+                    "INSERT INTO database_users(account_id, username, password_hash, status) VALUES (?, ?, ?, ?)",
+                    (account["id"], username, hash_password(password), "active"),
+                )
+                grant_cur = conn.execute(
+                    "INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, ?, ?)",
+                    (db_cur.lastrowid, user_cur.lastrowid, privileges, "active"),
+                )
+                enqueue_agent_job(conn, "create_database_user", "database_user", user_cur.lastrowid, {"username": username, "password": password, "account_id": account["id"]})
+                job_id = enqueue_agent_job(conn, "create_database", "database", db_cur.lastrowid, {"name": name, "account_id": account["id"]})
+                enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {"database_id": db_cur.lastrowid, "user_id": user_cur.lastrowid, "privileges": privileges, "account_id": account["id"]})
+                log_activity(conn, actor["id"], "database_wizard_completed", {"name": name, "username": username})
+                return self.json_response({"database_id": db_cur.lastrowid, "database_user_id": user_cur.lastrowid, "database_grant_id": grant_cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])}, HTTPStatus.CREATED)
             if path == "/api/client/databases" and method == "POST":
                 require_active_account(account)
                 require_collaborator_permission(conn, actor["id"], account["id"], "can_create_databases")
@@ -5070,12 +5145,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                     })
 
                 # Create WordPress install record
+                sso_secret = wordpress_sso_secret()
                 cur = conn.execute(
                     """
-                    INSERT INTO wordpress_installs(website_id, database_id, site_title, admin_username, admin_email, status)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO wordpress_installs(website_id, database_id, site_title, admin_username, admin_email, sso_secret, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (website_id, database_id, site_title, admin_username, admin_email, "installing"),
+                    (website_id, database_id, site_title, admin_username, admin_email, sso_secret, "installing"),
                 )
                 install_id = cur.lastrowid
 
@@ -5091,6 +5167,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "admin_username": admin_username,
                     "admin_email": admin_email,
                     "admin_password": admin_password,
+                    "sso_secret": sso_secret,
                     "allow_overwrite": allow_overwrite,
                 })
                 job = conn.execute("SELECT status, result FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -5112,6 +5189,74 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "job_id": job_id,
                     "status": "installing"
                 }, HTTPStatus.CREATED)
+            if path == "/api/client/wordpress/installs" and method == "GET":
+                require_account(account)
+                rows = conn.execute(
+                    """
+                    SELECT wi.website_id, w.domain, wi.site_title, wi.admin_username, wi.admin_email,
+                           wi.status, wi.installed_at, wi.created_at
+                    FROM wordpress_installs wi
+                    JOIN websites w ON w.id = wi.website_id
+                    WHERE w.account_id = ?
+                    ORDER BY lower(w.domain)
+                    """,
+                    (account["id"],),
+                ).fetchall()
+                sites = rows_to_dicts(rows)
+                for site in sites:
+                    site["admin_url"] = f"https://{site['domain']}/wp-admin/"
+                return self.json_response({"sites": sites})
+            if path == "/api/client/wordpress/detect" and method == "POST":
+                require_active_account(account)
+                websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()
+                detected = 0
+                for website in websites:
+                    root = Path(website["document_root"])
+                    if not (root / "wp-config.php").exists() or not (root / "wp-admin").is_dir():
+                        continue
+                    existing = conn.execute("SELECT * FROM wordpress_installs WHERE website_id = ?", (website["id"],)).fetchone()
+                    if existing:
+                        admin_username = existing["admin_username"]
+                        admin_email = existing["admin_email"]
+                        sso_secret = existing["sso_secret"] or wordpress_sso_secret()
+                        if not existing["sso_secret"]:
+                            conn.execute("UPDATE wordpress_installs SET sso_secret = ? WHERE website_id = ?", (sso_secret, website["id"]))
+                    else:
+                        config_text = (root / "wp-config.php").read_text(encoding="utf-8", errors="ignore")
+                        user_match = re.search(r"define\(\s*['\"]WP_ADMIN_USER['\"]\s*,\s*['\"]([^'\"]+)", config_text)
+                        email_match = re.search(r"define\(\s*['\"]WP_ADMIN_EMAIL['\"]\s*,\s*['\"]([^'\"]+)", config_text)
+                        admin_username = user_match.group(1) if user_match else "admin"
+                        admin_email = email_match.group(1) if email_match else (actor.get("email") or "")
+                        sso_secret = wordpress_sso_secret()
+                        conn.execute(
+                            "INSERT INTO wordpress_installs(website_id, site_title, admin_username, admin_email, sso_secret, status) VALUES (?, ?, ?, ?, ?, 'detected')",
+                            (website["id"], website["domain"], admin_username, admin_email, sso_secret),
+                        )
+                    if ensure_wordpress_compat(root, website["id"], admin_username, admin_email, sso_secret):
+                        conn.execute("UPDATE wordpress_installs SET status = CASE WHEN status = 'installing' THEN status ELSE 'installed' END, updated_at = CURRENT_TIMESTAMP WHERE website_id = ?", (website["id"],))
+                        detected += 1
+                return self.json_response({"detected": detected})
+            if path.startswith("/api/client/wordpress/") and path.endswith("/launch") and method == "GET":
+                require_active_account(account)
+                website_id = path_int_id(path, "/api/client/wordpress/")
+                website = require_owned_website(conn, account["id"], website_id, actor.get("id"))
+                install = conn.execute("SELECT * FROM wordpress_installs WHERE website_id = ?", (website_id,)).fetchone()
+                if not install:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "wordpress_not_found")
+                if install["status"] not in {"installed", "detected"}:
+                    raise ApiError(HTTPStatus.CONFLICT, "wordpress_install_not_ready")
+                sso_secret = install["sso_secret"] or wordpress_sso_secret()
+                if not install["sso_secret"]:
+                    conn.execute("UPDATE wordpress_installs SET sso_secret = ? WHERE website_id = ?", (sso_secret, website_id))
+                if not ensure_wordpress_compat(website["document_root"], website_id, install["admin_username"], install["admin_email"], sso_secret):
+                    raise ApiError(HTTPStatus.CONFLICT, "wordpress_compat_plugin_unavailable")
+                token = create_jwt({
+                    "purpose": "wordpress_sso",
+                    "website_id": website_id,
+                    "admin_username": install["admin_username"],
+                    "admin_email": install["admin_email"],
+                }, sso_secret, 90)
+                return self.json_response({"launch_url": f"https://{website['domain']}/wp-admin/?mangopanel_sso={quote(token)}"})
             if path == "/api/client/installer/scripts" and method == "GET":
                 require_account(account)
                 from .installers import INSTALLERS
@@ -5206,12 +5351,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                         (website_id, script_id, database_id, site_title, admin_username, admin_email, "installing"),
                     )
 
+                    sso_secret = wordpress_sso_secret()
                     cur = conn.execute(
                         """
-                        INSERT INTO wordpress_installs(website_id, database_id, site_title, admin_username, admin_email, status)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO wordpress_installs(website_id, database_id, site_title, admin_username, admin_email, sso_secret, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (website_id, database_id, site_title, admin_username, admin_email, "installing"),
+                        (website_id, database_id, site_title, admin_username, admin_email, sso_secret, "installing"),
                     )
                     install_id = cur.lastrowid
                     
@@ -5226,6 +5372,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "admin_username": admin_username,
                         "admin_email": admin_email,
                         "admin_password": admin_password,
+                        "sso_secret": sso_secret,
                         "allow_overwrite": allow_overwrite,
                     })
                 else:
@@ -6554,6 +6701,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response(get_network_overview(conn))
             if path == "/api/admin/network/live" and method == "GET":
                 return self.json_response(get_live_network_io(conn))
+            if path == "/api/admin/traffic" and method == "GET":
+                return self.json_response(admin_traffic_payload(conn))
             if path == "/api/admin/network/live/stream" and method == "GET":
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/event-stream")
@@ -6775,7 +6924,15 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"deleted": True})
 
             if path == "/api/admin/clients" and method == "GET":
-                return self.json_response({"clients": admin_clients_payload(conn)})
+                raw_page = (query.get("page") or ["1"])[0]
+                raw_page_size = (query.get("page_size") or ["25"])[0]
+                try:
+                    page = max(1, int(raw_page))
+                    page_size = min(100, max(10, int(raw_page_size)))
+                except (TypeError, ValueError):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_client_pagination")
+                search = str((query.get("search") or [""])[0]).strip()
+                return self.json_response(admin_clients_page_payload(conn, search, page, page_size))
             if path == "/api/admin/clients" and method == "POST":
                 require_admin_permission(actor, "clients.manage")
                 body = self.read_json()
@@ -7813,6 +7970,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                     ).fetchall()
                 )
                 return self.json_response({"hosting_account": row_to_dict(account), "databases": databases})
+
+            account_delete_match = re.match(r"^/api/admin/hosting-accounts/(\d+)$", path)
+            if account_delete_match and method == "DELETE":
+                require_admin_permission(actor, "hosting.manage")
+                account_id = int(account_delete_match.group(1))
+                account = conn.execute("SELECT id, user_id, username FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+                if not account:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "hosting_account_not_found")
+                deleted = delete_hosting_account(conn, account_id)
+                log_audit(conn, "admin", actor["id"], "delete_hosting_account", "hosting_account", account_id, metadata=deleted)
+                return self.json_response({"deleted": True, "hosting_account_id": account_id, "user_id": account["user_id"], "username": account["username"]})
 
             database_delete_match = re.match(r"^/api/admin/databases/(\d+)$", path)
             if database_delete_match and method == "DELETE":
@@ -9206,7 +9374,7 @@ def check_domain_dns_provider(conn, account, domain_name):
                 "dns_provider": provider_key,
                 "blocked": True,
                 "alert_message": "This domain already exists in the DNS",
-                "error_message": "This website can't be added to this account because it already exists on another account on this hosting. Kindly contact support"
+                "error_message": "This website can't be added to this account because it already exists on another account on this hosting. It must be removed from the other account first. If you think this is an error, please contact support."
             }
 
         return {
@@ -10224,6 +10392,53 @@ def client_visible_job(account, row):
     return item
 
 
+def admin_traffic_payload(conn, live_window_minutes=5, history_days=30):
+    """Return current and historical website traffic grouped by domain."""
+    now = datetime.now(timezone.utc)
+    live_start = (now - timedelta(minutes=live_window_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    history_start = (now - timedelta(days=history_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+    current = rows_to_dicts(conn.execute(
+        """
+        SELECT w.id AS website_id, w.domain, w.status,
+               ha.username, COALESCE(u.full_name, u.email) AS owner,
+               COUNT(l.id) AS requests,
+               COALESCE(SUM(l.bytes_sent), 0) AS bandwidth_bytes,
+               MAX(l.created_at) AS last_request_at
+        FROM websites w
+        JOIN hosting_accounts ha ON ha.id = w.account_id
+        JOIN users u ON u.id = ha.user_id
+        LEFT JOIN access_logs l
+          ON l.website_id = w.id AND l.created_at >= ?
+        GROUP BY w.id, w.domain, w.status, ha.username, u.full_name, u.email
+        ORDER BY bandwidth_bytes DESC, requests DESC, w.domain ASC
+        """,
+        (live_start,),
+    ).fetchall())
+
+    history = rows_to_dicts(conn.execute(
+        """
+        SELECT domain, substr(created_at, 1, 10) AS period,
+               COUNT(*) AS requests,
+               COALESCE(SUM(bytes_sent), 0) AS bandwidth_bytes,
+               SUM(CASE WHEN status_code BETWEEN 400 AND 599 THEN 1 ELSE 0 END) AS errors
+        FROM access_logs
+        WHERE created_at >= ?
+        GROUP BY domain, substr(created_at, 1, 10)
+        ORDER BY period DESC, bandwidth_bytes DESC, domain ASC
+        """,
+        (history_start,),
+    ).fetchall())
+
+    return {
+        "current": current,
+        "history": history,
+        "live_window_minutes": live_window_minutes,
+        "history_days": history_days,
+        "updated_at": now.isoformat(),
+    }
+
+
 ANALYTICS_FILTERS = {
     "top-countries": "Top list",
     "access-logs": "Access logs",
@@ -11033,6 +11248,61 @@ def path_int_id(path, prefix):
     return value
 
 
+def wordpress_sso_secret(website_id=None, stored_secret=None):
+    """Return the installation's random SSO secret; never derive it globally."""
+    return stored_secret or secrets.token_urlsafe(32)
+
+
+def wordpress_compat_plugin(secret):
+    return f'''<?php
+// MangoPanel Compatibility Plugin
+add_filter('wp_signature_hosts', '__return_empty_array', 999);
+
+// Short-lived MangoPanel launch tokens log the owning WordPress administrator in.
+add_action('init', function () {{
+    if (empty($_GET['mangopanel_sso']) || !defined('MANGOPANEL_SSO_SECRET')) return;
+    $token = (string) $_GET['mangopanel_sso'];
+    $parts = explode('.', $token);
+    if (count($parts) !== 3) return;
+    $expected = rtrim(strtr(base64_encode(hash_hmac('sha256', $parts[0] . '.' . $parts[1], MANGOPANEL_SSO_SECRET, true)), '+/', '-_'), '=');
+    if (!hash_equals($expected, $parts[2])) return;
+    $decode = function ($value) {{
+        $value .= str_repeat('=', (4 - strlen($value) % 4) % 4);
+        return json_decode(base64_decode(strtr($value, '-_', '+/')), true);
+    }};
+    $payload = $decode($parts[1]);
+    if (!is_array($payload) || ($payload['purpose'] ?? '') !== 'wordpress_sso' || (int) ($payload['exp'] ?? 0) < time()) return;
+    $user = get_user_by('login', (string) ($payload['admin_username'] ?? ''));
+    if (!$user && !empty($payload['admin_email'])) $user = get_user_by('email', (string) $payload['admin_email']);
+    if (!$user) return;
+    wp_set_auth_cookie($user->ID, true, is_ssl());
+    wp_safe_redirect(admin_url());
+    exit;
+}});
+'''
+
+
+def ensure_wordpress_compat(document_root, website_id, admin_username="", admin_email="", sso_secret=None):
+    root = Path(document_root)
+    wp_config = root / "wp-config.php"
+    if not wp_config.exists():
+        return False
+    secret = wordpress_sso_secret(website_id, sso_secret)
+    try:
+        mu_dir = root / "wp-content" / "mu-plugins"
+        mu_dir.mkdir(parents=True, exist_ok=True)
+        (mu_dir / "mangopanel-compat.php").write_text(wordpress_compat_plugin(secret), encoding="utf-8")
+        config = wp_config.read_text(encoding="utf-8")
+        if "MANGOPANEL_SSO_SECRET" not in config:
+            define_line = f"define('MANGOPANEL_SSO_SECRET', '{secret}');\n"
+            marker = "if ( !defined('ABSPATH') )"
+            config = config.replace(marker, define_line + "\n" + marker, 1) if marker in config else config + "\n" + define_line
+            wp_config.write_text(config, encoding="utf-8")
+        return True
+    except (OSError, UnicodeError):
+        return False
+
+
 def require_owned_website(conn, account_id, website_id, user_id=None):
     row = conn.execute("SELECT * FROM websites WHERE id = ? AND account_id = ?", (website_id, account_id)).fetchone()
     if not row:
@@ -11795,10 +12065,18 @@ def validate_db_password(value):
 
 def validate_db_privileges(value):
     privileges = str(value or "ALL").strip().upper()
-    allowed = {"ALL", "READ", "READ_WRITE"}
-    if privileges not in allowed:
+    aliases = {"ALL", "READ", "READ_WRITE"}
+    granular = {
+        "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX",
+        "REFERENCES", "EXECUTE", "TRIGGER", "CREATE VIEW", "SHOW VIEW", "EVENT",
+        "CREATE ROUTINE", "ALTER ROUTINE", "CREATE TEMPORARY TABLES", "LOCK TABLES",
+    }
+    if privileges in aliases:
+        return privileges
+    selected = [item.strip() for item in privileges.split(",") if item.strip()]
+    if not selected or len(set(selected)) != len(selected) or any(item not in granular for item in selected):
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_database_privileges")
-    return privileges
+    return ", ".join(selected)
 
 
 def validate_hotlink_allowed_domains(value):
@@ -12284,6 +12562,39 @@ def admin_clients_payload(conn):
     return users
 
 
+def admin_clients_page_payload(conn, search="", page=1, page_size=25):
+    search = str(search or "").strip()
+    where = ""
+    params = []
+    if search:
+        where = "WHERE LOWER(u.email) LIKE ? OR LOWER(COALESCE(u.full_name, '')) LIKE ? OR CAST(u.id AS TEXT) LIKE ?"
+        needle = f"%{search.lower()}%"
+        params = [needle, needle, needle]
+    total = conn.execute(f"SELECT COUNT(*) AS count FROM users u {where}", params).fetchone()["count"]
+    page = max(1, int(page or 1))
+    page_size = min(100, max(10, int(page_size or 25)))
+    offset = (page - 1) * page_size
+    rows = conn.execute(
+        f"SELECT u.id, u.email, u.full_name, u.status, u.created_at FROM users u {where} ORDER BY u.id ASC LIMIT ? OFFSET ?",
+        [*params, page_size, offset],
+    ).fetchall()
+    users = []
+    for row in rows:
+        user = row_to_dict(row)
+        user["accounts"] = admin_client_accounts(conn, user["id"])
+        user["profile"] = user_profile_payload(conn, user["id"])
+        users.append(user)
+    return {
+        "clients": users,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": max(1, (total + page_size - 1) // page_size),
+        },
+    }
+
+
 def admin_client_payload(conn, user_id):
     user = conn.execute("SELECT id, email, full_name, status, created_at FROM users WHERE id = ?", (user_id,)).fetchone()
     if not user:
@@ -12421,9 +12732,17 @@ def admin_client_accounts(conn, user_id):
     return accounts
 
 
-def delete_client(conn, user_id):
-    accounts = conn.execute("SELECT id FROM hosting_accounts WHERE user_id = ?", (user_id,)).fetchall()
-    account_ids = [row["id"] for row in accounts]
+def delete_hosting_account(conn, account_id):
+    account = conn.execute("SELECT id, user_id FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+    if not account:
+        raise ApiError(HTTPStatus.NOT_FOUND, "hosting_account_not_found")
+    _delete_hosting_accounts(conn, [account_id], owner_user_id=None)
+    return {"account_id": account_id, "user_id": account["user_id"]}
+
+
+def _delete_hosting_accounts(conn, account_ids, owner_user_id=None):
+    if not account_ids:
+        return {"account_ids": [], "website_ids": []}
     website_ids = select_ids_for_accounts(conn, "websites", account_ids)
     domain_ids = select_ids_for_accounts(conn, "domains", account_ids)
     backup_rows = select_rows_for_accounts(conn, "backups", account_ids, "id, artifact_path")
@@ -12470,8 +12789,12 @@ def delete_client(conn, user_id):
             "databases",
         ]:
             conn.execute("DELETE FROM {} WHERE account_id IN ({})".format(table, sql_placeholders(account_ids)), account_ids)
-        conn.execute("DELETE FROM collaborators WHERE hosting_account_id IN ({}) OR owner_user_id = ?".format(sql_placeholders(account_ids)), [*account_ids, user_id])
-        conn.execute("DELETE FROM support_notes WHERE hosting_account_id IN ({}) OR user_id = ?".format(sql_placeholders(account_ids)), [*account_ids, user_id])
+        if owner_user_id is None:
+            conn.execute("DELETE FROM collaborators WHERE hosting_account_id IN ({})".format(sql_placeholders(account_ids)), account_ids)
+            conn.execute("DELETE FROM support_notes WHERE hosting_account_id IN ({})".format(sql_placeholders(account_ids)), account_ids)
+        else:
+            conn.execute("DELETE FROM collaborators WHERE hosting_account_id IN ({}) OR owner_user_id = ?".format(sql_placeholders(account_ids)), [*account_ids, owner_user_id])
+            conn.execute("DELETE FROM support_notes WHERE hosting_account_id IN ({}) OR user_id = ?".format(sql_placeholders(account_ids)), [*account_ids, owner_user_id])
         for row in backup_rows:
             artifact_path = row["artifact_path"]
             if artifact_path:
@@ -12480,11 +12803,18 @@ def delete_client(conn, user_id):
                     artifact.unlink()
         conn.execute("DELETE FROM backups WHERE account_id IN ({})".format(sql_placeholders(account_ids)), account_ids)
         conn.execute("DELETE FROM hosting_accounts WHERE id IN ({})".format(sql_placeholders(account_ids)), account_ids)
+    return {"account_ids": account_ids, "website_ids": website_ids}
+
+
+def delete_client(conn, user_id):
+    accounts = conn.execute("SELECT id FROM hosting_accounts WHERE user_id = ?", (user_id,)).fetchall()
+    account_ids = [row["id"] for row in accounts]
+    deleted_accounts = _delete_hosting_accounts(conn, account_ids, owner_user_id=user_id)
     conn.execute("DELETE FROM sessions WHERE actor_type = 'user' AND actor_id = ?", (user_id,))
     conn.execute("DELETE FROM activity_logs WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM recovery_codes WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    return {"user_id": user_id, "account_ids": account_ids, "website_ids": website_ids}
+    return {"user_id": user_id, **deleted_accounts}
 
 
 def select_ids_for_accounts(conn, table, account_ids):

@@ -814,16 +814,19 @@
               </div>
               <button class="primary-button" @click="openClientModal">Create Client</button>
             </div>
-            <div class="client-selector">
-              <label>Find client
-                <select v-model="selectedClientId" aria-label="Select client to manage">
-                  <option value="">All clients</option>
-                  <option v-for="client in clients" :key="client.id" :value="client.id">
-                    {{ client.full_name || client.email }} — {{ client.email }} (#{{ client.id }})
-                  </option>
+            <div class="client-toolbar">
+              <label class="client-search-field">Search customers
+                <input v-model="clientSearch" @input="scheduleClientSearch" type="search" placeholder="Name, email, or customer ID" aria-label="Search customers">
+              </label>
+              <label>Customers per page
+                <select v-model.number="clientPagination.page_size" @change="loadClients(1)">
+                  <option :value="10">10</option>
+                  <option :value="25">25</option>
+                  <option :value="50">50</option>
+                  <option :value="100">100</option>
                 </select>
               </label>
-              <small class="muted">Click the dropdown and type to search by name or email.</small>
+              <span class="muted client-result-count">{{ clientPagination.total }} customer{{ clientPagination.total === 1 ? '' : 's' }}</span>
             </div>
             <div class="table-wrap">
               <table class="client-table">
@@ -836,7 +839,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="client in managedClients" :key="client.id">
+                  <tr v-for="client in clients" :key="client.id">
                     <td>
                       <strong>{{ client.full_name || client.email }}</strong>
                       <small>{{ client.email }}</small>
@@ -846,7 +849,7 @@
                       <span class="pill" :class="client.status === 'suspended' ? 'pill-danger' : 'pill-success'">{{ client.status }}</span>
                     </td>
                     <td>
-                      <div v-for="account in client.accounts" :key="account.id" class="account-manage-row" style="margin-bottom:0.75rem; padding-bottom:0.5rem; border-bottom:1px solid var(--border-color,#e5e7eb);">
+                      <div v-for="account in client.accounts" :key="account.id" class="account-manage-row">
                         <div>
                           <strong>{{ account.username }}</strong>
                           <span class="pill">{{ account.status }}</span>
@@ -855,7 +858,7 @@
                             <span class="pill" style="font-size:0.75rem; background:var(--bg-accent,#e0f2fe); color:var(--text-accent,#0369a1);">DNS: {{ account.effective_dns_label || 'Local DNS (from global)' }}</span>
                           </div>
                         </div>
-                        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.35rem;">
+                        <div class="account-actions">
                           <select v-model.number="account.selected_plan_id" style="width:auto;">
                             <option v-for="plan in plans" :key="plan.id" :value="plan.id">{{ plan.name }}</option>
                           </select>
@@ -863,8 +866,9 @@
                           <button @click="openAccountDatabases(client, account)">Databases</button>
                           <button @click="toggleAccountStatus(client, account)">{{ ['suspended', 'hard_suspended'].includes(account.status) ? "Unsuspend" : "Soft suspend" }}</button>
                           <button v-if="!['suspended', 'hard_suspended'].includes(account.status)" class="danger-button" @click="hardSuspendAccount(client, account)">Hard suspend</button>
+                          <button class="danger-button account-delete-button" @click="deleteHostingAccount(client, account)" title="Delete only this hosting account">Delete hosting account</button>
                         </div>
-                        <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.35rem; background:var(--bg-subtle,#f9fafb); padding:0.4rem 0.6rem; border-radius:4px;">
+                        <div class="account-dns-controls">
                           <label style="font-size:0.8rem; margin:0; font-weight:500;">DNS Provider:
                             <select v-model="account.selected_dns_provider" style="width:auto; font-size:0.8rem; padding:0.2rem 0.4rem;">
                               <option value="">Default / Inherit (Use Plan / Global)</option>
@@ -885,11 +889,90 @@
                     <td class="client-actions">
                       <button class="primary-button" @click="openClientProfile(client)">Edit Profile</button>
                       <button @click="loginAsClient(client)" :disabled="client.status !== 'active'">Login as Client</button>
-                      <button class="danger-button" @click="deleteClient(client)">Delete</button>
+                      <button class="danger-button" @click="deleteClient(client)" title="Delete customer and all hosting accounts">Delete customer</button>
                     </td>
                   </tr>
+                  <tr v-if="clientsLoading"><td colspan="4" class="empty-row">Loading customers…</td></tr>
+                  <tr v-if="!clientsLoading && !clients.length"><td colspan="4" class="empty-row">No customers match this search.</td></tr>
                 </tbody>
               </table>
+            </div>
+            <div class="client-pagination" v-if="clientPagination.total_pages > 1">
+              <button class="secondary-button" @click="goToClientPage(clientPagination.page - 1)" :disabled="clientPagination.page <= 1">Previous</button>
+              <span>Page {{ clientPagination.page }} of {{ clientPagination.total_pages }}</span>
+              <button class="secondary-button" @click="goToClientPage(clientPagination.page + 1)" :disabled="clientPagination.page >= clientPagination.total_pages">Next</button>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'traffic'" class="page-stack">
+            <div class="section-head" style="margin-bottom: 1rem;">
+              <div>
+                <h2>Website Traffic</h2>
+                <p>Current and historical requests and bandwidth grouped by website domain.</p>
+              </div>
+              <div class="actions" style="display:flex; gap:.5rem; align-items:center;">
+                <small class="muted" v-if="trafficData.updated_at">Updated {{ new Date(trafficData.updated_at).toLocaleTimeString() }}</small>
+                <button class="primary-button" @click="loadTraffic" :disabled="trafficLoading">
+                  <span v-if="trafficLoading" class="btn-spinner"></span>
+                  <app-icon v-else name="refresh"></app-icon>
+                  {{ trafficLoading ? 'Refreshing…' : 'Refresh Traffic' }}
+                </button>
+              </div>
+            </div>
+
+            <div class="metric-grid">
+              <div class="metric"><span>Domains monitored</span><strong>{{ trafficData.current.length }}</strong><small>Configured websites</small></div>
+              <div class="metric"><span>Requests (last {{ trafficData.live_window_minutes }} min)</span><strong>{{ trafficData.current.reduce((sum, item) => sum + Number(item.requests || 0), 0).toLocaleString() }}</strong><small>Live request window</small></div>
+              <div class="metric"><span>Bandwidth (last {{ trafficData.live_window_minutes }} min)</span><strong>{{ formatTrafficBytes(trafficData.current.reduce((sum, item) => sum + Number(item.bandwidth_bytes || 0), 0)) }}</strong><small>Access-log bytes sent</small></div>
+              <div class="metric"><span>Historical range</span><strong>{{ trafficData.history_days }} days</strong><small>Daily domain totals</small></div>
+            </div>
+
+            <div class="panel">
+              <div class="section-head">
+                <div><h2>Current / Live by Domain</h2><p>Traffic observed during the last {{ trafficData.live_window_minutes }} minutes; refreshed every 10 seconds.</p></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th class="sortable-th" @click="sortBy('traffic_current', 'domain')">Domain {{ getSortIcon('traffic_current', 'domain') }}</th>
+                    <th class="sortable-th" @click="sortBy('traffic_current', 'owner')">Account Owner {{ getSortIcon('traffic_current', 'owner') }}</th>
+                    <th class="sortable-th" @click="sortBy('traffic_current', 'requests')">Requests {{ getSortIcon('traffic_current', 'requests') }}</th>
+                    <th class="sortable-th" @click="sortBy('traffic_current', 'bandwidth_bytes')">Bandwidth {{ getSortIcon('traffic_current', 'bandwidth_bytes') }}</th>
+                    <th>Avg. rate</th><th class="sortable-th" @click="sortBy('traffic_current', 'last_request_at')">Last request {{ getSortIcon('traffic_current', 'last_request_at') }}</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr v-for="site in getSortedList(trafficData.current, 'traffic_current', sortState.colKey, ['requests', 'bandwidth_bytes'].includes(sortState.colKey))" :key="'traffic-current-' + site.website_id">
+                      <td><strong>{{ site.domain }}</strong><small>{{ site.status }} · {{ site.username }}</small></td>
+                      <td>{{ site.owner }}</td><td>{{ Number(site.requests || 0).toLocaleString() }}</td>
+                      <td>{{ formatTrafficBytes(site.bandwidth_bytes) }}</td>
+                      <td>{{ formatTrafficRate(site.bandwidth_bytes, trafficData.live_window_minutes) }}</td>
+                      <td>{{ site.last_request_at ? new Date(site.last_request_at).toLocaleString() : 'No recent requests' }}</td>
+                    </tr>
+                    <tr v-if="!trafficData.current.length"><td colspan="6" class="empty-row">No websites are configured.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="section-head"><div><h2>Historical Daily Traffic</h2><p>Domain-level totals from access logs for the last {{ trafficData.history_days }} days.</p></div></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th class="sortable-th" @click="sortBy('traffic_history', 'domain')">Domain {{ getSortIcon('traffic_history', 'domain') }}</th>
+                    <th class="sortable-th" @click="sortBy('traffic_history', 'period')">Date {{ getSortIcon('traffic_history', 'period') }}</th>
+                    <th class="sortable-th" @click="sortBy('traffic_history', 'requests')">Requests {{ getSortIcon('traffic_history', 'requests') }}</th>
+                    <th class="sortable-th" @click="sortBy('traffic_history', 'bandwidth_bytes')">Bandwidth {{ getSortIcon('traffic_history', 'bandwidth_bytes') }}</th>
+                    <th class="sortable-th" @click="sortBy('traffic_history', 'errors')">Errors {{ getSortIcon('traffic_history', 'errors') }}</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr v-for="row in getSortedList(trafficData.history, 'traffic_history', sortState.colKey, ['requests', 'bandwidth_bytes', 'errors'].includes(sortState.colKey))" :key="'traffic-history-' + row.domain + '-' + row.period">
+                      <td><strong>{{ row.domain }}</strong></td><td>{{ row.period }}</td><td>{{ Number(row.requests || 0).toLocaleString() }}</td><td>{{ formatTrafficBytes(row.bandwidth_bytes) }}</td><td>{{ Number(row.errors || 0).toLocaleString() }}</td>
+                    </tr>
+                    <tr v-if="!trafficData.history.length"><td colspan="5" class="empty-row">No historical access-log traffic is available yet.</td></tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
 
@@ -897,7 +980,7 @@
             <div class="section-head" style="margin-bottom: 1rem;">
               <div>
                 <h2>Storage Engine &amp; Quotas</h2>
-                <p>Monitor filesystem capacity, live disk I/O streams, WHM quota breakdowns, and path utilization.</p>
+                <p>Monitor filesystem capacity, live disk I/O streams, MangoPanel Host Manager quota breakdowns, and path utilization.</p>
               </div>
               <div class="actions" style="display: flex; gap: 0.5rem; align-items: center;">
                 <button class="primary-button" :disabled="loadingStorage" @click="loadStorage">
@@ -1105,7 +1188,7 @@
               </div>
             </div>
 
-            <!-- WHM Hosting Control Plane Backend Suite -->
+            <!-- MangoPanel Host Manager Hosting Control Plane Backend Suite -->
             <div class="two-column">
               <!-- Account Disk Quotas -->
               <div class="panel">
@@ -1158,7 +1241,7 @@
                 <div class="section-head">
                   <div>
                     <h2>System Directory Size Analyzer & Cleaner</h2>
-                    <p>Disk footprint of system components and 1-click WHM storage maintenance tools.</p>
+                    <p>Disk footprint of system components and 1-click MangoPanel Host Manager storage maintenance tools.</p>
                   </div>
                 </div>
 
@@ -1175,7 +1258,7 @@
                   </li>
                 </ul>
 
-                <h3 style="font-size:1rem; margin-bottom:0.5rem; color:var(--text-color, #38bdf8);">WHM Storage Maintenance & Cleanup</h3>
+                <h3 style="font-size:1rem; margin-bottom:0.5rem; color:var(--text-color, #38bdf8);">MangoPanel Host Manager Storage Maintenance & Cleanup</h3>
                 <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem;">
                   <button class="secondary-button" @click="runStorageCleanup('docker')" :disabled="storageCleanupRunning">
                     🧹 Prune Docker Cache
@@ -1527,6 +1610,7 @@
                   <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:1rem;">
                     <button class="secondary-button" type="button" @click="showAddIpModal = false">Cancel</button>
                     <button class="primary-button" type="submit" :disabled="savingIp">
+                      <span v-if="savingIp" class="btn-spinner"></span>
                       {{ savingIp ? 'Saving...' : (ipForm.id ? 'Save Changes' : 'Add IP Address') }}
                     </button>
                   </div>
@@ -2341,7 +2425,10 @@
               </div>
               <div class="modal-footer">
                 <button class="ghost-button" type="button" @click="closePlanModal">Cancel</button>
-                <button class="primary-button plan-submit" type="button" @click="editingPlanId ? updatePlan() : createPlan()">{{ editingPlanId ? 'Save Changes' : 'Create Plan' }}</button>
+                <button class="primary-button plan-submit" type="button" @click="editingPlanId ? updatePlan() : createPlan()" :disabled="planSaving">
+                  <span v-if="planSaving" class="btn-spinner"></span>
+                  {{ editingPlanId ? 'Save Changes' : 'Create Plan' }}
+                </button>
               </div>
             </div>
           </div>
@@ -2472,7 +2559,7 @@
             <div class="registrar-toolbar"><div><h3>Domain inventory</h3><p>Search locally cached registrar data, then synchronize an account when you need fresh expiry and balance information.</p></div><div class="registrar-filters"><input v-model="registrarSearch" @input="loadRegistrarDashboard" placeholder="Search domain, client, account…"><select v-model="registrarProviderFilter" @change="loadRegistrarDashboard"><option value="">All providers</option><option v-for="provider in registrarDashboard.providers" :value="provider.key" :key="provider.key">{{ provider.display_name }}</option></select><select v-model="registrarSort" @change="loadRegistrarDashboard"><option value="expiry">Expiry date</option><option value="days">Days remaining</option><option value="domain">Domain</option><option value="provider">Provider</option></select><button class="ghost-button" @click="registrarDirection = registrarDirection === 'asc' ? 'desc' : 'asc'; loadRegistrarDashboard()">{{ registrarDirection === 'asc' ? '↑' : '↓' }}</button></div></div>
             <div class="registrar-bulk-toolbar"><label><input type="checkbox" :checked="allRegistrarDomainsSelected" @change="toggleAllRegistrarDomains"> Select all visible</label><span>{{ selectedRegistrarDomains.length }} selected</span><button class="secondary-button" :disabled="!selectedRegistrarDomains.length" @click="openRegistrarAssignModal">Assign to client</button><button class="ghost-button" :disabled="!selectedRegistrarDomains.length" @click="bulkRegistrarAction('unassign')">Unassign clients</button><button class="danger-button" :disabled="!selectedRegistrarDomains.length" @click="bulkRegistrarAction('delete_local')">Remove local records</button></div>
             <div class="table-wrap registrar-table"><table><thead><tr><th class="select-column"> <input type="checkbox" :checked="allRegistrarDomainsSelected" @change="toggleAllRegistrarDomains"></th><th>Domain</th><th>Registrar / account</th><th>Status</th><th>Expiry</th><th>Days remaining</th><th>Renewal</th><th>Transfer</th><th>Assigned client</th><th>Actions</th></tr></thead><tbody><tr v-for="domain in registrarDomains" :key="(domain.id || domain.local_domain_id || domain.domain_name) + domain.provider_key"><td class="select-column"><input v-if="domain.id" type="checkbox" :checked="selectedRegistrarDomains.includes(domain.id)" @change="toggleRegistrarDomainSelection(domain.id)"></td><td><strong>{{ domain.domain_name }}</strong><small>{{ domain.registrar_domain_id || 'Local inventory record' }}</small></td><td><strong>{{ domain.provider_name }}</strong><small>{{ domain.account_label }}</small></td><td><span class="pill" :class="domain.status">{{ domain.status }}</span></td><td>{{ domain.expiry_at ? domain.expiry_at.slice(0, 10) : '—' }}</td><td><span v-if="domain.days_to_expiry != null" :class="{ 'expiry-danger': domain.days_to_expiry < 0, 'expiry-warning': domain.days_to_expiry >= 0 && domain.days_to_expiry <= 30 }">{{ domain.days_to_expiry < 0 ? 'Expired ' + Math.abs(domain.days_to_expiry) + ' days ago' : domain.days_to_expiry + ' days' }}</span><span v-else>—</span></td><td><span class="pill">{{ domain.auto_renew ? 'Auto-renew on' : 'Manual' }}</span></td><td><span class="pill">{{ domain.transfer_lock ? 'Locked' : 'Unlocked' }}</span><small>{{ domain.auth_code_available ? 'Code available' : 'Code protected' }}</small></td><td><strong>{{ domain.owner_email || 'Unassigned' }}</strong><small>{{ domain.username || '' }}</small></td><td class="actions"><button class="ghost-button" title="Manage local assignment and nameservers" @click="openRegistrarManage(domain)">Manage</button></td></tr><tr v-if="!registrarDomains.length"><td colspan="10" class="empty-row">No registrar domains match the current filters.</td></tr></tbody></table></div>
-            <div v-if="registrarManageModal.open" class="modal-overlay" @click.self="registrarManageModal.open = false"><div class="modal-panel registrar-modal"><div class="modal-header"><div><span class="eyebrow">Client association</span><h2>Manage {{ registrarManageModal.record && registrarManageModal.record.domain_name }}</h2></div><button class="close-button" @click="registrarManageModal.open = false">×</button></div><form class="form-grid" @submit.prevent="saveRegistrarManage"><label>Assign to client user<select v-model="registrarManageModal.user_id"><option value="">Unassigned</option><option v-for="client in clients" :value="client.id" :key="client.id">{{ client.full_name || client.email }} · {{ client.email }}</option></select></label><label>Nameserver 1<input v-model.trim="registrarManageModal.nameservers[0]" placeholder="ns1.example.com"></label><label>Nameserver 2<input v-model.trim="registrarManageModal.nameservers[1]" placeholder="ns2.example.com"></label><div class="registrar-note"><strong>Client-level assignment</strong><span>This assigns the registrar domain directly to a client user. It does not require or change a hosting account or local domain record.</span></div><div class="modal-actions"><button type="button" class="ghost-button" @click="registrarManageModal.open = false">Cancel</button><button type="submit" class="primary-button" :disabled="registrarManageModal.saving">{{ registrarManageModal.saving ? 'Saving…' : 'Save changes' }}</button></div></form></div></div>
+            <div v-if="registrarManageModal.open" class="modal-overlay" @click.self="registrarManageModal.open = false"><div class="modal-panel registrar-modal"><div class="modal-header"><div><span class="eyebrow">Client association</span><h2>Manage {{ registrarManageModal.record && registrarManageModal.record.domain_name }}</h2></div><button class="close-button" @click="registrarManageModal.open = false">×</button></div><form class="form-grid" @submit.prevent="saveRegistrarManage"><label>Assign to client user<select v-model="registrarManageModal.user_id"><option value="">Unassigned</option><option v-for="client in clients" :value="client.id" :key="client.id">{{ client.full_name || client.email }} · {{ client.email }}</option></select></label><label>Nameserver 1<input v-model.trim="registrarManageModal.nameservers[0]" placeholder="ns1.example.com"></label><label>Nameserver 2<input v-model.trim="registrarManageModal.nameservers[1]" placeholder="ns2.example.com"></label><div class="registrar-note"><strong>Client-level assignment</strong><span>This assigns the registrar domain directly to a client user. It does not require or change a hosting account or local domain record.</span></div><div class="modal-actions"><button type="button" class="ghost-button" @click="registrarManageModal.open = false">Cancel</button><button type="submit" class="primary-button" :disabled="registrarManageModal.saving"><span v-if="registrarManageModal.saving" class="btn-spinner"></span>{{ registrarManageModal.saving ? 'Saving…' : 'Save changes' }}</button></div></form></div></div>
             <div class="registrar-note"><strong>Provider operations</strong><span>Inventory sync is provider-specific and preserves the local cache. Register, renew, WHOIS, transfer-lock, and transfer-code actions will only be enabled after the corresponding registrar account adapter is configured.</span></div>
             <details class="registrar-assign-panel"><summary>Assign or register a domain for a client</summary><div class="form-grid registrar-assign-grid"><label>Client<select v-model="domainForm.user_id"><option value="" disabled>Select client</option><option v-for="client in clients" :value="client.id" :key="client.id">{{ client.email }}</option></select></label><label>Domain<input v-model.trim="domainForm.domain" placeholder="example.com"></label><label>Registrar account<select v-model="domainForm.registrar_provider_id"><option value="">No registrar API</option><option v-for="provider in registrars" :key="provider.id" :value="provider.id">{{ provider.display_name }}</option></select></label><label class="registrar-check"><input type="checkbox" v-model="domainForm.register"> Register through provider</label><label v-if="domainForm.register">Nameserver 1<input v-model.trim="domainForm.nameservers[0]" placeholder="ns1.example.com"></label><label v-if="domainForm.register">Nameserver 2<input v-model.trim="domainForm.nameservers[1]" placeholder="ns2.example.com"></label><button class="primary-button" @click="addClientDomain">{{ domainForm.register ? 'Register and assign' : 'Assign existing domain' }}</button></div></details>
             <div v-if="showRegistrarAccountModal" class="modal-overlay" @click.self="showRegistrarAccountModal = false"><div class="modal-panel registrar-modal"><div class="modal-header"><div><span class="eyebrow">New connection</span><h2>Connect registrar account</h2></div><button class="close-button" @click="showRegistrarAccountModal = false">×</button></div><form class="form-grid" @submit.prevent="saveRegistrarAccount"><label>Provider<select v-model="registrarAccountForm.provider_key"><option value="pdr">PDR / ResellerClub</option><option value="resellerclub">ResellerClub</option><option value="domainnameapi">DomainNameAPI</option><option value="namecheap">Namecheap</option><option value="cloudflare">Cloudflare</option></select></label><label>Account label<input v-model.trim="registrarAccountForm.label" required placeholder="Production reseller account"></label><label v-if="registrarAccountForm.provider_key !== 'cloudflare'">Reseller / username / account ID<input v-model.trim="registrarAccountForm.account_identifier" placeholder="Account identifier"></label><label v-if="registrarAccountForm.provider_key === 'cloudflare'">Existing Cloudflare DNS account<select v-model="registrarAccountForm.dns_provider_account_id" required><option value="" disabled>Select existing DNS account</option><option v-for="account in cloudflareAccounts()" :key="account.id" :value="account.id">{{ account.display_name }}{{ account.account_name ? ' · ' + account.account_name : '' }}</option></select><small class="form-help">The registrar module will reuse this account’s encrypted API token.</small></label><label>API base URL<input v-model.trim="registrarAccountForm.api_base" placeholder="Optional provider endpoint"></label><label v-if="registrarAccountForm.provider_key !== 'cloudflare'">API key or token<input v-model="registrarAccountForm.api_key" type="password" placeholder="Stored encrypted"></label><div v-if="registrarAccountForm.provider_key === 'cloudflare' && !cloudflareAccounts().length" class="registrar-note"><strong>No DNS account found</strong><span>Add a Cloudflare account under DNS Settings first.</span></div><div class="modal-actions"><button type="button" class="ghost-button" @click="showRegistrarAccountModal = false">Cancel</button><button type="submit" class="primary-button" :disabled="registrarAccountForm.provider_key === 'cloudflare' && !registrarAccountForm.dns_provider_account_id">Save account</button></div></form></div></div>
