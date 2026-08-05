@@ -30,6 +30,25 @@ class AgentTests(unittest.TestCase):
         self.assertNotEqual(first["pop_tls_port"], second["pop_tls_port"])
         self.assertNotEqual(first["sieve_port"], second["sieve_port"])
 
+    def test_mariadb_sql_fails_when_database_container_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "docker"
+            seed_dev_data(config.db_path, config.account_root)
+            agent = Agent(config)
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT id FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                result = type("Result", (), {"stdout": "", "stderr": "", "returncode": 0})()
+                with patch("mangopanel.agent.shutil.which", return_value="/usr/bin/docker"), patch(
+                    "mangopanel.agent.subprocess.run", return_value=result
+                ):
+                    with self.assertRaisesRegex(Exception, "mariadb_container_unavailable"):
+                        agent.execute_mariadb_sql(conn, account["id"], ["CREATE USER test@'%';"])
+
     def test_agent_generates_account_stack_from_seed_job(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -58,6 +77,7 @@ class AgentTests(unittest.TestCase):
             self.assertIn('mangopanel.storage_mb: "10240"', compose_text)
             self.assertIn('mangopanel.inode_limit: "100000"', compose_text)
             self.assertIn('mangopanel.backup_retention_days: "7"', compose_text)
+            self.assertIn("umask 0002", compose_text)
             self.assertTrue((config.account_root / "u000001" / "account.json").exists())
             web_dockerfile = (config.account_root / "u000001" / ".runtime" / "stack" / "web" / "Dockerfile").read_text(encoding="utf-8")
             self.assertIn("openssh-server", web_dockerfile)

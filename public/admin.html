@@ -405,7 +405,7 @@
           <div v-for="section in sidebarSections" :key="section.label" class="nav-section">
             <span class="nav-group">{{ section.label }}</span>
             <button v-for="item in section.items" :key="item.target" :class="{ active: activePage === item.target }" @click="goTo(item.target)">
-              <span class="nav-item-icon">{{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',cpu:'🖥',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[item.target] || '•' }}</span>
+              <span class="nav-item-icon">{{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',cpu:'🖥',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒','audit-logs':'🧾',status:'📢',system:'⚙','default-page':'📄'}[item.target] || '•' }}</span>
               <span>{{ item.label }}</span>
             </button>
           </div>
@@ -421,7 +421,7 @@
         <header v-if="token" class="topbar">
           <div class="topbar-context">
             <div class="topbar-page-icon admin-page-glyph">
-              {{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',cpu:'🖥',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒',status:'📢',system:'⚙','default-page':'📄'}[activePage] || activeMenuItem.label.slice(0, 1) }}
+              {{ {overview:'⊞',clients:'👥',plans:'📋',storage:'💾',networking:'🔌',cpu:'🖥',dns:'🌐','dns-domains':'🗺',registrars:'🔗',admins:'🛡',security:'🔒','audit-logs':'🧾',status:'📢',system:'⚙','default-page':'📄'}[activePage] || activeMenuItem.label.slice(0, 1) }}
             </div>
             <div class="topbar-page-meta">
               <span class="topbar-page-title-row">
@@ -894,7 +894,7 @@
                     </td>
                     <td class="client-actions">
                       <button class="primary-button" @click="openClientProfile(client)">Edit Profile</button>
-                      <button @click="loginAsClient(client)" :disabled="client.status !== 'active'">Login as Client</button>
+                      <button class="login-client-button" @click="loginAsClient(client)" :disabled="client.status !== 'active' || clientLoginLoadingId === client.id"><span v-if="clientLoginLoadingId === client.id" class="btn-spinner"></span>{{ clientLoginLoadingId === client.id ? 'Launching…' : 'Login as Client' }}</button>
                       <button class="danger-button" @click="deleteClient(client)" title="Delete customer and all hosting accounts">Delete customer</button>
                     </td>
                   </tr>
@@ -2804,6 +2804,52 @@
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </section>
+
+          <section v-if="activePage === 'audit-logs'" class="panel">
+            <div class="section-head">
+              <div>
+                <h2>Audit Logs</h2>
+                <p>Browse administrative and security events. Logs are loaded page by page.</p>
+              </div>
+              <button class="ghost-button" :disabled="auditLogLoading" @click="loadAuditLogs(auditLogPagination.page)">Refresh</button>
+            </div>
+            <div class="actions" style="display:flex; gap:.6rem; flex-wrap:wrap; margin-bottom:1rem;">
+              <input class="admin-form-input" style="max-width:260px;" v-model="auditLogSearch" @keyup.enter="loadAuditLogs(1)" placeholder="Search action, target, IP...">
+              <select class="admin-form-input" style="max-width:180px;" v-model="auditLogActorType" @change="loadAuditLogs(1)">
+                <option value="">All actor types</option>
+                <option value="admin">Admin</option>
+                <option value="user">User</option>
+                <option value="system">System</option>
+                <option value="public">Public</option>
+              </select>
+              <input class="admin-form-input" style="max-width:220px;" v-model="auditLogAction" @keyup.enter="loadAuditLogs(1)" placeholder="Exact action (optional)">
+              <button class="primary-button" :disabled="auditLogLoading" @click="loadAuditLogs(1)">Apply filters</button>
+              <button class="ghost-button" @click="resetAuditLogFilters">Clear</button>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>IP address</th><th>Details</th></tr></thead>
+                <tbody>
+                  <tr v-for="log in auditLogs" :key="log.id">
+                    <td><small>{{ new Date(log.created_at + 'Z').toLocaleString() }}</small></td>
+                    <td><span class="pill info">{{ log.actor_type }} #{{ log.actor_id || '—' }}</span></td>
+                    <td><strong>{{ log.action }}</strong></td>
+                    <td>{{ log.target_type || '—' }}<span v-if="log.target_id"> #{{ log.target_id }}</span></td>
+                    <td><code>{{ log.ip_address || '—' }}</code></td>
+                    <td><details><summary>View</summary><pre style="white-space:pre-wrap; max-width:360px; margin:.5rem 0 0;">{{ log.metadata }}</pre></details></td>
+                  </tr>
+                  <tr v-if="!auditLogs.length"><td colspan="6" class="empty-row">{{ auditLogLoading ? 'Loading audit logs...' : 'No audit logs match these filters.' }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-top:1rem;">
+              <small style="color:var(--muted,#64748b);">{{ auditLogPagination.total }} total events · Page {{ auditLogPagination.page }} of {{ auditLogPagination.total_pages }}</small>
+              <div style="display:flex; gap:.5rem;">
+                <button class="ghost-button" :disabled="auditLogLoading || auditLogPagination.page <= 1" @click="goToAuditLogPage(auditLogPagination.page - 1)">Previous</button>
+                <button class="ghost-button" :disabled="auditLogLoading || auditLogPagination.page >= auditLogPagination.total_pages" @click="goToAuditLogPage(auditLogPagination.page + 1)">Next</button>
+              </div>
             </div>
           </section>
 

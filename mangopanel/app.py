@@ -1415,7 +1415,10 @@ class MangoHandler(BaseHTTPRequestHandler):
         ).fetchone()
         if not mailbox:
             raise ApiError(HTTPStatus.NOT_FOUND, "mailbox_not_found")
-        if int(payload.get("sub") or 0) != int(mailbox["account_id"]):
+        # Client launch tokens use `sub` for the user, while mail-session
+        # tokens use it for the account. Prefer the explicit account claim.
+        token_account_id = payload.get("account_id") or payload.get("sub")
+        if int(token_account_id or 0) != int(mailbox["account_id"]):
             raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
         return mailbox
 
@@ -1504,8 +1507,18 @@ class MangoHandler(BaseHTTPRequestHandler):
             mailbox = self.load_webmail_mailbox(conn, payload, mailbox_id)
             cookies = []
             if CONFIG.agent_mode == "docker":
-                session = self.snappymail_login_session(conn, mailbox)
-                cookies = session.get("cookies") or []
+                try:
+                    session = self.snappymail_login_session(conn, mailbox)
+                    cookies = session.get("cookies") or []
+                except Exception as exc:
+                    # A mail-edge outage must not turn a valid launch token
+                    # into an opaque 500. Open webmail and let the user log
+                    # in normally while retaining the server-side detail.
+                    logging.warning(
+                        "SnappyMail SSO handoff failed for mailbox %s: %s",
+                        mailbox["id"],
+                        exc,
+                    )
             self.redirect_response(self.snappymail_launch_url(conn, mailbox), cookies)
         return
 
@@ -4131,9 +4144,11 @@ class MangoHandler(BaseHTTPRequestHandler):
                     CONFIG.jwt_secret,
                     3600,
                 )
-                mail_host = runtime.get("mail_edge_host") or runtime.get("mail_host", "")
                 launch_path = f"/webmail?launch={launch_token}"
-                launch_url = f"http://{mail_host}{launch_path}" if mail_host else launch_path
+                # Keep the first hop on the panel origin. This avoids HTTPS
+                # mixed-content failures and lets the server perform the
+                # authenticated handoff to the configured mail edge.
+                launch_url = launch_path
                 return self.json_response({"launch_url": launch_url, "expires_in": 3600, "mailbox": mailbox_row_payload(conn, mailbox)})
             if path == "/api/client/databases" and method == "GET":
                 require_account(account)
@@ -4238,25 +4253,42 @@ class MangoHandler(BaseHTTPRequestHandler):
                 privileges = validate_db_privileges(body.get("privileges", "ALL"))
                 if conn.execute("SELECT id FROM databases WHERE name = ?", (name,)).fetchone():
                     raise ApiError(HTTPStatus.CONFLICT, "database_name_already_exists")
-                if conn.execute("SELECT id FROM database_users WHERE username = ?", (username,)).fetchone():
+                existing_user = conn.execute(
+                    "SELECT id, account_id FROM database_users WHERE username = ?",
+                    (username,),
+                ).fetchone()
+                if existing_user and int(existing_user["account_id"]) != int(account["id"]):
                     raise ApiError(HTTPStatus.CONFLICT, "database_user_already_exists")
                 db_cur = conn.execute(
                     "INSERT INTO databases(account_id, name, username, status, created_by_user_id) VALUES (?, ?, ?, ?, ?)",
                     (account["id"], name, username, "active", actor["id"]),
                 )
-                user_cur = conn.execute(
-                    "INSERT INTO database_users(account_id, username, password_hash, status) VALUES (?, ?, ?, ?)",
-                    (account["id"], username, hash_password(password), "active"),
-                )
+                if existing_user:
+                    user_id = int(existing_user["id"])
+                    conn.execute(
+                        "UPDATE database_users SET password_hash = ?, status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (hash_password(password), user_id),
+                    )
+                    user_action = "update_database_user"
+                else:
+                    user_cur = conn.execute(
+                        "INSERT INTO database_users(account_id, username, password_hash, status) VALUES (?, ?, ?, ?)",
+                        (account["id"], username, hash_password(password), "active"),
+                    )
+                    user_id = int(user_cur.lastrowid)
+                    user_action = "create_database_user"
                 grant_cur = conn.execute(
                     "INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, ?, ?)",
-                    (db_cur.lastrowid, user_cur.lastrowid, privileges, "active"),
+                    (db_cur.lastrowid, user_id, privileges, "active"),
                 )
-                enqueue_agent_job(conn, "create_database_user", "database_user", user_cur.lastrowid, {"username": username, "password": password, "account_id": account["id"]})
                 job_id = enqueue_agent_job(conn, "create_database", "database", db_cur.lastrowid, {"name": name, "account_id": account["id"]})
-                enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {"database_id": db_cur.lastrowid, "user_id": user_cur.lastrowid, "privileges": privileges, "account_id": account["id"]})
+                # Create the database/container first; the user and grant
+                # jobs must never race a database service that is still
+                # being provisioned.
+                enqueue_agent_job(conn, user_action, "database_user", user_id, {"username": username, "password": password, "account_id": account["id"]})
+                enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {"database_id": db_cur.lastrowid, "user_id": user_id, "privileges": privileges, "account_id": account["id"]})
                 log_activity(conn, actor["id"], "database_wizard_completed", {"name": name, "username": username})
-                return self.json_response({"database_id": db_cur.lastrowid, "database_user_id": user_cur.lastrowid, "database_grant_id": grant_cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])}, HTTPStatus.CREATED)
+                return self.json_response({"database_id": db_cur.lastrowid, "database_user_id": user_id, "database_grant_id": grant_cur.lastrowid, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])}, HTTPStatus.CREATED)
             if path == "/api/client/databases" and method == "POST":
                 require_active_account(account)
                 require_collaborator_permission(conn, actor["id"], account["id"], "can_create_databases")
@@ -4273,6 +4305,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (account["id"], name, username, "active", actor["id"]),
                 )
                 db_id = cur.lastrowid
+                user_id = None
+                grant_id = None
                 if password:
                     password = validate_db_password(password)
                     db_user = conn.execute("SELECT id FROM database_users WHERE username = ?", (username,)).fetchone()
@@ -4284,16 +4318,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                             (account["id"], username, hash_password(password), "active"),
                         )
                         user_id = user_cur.lastrowid
-                        enqueue_agent_job(conn, "create_database_user", "database_user", user_id, {"username": username, "password": password, "account_id": account["id"]})
-
                     grant = conn.execute("SELECT id FROM database_grants WHERE database_id = ? AND user_id = ?", (db_id, user_id)).fetchone()
                     if not grant:
                         grant_cur = conn.execute(
                             "INSERT INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')",
                             (db_id, user_id),
                         )
-                        enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_cur.lastrowid, {})
+                        grant_id = grant_cur.lastrowid
                 job_id = enqueue_agent_job(conn, "create_database", "database", db_id, {"name": name, "account_id": account["id"]})
+                if password and user_id:
+                    enqueue_agent_job(conn, "create_database_user", "database_user", user_id, {"username": username, "password": password, "account_id": account["id"]})
+                if grant_id:
+                    enqueue_agent_job(conn, "grant_database_user", "database_grant", grant_id, {})
                 log_activity(conn, actor["id"], "database_created", {"name": name})
                 return self.json_response({"database_id": db_id, "job_id": job_id, **client_databases_payload(conn, account["id"], actor["id"])}, HTTPStatus.CREATED)
             if path.startswith("/api/client/databases/"):
@@ -4443,6 +4479,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not local_part or not domain:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_mailbox_address")
                 mail_domain = require_owned_mail_domain(conn, account["id"], domain)
+                # Only an explicit JSON boolean grants permission; do not treat
+                # strings such as "false" as consent.
+                configure_dns = body.get("configure_dns") is True
                 password = validate_password(body.get("password", ""))
                 confirm_password = str(body.get("confirm_password") or "").strip()
                 if confirm_password and confirm_password != password:
@@ -4471,9 +4510,19 @@ class MangoHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 job_id = enqueue_agent_job(conn, "sync_mailboxes", "hosting_account", account["id"], {"mailbox_id": cur.lastrowid, "email": email})
+                dns_job_id = None
+                if configure_dns:
+                    domain_row = conn.execute(
+                        "SELECT * FROM domains WHERE id = ? AND account_id = ?",
+                        (mail_domain["domain_id"], account["id"]),
+                    ).fetchone()
+                    runtime = account_runtime(conn, account["id"])
+                    mail_host = (runtime or {}).get("mail_host") or mail_dns_target_for_account(account["username"])
+                    ensure_mail_dns_records(conn, domain_row, mail_domain, mail_host)
+                    dns_job_id = enqueue_dns_zone_sync(conn, domain_row["id"], {"reason": "mailbox_created_with_dns_permission"})
                 log_activity(conn, actor["id"], "mailbox_created", {"mailbox_id": cur.lastrowid, "email": email})
                 created = conn.execute("SELECT * FROM mailboxes WHERE id = ?", (cur.lastrowid,)).fetchone()
-                return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id, "mailbox": mailbox_row_payload(conn, created)}, HTTPStatus.CREATED)
+                return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id, "dns_job_id": dns_job_id, "dns_configured": configure_dns, "mailbox": mailbox_row_payload(conn, created)}, HTTPStatus.CREATED)
             if path == "/api/client/backups" and method == "POST":
                 require_active_account(account)
                 cur = conn.execute(
@@ -8156,7 +8205,44 @@ class MangoHandler(BaseHTTPRequestHandler):
                 result = Agent(CONFIG).run_all()
                 return self.json_response({"results": result})
             if path == "/api/admin/audit-logs" and method == "GET":
-                return self.json_response({"audit_logs": rows_to_dicts(conn.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 100").fetchall())})
+                raw_page = (query.get("page") or ["1"])[0]
+                raw_page_size = (query.get("page_size") or ["25"])[0]
+                try:
+                    page = max(1, int(raw_page))
+                    page_size = min(100, max(10, int(raw_page_size)))
+                except (TypeError, ValueError):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_audit_log_pagination")
+                action = str((query.get("action") or [""])[0]).strip()
+                actor_type = str((query.get("actor_type") or [""])[0]).strip().lower()
+                search = str((query.get("search") or [""])[0]).strip()
+                if actor_type and actor_type not in {"admin", "user", "system", "public"}:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_audit_log_actor_type")
+                where = []
+                params = []
+                if action:
+                    where.append("action = ?")
+                    params.append(action)
+                if actor_type:
+                    where.append("actor_type = ?")
+                    params.append(actor_type)
+                if search:
+                    term = f"%{search}%"
+                    where.append("(action LIKE ? OR target_type LIKE ? OR metadata LIKE ? OR ip_address LIKE ?)")
+                    params.extend([term, term, term, term])
+                where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+                total = conn.execute(f"SELECT COUNT(*) AS total FROM audit_logs {where_sql}", params).fetchone()["total"]
+                total_pages = max(1, (total + page_size - 1) // page_size)
+                page = min(page, total_pages)
+                rows = conn.execute(
+                    f"SELECT id, actor_type, actor_id, action, target_type, target_id, ip_address, metadata, created_at "
+                    f"FROM audit_logs {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+                    [*params, page_size, (page - 1) * page_size],
+                ).fetchall()
+                return self.json_response({
+                    "audit_logs": rows_to_dicts(rows),
+                    "pagination": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages},
+                    "filters": {"action": action, "actor_type": actor_type, "search": search},
+                })
             if path == "/api/admin/status" and method == "GET":
                 return self.public_status_payload(conn, include_admin=True)
             if path == "/api/admin/status/incidents" and method == "POST":
@@ -9581,6 +9667,47 @@ def seed_website_dns_records(conn, domain_id, domain, mail_host, dkim_material=N
         "dkim_public_key": dkim_material["public_key"],
         "dkim_selector": dkim_material["selector"],
     }
+
+
+def ensure_mail_dns_records(conn, domain_row, mail_domain_row, mail_host):
+    """Create/update the records required for hosted mail after explicit consent."""
+    domain_id = domain_row["id"]
+    domain = domain_row["name"]
+    dkim_name = f"{mail_domain_row['dkim_selector'] or 'mango'}._domainkey"
+    desired = [
+        ("MX", "@", mail_host, 10),
+        ("TXT", "@", mail_domain_row["spf_policy"] or recommended_spf_record(mail_host), None),
+        ("TXT", dkim_name, dkim_dns_value(mail_domain_row["dkim_public_key"]), None),
+        ("TXT", "_dmarc", mail_domain_row["dmarc_policy"] or recommended_dmarc_record(domain), None),
+    ]
+    for record_type, name, value, priority in desired:
+        if not value:
+            continue
+        if record_type == "TXT" and name == "@":
+            existing = conn.execute(
+                "SELECT id FROM dns_records WHERE domain_id = ? AND type = 'TXT' AND name = '@' AND LOWER(value) LIKE 'v=spf1%' ORDER BY id LIMIT 1",
+                (domain_id,),
+            ).fetchone()
+        elif record_type == "TXT" and name == "_dmarc":
+            existing = conn.execute(
+                "SELECT id FROM dns_records WHERE domain_id = ? AND type = 'TXT' AND name = '_dmarc' ORDER BY id LIMIT 1",
+                (domain_id,),
+            ).fetchone()
+        else:
+            existing = conn.execute(
+                "SELECT id FROM dns_records WHERE domain_id = ? AND type = ? AND name = ? ORDER BY id LIMIT 1",
+                (domain_id, record_type, name),
+            ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE dns_records SET value = ?, priority = ?, ttl = 300, system_record = 1, locked = 1 WHERE id = ?",
+                (value, priority, existing["id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO dns_records(domain_id, type, name, value, ttl, priority, system_record, locked) VALUES (?, ?, ?, ?, 300, ?, 1, 1)",
+                (domain_id, record_type, name, value, priority),
+            )
 
 
 def check_ssh_config():
@@ -11715,6 +11842,8 @@ def shared_mail_edge_manifest(conn):
     edge_webmail_url = f"{edge_url}/webmail"
     edge_login_url = f"{edge_url}/webmail/login"
     accounts = []
+    manifest_mailboxes = []
+    manifest_domains = []
     account_rows = conn.execute(
         """
         SELECT ha.id, ha.username, ha.status
@@ -11726,6 +11855,20 @@ def shared_mail_edge_manifest(conn):
     for account in account_rows:
         mailboxes = client_mailboxes_payload(conn, account["id"])
         routing = client_mail_routing_payload(conn, account["id"])
+        manifest_mailboxes.extend(mailboxes["mailboxes"])
+        for domain in routing["mail_domains"]:
+            # Do not expose dkim_private_key (or other client-only policy
+            # fields) through the public edge contract.
+            manifest_domains.append(
+                {
+                    "id": domain.get("domain_id"),
+                    "name": domain.get("name"),
+                    "status": domain.get("domain_status") or domain.get("mail_status"),
+                    "mail_domain_id": domain.get("mail_domain_id"),
+                    "catch_all_enabled": int(domain.get("catch_all_enabled") or 0),
+                    "catch_all_destination": domain.get("catch_all_destination") or "",
+                }
+            )
         accounts.append(
             {
                 "account_id": account["id"],
@@ -11759,6 +11902,10 @@ def shared_mail_edge_manifest(conn):
         "edge_url": edge_url,
         "edge_webmail_url": edge_webmail_url,
         "edge_login_url": edge_login_url,
+        # Keep the top-level contract used by the account-stack mail edge
+        # manifest. The nested account view remains for multi-tenant clients.
+        "mailboxes": manifest_mailboxes,
+        "domains": manifest_domains,
         "accounts": accounts,
     }
 

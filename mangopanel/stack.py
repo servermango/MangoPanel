@@ -1,5 +1,6 @@
 import crypt
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -59,11 +60,11 @@ SHA512_CRYPT_SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0
 def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
     account_id = int(account["id"])
     slot = port_base + (account_id * 10)
-    # The first development account keeps the documented mail ports. Every
-    # additional account receives its own range so its mailserver can be
-    # provisioned alongside the other per-account services.
+    # Every account needs an isolated host-port range. Production accounts
+    # used to share 110/143/465/etc., which made the second mailserver fail to
+    # start and left its SnappyMail mailbox authentication unavailable.
     import os
-    use_dev_mail_ports = public_host == "127.0.0.1" or sys.platform == "darwin" or os.getenv("MP_ENV") == "development"
+    use_dev_mail_ports = True
     mail_port_offset = (account_id - 1) * 10 if use_dev_mail_ports else 0
     username = account["username"]
     base = {
@@ -452,11 +453,28 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         tmp = root.parent / "tmp"
         logs.mkdir(parents=True, exist_ok=True)
         tmp.mkdir(parents=True, exist_ok=True)
+        # File Browser runs as the account UID, while PHP/OLS runs as the
+        # web user. Setgid + group-write keeps directories created by either
+        # service writable by the other, including move/rename operations.
         for p in [root.parent, root, logs, tmp]:
             try:
-                os.chmod(p, 0o777)
+                os.chmod(p, 0o2777)
             except Exception:
                 pass
+        # Repair existing subdirectories as well. This makes the policy
+        # effective for sites created before setgid permissions were added.
+        try:
+            for current, dirs, _files in os.walk(root):
+                if Path(current).is_symlink():
+                    dirs[:] = []
+                    continue
+                os.chmod(current, 0o2777)
+                for name in dirs:
+                    child = Path(current) / name
+                    if not child.is_symlink():
+                        os.chmod(child, 0o2777)
+        except OSError:
+            pass
         index = root / "index.php"
         if not index.exists():
             # Only drop the placeholder when the directory is truly empty.
@@ -614,7 +632,6 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     (paths["stack"] / "cron").write_text(render_crontab(account), encoding="utf-8")
     (paths["stack"] / "cron").chmod(0o600)
     try:
-        import os
         os.chown(paths["stack"] / "cron", 0, 0)
     except PermissionError:
         pass
@@ -1305,7 +1322,7 @@ services:
     mem_limit: {memory}
     cpus: "{cpu_count}"
     pids_limit: 256
-    entrypoint: ["/bin/sh", "-c", 'groupadd -g {uid} {username} 2>/dev/null || true; usermod -aG {uid} nobody 2>/dev/null || true; exec /entrypoint.sh "$$@"', "--"]
+    entrypoint: ["/bin/sh", "-c", 'umask 0002; groupadd -g {uid} {username} 2>/dev/null || true; usermod -aG {uid} nobody 2>/dev/null || true; exec /entrypoint.sh "$$@"', "--"]
     command: ["/bin/sh", "/usr/local/bin/mangopanel-services.sh"]
     ports:
       - "0.0.0.0:{ftp_port}:21"

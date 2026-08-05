@@ -355,6 +355,7 @@ const app = createApp({
       editingDatabaseGrant: null,
       // DB Wizard
       dbWizardStep: 1,
+      dbWizardSubmitting: false,
       wizardDbName: "",
       wizardDbUser: "",
       wizardDbPass: "",
@@ -383,6 +384,7 @@ const app = createApp({
       sslModal: { isOpen: false, website_id: "", crt: "", key: "", isSubmitting: false, errorMessage: "" },
       issuingSsl: {},
       mailboxes: [],
+      launchingMailboxId: null,
       mailRouting: {
         mail_domains: [],
         mail_aliases: [],
@@ -428,7 +430,7 @@ const app = createApp({
         body: "",
         enabled: true,
       },
-      mailboxWizard: { isOpen: false, mode: "create", step: 1, isCreating: false, createdMailbox: null, mailboxId: null, email: "", quota_mb: 1024, password: "", confirm_password: "", status: "active" },
+      mailboxWizard: { isOpen: false, mode: "create", step: 1, isCreating: false, createdMailbox: null, mailboxId: null, local_part: "", domain: "", email: "", quota_mb: 1024, password: "", confirm_password: "", configure_dns: false, status: "active" },
       mailboxEditor: { isOpen: false, isSaving: false, mailboxId: null, email: "", quota_mb: 1024, status: "active", password: "", confirm_password: "" },
       cronJobs: [],
       newCronJob: { schedule: "*/15 * * * *", command: "" },
@@ -623,6 +625,13 @@ const app = createApp({
     },
     selectedWebsite() {
       return this.websites.find((site) => String(site.id) === String(this.selectedWebsiteId)) || this.websites[0] || null;
+    },
+    mailboxWizardDomain() {
+      return (this.mailRouting.mail_domains || []).find((domain) => String(domain.name) === String(this.mailboxWizard.domain)) || null;
+    },
+    mailboxWizardDnsReady() {
+      const auth = this.mailboxWizardDomain?.auth;
+      return Boolean(auth && auth.mx?.configured && auth.spf?.configured && auth.dkim?.configured && auth.dmarc?.configured);
     },
     selectedWebsiteLabel() {
       return this.selectedWebsiteId && this.selectedWebsite ? this.selectedWebsite.domain : "All sites";
@@ -3543,31 +3552,28 @@ const app = createApp({
     },
     // DB Wizard
     async wizardNextStep() {
+      if (this.dbWizardSubmitting) return;
+      if (this.dbWizardStep === 1 && !this.wizardDbName) return;
+      if (this.dbWizardStep === 2 && (!this.wizardDbUser || !this.wizardDbPass)) return;
+      this.dbWizardSubmitting = true;
       try {
         if (this.dbWizardStep === 1) {
-          await this.api("/api/client/databases", { method: "POST", body: JSON.stringify({ name: this.wizardDbName }) });
-          await this.refresh();
           this.dbWizardStep = 2;
         } else if (this.dbWizardStep === 2) {
-          await this.api("/api/client/database-users", { method: "POST", body: JSON.stringify({ username: this.wizardDbUser, password: this.wizardDbPass }) });
-          await this.refresh();
           this.dbWizardStep = 3;
         } else if (this.dbWizardStep === 3) {
-          const db = this.databases.find(d => d.name === this.wizardDbName);
-          const user = this.databaseUsers.find(u => u.username === this.wizardDbUser);
-          if (db && user) {
-            await this.api("/api/client/database-grants", { method: "POST", body: JSON.stringify({ database_id: db.id, user_id: user.id, privileges: "ALL" }) });
-            await this.refresh();
-            this.dbWizardStep = 4;
-          } else {
-            this.notify("Could not find created database or user.", "error");
-          }
+          await this.api("/api/client/database-wizard", { method: "POST", body: JSON.stringify({ name: this.wizardDbName, username: this.wizardDbUser, password: this.wizardDbPass, privileges: "ALL" }) });
+          await this.refresh();
+          this.dbWizardStep = 4;
         }
       } catch (err) {
         this.notify(String(err), "error");
+      } finally {
+        this.dbWizardSubmitting = false;
       }
     },
     resetDbWizard() {
+      this.dbWizardSubmitting = false;
       this.dbWizardStep = 1;
       this.wizardDbName = "";
       this.wizardDbUser = "";
@@ -3798,7 +3804,8 @@ const app = createApp({
     },
     // Mailbox methods
     openMailboxWizard() {
-      this.mailboxWizard = { isOpen: true, mode: "create", step: 1, isCreating: false, createdMailbox: null, mailboxId: null, email: "", quota_mb: 1024, password: "", confirm_password: "", status: "active" };
+      const firstDomain = (this.mailRouting.mail_domains || []).find((domain) => domain.mail_domain_id) || (this.mailRouting.mail_domains || [])[0];
+      this.mailboxWizard = { isOpen: true, mode: "create", step: 1, isCreating: false, createdMailbox: null, mailboxId: null, local_part: "", domain: firstDomain?.name || "", email: "", quota_mb: 1024, password: "", confirm_password: "", configure_dns: false, status: "active" };
     },
     closeMailboxWizard() {
       if (this.mailboxWizard.isCreating) return;
@@ -3817,6 +3824,8 @@ const app = createApp({
       };
     },
     async openMailboxWebmail(mailbox) {
+      if (this.launchingMailboxId) return;
+      this.launchingMailboxId = mailbox.id;
       try {
         const payload = await this.api(`/api/client/mailboxes/${mailbox.id}/webmail/launch`);
         if (!payload.launch_url) {
@@ -3825,6 +3834,8 @@ const app = createApp({
         window.location.assign(payload.launch_url);
       } catch (error) {
         this.notify(error.message, "error");
+      } finally {
+        this.launchingMailboxId = null;
       }
     },
     openMailboxLogin(mailbox) {
@@ -3878,7 +3889,8 @@ const app = createApp({
     nextMailboxWizardStep() {
       if (this.mailboxWizard.isCreating) return;
       if (this.mailboxWizard.step === 1) {
-        if (!this.mailboxWizard.email || !this.mailboxWizard.quota_mb) return;
+        if (!this.mailboxWizard.local_part || !this.mailboxWizard.domain || !this.mailboxWizard.quota_mb) return;
+        this.mailboxWizard.email = `${this.mailboxWizard.local_part}@${this.mailboxWizard.domain}`;
         this.mailboxWizard.step = 2;
         return;
       }
@@ -3890,7 +3902,8 @@ const app = createApp({
     },
     async createMailbox() {
       if (this.mailboxWizard.isCreating) return;
-      if (!this.mailboxWizard.email || !this.mailboxWizard.password) return;
+      if (!this.mailboxWizard.local_part || !this.mailboxWizard.domain || !this.mailboxWizard.password) return;
+      this.mailboxWizard.email = `${this.mailboxWizard.local_part}@${this.mailboxWizard.domain}`;
       try {
         this.mailboxWizard.isCreating = true;
         const payload = {
@@ -3898,6 +3911,7 @@ const app = createApp({
           quota_mb: this.mailboxWizard.quota_mb,
           password: this.mailboxWizard.password,
           confirm_password: this.mailboxWizard.confirm_password,
+          configure_dns: this.mailboxWizard.configure_dns && !this.mailboxWizardDnsReady,
         };
         const response = await this.api("/api/client/mailboxes", {
           method: "POST",

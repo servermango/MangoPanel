@@ -218,6 +218,8 @@ def mail_auth_health(domain_row, dns_records, mail_host=None):
     domain = str(domain_row.get("name") or "").strip().lower()
     expected_spf = recommended_spf_record(mail_host)
     expected_dmarc = recommended_dmarc_record(domain)
+    expected_mx = str(mail_host or "").strip().lower().rstrip(".")
+    mx_ok = False
     spf_ok = False
     dmarc_ok = False
     dkim_ok = False
@@ -227,6 +229,8 @@ def mail_auth_health(domain_row, dns_records, mail_host=None):
         name = str(record.get("name") or "").strip()
         value = str(record.get("value") or "").strip()
         normalized_value = value.lower()
+        if rtype == "MX" and name in {"@", domain} and normalized_value.rstrip(".") == expected_mx and expected_mx:
+            mx_ok = True
         if rtype == "TXT" and name in {"@", domain} and normalized_value == expected_spf.lower():
             spf_ok = True
         if rtype == "TXT" and name == "_dmarc" and normalized_value == expected_dmarc.lower():
@@ -235,6 +239,8 @@ def mail_auth_health(domain_row, dns_records, mail_host=None):
             dkim_ok = True
     if not spf_ok:
         notes.append("SPF missing or not aligned")
+    if not mx_ok:
+        notes.append("MX missing or not aligned")
     if not dmarc_ok:
         notes.append("DMARC missing or not aligned")
     if not dkim_ok:
@@ -246,6 +252,7 @@ def mail_auth_health(domain_row, dns_records, mail_host=None):
     return {
         "status": status,
         "spf": {"expected": expected_spf, "configured": spf_ok},
+        "mx": {"expected": expected_mx, "configured": mx_ok},
         "dmarc": {"expected": expected_dmarc, "configured": dmarc_ok},
         "dkim": {"configured": dkim_ok},
         "notes": notes,

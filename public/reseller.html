@@ -808,7 +808,7 @@
                     </td>
                     <td class="client-actions">
                       <button class="primary-button" @click="updateClient(client)">Save</button>
-                      <button @click="loginAsClient(client)" :disabled="client.status !== 'active'">Login as Client</button>
+                      <button class="login-client-button" @click="loginAsClient(client)" :disabled="client.status !== 'active' || clientLoginLoadingId === client.id"><span v-if="clientLoginLoadingId === client.id" class="btn-spinner"></span>{{ clientLoginLoadingId === client.id ? 'Launching…' : 'Login as Client' }}</button>
                       <button class="danger-button" @click="deleteClient(client)">Delete</button>
                     </td>
                   </tr>

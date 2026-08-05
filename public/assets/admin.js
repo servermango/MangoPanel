@@ -1,7 +1,7 @@
 const { createApp } = Vue;
 const IS_RESELLER = Boolean(window.IS_RESELLER_PANEL);
 const ADMIN_ROUTE_PREFIX = IS_RESELLER ? "/reseller" : "/admin";
-const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "traffic", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "configuration", "system-backup", "system", "admins", "api-tokens", "status", "security", "default-page"]);
+const ADMIN_PAGE_TARGETS = new Set(["overview", "clients", "plans", "reseller-plans", "reseller-users", "traffic", "storage", "networking", "cpu", "ram", "dns", "registrars", "dns-domains", "configuration", "system-backup", "system", "admins", "api-tokens", "status", "security", "audit-logs", "default-page"]);
 
 function adminPageFromLocation() {
   let hash = window.location.hash.replace(/^#/, "");
@@ -62,6 +62,7 @@ createApp({
       clientPagination: { page: 1, page_size: 25, total: 0, total_pages: 1 },
       clientSearchTimer: null,
       clientsLoading: false,
+      clientLoginLoadingId: null,
       showClientModal: false,
       plans: [],
       configuration: { backup_time: "02:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "" },
@@ -104,6 +105,12 @@ createApp({
       dnsSettings: { global_mode: "local_powerdns", local: { nameservers: ["ns1.mango.test", "ns2.mango.test"], public_ipv4: "127.0.0.1", public_ipv6: "", soa_email: "hostmaster.mango.test", default_ttl: 300 }, providers: [], accounts: [], health_checks: [] },
       cloudflareAccount: { id: null, display_name: "", account_name: "", external_account_id: "", api_token: "", status: "active" },
       securityAudit: { score: 0, score_label: "Scanning...", total_checks: 0, pass_count: 0, warning_count: 0, fail_count: 0, items: [], scanned_at: null, loading: false },
+      auditLogs: [],
+      auditLogSearch: "",
+      auditLogAction: "",
+      auditLogActorType: "",
+      auditLogLoading: false,
+      auditLogPagination: { page: 1, page_size: 25, total: 0, total_pages: 1 },
       jobEvents: [],
       admins: [],
       newAdminSecret: "",
@@ -470,6 +477,7 @@ createApp({
             { label: "System Backup", target: "system-backup", description: "Back up the control-plane database and every user and website archive locally or to S3-compatible storage." },
             { label: "Default Page", target: "default-page", description: "Default index.php template content for newly created websites." },
             { label: "Security Checklist", target: "security", description: "Server security audit, SSH hardening, firewall, SSL, and WAF status." },
+            { label: "Audit Logs", target: "audit-logs", description: "Browse paginated administrative and security events." },
             { label: "Stack & Jobs", target: "system", description: "Generated stacks, agent runs, recent jobs, and events." },
             { label: "Admins", target: "admins", description: "Admin users, TOTP secrets, nodes, and PHP availability." },
             { label: "API Tokens", target: "api-tokens", description: "Manage Admin API keys and granular permissions." },
@@ -537,6 +545,13 @@ createApp({
         this.stopCpuLiveStream();
         this.stopRamLiveStream();
         this.loadStatusData();
+      } else if (target === "audit-logs") {
+        this.stopTrafficPolling();
+        this.stopStorageLiveStream();
+        this.stopNetworkLiveStream();
+        this.stopCpuLiveStream();
+        this.stopRamLiveStream();
+        this.loadAuditLogs(this.auditLogPagination.page || 1);
       } else {
         this.stopTrafficPolling();
         this.stopStorageLiveStream();
@@ -1244,6 +1259,35 @@ createApp({
       } finally {
         this.securityAudit.loading = false;
       }
+    },
+    async loadAuditLogs(page = 1) {
+      this.auditLogLoading = true;
+      try {
+        const params = new URLSearchParams({
+          page: String(page),
+          page_size: String(this.auditLogPagination.page_size || 25),
+          search: this.auditLogSearch.trim(),
+          action: this.auditLogAction,
+          actor_type: this.auditLogActorType,
+        });
+        const payload = await this.api(`/api/admin/audit-logs?${params.toString()}`);
+        this.auditLogs = payload.audit_logs || [];
+        this.auditLogPagination = { ...this.auditLogPagination, ...(payload.pagination || {}), page: Number(payload.pagination?.page || page) };
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.auditLogLoading = false;
+      }
+    },
+    goToAuditLogPage(page) {
+      const target = Math.max(1, Math.min(Number(page), Number(this.auditLogPagination.total_pages || 1)));
+      if (target !== this.auditLogPagination.page) this.loadAuditLogs(target);
+    },
+    resetAuditLogFilters() {
+      this.auditLogSearch = "";
+      this.auditLogAction = "";
+      this.auditLogActorType = "";
+      this.loadAuditLogs(1);
     },
     async saveConfiguration() {
       this.configurationSaving = true;
@@ -2145,11 +2189,23 @@ createApp({
     },
     async loginAsClient(client) {
       this.message = "";
+      if (this.clientLoginLoadingId !== null) return;
+      // Open synchronously from the click handler so popup blockers do not
+      // reject the client window while the impersonation request is pending.
+      const clientWindow = window.open("about:blank", "_blank");
+      if (!clientWindow) {
+        this.message = "Please allow pop-ups to open the client panel.";
+        return;
+      }
+      this.clientLoginLoadingId = client.id;
       try {
         const payload = await this.api(`/api/admin/clients/${client.id}/login-as`, { method: "POST" });
-        window.location.assign(payload.client_url);
+        clientWindow.location.href = payload.client_url;
       } catch (error) {
+        clientWindow.close();
         this.message = error.message;
+      } finally {
+        this.clientLoginLoadingId = null;
       }
     },
     async createClient() {

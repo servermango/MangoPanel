@@ -212,6 +212,43 @@ class ComprehensiveClientAPISecurityTests(unittest.TestCase):
         del_site = json.loads(handler.wfile.read().decode("utf-8"))
         self.assertTrue(del_site.get("deleted"))
 
+    def test_database_wizard_reuses_same_account_user_but_blocks_cross_account_user(self):
+        with connect(self.db_path) as conn:
+            existing_id = conn.execute(
+                "INSERT INTO database_users(account_id, username, password_hash, status) VALUES (?, ?, ?, 'active')",
+                (self.user1_acc["id"], "shared_user", "old-hash"),
+            ).lastrowid
+
+        handler = self.make_handler(auth_header=f"Bearer {self.user1_jwt}")
+        actor = handler.require_auth("user")
+        body = json.dumps({"name": "wizard_db", "username": "shared_user", "password": "NewPassword123!"}).encode()
+        handler.headers["Content-Length"] = str(len(body))
+        handler.rfile = tempfile.SpooledTemporaryFile()
+        handler.rfile.write(body)
+        handler.rfile.seek(0)
+        handler.wfile = tempfile.SpooledTemporaryFile()
+        handler.client_api("POST", "/api/client/database-wizard", {}, actor)
+        handler.wfile.seek(0)
+        response = json.loads(handler.wfile.read().decode())
+        self.assertEqual(response["database_user_id"], existing_id)
+
+        with connect(self.db_path) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) AS count FROM database_users WHERE username = 'shared_user'").fetchone()["count"],
+                1,
+            )
+
+        other_handler = self.make_handler(auth_header=f"Bearer {self.user2_jwt}")
+        other_actor = other_handler.require_auth("user")
+        body = json.dumps({"name": "other_wizard_db", "username": "shared_user", "password": "NewPassword123!"}).encode()
+        other_handler.headers["Content-Length"] = str(len(body))
+        other_handler.rfile = tempfile.SpooledTemporaryFile()
+        other_handler.rfile.write(body)
+        other_handler.rfile.seek(0)
+        with self.assertRaises(Exception) as error:
+            other_handler.client_api("POST", "/api/client/database-wizard", {}, other_actor)
+        self.assertIn("database_user_already_exists", str(error.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

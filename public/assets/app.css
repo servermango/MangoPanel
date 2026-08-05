@@ -3987,6 +3987,10 @@ body.app-loaded #app-preloader {
 .connect-instructions small { display: block; margin-top: .5rem; }
 .success-box { border-color: #16a34a; }
 .warning-box { border-color: #d97706; }
+.input-group { display: flex; align-items: stretch; }
+.input-group input { min-width: 0; flex: 1; border-radius: 8px 0 0 8px; }
+.input-group select { min-width: 0; flex: 1; border-radius: 0 8px 8px 0; }
+.input-group-addon { display: inline-flex; align-items: center; padding: 0 .7rem; background: var(--surface-muted, #f3f4f6); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 @media (max-width: 760px) { .connect-method-grid { grid-template-columns: 1fr; } .connect-wizard-panel .modal-footer { flex-wrap: wrap; } }
 
 /* ══════════════════════════════════════════════════════════════

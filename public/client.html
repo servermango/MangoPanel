@@ -1263,11 +1263,11 @@
                       <td>{{ mailbox.quota_mb }} MB</td>
                       <td><span class="pill" :class="mailbox.status">{{ mailbox.status }}</span></td>
                       <td class="actions">
-                        <button class="secondary-button" @click="openMailboxWebmail(mailbox)"><app-icon name="webmail"></app-icon><span>Webmail</span></button>
-                        <button class="secondary-button" @click="openMailboxLogin(mailbox)"><app-icon name="login"></app-icon><span>Login</span></button>
-                        <button class="secondary-button" @click="openMailboxEditor(mailbox)"><app-icon name="settings"></app-icon><span>Edit</span></button>
-                        <button @click="toggleMailboxStatus(mailbox)">{{ mailbox.status === 'suspended' ? 'Enable' : 'Suspend' }}</button>
-                        <button class="danger-button" @click="deleteMailbox(mailbox)"><app-icon name="trash"></app-icon></button>
+                        <button type="button" class="secondary-button" @click="openMailboxWebmail(mailbox)" :disabled="launchingMailboxId === mailbox.id"><span v-if="launchingMailboxId === mailbox.id" class="btn-spinner"></span><app-icon v-else name="webmail"></app-icon><span>{{ launchingMailboxId === mailbox.id ? 'Launching…' : 'Webmail' }}</span></button>
+                        <button type="button" class="secondary-button" @click="openMailboxLogin(mailbox)"><app-icon name="login"></app-icon><span>Login</span></button>
+                        <button type="button" class="secondary-button" @click="openMailboxEditor(mailbox)"><app-icon name="settings"></app-icon><span>Edit</span></button>
+                        <button type="button" @click="toggleMailboxStatus(mailbox)">{{ mailbox.status === 'suspended' ? 'Enable' : 'Suspend' }}</button>
+                        <button type="button" class="danger-button" @click="deleteMailbox(mailbox)"><app-icon name="trash"></app-icon></button>
                       </td>
                     </tr>
                     <tr v-if="!mailboxes.length"><td colspan="4" class="empty-row">No mailboxes yet. Add one above.</td></tr>
@@ -1465,7 +1465,14 @@
                 <div class="form-grid">
                   <label>
                     Email address
-                    <input v-model.trim="mailboxWizard.email" type="email" placeholder="user@yourdomain.com">
+                    <div class="input-group">
+                      <input v-model.trim="mailboxWizard.local_part" type="text" placeholder="user" autocomplete="off">
+                      <span class="input-group-addon">@</span>
+                      <select v-model="mailboxWizard.domain" :disabled="!mailRouting.mail_domains.length">
+                        <option v-for="domain in mailRouting.mail_domains.filter(item => item.mail_domain_id)" :key="domain.domain_id" :value="domain.name">{{ domain.name }}</option>
+                      </select>
+                    </div>
+                    <small v-if="!mailRouting.mail_domains.filter(item => item.mail_domain_id).length">No managed domains are available for email.</small>
                   </label>
                   <label>
                     Quota (MB)
@@ -1503,6 +1510,18 @@
                   <app-icon name="activity"></app-icon>
                   <p>The mailbox will be stored locally and synced into the mail routing map.</p>
                 </div>
+                <label class="checkbox-row" style="margin-top: 1rem;" v-if="!mailboxWizardDnsReady">
+                  <input v-model="mailboxWizard.configure_dns" type="checkbox">
+                  <span>Allow MangoPanel to create and publish the MX, SPF, DKIM, and DMARC records for <strong>{{ mailboxWizard.domain }}</strong>.</span>
+                </label>
+                <div class="info-box success-box" style="margin-top: 1rem;" v-if="mailboxWizardDnsReady">
+                  <app-icon name="check"></app-icon>
+                  <p>DNS for <strong>{{ mailboxWizard.domain }}</strong> is already configured. No DNS changes are needed.</p>
+                </div>
+                <div class="info-box warning-box" style="margin-top: 1rem;" v-if="!mailboxWizardDnsReady && !mailboxWizard.configure_dns">
+                  <app-icon name="warning"></app-icon>
+                  <p>After creating the mailbox, update DNS at your provider. MX: <code>{{ activeAccount?.runtime?.mail_host || mailRouting.mail_host || 'mail host' }}</code>; SPF, DKIM, and DMARC values are shown in Email settings.</p>
+                </div>
               </div>
 
               <div class="modal-body success-step" v-if="mailboxWizard.step === 4">
@@ -1513,8 +1532,8 @@
 
               <div class="modal-footer">
                 <button v-if="mailboxWizard.step > 1 && mailboxWizard.step < 4" class="ghost-button" @click="prevMailboxWizardStep" :disabled="mailboxWizard.isCreating">Back</button>
-                <button v-if="mailboxWizard.step < 3" class="primary-button" @click="nextMailboxWizardStep" :disabled="(mailboxWizard.step === 1 && (!mailboxWizard.email || mailboxWizard.quota_mb < 100)) || (mailboxWizard.step === 2 && (!mailboxWizard.password || mailboxWizard.password.length < 10 || mailboxWizard.password !== mailboxWizard.confirm_password))">Next</button>
-                <button v-if="mailboxWizard.step === 3" class="primary-button" @click="createMailbox" :disabled="mailboxWizard.isCreating || !mailboxWizard.email || !mailboxWizard.password || mailboxWizard.password !== mailboxWizard.confirm_password"><span v-if="!mailboxWizard.isCreating">Create Mailbox</span><span v-else>Creating...</span></button>
+                <button v-if="mailboxWizard.step < 3" class="primary-button" @click="nextMailboxWizardStep" :disabled="(mailboxWizard.step === 1 && (!mailboxWizard.local_part || !mailboxWizard.domain || mailboxWizard.quota_mb < 100)) || (mailboxWizard.step === 2 && (!mailboxWizard.password || mailboxWizard.password.length < 10 || mailboxWizard.password !== mailboxWizard.confirm_password))">Next</button>
+                <button v-if="mailboxWizard.step === 3" class="primary-button" @click="createMailbox" :disabled="mailboxWizard.isCreating || !mailboxWizard.local_part || !mailboxWizard.domain || !mailboxWizard.password || mailboxWizard.password !== mailboxWizard.confirm_password"><span v-if="!mailboxWizard.isCreating">Create Mailbox</span><span v-else>Creating...</span></button>
                 <button v-if="mailboxWizard.step === 4" class="primary-button" @click="closeMailboxWizard">Done</button>
               </div>
             </div>
@@ -2959,7 +2978,10 @@
                 <label style="display:block; margin: 1rem 0;">New Database Name
                   <input v-model="wizardDbName" type="text" placeholder="e.g. app_data" style="margin-top:0.5rem; width:100%;">
                 </label>
-                <button class="primary-button" @click="wizardNextStep" :disabled="!wizardDbName">Next Step</button>
+                <button class="primary-button" @click="wizardNextStep" :disabled="!wizardDbName || dbWizardSubmitting">
+                  <span v-if="dbWizardSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbWizardSubmitting ? 'Loading...' : 'Next Step' }}</span>
+                </button>
               </div>
 
               <!-- Step 2: Create User -->
@@ -2972,8 +2994,11 @@
                   <input v-model="wizardDbPass" type="password" placeholder="Strong password" style="margin-top:0.5rem; width:100%;">
                 </label>
                 <div style="display:flex; gap:1rem;">
-                  <button class="secondary-button" @click="dbWizardStep = 1">Back</button>
-                  <button class="primary-button" @click="wizardNextStep" :disabled="!wizardDbUser || !wizardDbPass">Next Step</button>
+                  <button class="secondary-button" @click="dbWizardStep = 1" :disabled="dbWizardSubmitting">Back</button>
+                  <button class="primary-button" @click="wizardNextStep" :disabled="!wizardDbUser || !wizardDbPass || dbWizardSubmitting">
+                    <span v-if="dbWizardSubmitting" class="btn-spinner"></span>
+                    <span>{{ dbWizardSubmitting ? 'Loading...' : 'Next Step' }}</span>
+                  </button>
                 </div>
               </div>
 
@@ -2982,8 +3007,11 @@
                 <h3>Step 3: Add User to the Database</h3>
                 <p style="margin: 1rem 0;">User <strong>{{ wizardDbUser }}</strong> will be granted all privileges on database <strong>{{ wizardDbName }}</strong>.</p>
                 <div style="display:flex; gap:1rem;">
-                  <button class="secondary-button" @click="dbWizardStep = 2">Back</button>
-                  <button class="primary-button" @click="wizardNextStep">Make Changes</button>
+                  <button class="secondary-button" @click="dbWizardStep = 2" :disabled="dbWizardSubmitting">Back</button>
+                  <button class="primary-button" @click="wizardNextStep" :disabled="dbWizardSubmitting">
+                    <span v-if="dbWizardSubmitting" class="btn-spinner"></span>
+                    <span>{{ dbWizardSubmitting ? 'Creating...' : 'Make Changes' }}</span>
+                  </button>
                 </div>
               </div>
 

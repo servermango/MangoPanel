@@ -654,11 +654,26 @@ class Agent:
             return {"job_id": job["id"], "status": "succeeded", "result": result}
         except Exception as exc:
             is_dns_job = job["type"] in {"sync_dns_record", "sync_dns_zone"}
+            is_database_job = job["type"] in {
+                "create_database",
+                "create_database_user",
+                "update_database_user",
+                "grant_database_user",
+                "update_database_grant",
+                "revoke_database_user",
+                "delete_database_user",
+                "sync_remote_mysql",
+            }
             attempts = int(job["attempts"] or 0)
             max_attempts = int(job["max_attempts"] if "max_attempts" in job.keys() and job["max_attempts"] is not None else 3)
             error_text = str(exc)
             retryable_dns_error = is_dns_job and not error_text.endswith("_not_found")
-            if retryable_dns_error and attempts < max_attempts:
+            retryable_database_error = is_database_job and (
+                "container_unavailable" in error_text
+                or "docker_unavailable" in error_text
+                or "mariadb_sql_failed" in error_text
+            )
+            if (retryable_dns_error or retryable_database_error) and attempts < max_attempts:
                 delay_seconds = min(300, 30 * (2 ** max(0, attempts - 1)))
                 conn.execute(
                     """
@@ -717,6 +732,10 @@ class Agent:
             if not database:
                 raise AgentError("database_not_found")
             account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (database["account_id"],)).fetchone()
+            # The database container may not exist yet for a newly-created
+            # account. Bring the account stack up before issuing SQL; the old
+            # order silently skipped SQL when the container was unavailable.
+            self.provision_hosting_account(conn, database["account_id"])
             sql = [f"CREATE DATABASE IF NOT EXISTS `{database['name']}`;"]
             if account:
                 runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
@@ -726,7 +745,7 @@ class Agent:
                     sql.append(f"GRANT ALL PRIVILEGES ON `{db_dict['name']}`.* TO {sql_literal(db_dict['username'])}@'%';")
                 sql.append("FLUSH PRIVILEGES;")
             self.execute_mariadb_sql(conn, database["account_id"], sql)
-            return self.provision_hosting_account(conn, database["account_id"])
+            return {"database_id": database["id"], "name": database["name"], "created": True}
         if job_type == "create_mailbox":
             mailbox = conn.execute("SELECT * FROM mailboxes WHERE id = ?", (job["target_id"],)).fetchone()
             if not mailbox:
@@ -875,12 +894,14 @@ class Agent:
             payload = self.job_payload(job)
             password = payload.get("password")
             if password:
+                self.provision_hosting_account(conn, db_user["account_id"])
                 sql = [
                     f"CREATE USER IF NOT EXISTS {sql_literal(db_user['username'])}@'%' IDENTIFIED BY {sql_literal(password)};",
                     f"ALTER USER {sql_literal(db_user['username'])}@'%' IDENTIFIED BY {sql_literal(password)};",
                     "FLUSH PRIVILEGES;",
                 ]
                 self.execute_mariadb_sql(conn, db_user["account_id"], sql)
+                self.sync_wordpress_database_password(db_user["account_id"], db_user["username"], password, conn=conn)
             return {"database_user_id": db_user["id"], "username": db_user["username"], "created": True}
         if job_type == "update_database_user":
             db_user = conn.execute("SELECT id, account_id, username, status FROM database_users WHERE id = ?", (job["target_id"],)).fetchone()
@@ -890,6 +911,11 @@ class Agent:
             password = payload.get("password")
             sql = []
             if password:
+                # Self-heal a control-plane row whose MariaDB account was
+                # lost during a previous partial provisioning run.
+                sql.append(
+                    f"CREATE USER IF NOT EXISTS {sql_literal(db_user['username'])}@'%' IDENTIFIED BY {sql_literal(password)};"
+                )
                 sql.append(f"ALTER USER {sql_literal(db_user['username'])}@'%' IDENTIFIED BY {sql_literal(password)};")
             if db_user["status"] == "suspended":
                 sql.append(f"ALTER USER {sql_literal(db_user['username'])}@'%' ACCOUNT LOCK;")
@@ -898,6 +924,8 @@ class Agent:
             if sql:
                 sql.append("FLUSH PRIVILEGES;")
                 self.execute_mariadb_sql(conn, db_user["account_id"], sql)
+                if password:
+                    self.sync_wordpress_database_password(db_user["account_id"], db_user["username"], password, conn=conn)
             return {"database_user_id": db_user["id"], "username": db_user["username"], "status": db_user["status"], "synced": True}
         if job_type == "delete_database_user":
             payload = self.job_payload(job)
@@ -1260,7 +1288,9 @@ class Agent:
 
             if is_domain_file:
                 if path_obj.is_dir():
-                    mode = 0o777
+                    # Keep directories created by the web container writable
+                    # by the account-UID File Browser process.
+                    mode = 0o2777
                 else:
                     st_mode = path_obj.stat().st_mode if path_obj.exists() else 0
                     mode = 0o777 if (st_mode & 0o111) else 0o666
@@ -1799,28 +1829,94 @@ class Agent:
             return
         runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
         docker = shutil.which("docker")
+        if self.config.agent_mode == "simulate":
+            return {"simulated": True}
+        if not docker:
+            raise AgentError("docker_unavailable_for_mariadb_sql")
         if docker and self.config.agent_mode != "simulate":
             container_name = f"mp-{account['username']}-db"
             check_proc = subprocess.run([docker, "ps", "-q", "-f", f"name=^{container_name}$"], capture_output=True, text=True)
-            if check_proc.stdout.strip():
-                sql_body = "\n".join(sql_statements)
-                proc = subprocess.run(
-                    [
-                        docker,
-                        "exec",
-                        container_name,
-                        "mariadb",
-                        "-uroot",
-                        f"-p{runtime['db_root_password']}",
-                        "-e",
-                        sql_body,
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                if proc.returncode != 0:
-                    raise AgentError(f"mariadb_sql_failed: {proc.stderr.strip()}")
+            if not check_proc.stdout.strip():
+                raise AgentError(f"mariadb_container_unavailable: {container_name}")
+            sql_body = "\n".join(sql_statements)
+            proc = subprocess.run(
+                [
+                    docker,
+                    "exec",
+                    container_name,
+                    "mariadb",
+                    "-uroot",
+                    f"-p{runtime['db_root_password']}",
+                    "-e",
+                    sql_body,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                raise AgentError(f"mariadb_sql_failed: {proc.stderr.strip() or proc.stdout.strip()}")
+            return {"executed": True}
+
+    def sync_wordpress_database_password(self, account_id, username, password, conn=None):
+        """Keep imported WordPress configs aligned with a panel DB password."""
+        if not password:
+            return 0
+        if conn is not None:
+            account = conn.execute("SELECT base_path FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+            website_rows = conn.execute("SELECT document_root FROM websites WHERE account_id = ?", (account_id,)).fetchall()
+        else:
+            with connect(self.config.db_path) as db_conn:
+                account = db_conn.execute("SELECT base_path FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+                website_rows = db_conn.execute("SELECT document_root FROM websites WHERE account_id = ?", (account_id,)).fetchall()
+        if not account:
+            return 0
+        account_base = Path(account["base_path"]).resolve()
+
+        user_re = re.compile(
+            r"(?P<prefix>define\s*\(\s*['\"]DB_USER['\"]\s*,\s*)(?P<quote>['\"])(?P<value>.*?)(?P=quote)(?P<suffix>\s*\)\s*;)",
+            re.I,
+        )
+        password_re = re.compile(
+            r"(?P<prefix>define\s*\(\s*['\"]DB_PASSWORD['\"]\s*,\s*)(?P<quote>['\"])(?P<value>.*?)(?P=quote)(?P<suffix>\s*\)\s*;)",
+            re.I,
+        )
+        changed = 0
+        config_paths = set()
+        for website in website_rows:
+            document_root = Path(website["document_root"])
+            if not document_root.is_absolute():
+                document_root = account_base / document_root
+            document_root = document_root.resolve()
+            if document_root == account_base or not str(document_root).startswith(str(account_base) + os.sep):
+                continue
+            config_paths.add(document_root / "wp-config.php")
+            # WordPress also supports wp-config.php one directory above the
+            # document root, so include that standard layout without walking
+            # the entire account tree.
+            config_paths.add(document_root.parent / "wp-config.php")
+
+        for config_path in config_paths:
+            if not config_path.is_file() or config_path.is_symlink():
+                continue
+            try:
+                content = config_path.read_text(encoding="utf-8")
+                user_match = user_re.search(content)
+                if not user_match or user_match.group("value") != username:
+                    continue
+
+                def replace_password(match):
+                    quote = match.group("quote")
+                    escaped = password.replace("\\", "\\\\").replace(quote, "\\" + quote)
+                    return match.group("prefix") + quote + escaped + quote + match.group("suffix")
+
+                updated, count = password_re.subn(replace_password, content, count=1)
+                if count and updated != content:
+                    config_path.write_text(updated, encoding="utf-8")
+                    changed += 1
+            except OSError:
+                continue
+        return changed
 
     def sync_hotlink_protection(self, conn, account_id):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -2475,10 +2571,7 @@ class Agent:
 
         if sql:
             sql.append("FLUSH PRIVILEGES;")
-            try:
-                self.execute_mariadb_sql(conn, account_id, sql)
-            except Exception as exc:
-                print(f"Warning: sync_account_databases failed for account {account_id}: {exc}")
+            self.execute_mariadb_sql(conn, account_id, sql)
 
     def sync_mailboxes(self, conn, account_id):
         return self.provision_hosting_account(conn, account_id)

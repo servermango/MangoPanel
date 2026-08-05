@@ -101,6 +101,8 @@ class FixPermissionsTargetedTests(unittest.TestCase):
                 # Verify file1 was fixed to 0666
                 stat1 = os.stat(file1)
                 self.assertEqual(oct(stat1.st_mode & 0o777), "0o666")
+                self.assertFalse(stat1.st_mode & 0o2000, "regular files must not retain setgid")
+                self.assertTrue(os.stat(site1_dir).st_mode & 0o2000, "website directories must retain setgid")
 
                 # file2 (untargeted) should NOT have been changed by targeted run (remains 0600)
                 stat2 = os.stat(file2)
