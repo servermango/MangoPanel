@@ -2241,7 +2241,7 @@
                       <span v-if="plan.is_reseller" class="pill pill-warning" style="font-size: 0.7rem; margin-left: 0.4rem; padding: 1px 6px;">Reseller Plan</span>
                       <small>#{{ plan.id }}</small>
                     </td>
-                    <td>{{ plan.cpu_limit }} CPU<small>{{ plan.memory_mb }} MB RAM</small></td>
+                    <td>{{ plan.cpu_limit }} web CPU<small>{{ plan.service_cpu_limit }} service CPU · {{ plan.total_cpu_limit }} total · {{ plan.memory_mb }} MB RAM</small></td>
                     <td>{{ plan.storage_mb }} MB<small>{{ plan.inode_limit }} inodes</small></td>
                     <td>{{ plan.max_websites }} sites<small>{{ plan.max_databases }} DB · {{ plan.max_mailboxes }} mail · {{ plan.max_cron_jobs }} cron</small></td>
                     <td>{{ plan.daily_email_limit }}/day</td>
@@ -2369,7 +2369,9 @@
                     </div>
                   </div>
                   <label>Plan name <input v-model="newPlan.name" placeholder="Starter 10 GB"></label>
-                  <label>CPU cores <input v-model="newPlan.cpu_limit" inputmode="decimal" placeholder="1"></label>
+                  <label>Web CPU cores <input v-model="newPlan.cpu_limit" inputmode="decimal" placeholder="1"></label>
+                  <label>Supporting service CPU each <input v-model="newPlan.service_cpu_limit" inputmode="decimal" placeholder="0.25"></label>
+                  <label>Total combined CPU cores <input v-model="newPlan.total_cpu_limit" inputmode="decimal" placeholder="2"></label>
                   <label>Memory MB <input v-model.number="newPlan.memory_mb" type="number" min="128"></label>
                   <label>Storage MB <input v-model.number="newPlan.storage_mb" type="number" min="100"></label>
                   <label>Inode limit <input v-model.number="newPlan.inode_limit" type="number" min="1000"></label>

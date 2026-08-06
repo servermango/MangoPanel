@@ -89,6 +89,8 @@ CREATE TABLE IF NOT EXISTS plans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   cpu_limit TEXT NOT NULL,
+  service_cpu_limit TEXT NOT NULL DEFAULT '0.25',
+  total_cpu_limit TEXT NOT NULL DEFAULT '2',
   memory_mb INTEGER NOT NULL,
   storage_mb INTEGER NOT NULL,
   inode_limit INTEGER NOT NULL,
@@ -611,7 +613,42 @@ CREATE TABLE IF NOT EXISTS wordpress_installs (
   status TEXT NOT NULL DEFAULT 'installing',
   installed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  mangopanel_cron_enabled INTEGER NOT NULL DEFAULT 0,
+  litespeed_cache_status TEXT NOT NULL DEFAULT 'pending',
+  litespeed_object_cache_status TEXT NOT NULL DEFAULT 'pending',
+  cloudflare_security_status TEXT NOT NULL DEFAULT 'pending',
+  wordpress_task_job_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS wordpress_detection_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+  job_id INTEGER REFERENCES jobs(id),
+  status TEXT NOT NULL DEFAULT 'queued',
+  total_sites INTEGER NOT NULL DEFAULT 0,
+  completed_sites INTEGER NOT NULL DEFAULT 0,
+  current_domain TEXT,
+  error TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS wordpress_detection_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES wordpress_detection_runs(id) ON DELETE CASCADE,
+  website_id INTEGER NOT NULL REFERENCES websites(id),
+  status TEXT NOT NULL DEFAULT 'pending',
+  step TEXT NOT NULL DEFAULT 'queued',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, website_id)
 );
 
 CREATE TABLE IF NOT EXISTS script_installs (
@@ -957,7 +994,48 @@ def ensure_schema(conn):
           status TEXT NOT NULL DEFAULT 'installing',
           installed_at TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          mangopanel_cron_enabled INTEGER NOT NULL DEFAULT 0,
+          litespeed_cache_status TEXT NOT NULL DEFAULT 'pending',
+          litespeed_object_cache_status TEXT NOT NULL DEFAULT 'pending',
+          cloudflare_security_status TEXT NOT NULL DEFAULT 'pending',
+          wordpress_task_job_id INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wordpress_detection_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
+          job_id INTEGER REFERENCES jobs(id),
+          status TEXT NOT NULL DEFAULT 'queued',
+          total_sites INTEGER NOT NULL DEFAULT 0,
+          completed_sites INTEGER NOT NULL DEFAULT 0,
+          current_domain TEXT,
+          error TEXT,
+          started_at TEXT,
+          completed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wordpress_detection_tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id INTEGER NOT NULL REFERENCES wordpress_detection_runs(id) ON DELETE CASCADE,
+          website_id INTEGER NOT NULL REFERENCES websites(id),
+          status TEXT NOT NULL DEFAULT 'pending',
+          step TEXT NOT NULL DEFAULT 'queued',
+          result_json TEXT NOT NULL DEFAULT '{}',
+          error TEXT,
+          started_at TEXT,
+          completed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(run_id, website_id)
         )
         """
     )
@@ -1326,8 +1404,19 @@ def ensure_schema(conn):
     )
     ensure_table_columns(conn, "users", {"totp_secret": "TEXT"})
     ensure_table_columns(conn, "admins", {"totp_secret": "TEXT"})
-    ensure_table_columns(conn, "wordpress_installs", {"sso_secret": "TEXT"})
-    ensure_table_columns(conn, "plans", {"allow_api_access": "INTEGER NOT NULL DEFAULT 0"})
+    ensure_table_columns(conn, "wordpress_installs", {
+        "sso_secret": "TEXT",
+        "mangopanel_cron_enabled": "INTEGER NOT NULL DEFAULT 0",
+        "litespeed_cache_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "litespeed_object_cache_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "cloudflare_security_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "wordpress_task_job_id": "INTEGER",
+    })
+    ensure_table_columns(conn, "plans", {
+        "allow_api_access": "INTEGER NOT NULL DEFAULT 0",
+        "service_cpu_limit": "TEXT NOT NULL DEFAULT '0.25'",
+        "total_cpu_limit": "TEXT NOT NULL DEFAULT '2'",
+    })
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS admin_api_tokens (
@@ -1659,6 +1748,26 @@ def ensure_schema(conn):
     ]:
         conn.execute(stmt)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dns_zone_exports_domain ON dns_zone_exports(domain_id, created_at)")
+    # Keep the DNS domain catalog aligned with hosted websites created by
+    # older provisioning paths. The DNS editor uses `domains`, while the
+    # client site switcher uses `websites`; a missing link made a site appear
+    # in one control but not the other.
+    conn.execute(
+        """
+        UPDATE domains
+        SET account_id = (SELECT w.account_id FROM websites w WHERE w.id = domains.linked_website_id)
+        WHERE linked_website_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM websites w WHERE w.id = domains.linked_website_id AND w.account_id != domains.account_id)
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO domains(account_id, name, kind, status, linked_website_id)
+        SELECT w.account_id, w.domain, 'managed', 'active', w.id
+        FROM websites w
+        WHERE NOT EXISTS (SELECT 1 FROM domains d WHERE d.name = w.domain)
+        """
+    )
     ensure_reseller_schema(conn)
     seed_legacy_database_users(conn)
 

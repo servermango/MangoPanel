@@ -235,6 +235,7 @@ const app = createApp({
       },
       featureStatuses: {},
       websites: [],
+      websitesLoaded: false,
       subdomains: [],
       subdomainDomains: [],
       subdomainUsage: { used: 0, limit: 0 },
@@ -375,8 +376,12 @@ const app = createApp({
         }
       },
       wordpressSites: [],
-      wordpressManagerLoading: false,
+      wordpressManagerLoading: true,
+      wordpressSitesLoaded: false,
       wordpressDetecting: false,
+      wordpressDetectionRun: null,
+      wordpressDetectionPoller: null,
+      wordpressDetectionPolling: false,
       siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], dnsCheckResult: null, dnsAction: 'keep', isCheckingDns: false, isSubmitting: false, isBuilding: false, errorMessage: '', dnsTab: 'records' },
       connectWizard: { isOpen: false, website: null, method: 'nameservers', auto_update_dns: false, checking: false, result: null },
       sshState: { enabled: false, toggling: false, loaded: false, hasPassword: false, settingPassword: false, newPassword: null, passwordModal: false, passwordInput: "", passwordError: "" },
@@ -560,6 +565,7 @@ const app = createApp({
   },
   unmounted() {
     if (this.resourcePoll) window.clearInterval(this.resourcePoll);
+    this.stopWordPressDetectionPolling();
   },
   computed: {
     backupInProgress() {
@@ -1200,6 +1206,7 @@ const app = createApp({
     },
     clearSessionState() {
       localStorage.removeItem("mp_client_token");
+      localStorage.removeItem("mp_selected_account_id");
       const host = window.location.hostname;
       const cookieNames = ["mp_client_token", "jwt"];
       cookieNames.forEach(name => {
@@ -1294,12 +1301,11 @@ const app = createApp({
         const headers = { Accept: "application/json", ...(options.headers || {}) };
         if (this.token) headers.Authorization = `Bearer ${this.token}`;
         let targetAccountId = null;
-        if (this.activeAccount) {
-          targetAccountId = this.activeAccount.id;
-        } else if (this.home && Array.isArray(this.home.accounts) && this.home.accounts.length > 0) {
+        if (this.home && Array.isArray(this.home.accounts) && this.home.accounts.length > 0 && this.selectedAccountId) {
           const found = this.home.accounts.find((a) => String(a.id) === String(this.selectedAccountId));
           if (found) targetAccountId = found.id;
         }
+        if (!targetAccountId && this.activeAccount) targetAccountId = this.activeAccount.id;
         if (targetAccountId && !headers["X-Hosting-Account-ID"]) {
           headers["X-Hosting-Account-ID"] = String(targetAccountId);
         }
@@ -1365,9 +1371,14 @@ const app = createApp({
       }
     },
     async load() {
+      const loadGeneration = (this.loadGeneration || 0) + 1;
+      this.loadGeneration = loadGeneration;
+      this.websitesLoaded = false;
       try {
         this.featureStatuses = (await this.api("/api/client/feature-status")).features || {};
-        this.home = await this.api("/api/client/home");
+        const homePayload = await this.api("/api/client/home");
+        if (loadGeneration !== this.loadGeneration) return;
+        this.home = homePayload;
         this.has2FA = this.home.has_2fa || false;
         if (this.hasHostingAccount) {
           const validAccount = this.home.accounts.find((a) => String(a.id) === String(this.selectedAccountId));
@@ -1378,10 +1389,15 @@ const app = createApp({
         }
         if (this.home.hosting_account_suspended) {
           this.websites = this.home.websites || [];
+          this.websitesLoaded = true;
           if (this.activePage === "settings") await this.loadProfile();
           return;
         }
-        this.websites = this.hasHostingAccount ? (await this.api("/api/client/websites")).websites : [];
+        const websitesPayload = this.hasHostingAccount ? await this.api("/api/client/websites") : { websites: [] };
+        if (loadGeneration !== this.loadGeneration) return;
+        this.websites = websitesPayload.websites || [];
+        this.websitesLoaded = true;
+        if (this.hasHostingAccount) this.loadActiveWordPressDetection();
         if (this.hasHostingAccount) {
           const subdomainPayload = await this.api("/api/client/subdomains");
           this.subdomains = subdomainPayload.subdomains || [];
@@ -1735,6 +1751,9 @@ const app = createApp({
           method: "POST",
           body: JSON.stringify({ account_id: accId }),
         });
+        this.selectedAccountId = String(accId);
+        localStorage.setItem("mp_selected_account_id", this.selectedAccountId);
+        this.loadGeneration = (this.loadGeneration || 0) + 1;
         this.notify("Switched active account context.", "success");
         await this.loadHome();
         await this.fetchCollaborators();
@@ -1789,16 +1808,31 @@ const app = createApp({
     async loadWordPressSites() {
       if (!this.hasHostingAccount) {
         this.wordpressSites = [];
+        this.wordpressSitesLoaded = true;
+        this.wordpressManagerLoading = false;
         return;
       }
       this.wordpressManagerLoading = true;
       try {
         const payload = await this.api("/api/client/wordpress/installs");
         this.wordpressSites = payload.sites || [];
+        await this.loadActiveWordPressDetection();
       } catch (error) {
         console.error("Failed to load WordPress sites:", error);
       } finally {
         this.wordpressManagerLoading = false;
+        this.wordpressSitesLoaded = true;
+      }
+    },
+    async loadActiveWordPressDetection() {
+      try {
+        const activeDetection = await this.api("/api/client/wordpress/detect/active");
+        if (activeDetection.active) {
+          this.wordpressDetectionRun = { ...activeDetection.run, tasks: activeDetection.tasks || [] };
+          if (!this.wordpressDetectionPoller) this.startWordPressDetectionPolling(activeDetection.run.id);
+        }
+      } catch (error) {
+        console.error("Failed to load active WordPress detection:", error);
       }
     },
     openWordPressInstaller() {
@@ -1810,19 +1844,74 @@ const app = createApp({
       this.wordpressDetecting = true;
       try {
         const payload = await this.api("/api/client/wordpress/detect", { method: "POST", body: JSON.stringify({}) });
-        this.notify(payload.detected ? `Detected ${payload.detected} WordPress site${payload.detected === 1 ? "" : "s"}.` : "No WordPress sites were detected.", payload.detected ? "success" : "info");
+        this.wordpressDetectionRun = {
+          id: payload.run_id,
+          status: payload.status || "queued",
+          total_sites: payload.total_sites || 0,
+          completed_sites: payload.completed_sites || 0,
+          current_domain: null,
+          tasks: [],
+        };
+        this.notify(`WordPress detection queued for ${payload.total_sites || 0} site${payload.total_sites === 1 ? "" : "s"}.`, "info");
+        this.startWordPressDetectionPolling(payload.run_id);
         await this.loadWordPressSites();
       } catch (error) {
         this.notify(error.message, "error");
-      } finally {
         this.wordpressDetecting = false;
+      } finally {
+        // The batch remains active until the status endpoint reports completion.
       }
+    },
+    startWordPressDetectionPolling(runId) {
+      this.stopWordPressDetectionPolling();
+      this.wordpressDetecting = true;
+      this.pollWordPressDetection(runId);
+      this.wordpressDetectionPoller = window.setInterval(() => this.pollWordPressDetection(runId), 1000);
+    },
+    async pollWordPressDetection(runId) {
+      if (this.wordpressDetectionPolling) return;
+      this.wordpressDetectionPolling = true;
+      try {
+        const payload = await this.api(`/api/client/wordpress/detect/status/${runId}`);
+        this.wordpressDetectionRun = { ...payload.run, tasks: payload.tasks || [] };
+        await this.loadWordPressSites();
+        if (["completed", "completed_with_errors", "failed"].includes(payload.run.status)) {
+          this.stopWordPressDetectionPolling();
+          this.notify(payload.run.status === "completed" ? "WordPress detection completed." : "WordPress detection completed with errors.", payload.run.status === "completed" ? "success" : "error");
+        }
+      } catch (error) {
+        console.error("Failed to poll WordPress detection:", error);
+      } finally {
+        this.wordpressDetectionPolling = false;
+      }
+    },
+    stopWordPressDetectionPolling() {
+      if (this.wordpressDetectionPoller) window.clearInterval(this.wordpressDetectionPoller);
+      this.wordpressDetectionPoller = null;
+      this.wordpressDetectionPolling = false;
+      this.wordpressDetecting = false;
     },
     async loginToWordPress(site) {
       try {
         const payload = await this.api(`/api/client/wordpress/${site.website_id}/launch`);
         if (payload.launch_url) window.open(payload.launch_url, "_blank", "noopener,noreferrer");
       } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async toggleWordPressCron(site) {
+      const enabled = Boolean(site.mangopanel_cron_enabled);
+      try {
+        site.wordpress_task_job_id = null;
+        const payload = await this.api(`/api/client/wordpress/${site.website_id}/cron`, {
+          method: "POST",
+          body: JSON.stringify({ enabled }),
+        });
+        site.mangopanel_cron_enabled = enabled ? 1 : 0;
+        site.wordpress_task_job_id = payload.job_id;
+        this.notify(enabled ? "MangoPanel WordPress cron enabled (every 5 minutes)." : "MangoPanel WordPress cron disabled.", "success");
+      } catch (error) {
+        site.mangopanel_cron_enabled = enabled ? 0 : 1;
         this.notify(error.message, "error");
       }
     },
@@ -4116,6 +4205,7 @@ const app = createApp({
         });
         this.selectedAccountId = nextAccountId;
         localStorage.setItem("mp_selected_account_id", nextAccountId);
+        this.loadGeneration = (this.loadGeneration || 0) + 1;
         this.accountSwitcherOpen = false;
         this.userMenuOpen = false;
         await this.load();
@@ -4368,13 +4458,18 @@ const app = createApp({
       this.goTo(tile.target);
     },
     async logout() {
-      try {
-        await this.api("/api/client/auth/logout", { method: "POST" });
-      } catch (err) {
-        console.error("API logout failed:", err);
-      }
+      const token = this.token || localStorage.getItem("mp_client_token") || "";
+      // Do not make navigation depend on the control-plane request completing.
+      // The server cleanup is best-effort; local credentials are cleared first.
+      const cleanup = fetch("/api/client/auth/logout", {
+        method: "POST",
+        keepalive: true,
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: "same-origin",
+      });
       this.clearSessionState();
       window.location.href = "/login";
+      cleanup.catch((err) => console.error("API logout cleanup failed:", err));
     },
     async loadProfile() {
       this.profileLoading = true;

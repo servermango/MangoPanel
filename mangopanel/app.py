@@ -5244,7 +5244,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                 rows = conn.execute(
                     """
                     SELECT wi.website_id, w.domain, wi.site_title, wi.admin_username, wi.admin_email,
-                           wi.status, wi.installed_at, wi.created_at
+                           wi.status, wi.installed_at, wi.created_at,
+                           COALESCE(wi.mangopanel_cron_enabled, 0) AS mangopanel_cron_enabled,
+                           COALESCE(wi.litespeed_cache_status, 'pending') AS litespeed_cache_status,
+                           COALESCE(wi.litespeed_object_cache_status, 'pending') AS litespeed_object_cache_status,
+                           COALESCE(wi.cloudflare_security_status, 'pending') AS cloudflare_security_status,
+                           wi.wordpress_task_job_id
                     FROM wordpress_installs wi
                     JOIN websites w ON w.id = wi.website_id
                     WHERE w.account_id = ?
@@ -5256,10 +5261,45 @@ class MangoHandler(BaseHTTPRequestHandler):
                 for site in sites:
                     site["admin_url"] = f"https://{site['domain']}/wp-admin/"
                 return self.json_response({"sites": sites})
+            if path == "/api/client/wordpress/detect/active" and method == "GET":
+                require_active_account(account)
+                run = conn.execute(
+                    "SELECT * FROM wordpress_detection_runs WHERE account_id = ? AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1",
+                    (account["id"],),
+                ).fetchone()
+                if not run:
+                    return self.json_response({"active": False})
+                tasks = conn.execute(
+                    "SELECT t.website_id, w.domain, t.status, t.step, t.result_json, t.error, t.started_at, t.completed_at FROM wordpress_detection_tasks t JOIN websites w ON w.id = t.website_id WHERE t.run_id = ? ORDER BY t.id",
+                    (run["id"],),
+                ).fetchall()
+                task_rows = rows_to_dicts(tasks)
+                for task in task_rows:
+                    task["result"] = parse_json_field(task.pop("result_json"), {})
+                return self.json_response({"active": True, "run": row_to_dict(run), "tasks": task_rows})
             if path == "/api/client/wordpress/detect" and method == "POST":
                 require_active_account(account)
+                active_run = conn.execute(
+                    "SELECT * FROM wordpress_detection_runs WHERE account_id = ? AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1",
+                    (account["id"],),
+                ).fetchone()
+                if active_run:
+                    active_counts = conn.execute(
+                        "SELECT COUNT(*) AS total, SUM(CASE WHEN status IN ('completed', 'completed_with_errors', 'failed', 'skipped') THEN 1 ELSE 0 END) AS completed FROM wordpress_detection_tasks WHERE run_id = ?",
+                        (active_run["id"],),
+                    ).fetchone()
+                    return self.json_response({
+                        "detected": 0,
+                        "run_id": active_run["id"],
+                        "job_id": active_run["job_id"],
+                        "total_sites": active_counts["total"] or 0,
+                        "completed_sites": active_counts["completed"] or 0,
+                        "status": active_run["status"],
+                        "already_running": True,
+                    })
                 websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()
                 detected = 0
+                website_ids = []
                 for website in websites:
                     root = Path(website["document_root"])
                     if not (root / "wp-config.php").exists() or not (root / "wp-admin").is_dir():
@@ -5284,8 +5324,55 @@ class MangoHandler(BaseHTTPRequestHandler):
                         )
                     if ensure_wordpress_compat(root, website["id"], admin_username, admin_email, sso_secret):
                         conn.execute("UPDATE wordpress_installs SET status = CASE WHEN status = 'installing' THEN status ELSE 'installed' END, updated_at = CURRENT_TIMESTAMP WHERE website_id = ?", (website["id"],))
+                        website_ids.append(website["id"])
                         detected += 1
-                return self.json_response({"detected": detected})
+                run_id = Agent.create_wordpress_detection_run(conn, account["id"], website_ids)
+                for website_id in website_ids:
+                    install = conn.execute("SELECT * FROM wordpress_installs WHERE website_id = ?", (website_id,)).fetchone()
+                    cache_done = install["litespeed_cache_status"] in {"installed", "activated", "installed_inactive"}
+                    security_done = install["cloudflare_security_status"] in {"ruleset_created", "ruleset_exists", "mocked", "skipped"}
+                    cron_done = bool(install["mangopanel_cron_enabled"])
+                    if cache_done and security_done and cron_done:
+                        conn.execute("UPDATE wordpress_detection_tasks SET status = 'skipped', step = 'already_configured', completed_at = CURRENT_TIMESTAMP WHERE run_id = ? AND website_id = ?", (run_id, website_id))
+                job_id = enqueue_agent_job(conn, "detect_wordpress_sites", "hosting_account", account["id"], {"run_id": run_id}, inline=False)
+                conn.execute("UPDATE wordpress_detection_runs SET job_id = ? WHERE id = ?", (job_id, run_id))
+                conn.execute("UPDATE wordpress_installs SET wordpress_task_job_id = ? WHERE website_id IN ({})".format(",".join("?" for _ in website_ids)), [job_id, *website_ids]) if website_ids else None
+                total = conn.execute("SELECT COUNT(*) AS count FROM wordpress_detection_tasks WHERE run_id = ?", (run_id,)).fetchone()["count"]
+                completed = conn.execute("SELECT COUNT(*) AS count FROM wordpress_detection_tasks WHERE run_id = ? AND status = 'skipped'", (run_id,)).fetchone()["count"]
+                conn.execute("UPDATE wordpress_detection_runs SET total_sites = ?, completed_sites = ? WHERE id = ?", (total, completed, run_id))
+                return self.json_response({"detected": detected, "run_id": run_id, "job_id": job_id, "total_sites": total, "completed_sites": completed, "status": "queued"})
+            if path.startswith("/api/client/wordpress/detect/status/") and method == "GET":
+                require_active_account(account)
+                run_id = path_int_id(path, "/api/client/wordpress/detect/status/")
+                run = conn.execute("SELECT * FROM wordpress_detection_runs WHERE id = ? AND account_id = ?", (run_id, account["id"])).fetchone()
+                if not run:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "wordpress_detection_run_not_found")
+                tasks = conn.execute(
+                    "SELECT t.website_id, w.domain, t.status, t.step, t.result_json, t.error, t.started_at, t.completed_at FROM wordpress_detection_tasks t JOIN websites w ON w.id = t.website_id WHERE t.run_id = ? ORDER BY t.id",
+                    (run_id,),
+                ).fetchall()
+                task_rows = rows_to_dicts(tasks)
+                for task in task_rows:
+                    task["result"] = parse_json_field(task.pop("result_json"), {})
+                return self.json_response({"run": row_to_dict(run), "tasks": task_rows})
+            if path.startswith("/api/client/wordpress/") and path.endswith("/cron") and method == "POST":
+                require_active_account(account)
+                website_id = path_int_id(path, "/api/client/wordpress/")
+                website = require_owned_website(conn, account["id"], website_id, actor.get("id"))
+                install = conn.execute("SELECT * FROM wordpress_installs WHERE website_id = ?", (website_id,)).fetchone()
+                if not install:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "wordpress_not_found")
+                body = self.read_json()
+                enabled = bool(body.get("enabled"))
+                job_id = enqueue_agent_job(
+                    conn,
+                    "configure_wordpress_site",
+                    "website",
+                    website_id,
+                    {"install_litespeed_cache": False, "configure_cloudflare": False, "manage_wp_cron": enabled},
+                )
+                conn.execute("UPDATE wordpress_installs SET wordpress_task_job_id = ? WHERE website_id = ?", (job_id, website_id))
+                return self.json_response({"website_id": website_id, "job_id": job_id, "mangopanel_cron_enabled": enabled, "status": "queued"})
             if path.startswith("/api/client/wordpress/") and path.endswith("/launch") and method == "GET":
                 require_active_account(account)
                 website_id = path_int_id(path, "/api/client/wordpress/")
@@ -7895,7 +7982,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 cur = conn.execute(
                     """
                     INSERT INTO plans(
-                      name, cpu_limit, memory_mb, storage_mb, inode_limit, max_websites,
+                      name, cpu_limit, service_cpu_limit, total_cpu_limit, memory_mb, storage_mb, inode_limit, max_websites, max_subdomains,
                       max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days,
                       max_processes, php_workers, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
                       frontend_frameworks, backend_frameworks, nodejs_versions, package_managers,
@@ -7904,11 +7991,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_min_ttl, dns_wildcard_records_allowed, dns_cloudflare_proxy_allowed,
                       dns_dnssec_allowed, dns_dnssec_required, allow_api_access,
                       is_reseller, max_clients, max_reseller_subplans
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     (
                         plan["name"],
                         plan["cpu_limit"],
+                        plan["service_cpu_limit"],
+                        plan["total_cpu_limit"],
                         plan["memory_mb"],
                         plan["storage_mb"],
                         plan["inode_limit"],
@@ -7969,7 +8063,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 conn.execute(
                     """
                     UPDATE plans SET
-                      name = ?, cpu_limit = ?, memory_mb = ?, storage_mb = ?, inode_limit = ?, max_websites = ?, max_subdomains = ?,
+                      name = ?, cpu_limit = ?, service_cpu_limit = ?, total_cpu_limit = ?, memory_mb = ?, storage_mb = ?, inode_limit = ?, max_websites = ?, max_subdomains = ?,
                       max_databases = ?, max_mailboxes = ?, max_cron_jobs = ?, daily_email_limit = ?, backup_retention_days = ?, backup_schedule = ?,
                       max_processes = ?, php_workers = ?, bandwidth_mb = ?, nameserver_1 = ?, nameserver_2 = ?, backup_location = ?,
                       frontend_frameworks = ?, backend_frameworks = ?, nodejs_versions = ?, package_managers = ?,
@@ -7981,7 +8075,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     WHERE id = ?
                     """,
                     (
-                        plan["name"], plan["cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"], plan["max_websites"], plan["max_subdomains"],
+                        plan["name"], plan["cpu_limit"], plan["service_cpu_limit"], plan["total_cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"], plan["max_websites"], plan["max_subdomains"],
                         plan["max_databases"], plan["max_mailboxes"], plan["max_cron_jobs"], plan["daily_email_limit"], plan["backup_retention_days"],
                         plan["backup_schedule"],
                         plan["max_processes"], plan["php_workers"], plan["bandwidth_mb"], plan["nameserver_1"], plan["nameserver_2"], plan["backup_location"],
@@ -8619,35 +8713,36 @@ class MangoHandler(BaseHTTPRequestHandler):
         self.record_access_log(HTTPStatus.OK, len(data))
 
     def record_access_log(self, status, bytes_sent):
+        # Panel pages and API polling are not hosted-site traffic. Recording
+        # every admin response here creates a SQLite write transaction for
+        # each dashboard request and can contend with worker/backups.
+        if getattr(self.server, "panel", "combined") in {"admin", "client", "reseller"}:
+            return
         domain = request_domain(self.headers)
         if not domain:
             return
         try:
-            with connect(CONFIG.db_path) as conn:
-                website = conn.execute("SELECT id, account_id, domain FROM websites WHERE domain = ?", (domain,)).fetchone()
-                if not website:
-                    return
-                conn.execute(
-                    """
-                    INSERT INTO access_logs(
-                      account_id, website_id, domain, method, path, status_code, bytes_sent,
-                      ip_address, country, user_agent, referer
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        website["account_id"],
-                        website["id"],
-                        website["domain"],
-                        self.command,
-                        self.path[:2048],
-                        int(status),
-                        int(bytes_sent or 0),
-                        client_ip(self),
-                        request_country(self.headers, client_ip(self)),
-                        self.headers.get("User-Agent", "")[:512],
-                        self.headers.get("Referer", "")[:1024],
-                    ),
-                )
+            website = panel_access_log_website(domain)
+            if not website:
+                return
+            log_path = Path(website["document_root"]).parent / "logs" / "mangopanel-access.jsonl"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "account_id": int(website["account_id"]),
+                "website_id": int(website["id"]),
+                "domain": website["domain"],
+                "method": self.command[:16],
+                "path": self.path[:2048],
+                "status_code": int(status),
+                "bytes_sent": int(bytes_sent or 0),
+                "ip_address": client_ip(self)[:80],
+                "country": request_country(self.headers, client_ip(self)),
+                "user_agent": self.headers.get("User-Agent", "")[:512],
+                "referer": self.headers.get("Referer", "")[:1024],
+            }
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
         except Exception as exc:
             print(f"analytics log failed: {exc}")
 
@@ -10627,8 +10722,6 @@ def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-
     if not selected:
         return empty_analytics_payload(filter_key)
     analytics_enabled = int(selected.get("analytics_enabled", 1) or 0) != 0
-    if analytics_enabled:
-        collect_hosted_access_logs(conn, account_id)
 
     params = [account_id, selected["id"]]
     where_sql = "account_id = ? AND website_id = ?"
@@ -10756,6 +10849,30 @@ COMBINED_LOG_RE = re.compile(
 )
 
 
+_PANEL_ACCESS_LOG_CACHE = {}
+
+
+def panel_access_log_website(domain):
+    """Resolve a hosted domain without opening a write transaction per request."""
+    now = time.monotonic()
+    cached = _PANEL_ACCESS_LOG_CACHE.get(domain)
+    if cached and now - cached[0] < 300:
+        return cached[1]
+    website = None
+    try:
+        with connect(CONFIG.db_path) as conn:
+            row = conn.execute(
+                "SELECT id, account_id, domain, document_root FROM websites WHERE domain = ? AND status = 'active'",
+                (domain,),
+            ).fetchone()
+            website = row_to_dict(row) if row else None
+    except sqlite3.OperationalError as exc:
+        if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+            raise
+    _PANEL_ACCESS_LOG_CACHE[domain] = (now, website)
+    return website
+
+
 def collect_hosted_access_logs(conn, account_id):
     websites = conn.execute("SELECT id, account_id, domain, document_root FROM websites WHERE account_id = ?", (account_id,)).fetchall()
     for website in websites:
@@ -10833,6 +10950,68 @@ def parse_combined_access_log(line):
         "referer": "" if match.group("referer") == "-" else match.group("referer")[:1024],
         "user_agent": "" if match.group("user_agent") == "-" else match.group("user_agent")[:512],
     }
+
+
+def collect_daily_panel_access_log_metadata(conn):
+    """Import local panel request logs once per day for admin analytics."""
+    now = datetime.now(timezone.utc)
+    last_run = get_system_setting(conn, "access_log_metadata_last_run", "")
+    try:
+        if last_run and (now - datetime.fromisoformat(last_run.replace("Z", "+00:00"))).total_seconds() < 86400:
+            return 0
+    except ValueError:
+        pass
+
+    imported = 0
+    for account in conn.execute("SELECT id FROM hosting_accounts WHERE status = 'active'").fetchall():
+        collect_hosted_access_logs(conn, account["id"])
+    websites = conn.execute("SELECT id, account_id, domain, document_root FROM websites WHERE status = 'active'").fetchall()
+    for website in websites:
+        log_path = Path(website["document_root"]).parent / "logs" / "mangopanel-access.jsonl"
+        if not log_path.exists():
+            continue
+        cursor_path = log_path.with_suffix(".cursor")
+        try:
+            offset = int(cursor_path.read_text(encoding="ascii").strip() or "0") if cursor_path.exists() else 0
+            if offset > log_path.stat().st_size:
+                offset = 0
+            rows = []
+            with log_path.open("r", encoding="utf-8", errors="replace") as log_file:
+                log_file.seek(offset)
+                for line in log_file:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    rows.append((
+                        int(record.get("account_id") or website["account_id"]),
+                        int(record.get("website_id") or website["id"]),
+                        str(record.get("domain") or website["domain"])[:255],
+                        str(record.get("method") or "GET")[:16],
+                        str(record.get("path") or "/")[:2048],
+                        int(record.get("status_code") or 200),
+                        int(record.get("bytes_sent") or 0),
+                        str(record.get("ip_address") or "")[:80],
+                        str(record.get("country") or "Unknown")[:80],
+                        str(record.get("user_agent") or "")[:512],
+                        str(record.get("referer") or "")[:1024],
+                        str(record.get("created_at") or now.strftime("%Y-%m-%d %H:%M:%S")),
+                    ))
+                new_offset = log_file.tell()
+            if rows:
+                conn.executemany(
+                    """INSERT INTO access_logs(
+                       account_id, website_id, domain, method, path, status_code, bytes_sent,
+                       ip_address, country, user_agent, referer, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    rows,
+                )
+                imported += len(rows)
+            cursor_path.write_text(str(new_offset), encoding="ascii")
+        except (OSError, ValueError):
+            continue
+    set_system_setting(conn, "access_log_metadata_last_run", now.isoformat())
+    return imported
 
 
 def optional_positive_int(value):
@@ -11014,6 +11193,7 @@ def collect_all_resource_usage_samples(config=None):
     config = config or CONFIG
     init_db(config.db_path)
     with connect(config.db_path) as conn:
+        collect_daily_panel_access_log_metadata(conn)
         accounts = conn.execute(
             """
             SELECT ha.*, p.memory_mb, p.storage_mb
@@ -11427,6 +11607,14 @@ def wordpress_compat_plugin(secret):
     return f'''<?php
 // MangoPanel Compatibility Plugin
 add_filter('wp_signature_hosts', '__return_empty_array', 999);
+
+// MangoPanel provides one Redis service per hosting account. Keep LiteSpeed
+// Cache pointed at that service even when its own settings are regenerated.
+add_filter('litespeed_conf_load_option_object', function ($value) {{ return true; }}, 20);
+add_filter('litespeed_conf_load_option_object-kind', function ($value) {{ return true; }}, 20);
+add_filter('litespeed_conf_load_option_object-host', function ($value) {{ return 'redis'; }}, 20);
+add_filter('litespeed_conf_load_option_object-port', function ($value) {{ return 6379; }}, 20);
+add_filter('litespeed_conf_load_option_object-db_id', function ($value) {{ return 0; }}, 20);
 
 // Short-lived MangoPanel launch tokens log the owning WordPress administrator in.
 add_action('init', function () {{
@@ -12328,6 +12516,10 @@ def validate_plan_payload(body):
     if backup_schedule not in {"disabled", "daily", "weekly", "monthly", "quarterly"}:
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_backup_schedule")
     cpu_limit = normalize_cpu_limit(body.get("cpu_limit", "1"))
+    service_cpu_limit = normalize_cpu_limit(body.get("service_cpu_limit", "0.25"))
+    total_cpu_limit = normalize_cpu_limit(body.get("total_cpu_limit", "2"))
+    if float(total_cpu_limit) < float(cpu_limit):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "total_cpu_limit_below_web_cpu_limit")
     max_processes = positive_int(body.get("max_processes", 120), "invalid_max_processes", minimum=0, maximum=10000)
     php_workers = positive_int(body.get("php_workers", 60), "invalid_php_workers", minimum=0, maximum=1000)
     bandwidth_mb = positive_int(body.get("bandwidth_mb", 0), "invalid_bandwidth_mb", minimum=0, maximum=104857600)
@@ -12398,6 +12590,8 @@ def validate_plan_payload(body):
     return {
         "name": name,
         "cpu_limit": cpu_limit,
+        "service_cpu_limit": service_cpu_limit,
+        "total_cpu_limit": total_cpu_limit,
         "memory_mb": memory_mb,
         "storage_mb": storage_mb,
         "inode_limit": inode_limit,
@@ -12543,20 +12737,31 @@ def resolve_panel_base_domain(request_headers=None):
     host = ""
     if request_headers:
         if isinstance(request_headers, dict):
-            host = request_headers.get("Host") or request_headers.get("X-Forwarded-Host") or ""
+            # Behind a reverse proxy Host can be localhost; use the public
+            # host users actually used to reach the panel/API.
+            host = request_headers.get("X-Forwarded-Host") or request_headers.get("Host") or ""
         elif hasattr(request_headers, "get"):
-            host = request_headers.get("Host", "") or request_headers.get("X-Forwarded-Host", "") or ""
+            host = request_headers.get("X-Forwarded-Host", "") or request_headers.get("Host", "") or ""
+    # Proxies may pass a comma-separated forwarding chain; the first host is
+    # the one presented by the client.
+    host = str(host).split(",", 1)[0].strip()
     if not host and hasattr(CONFIG, "public_host"):
         host = CONFIG.public_host or ""
 
-    if ":" in host:
-        host = host.split(":")[0].strip()
+    if host.startswith("[") and "]" in host:
+        host = host[1:host.index("]")]
+    elif ":" in host:
+        host = host.rsplit(":", 1)[0].strip()
 
     host = host.strip().lower()
     if host and host not in {"127.0.0.1", "0.0.0.0", "localhost"}:
         parts = host.split(".")
         is_ip = len(parts) == 4 and all(p.isdigit() for p in parts)
         if not is_ip:
+            # Conventional panel/API endpoints are not part of customer
+            # website hostnames. Keep arbitrary configured subdomains intact.
+            if len(parts) > 2 and parts[0] in {"admin", "api", "client", "panel", "www"}:
+                host = ".".join(parts[1:])
             return host
 
     return "mango.test"
@@ -12654,9 +12859,11 @@ def create_initial_hosting_account(conn, user_id, request_headers=None):
     }
 
 
-def enqueue_agent_job(conn, job_type, target_type, target_id=None, payload=None):
+def enqueue_agent_job(conn, job_type, target_type, target_id=None, payload=None, inline=None):
     job_id = create_job(conn, job_type, target_type, target_id, payload)
-    if CONFIG.agent_inline:
+    if inline is None:
+        inline = CONFIG.agent_inline
+    if inline:
         conn.execute(
             """
             UPDATE jobs
@@ -13262,6 +13469,8 @@ def client_home(conn, user_id, active_account_id=None):
             SELECT id FROM jobs
             WHERE target_type = 'hosting_account' AND target_id = ?
               AND type = 'provision_hosting_account' AND status IN ('queued', 'running')
+              AND (not_before_at IS NULL OR not_before_at <= CURRENT_TIMESTAMP)
+              AND updated_at >= datetime('now', '-2 hours')
             LIMIT 1
             """,
             (primary_account["id"],),
@@ -13535,6 +13744,15 @@ def start_worker_daemon(config):
         pid_file.write_text(str(pid), encoding="utf-8")
 
         agent = Agent(config)
+        try:
+            with connect(config.db_path) as conn:
+                agent.recover_interrupted_wordpress_detections(conn)
+        except Exception as exc:
+            try:
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(f"[{datetime.datetime.now(datetime.UTC)}] detection recovery error: {exc}\n")
+            except Exception:
+                pass
         while True:
             try:
                 agent.run_all()

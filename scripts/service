@@ -9,7 +9,8 @@ Environment overrides:
   MP_HOST, MP_CLIENT_PORT, MP_ADMIN_PORT, MP_ENV, MP_PUBLIC_HOST,
   MP_DEV_AUTH_TEST_MODE
   MANGOPANEL_PID_FILE, MANGOPANEL_LOG_FILE, MANGOPANEL_PYTHON,
-  MANGOPANEL_WORKER_PID_FILE, MANGOPANEL_WORKER_LOG_FILE
+  MANGOPANEL_WORKER_PID_FILE, MANGOPANEL_WORKER_LOG_FILE,
+  MANGOPANEL_STOP_FILE, MANGOPANEL_CONTAINER_STATE_FILE
 
 This wrapper is cross-platform and does not depend on systemd, launchd, or
 SysV init. It runs MangoPanel in the background, tracks a PID file, and writes
@@ -31,6 +32,8 @@ pid_file="${MANGOPANEL_PID_FILE:-$repo_root/var/mangopanel.pid}"
 log_file="${MANGOPANEL_LOG_FILE:-$repo_root/var/mangopanel.log}"
 worker_pid_file="${MANGOPANEL_WORKER_PID_FILE:-$repo_root/var/mangopanel-worker.pid}"
 worker_log_file="${MANGOPANEL_WORKER_LOG_FILE:-$repo_root/var/mangopanel-worker.log}"
+stop_file="${MANGOPANEL_STOP_FILE:-$repo_root/var/mangopanel.stopped}"
+container_state_file="${MANGOPANEL_CONTAINER_STATE_FILE:-$repo_root/var/mangopanel-containers.state}"
 host="${MP_HOST:-0.0.0.0}"
 client_port="${MP_CLIENT_PORT:-8000}"
 admin_port="${MP_ADMIN_PORT:-8001}"
@@ -49,11 +52,31 @@ is_running() {
   kill -0 "$pid" >/dev/null 2>&1
 }
 
+systemd_unit_available() {
+  command -v systemctl >/dev/null 2>&1 && [[ -f /etc/systemd/system/mangopanel.service ]]
+}
+
+systemd_is_running() {
+  systemd_unit_available && systemctl is-active --quiet mangopanel.service 2>/dev/null
+}
+
 start_service() {
-  if is_running; then
-    echo "mangopanel is already running (pid $(cat "$pid_file"))"
+  # An explicit start is the only operation that clears a manual stop.
+  rm -f "$stop_file"
+
+  if systemd_unit_available; then
+    systemctl start mangopanel.service
+    echo "mangopanel started by systemd"
     return 0
   fi
+
+  if is_running; then
+    echo "mangopanel is already running (pid $(cat "$pid_file"))"
+    start_containers
+    return 0
+  fi
+
+  start_containers
 
   (
     cd "$repo_root"
@@ -85,9 +108,21 @@ start_service() {
 }
 
 stop_service() {
+  # Keep this marker even when the panel is already down. It prevents a
+  # service manager or Docker restart policy from undoing an explicit stop.
+  touch "$stop_file"
+  if systemd_is_running; then
+    systemctl stop mangopanel.service >/dev/null 2>&1 || true
+    rm -f "$pid_file" "$worker_pid_file"
+    stop_containers
+    echo "mangopanel stopped"
+    return 0
+  fi
+
   if ! [[ -f "$pid_file" ]]; then
     echo "mangopanel is not running"
-    return 0
+    stop_containers
+    return
   fi
 
   local pid
@@ -123,10 +158,63 @@ stop_service() {
     fi
     rm -f "$worker_pid_file"
   fi
+  stop_containers
   echo "mangopanel stopped"
 }
 
+stop_system_service() {
+  systemd_is_running && systemctl stop mangopanel.service >/dev/null 2>&1 || true
+}
+
+stop_containers() {
+  command -v docker >/dev/null 2>&1 || return 0
+
+  local container_state
+  container_state="$(docker ps -q --no-trunc 2>/dev/null || true)"
+  [[ -n "$container_state" ]] || return 0
+
+  : >"$container_state_file"
+  while IFS= read -r container_id; do
+    [[ -n "$container_id" ]] || continue
+    local restart_name restart_max
+    restart_name="$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$container_id" 2>/dev/null || echo no)"
+    restart_max="$(docker inspect -f '{{.HostConfig.RestartPolicy.MaximumRetryCount}}' "$container_id" 2>/dev/null || echo 0)"
+    restart_name="${restart_name:-no}"
+    restart_max="${restart_max:-0}"
+    printf '%s\t%s\t%s\n' "$container_id" "$restart_name" "$restart_max" >>"$container_state_file"
+    docker update --restart=no "$container_id" >/dev/null 2>&1 || true
+  done <<<"$container_state"
+
+  # Stop only the containers that were running when the command was issued.
+  docker stop $(printf '%s\n' "$container_state") >/dev/null 2>&1 || true
+}
+
+start_containers() {
+  command -v docker >/dev/null 2>&1 || return 0
+  [[ -s "$container_state_file" ]] || return 0
+
+  local container_id restart_name restart_max restart_policy
+  while IFS=$'\t' read -r container_id restart_name restart_max; do
+    [[ -n "$container_id" ]] || continue
+    docker start "$container_id" >/dev/null 2>&1 || true
+    restart_policy="$restart_name"
+    if [[ "$restart_name" == "on-failure" && "${restart_max:-0}" != "0" ]]; then
+      restart_policy="on-failure:${restart_max}"
+    fi
+    docker update --restart="$restart_policy" "$container_id" >/dev/null 2>&1 || true
+  done <"$container_state_file"
+  rm -f "$container_state_file"
+}
+
 status_service() {
+  if systemd_is_running; then
+    local systemd_pid
+    systemd_pid="$(systemctl show -p MainPID --value mangopanel.service 2>/dev/null || true)"
+    echo "mangopanel is running under systemd (pid ${systemd_pid:-unknown})"
+    echo "client: http://127.0.0.1:${client_port}/"
+    echo "admin:  http://127.0.0.1:${admin_port}/admin"
+    return 0
+  fi
   if is_running; then
     echo "mangopanel is running (pid $(cat "$pid_file"))"
     echo "log: $log_file"

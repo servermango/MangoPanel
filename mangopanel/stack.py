@@ -744,7 +744,7 @@ exec /usr/sbin/cron -f
     runner_path.chmod(0o755)
 
     paths["compose"].write_text(
-        render_compose(account, plan, websites, runtime),
+        render_compose(account, plan, websites, runtime, mail_enabled=bool(mailboxes)),
         encoding="utf-8",
     )
     
@@ -756,6 +756,8 @@ RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     lsphp82-mysql lsphp83-mysql lsphp84-mysql \\
     lsphp82-curl lsphp83-curl lsphp84-curl \\
     lsphp82-opcache lsphp83-opcache lsphp84-opcache \\
+    lsphp82-redis lsphp83-redis lsphp84-redis \\
+    lsphp82-memcached lsphp83-memcached lsphp84-memcached \\
     proftpd-basic openssh-server socat \\
     && rm -rf /var/lib/apt/lists/*
 """
@@ -1078,6 +1080,12 @@ def render_modsecurity_rules(websites):
     lines.extend([
         'SecRule REQUEST_URI "@streq /__mangopanel_modsec_probe__" "id:1099990,phase:1,deny,status:403,log"',
         'SecRule REQUEST_URI "@rx (?i)(?:\\.\\./|<script[^>]*>)" "id:1099991,phase:1,deny,status:403,log"',
+        # Elementor sends large, authenticated JSON editor payloads containing
+        # HTML, CSS, SVG, and JavaScript. CRS interprets those values as attack
+        # signatures, so skip body inspection only for the editor endpoints.
+        'SecRule REQUEST_URI "@streq /wp-admin/admin-ajax.php" "id:1099992,phase:1,pass,nolog,chain,ctl:requestBodyAccess=Off"',
+        'SecRule REQUEST_HEADERS:Referer "@rx (?i)(?:[?&]action=elementor(?:&|$)|[?&]elementor-preview=)" "t:none"',
+        'SecRule REQUEST_URI "@rx ^/wp-json/elementor/v1/global-classes(?:\\?.*)?$" "id:1099993,phase:1,pass,nolog,ctl:ruleEngine=Off,ctl:ruleRemoveById=911100,ctl:ruleRemoveById=920620,ctl:ruleRemoveById=949110"',
     ])
     return "\n".join(lines) + "\n"
 
@@ -1241,10 +1249,12 @@ scripthandler  {{
 
 phpIniOverride  {{
   php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
+  php_admin_value memory_limit "256M"
   php_admin_value opcache.enable "{int(account.get('opcache_enabled', 1) or 0)}"
 }}
 
 module cache {{
+  enableCache             1
   storagePath             /usr/local/lsws/cachedata
 }}
 """
@@ -1268,7 +1278,7 @@ def render_crontab(account, cron_jobs=None):
     return "\n".join(lines) + "\n"
 
 
-def render_compose(account, plan, websites, runtime):
+def render_compose(account, plan, websites, runtime, mail_enabled=True):
     uid = 5000 + int(account["id"])
     domains_http = ", ".join([f"http://{w['domain']}" for w in websites]) if websites else f"http://{account['username']}.mango.test"
     public_doms = [w['domain'] for w in websites if not w['domain'].endswith(('.localhost', '.test', '.local', '.nip.io'))]
@@ -1284,6 +1294,8 @@ def render_compose(account, plan, websites, runtime):
     base_path = account["base_path"]
     memory = "{}m".format(plan["memory_mb"])
     cpu_count = compose_cpu_limit(plan["cpu_limit"])
+    service_cpu_count = compose_cpu_limit(plan.get("service_cpu_limit", "0.25"))
+    cpu_group = "mangopanel-{}.slice".format(username)
     storage_mb = int(plan["storage_mb"])
     inode_limit = int(plan["inode_limit"])
     backup_retention_days = int(plan["backup_retention_days"])
@@ -1297,20 +1309,27 @@ def render_compose(account, plan, websites, runtime):
         f'mangopanel.backup_retention_days: "{backup_retention_days}"',
         f'caddy_0: "{domains_http}"',
         'caddy_0.reverse_proxy: "{upstreams 80}"',
+        'caddy_0.reverse_proxy.header_up: "X-Forwarded-Proto https"',
+        'caddy_0.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
     ]
     if domains_public_https:
         labels_list.extend([
             f'caddy_1: "{domains_public_https}"',
             'caddy_1.reverse_proxy: "{upstreams 80}"',
+            'caddy_1.reverse_proxy.header_up: "X-Forwarded-Proto https"',
+            'caddy_1.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
         ])
     if domains_local_https:
         labels_list.extend([
             f'caddy_2: "{domains_local_https}"',
             'caddy_2.tls: "internal"',
             'caddy_2.reverse_proxy: "{upstreams 80}"',
+            'caddy_2.reverse_proxy.header_up: "X-Forwarded-Proto https"',
+            'caddy_2.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
         ])
     labels_str = "\n      ".join(labels_list)
 
+    mail_restart = "unless-stopped" if mail_enabled else "no"
     composed = """name: {project}
 services:
   web:
@@ -1321,6 +1340,7 @@ services:
     restart: unless-stopped
     mem_limit: {memory}
     cpus: "{cpu_count}"
+    cgroup_parent: {cpu_group}
     pids_limit: 256
     entrypoint: ["/bin/sh", "-c", 'umask 0002; groupadd -g {uid} {username} 2>/dev/null || true; usermod -aG {uid} nobody 2>/dev/null || true; exec /entrypoint.sh "$$@"', "--"]
     command: ["/bin/sh", "/usr/local/bin/mangopanel-services.sh"]
@@ -1354,6 +1374,8 @@ services:
     container_name: mp-{username}-redis
     restart: unless-stopped
     mem_limit: 128m
+    cpus: "{service_cpu_count}"
+    cgroup_parent: {cpu_group}
     command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
     volumes:
       - {base_path}/.runtime/stack/redis:/data
@@ -1366,6 +1388,8 @@ services:
     user: "{uid}:{uid}"
     restart: unless-stopped
     mem_limit: 128m
+    cpus: "{service_cpu_count}"
+    cgroup_parent: {cpu_group}
     entrypoint: ["/bin/sh", "-c", 'if [ ! -f /config/settings.json ]; then cp -a /defaults/settings.json /config/settings.json; fi; umask 0000; if [ ! -f /database/filebrowser.db ]; then /bin/filebrowser config init -d /database/filebrowser.db --auth.method noauth >/dev/null 2>&1; fi; /bin/filebrowser config set --auth.method noauth -d /database/filebrowser.db >/dev/null 2>&1 || true; exec /bin/filebrowser "$$@"', "--"]
     command: ["--config", "/config/settings.json", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
     environment:
@@ -1413,6 +1437,8 @@ services:
     container_name: mp-{username}-phpmyadmin
     restart: unless-stopped
     mem_limit: 256m
+    cpus: "{service_cpu_count}"
+    cgroup_parent: {cpu_group}
     labels:
       caddy: "{phpmyadmin_domain}"
       caddy.handle_path: "/auth/*"
@@ -1438,8 +1464,10 @@ services:
     container_name: mp-{username}-mailserver
     hostname: {mail_host}
     domainname: {public_host}
-    restart: unless-stopped
+    restart: {mail_restart}
     mem_limit: 768m
+    cpus: "{service_cpu_count}"
+    cgroup_parent: {cpu_group}
     ports:
       - "127.0.0.1:{smtp_port}:587"
       - "127.0.0.1:{smtp_tls_port}:465"
@@ -1481,6 +1509,8 @@ services:
     container_name: mp-{username}-mailproxy
     restart: unless-stopped
     mem_limit: 384m
+    cpus: "{service_cpu_count}"
+    cgroup_parent: {cpu_group}
     labels:
       caddy: "mail-{username}.seeds.servermango.com, http://{mail_host}, http://{mail_edge_host}"
       caddy.route.0_handle_path: "/assets*"
@@ -1507,6 +1537,8 @@ services:
     container_name: mp-{username}-db
     restart: unless-stopped
     mem_limit: 512m
+    cpus: "{service_cpu_count}"
+    cgroup_parent: {cpu_group}
     labels:
       mangopanel.plan: "{plan_name}"
       mangopanel.storage_mb: "{storage_mb}"
@@ -1530,6 +1562,8 @@ services:
     container_name: mp-{username}-pg
     restart: unless-stopped
     mem_limit: 512m
+    cpus: "{service_cpu_count}"
+    cgroup_parent: {cpu_group}
     ports:
       - "127.0.0.1:{pg_port}:5432"
     environment:
@@ -1546,6 +1580,8 @@ services:
     container_name: mp-{username}-adminer
     restart: unless-stopped
     mem_limit: 256m
+    cpus: "{service_cpu_count}"
+    cgroup_parent: {cpu_group}
     labels:
       caddy: "{adminer_domain}"
       caddy.reverse_proxy: "{{upstreams 8080}}"
@@ -1571,12 +1607,15 @@ volumes:
     pub_host = runtime.get("public_host") or "127.0.0.1"
     composed = composed.format(
         project=project,
+        mail_restart=mail_restart,
         uid=uid,
         labels_str=labels_str,
         plan_name=plan["name"],
         username=username,
         memory=memory,
         cpu_count=cpu_count,
+        service_cpu_count=service_cpu_count,
+        cpu_group=cpu_group,
         storage_mb=storage_mb,
         inode_limit=inode_limit,
         backup_retention_days=backup_retention_days,

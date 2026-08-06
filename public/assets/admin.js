@@ -42,6 +42,8 @@ createApp({
       isResellerMode: IS_RESELLER,
       token: getInitialToken(),
       activePage: adminPageFromLocation(),
+      pageLoaded: {},
+      pageLoadPromises: {},
       challengeToken: "",
       message: "",
       login: {
@@ -193,6 +195,8 @@ createApp({
       newPlan: {
         name: "",
         cpu_limit: "1",
+        service_cpu_limit: "0.25",
+        total_cpu_limit: "2",
         memory_mb: 1024,
         storage_mb: 10240,
         inode_limit: 100000,
@@ -501,6 +505,10 @@ createApp({
       if (window.location.hash !== nextHash) {
         window.history.pushState(null, "", `${ADMIN_ROUTE_PREFIX}${nextHash}`);
       }
+      // Load data only for the page currently in view. The overview's
+      // monitoring streams are started below; they are intentionally kept
+      // alive only while their cards are visible.
+      this.loadPageData(target);
       if (target === "storage") {
         this.stopNetworkLiveStream();
         this.stopCpuLiveStream();
@@ -544,14 +552,12 @@ createApp({
         this.stopNetworkLiveStream();
         this.stopCpuLiveStream();
         this.stopRamLiveStream();
-        this.loadStatusData();
       } else if (target === "audit-logs") {
         this.stopTrafficPolling();
         this.stopStorageLiveStream();
         this.stopNetworkLiveStream();
         this.stopCpuLiveStream();
         this.stopRamLiveStream();
-        this.loadAuditLogs(this.auditLogPagination.page || 1);
       } else {
         this.stopTrafficPolling();
         this.stopStorageLiveStream();
@@ -1330,46 +1336,110 @@ createApp({
     async load() {
       try {
         this.dashboard = await this.api("/api/admin/dashboard");
-        this.admins = (await this.api("/api/admin/admins")).admins.map((admin) => ({
-          ...admin,
-          totp_enabled: Boolean(admin.totp_enabled),
-        }));
-        await this.loadClients(this.clientPagination.page || 1);
-        const [plansRes, configRes, backupRes, dnsRes, domsRes, regsRes, stacksRes, jobsRes] = await Promise.all([
-          this.api("/api/admin/plans"),
-          this.api("/api/admin/configuration"),
-          this.api("/api/admin/system-backup"),
-          this.api("/api/admin/dns-settings"),
-          this.api("/api/admin/domains"),
-          this.api("/api/admin/registrars"),
-          this.api("/api/admin/account-stacks"),
-          this.api("/api/admin/job-events"),
-        ]);
-        this.plans = plansRes.plans;
-        this.configuration = { ...this.configuration, ...(configRes.configuration || {}) };
-        this.systemBackup = { ...this.systemBackup, ...(backupRes.backup || {}) };
-        this.modsecRuleset = this.configuration.modsecurity_ruleset || "baseline";
-        this.dnsSettings = dnsRes.dns_settings;
-        this.dnsDomains = domsRes.domains || [];
-        this.registrars = regsRes.registrars || [];
-        await this.loadRegistrarDashboard();
-        this.stacks = stacksRes.account_stacks;
-        this.jobEvents = jobsRes.job_events;
-
-        if (!IS_RESELLER) {
-          Promise.all([
-            this.loadResellerPlans(),
-            this.loadResellerUsers(),
-          ]).catch(() => {});
-        }
-
-        Promise.all([
-          this.loadDefaultPage(),
-          this.fetchAdminApiTokens(),
-          this.loadStatusData(),
-        ]).catch(() => {});
+        // Explicit refreshes (for example after saving or deleting a record)
+        // must still update the currently visible page, while ordinary
+        // navigation remains cached for the duration of the page session.
+        delete this.pageLoaded[this.activePage];
+        await this.loadPageData(this.activePage);
       } catch (error) {
         this.message = error.message;
+      }
+    },
+    async loadPageData(target) {
+      if (target === "overview" || ["storage", "networking", "cpu", "ram", "traffic"].includes(target)) return;
+      if (this.pageLoaded[target]) return;
+      if (this.pageLoadPromises[target]) return this.pageLoadPromises[target];
+
+      const task = (async () => {
+        switch (target) {
+          case "clients":
+            await Promise.all([
+              this.loadClients(this.clientPagination.page || 1),
+              this.loadPageData("plans"),
+            ]);
+            break;
+          case "plans": {
+            const result = await this.api("/api/admin/plans");
+            this.plans = result.plans || [];
+            break;
+          }
+          case "reseller-plans":
+            if (!IS_RESELLER) await this.loadResellerPlans();
+            break;
+          case "reseller-users":
+            if (!IS_RESELLER) await this.loadResellerUsers();
+            break;
+          case "dns": {
+            const result = await this.api("/api/admin/dns-settings");
+            this.dnsSettings = result.dns_settings;
+            break;
+          }
+          case "registrars": {
+            const [result] = await Promise.all([
+              this.api("/api/admin/registrars"),
+              this.loadRegistrarDashboard(),
+              this.loadClients(this.clientPagination.page || 1),
+            ]);
+            this.registrars = result.registrars || [];
+            break;
+          }
+          case "dns-domains": {
+            const result = await this.api("/api/admin/domains");
+            this.dnsDomains = result.domains || [];
+            break;
+          }
+          case "configuration": {
+            const result = await this.api("/api/admin/configuration");
+            this.configuration = { ...this.configuration, ...(result.configuration || {}) };
+            this.modsecRuleset = this.configuration.modsecurity_ruleset || "baseline";
+            break;
+          }
+          case "system-backup": {
+            const result = await this.api("/api/admin/system-backup");
+            this.systemBackup = { ...this.systemBackup, ...(result.backup || {}) };
+            break;
+          }
+          case "default-page":
+            await this.loadDefaultPage();
+            break;
+          case "security":
+            await this.loadSecurityAudit();
+            break;
+          case "audit-logs":
+            await this.loadAuditLogs(this.auditLogPagination.page || 1);
+            break;
+          case "system": {
+            const [stacks, jobs] = await Promise.all([
+              this.api("/api/admin/account-stacks"),
+              this.api("/api/admin/job-events"),
+            ]);
+            this.stacks = stacks.account_stacks || [];
+            this.jobEvents = jobs.job_events || [];
+            break;
+          }
+          case "admins": {
+            const result = await this.api("/api/admin/admins");
+            this.admins = (result.admins || []).map((admin) => ({ ...admin, totp_enabled: Boolean(admin.totp_enabled) }));
+            break;
+          }
+          case "api-tokens":
+            await this.fetchAdminApiTokens();
+            break;
+          case "status":
+            await this.loadStatusData();
+            break;
+          default:
+            break;
+        }
+        this.pageLoaded[target] = true;
+      })();
+      this.pageLoadPromises[target] = task;
+      try {
+        await task;
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        delete this.pageLoadPromises[target];
       }
     },
     async loadClients(page = 1) {
@@ -1916,6 +1986,8 @@ createApp({
         this.newPlan = {
           name: "",
           cpu_limit: "1",
+          service_cpu_limit: "0.25",
+          total_cpu_limit: "2",
           memory_mb: 1024,
           storage_mb: 10240,
           inode_limit: 100000,

@@ -115,15 +115,16 @@
         <div v-if="token" class="site-switcher">
           <span>Site</span>
           <button class="site-select-button" @click="toggleSiteSwitcher">
-            <span>{{ selectedWebsiteLabel }}</span>
+            <span>{{ websitesLoaded ? selectedWebsiteLabel : 'Loading sites…' }}</span>
             <app-icon name="chevron"></app-icon>
           </button>
           <div v-if="siteSwitcherOpen" class="site-select-menu">
             <input v-model="siteSearchQuery" placeholder="Search sites">
-            <button class="site-option" :class="{ active: !selectedWebsiteId }" @click="chooseSite('')">
+            <button v-if="websitesLoaded" class="site-option" :class="{ active: !selectedWebsiteId }" @click="chooseSite('')">
               <strong>All sites</strong>
               <small>{{ websites.length }} website{{ websites.length === 1 ? '' : 's' }}</small>
             </button>
+            <div v-if="!websitesLoaded" class="site-option"><span class="sw-spinner"></span><small>Loading websites…</small></div>
             <button v-for="site in filteredSites" :key="site.id" class="site-option" :class="{ active: String(site.id) === String(selectedWebsiteId) }" @click="chooseSite(site.id)">
               <strong>{{ site.domain }}</strong>
               <small>{{ site.status }} · PHP {{ site.php_version }}</small>
@@ -250,7 +251,7 @@
                 <button @click="goTo('settings')"><app-icon name="settings"></app-icon><span>Account Settings</span></button>
               </nav>
               <div class="user-menu-divider"></div>
-              <button class="user-menu-signout" @click="logout">
+              <button type="button" class="user-menu-signout" @click.stop="logout">
                 <app-icon name="logout"></app-icon>
                 <span>Sign out</span>
               </button>
@@ -3477,9 +3478,15 @@
               <div style="display:flex; gap:1rem; align-items:center;"><app-icon name="wordpress"></app-icon><div><h2>WordPress Manager</h2><p>Manage WordPress websites installed through MangoPanel.</p></div></div>
               <div style="display:flex; gap:.75rem; flex-wrap:wrap;"><button class="primary-button" @click="openWordPressInstaller"><app-icon name="plus"></app-icon>Create new WordPress website</button><button class="ghost-button" @click="detectWordPress" :disabled="wordpressDetecting"><span v-if="wordpressDetecting" class="sw-spinner"></span>{{ wordpressDetecting ? 'Detecting…' : 'Detect WordPress' }}</button></div>
             </div>
+            <div v-if="wordpressDetectionRun" class="panel" style="margin-top:1rem; padding:1.15rem; background:linear-gradient(135deg, var(--surface-muted, #f6f7f9), rgba(76,125,255,.08)); border:1px solid rgba(76,125,255,.22);">
+              <div style="display:flex; justify-content:space-between; gap:1rem; align-items:flex-start; flex-wrap:wrap;"><div><div style="display:flex; align-items:center; gap:.5rem;"><span class="sw-spinner" v-if="wordpressDetecting"></span><strong>WordPress detection in progress</strong></div><small style="display:block; margin-top:.35rem;">{{ wordpressDetectionRun.completed_sites || 0 }} completed · {{ Math.max(0, (wordpressDetectionRun.total_sites || 0) - (wordpressDetectionRun.completed_sites || 0)) }} remaining</small></div><span class="pill active">{{ wordpressDetectionRun.status }}</span></div>
+              <div style="height:8px; border-radius:99px; background:rgba(100,116,139,.18); overflow:hidden; margin-top:1rem;"><div style="height:100%; border-radius:99px; background:linear-gradient(90deg,#4c7dff,#35c99a); transition:width .4s ease;" :style="{ width: `${wordpressDetectionRun.total_sites ? Math.round((wordpressDetectionRun.completed_sites || 0) / wordpressDetectionRun.total_sites * 100) : 0}%` }"></div></div>
+              <div v-if="wordpressDetectionRun.current_domain" style="display:flex; align-items:center; gap:.5rem; margin-top:.9rem; padding:.65rem .75rem; border-radius:.6rem; background:rgba(76,125,255,.1);"><span class="sw-spinner"></span><span>Working on <strong>{{ wordpressDetectionRun.current_domain }}</strong></span></div>
+              <div v-if="wordpressDetectionRun.tasks && wordpressDetectionRun.tasks.length" style="margin-top:.8rem; max-height:12rem; overflow:auto; font-size:.85rem;"><div v-for="task in wordpressDetectionRun.tasks" :key="task.website_id" style="display:flex; justify-content:space-between; gap:.75rem; padding:.35rem 0; border-bottom:1px solid rgba(100,116,139,.12);"><span>{{ task.domain }}</span><span class="pill" :class="task.status === 'running' ? 'active' : (['completed','skipped'].includes(task.status) ? 'ok' : (task.status === 'failed' ? 'danger' : 'warning'))">{{ task.step || task.status }}</span></div></div>
+            </div>
             <div class="table-wrap" style="margin-top:1.5rem;"><table><thead><tr><th>Website</th><th>Title</th><th>Status</th><th>Installed</th><th>Actions</th></tr></thead><tbody>
-              <tr v-for="site in wordpressSites" :key="site.website_id"><td><strong>{{ site.domain }}</strong></td><td>{{ site.site_title || 'WordPress' }}</td><td><span class="pill" :class="site.status === 'installed' ? 'active' : 'warning'">{{ site.status }}</span></td><td>{{ site.installed_at || '—' }}</td><td><button class="primary-button" @click="loginToWordPress(site)" :disabled="site.status === 'installing'"><app-icon name="wordpress"></app-icon>Login to WordPress Admin</button></td></tr>
-              <tr v-if="wordpressManagerLoading"><td colspan="5" class="empty-row">Loading WordPress sites…</td></tr><tr v-else-if="!wordpressSites.length"><td colspan="5" class="empty-row">No WordPress sites found. Create one or use Detect WordPress.</td></tr>
+              <tr v-for="site in wordpressSites" :key="site.website_id"><td><strong>{{ site.domain }}</strong></td><td>{{ site.site_title || 'WordPress' }}</td><td><span class="pill" :class="site.status === 'installed' ? 'active' : 'warning'">{{ site.status }}</span><small style="display:block; margin-top:.25rem;">Cache: {{ site.litespeed_cache_status || 'pending' }} · Security: {{ site.cloudflare_security_status || 'pending' }}</small></td><td>{{ site.installed_at || '—' }}</td><td style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;"><label style="display:flex; align-items:center; gap:.35rem; font-size:.8rem;"><input type="checkbox" v-model="site.mangopanel_cron_enabled" :true-value="1" :false-value="0" @change="toggleWordPressCron(site)"> MangoPanel cron (5 min)</label><button class="primary-button" @click="loginToWordPress(site)" :disabled="site.status === 'installing'"><app-icon name="wordpress"></app-icon>Login to WordPress Admin</button></td></tr>
+              <tr v-if="!wordpressSitesLoaded"><td colspan="5" class="empty-row"><span class="sw-spinner"></span> Loading WordPress sites…</td></tr><tr v-else-if="!wordpressSites.length && !wordpressManagerLoading"><td colspan="5" class="empty-row">No WordPress sites found. Create one or use Detect WordPress.</td></tr>
             </tbody></table></div>
           </section>
 

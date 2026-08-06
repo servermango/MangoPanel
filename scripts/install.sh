@@ -353,8 +353,9 @@ Environment=MP_HOST=0.0.0.0
 Environment=MP_PUBLIC_HOST=$public_host
 Environment=MP_CLIENT_PORT=8000
 Environment=MP_ADMIN_PORT=8001
+ExecStartPre=/usr/bin/rm -f $repo_root/var/mangopanel.stopped
 ExecStart=$python_exec -m mangopanel.app
-Restart=always
+Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 KillSignal=SIGTERM

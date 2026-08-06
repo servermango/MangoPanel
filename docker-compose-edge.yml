@@ -16,6 +16,7 @@ services:
       - caddy_data:/data
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     restart: unless-stopped
+    cpus: "0.50"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

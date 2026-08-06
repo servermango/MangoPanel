@@ -12,6 +12,7 @@ import os
 import shlex
 import tempfile
 import threading
+import sys
 from datetime import datetime, timedelta, timezone
 
 def is_within_directory(directory, target):
@@ -420,6 +421,9 @@ class Agent:
     def run_once(self):
         with connect(self.config.db_path) as conn:
             apply_system_timezone(conn)
+            self.recover_stale_backup_jobs(conn)
+            self.recover_stale_jobs(conn)
+            self.enqueue_due_wordpress_detections(conn)
             self.enqueue_due_git_updates(conn)
             self.enqueue_due_automatic_backups(conn)
             self.enqueue_due_system_backups(conn)
@@ -432,6 +436,72 @@ class Agent:
             # filesystem, Docker, archive, or database work begins.
             conn.commit()
             return self.run_claimed_job(conn, job)
+
+    def recover_interrupted_wordpress_detections(self, conn):
+        """Resume detection batches interrupted by a panel process restart."""
+        jobs = conn.execute(
+            "SELECT id, payload FROM jobs WHERE type = 'detect_wordpress_sites' AND status = 'running'"
+        ).fetchall()
+        for job in jobs:
+            payload = self.job_payload(job)
+            run_id = int(payload.get("run_id") or 0)
+            if not run_id:
+                continue
+            conn.execute(
+                "UPDATE wordpress_detection_tasks SET status = 'pending', step = 'queued', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE run_id = ? AND status = 'running'",
+                (run_id,),
+            )
+            conn.execute(
+                "UPDATE wordpress_detection_runs SET status = 'queued', current_domain = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'",
+                (run_id,),
+            )
+            conn.execute(
+                "UPDATE jobs SET status = 'queued', claimed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (job["id"],),
+            )
+        conn.commit()
+
+    def recover_stale_backup_jobs(self, conn):
+        """Release backup jobs left running after a worker/container restart."""
+        conn.execute(
+            """UPDATE backups
+               SET status = 'failed', completed_at = CURRENT_TIMESTAMP
+             WHERE status = 'running'
+               AND created_at < datetime('now', '-6 hours')"""
+        )
+        conn.execute(
+            """UPDATE jobs
+               SET status = 'failed',
+                   result = ?,
+                   updated_at = CURRENT_TIMESTAMP,
+                   completed_at = CURRENT_TIMESTAMP
+             WHERE status = 'running'
+               AND type IN ('automatic_backup', 'manual_backup', 'system_backup')
+               AND claimed_at < datetime('now', '-6 hours')""",
+            (json.dumps({"error": "stale_backup_job_recovered"}),),
+        )
+
+    def recover_stale_jobs(self, conn):
+        """Mark jobs abandoned by a dead worker so they cannot block an account forever."""
+        conn.execute(
+            """UPDATE jobs
+               SET status = 'failed',
+                   result = ?,
+                   updated_at = CURRENT_TIMESTAMP,
+                   completed_at = CURRENT_TIMESTAMP
+             WHERE status = 'running'
+               AND claimed_at < datetime('now', '-2 hours')
+               AND type NOT IN ('automatic_backup', 'manual_backup', 'system_backup')""",
+            (json.dumps({"error": "stale_job_recovered"}),),
+        )
+        conn.execute(
+            """UPDATE system_backup_runs
+               SET status = 'failed',
+                   error = 'stale_backup_job_recovered',
+                   completed_at = CURRENT_TIMESTAMP
+             WHERE status IN ('queued', 'running')
+               AND created_at < datetime('now', '-6 hours')"""
+        )
 
     def enqueue_due_git_updates(self, conn):
         """Queue one pull per deployment once its five-minute interval elapses."""
@@ -471,7 +541,13 @@ class Agent:
             active = conn.execute("SELECT 1 FROM system_backup_runs WHERE status IN ('queued','running') AND kind LIKE ? LIMIT 1", (f"%{kind}%",)).fetchone()
             if active:
                 continue
-            last = conn.execute("SELECT created_at FROM system_backup_runs WHERE kind = ? AND status = 'completed' ORDER BY id DESC LIMIT 1", (kind,)).fetchone()
+            # A database+files run satisfies both components. Use the latest
+            # attempt, regardless of outcome, so a failed archive cannot be
+            # retried on every 15-second worker pass.
+            last = conn.execute(
+                "SELECT created_at FROM system_backup_runs WHERE kind LIKE ? ORDER BY id DESC LIMIT 1",
+                (f"%{kind}%",),
+            ).fetchone()
             if last and not self.backup_due(last["created_at"], frequency, now):
                 continue
             due.append(kind)
@@ -524,29 +600,26 @@ class Agent:
         ).fetchall()
         created = 0
         for account in rows:
-            sites = conn.execute("SELECT id FROM websites WHERE account_id = ? ORDER BY id", (account["account_id"],)).fetchall()
-            site_ids = [site["id"] for site in sites] or [None]
-            for website_id in site_ids:
-                active = conn.execute(
-                    """SELECT 1 FROM backups WHERE account_id = ? AND (website_id IS ? OR website_id = ?)
-                       AND status IN ('queued','running') LIMIT 1""",
-                    (account["account_id"], website_id, website_id),
-                ).fetchone()
-                if active:
-                    continue
-                last = conn.execute(
-                    """SELECT created_at FROM backups WHERE account_id = ? AND (website_id IS ? OR website_id = ?)
-                       AND kind = 'automatic' AND status = 'completed' ORDER BY id DESC LIMIT 1""",
-                    (account["account_id"], website_id, website_id),
-                ).fetchone()
-                if last and not self.backup_due(last["created_at"], account["backup_schedule"], now):
-                    continue
-                cur = conn.execute(
-                    "INSERT INTO backups(account_id, website_id, kind, includes_database, status) VALUES (?, ?, 'automatic', 1, 'queued')",
-                    (account["account_id"], website_id),
-                )
-                create_job(conn, "automatic_backup", "backup", cur.lastrowid, {"website_id": website_id})
-                return 1
+            active = conn.execute(
+                """SELECT 1 FROM backups WHERE account_id = ?
+                   AND status IN ('queued','running') LIMIT 1""",
+                (account["account_id"],),
+            ).fetchone()
+            if active:
+                continue
+            last = conn.execute(
+                """SELECT created_at FROM backups WHERE account_id = ?
+                   AND kind = 'automatic' ORDER BY id DESC LIMIT 1""",
+                (account["account_id"],),
+            ).fetchone()
+            if last and not self.backup_due(last["created_at"], account["backup_schedule"], now):
+                continue
+            cur = conn.execute(
+                "INSERT INTO backups(account_id, website_id, kind, includes_database, status) VALUES (?, NULL, 'automatic', 1, 'queued')",
+                (account["account_id"],),
+            )
+            create_job(conn, "automatic_backup", "backup", cur.lastrowid, {})
+            return 1
         return 0
 
     @staticmethod
@@ -790,6 +863,8 @@ class Agent:
             return self.optimize_images(conn, job)
         if job_type == "sync_cron_jobs":
             return self.sync_cron_jobs(conn, job["target_id"])
+        if job_type == "detect_wordpress_sites":
+            return self.detect_wordpress_sites(conn, job)
         if job_type == "sync_pg_databases":
             return self.sync_pg_databases(conn, job["target_id"])
         if job_type == "install_custom_ssl":
@@ -839,6 +914,10 @@ class Agent:
             return self.recalculate_usage(conn, job)
         if job_type == "install_wordpress":
             return self.install_wordpress(conn, job)
+        if job_type == "configure_wordpress_site":
+            return self.configure_wordpress_site(conn, job)
+        if job_type == "detect_wordpress_sites":
+            return self.detect_wordpress_sites(conn, job)
         if job_type == "install_script":
             return self.install_script(conn, job)
         if job_type == "suspend_account":
@@ -869,7 +948,8 @@ class Agent:
             stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (job["target_id"],)).fetchone()
             start_result = {"status": "not_required"}
             if account["status"] == "hard_suspended" and stack and stack["compose_path"]:
-                start_result = self.apply_stack(stack["compose_path"], account["username"])
+                plan = conn.execute("SELECT total_cpu_limit FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+                start_result = self.apply_stack(stack["compose_path"], account["username"], plan["total_cpu_limit"] if plan else "2")
                 conn.execute("UPDATE account_stacks SET status = ?, last_applied_at = CURRENT_TIMESTAMP, last_error = NULL WHERE account_id = ?", (start_result.get("status", "applied"), job["target_id"]))
             conn.execute("UPDATE hosting_accounts SET status = 'active' WHERE id = ?", (job["target_id"],))
             if account:
@@ -1839,24 +1919,24 @@ class Agent:
             if not check_proc.stdout.strip():
                 raise AgentError(f"mariadb_container_unavailable: {container_name}")
             sql_body = "\n".join(sql_statements)
-            proc = subprocess.run(
-                [
-                    docker,
-                    "exec",
-                    container_name,
-                    "mariadb",
-                    "-uroot",
-                    f"-p{runtime['db_root_password']}",
-                    "-e",
-                    sql_body,
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode != 0:
-                raise AgentError(f"mariadb_sql_failed: {proc.stderr.strip() or proc.stdout.strip()}")
-            return {"executed": True}
+            command = [
+                docker,
+                "exec",
+                container_name,
+                "mariadb",
+                "-uroot",
+                f"-p{runtime['db_root_password']}",
+                "-e",
+                sql_body,
+            ]
+            for attempt in range(30):
+                proc = subprocess.run(command, check=False, capture_output=True, text=True)
+                if proc.returncode == 0:
+                    return {"executed": True}
+                error_text = proc.stderr.strip() or proc.stdout.strip()
+                if "Can't connect to local server" not in error_text or attempt == 29:
+                    raise AgentError(f"mariadb_sql_failed: {error_text}")
+                time.sleep(2)
 
     def sync_wordpress_database_password(self, account_id, username, password, conn=None):
         """Keep imported WordPress configs aligned with a panel DB password."""
@@ -2489,7 +2569,7 @@ class Agent:
         mail_edge_provider = self.publish_mail_edge_state(conn, account, runtime, mailboxes, mail_policy)
         cron_jobs = rows_to_dicts(conn.execute("SELECT * FROM cron_jobs WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         ensure_cron_runtime_artifacts(row_to_dict(account), cron_jobs)
-        apply_result = self.apply_stack(paths["compose"], account["username"]) if apply_stack else {"status": "generated"}
+        apply_result = self.apply_stack(paths["compose"], account["username"], plan["total_cpu_limit"]) if apply_stack else {"status": "generated"}
         if account["status"] == "hard_suspended":
             # Maintenance jobs may still be queued when an account is hard
             # suspended. They may regenerate the stack, but must never leave
@@ -2576,7 +2656,52 @@ class Agent:
     def sync_mailboxes(self, conn, account_id):
         return self.provision_hosting_account(conn, account_id)
 
-    def apply_stack(self, compose_path, username=None):
+    def ensure_cpu_cgroup(self, username, total_cpu_limit):
+        """Create the account CPU parent cgroup used by Docker Compose."""
+        if not username or not str(total_cpu_limit).strip() or not sys.platform.startswith("linux"):
+            return
+
+        try:
+            quota = max(1, int(float(total_cpu_limit) * 100000))
+        except (TypeError, ValueError):
+            raise AgentError("invalid_total_cpu_limit")
+
+        cgroup_root = Path("/sys/fs/cgroup")
+        group_name = f"mangopanel-{username}.slice"
+        try:
+            if shutil.which("systemctl") and Path("/run/systemd/system").exists():
+                unit_path = Path("/run/systemd/system") / group_name
+                unit_path.write_text(
+                    "[Unit]\n"
+                    f"Description=MangoPanel CPU limit for {username}\n\n"
+                    "[Slice]\n"
+                    "CPUAccounting=yes\n"
+                    f"CPUQuota={float(total_cpu_limit) * 100:g}%\n",
+                    encoding="ascii",
+                )
+                subprocess.run(["systemctl", "daemon-reload"], check=True, capture_output=True, text=True)
+                subprocess.run(["systemctl", "start", group_name], check=True, capture_output=True, text=True)
+                return
+
+            if (cgroup_root / "cgroup.controllers").exists():
+                group = cgroup_root / group_name
+                group.mkdir(parents=True, exist_ok=True)
+                (group / "cpu.max").write_text(f"{quota} 100000\n", encoding="ascii")
+                return
+
+            cpu_root = cgroup_root / "cpu"
+            if cpu_root.exists():
+                group = cpu_root / group_name
+                group.mkdir(parents=True, exist_ok=True)
+                (group / "cpu.cfs_period_us").write_text("100000\n", encoding="ascii")
+                (group / "cpu.cfs_quota_us").write_text(f"{quota}\n", encoding="ascii")
+                return
+        except OSError as exc:
+            raise AgentError(f"cpu_cgroup_setup_failed: {exc}")
+
+        raise AgentError("cpu_cgroup_unavailable")
+
+    def apply_stack(self, compose_path, username=None, total_cpu_limit="2"):
         if self.config.agent_mode == "simulate":
             state_path = Path(compose_path).with_suffix(".agent-state.json")
             state = {
@@ -2592,6 +2717,7 @@ class Agent:
             docker = shutil.which("docker")
             if not docker:
                 raise AgentError("docker_not_found")
+            self.ensure_cpu_cgroup(username, total_cpu_limit)
             result = subprocess.run(
                 [docker, "compose", "-f", str(compose_path), "up", "-d", "--build", "--remove-orphans", "--force-recreate"],
                 check=False,
@@ -2671,6 +2797,326 @@ class Agent:
             "document_root": str(website["document_root"]),
             "site_title": payload.get("site_title"),
         }
+
+    def _wordpress_container_path(self, account, website):
+        base_path = str(account["base_path"])
+        document_root = str(website["document_root"])
+        if not document_root.startswith(base_path):
+            raise AgentError("wordpress_document_root_outside_account")
+        return f"/home/{account['username']}" + document_root[len(base_path):]
+
+    def _set_wordpress_cron_mode(self, root, enabled):
+        config_path = Path(root) / "wp-config.php"
+        if not config_path.is_file():
+            raise AgentError("wordpress_config_not_found")
+        text = config_path.read_text(encoding="utf-8", errors="ignore")
+        define_line = "define( 'DISABLE_WP_CRON', %s );" % ("true" if enabled else "false")
+        pattern = r"define\(\s*['\"]DISABLE_WP_CRON['\"]\s*,\s*[^;]+;"
+        if re.search(pattern, text):
+            text = re.sub(pattern, define_line, text, count=1)
+        else:
+            marker = "/* Add any custom values between this line and the \"stop editing\" line. */"
+            if marker in text:
+                text = text.replace(marker, marker + "\n" + define_line, 1)
+            else:
+                text = text.replace("/* That's all, stop editing! Happy publishing. */", define_line + "\n\n/* That's all, stop editing! Happy publishing. */", 1)
+        config_path.write_text(text, encoding="utf-8")
+
+    def _ensure_wordpress_cron(self, conn, account, website, enabled):
+        command = "/usr/bin/wp --allow-root --path={} cron event run --due-now --quiet".format(
+            self._wordpress_container_path(account, website)
+        )
+        existing = conn.execute(
+            "SELECT * FROM cron_jobs WHERE account_id = ? AND command = ? ORDER BY id LIMIT 1",
+            (account["id"], command),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE cron_jobs SET schedule = '*/5 * * * *', status = ? WHERE id = ?",
+                ("enabled" if enabled else "disabled", existing["id"]),
+            )
+        elif enabled:
+            cur = conn.execute(
+                "INSERT INTO cron_jobs(account_id, schedule, command, status) VALUES (?, '*/5 * * * *', ?, 'enabled')",
+                (account["id"], command),
+            )
+        self._set_wordpress_cron_mode(website["document_root"], enabled)
+        self.sync_cron_jobs(conn, account["id"])
+        return {"enabled": bool(enabled), "schedule": "*/5 * * * *", "command": command}
+
+    def _install_litespeed_cache(self, account, website):
+        if self.config.agent_mode != "docker":
+            return {"status": "skipped", "reason": "simulate_mode"}
+        docker = shutil.which("docker") or "docker"
+        container = f"mp-{account['username']}-web"
+        path = self._wordpress_container_path(account, website)
+        installed = subprocess.run(
+            [docker, "exec", container, "wp", "plugin", "is-installed", "litespeed-cache", f"--path={path}", "--allow-root"],
+            capture_output=True, text=True, check=False, timeout=30,
+        ).returncode == 0
+        if installed:
+            # An owner may have deliberately disabled LiteSpeed Cache. Detect
+            # that state without changing it; it is still a successful result.
+            active = subprocess.run(
+                [docker, "exec", container, "wp", "plugin", "is-active", "litespeed-cache", f"--path={path}", "--allow-root"],
+                capture_output=True, text=True, check=False, timeout=30,
+            ).returncode == 0
+            if not active:
+                return {"status": "installed_inactive", "reason": "already_present"}
+            status = "activated"
+        else:
+            command = [docker, "exec", container, "wp", "plugin", "install", "litespeed-cache", "--activate", f"--path={path}", "--allow-root"]
+            result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=180)
+            if result.returncode != 0:
+                raise AgentError("litespeed_cache_install_failed: " + (result.stderr.strip() or result.stdout.strip()))
+            status = "installed"
+        self._configure_litespeed_object_cache(account, website)
+        return {"status": status, "object_cache": {"status": "configured", "backend": "redis", "host": "redis", "port": 6379}}
+
+    def _configure_litespeed_object_cache(self, account, website):
+        """Point LiteSpeed Cache's object cache at the account-local Redis service."""
+        # Save through LiteSpeed's supported option API as well as the runtime
+        # file.  The admin Connection Test reads the saved options, while the
+        # drop-in may read the file during early WordPress bootstrap.
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker") or "docker"
+            container = f"mp-{account['username']}-web"
+            path = self._wordpress_container_path(account, website)
+            for key, value in (
+                ("object", "true"),
+                ("object-kind", "true"),
+                ("object-host", "redis"),
+                ("object-port", "6379"),
+                ("object-db_id", "0"),
+                ("object-persistent", "true"),
+                ("object-admin", "true"),
+            ):
+                result = subprocess.run(
+                    [docker, "exec", container, "wp", "litespeed-option", "set", key, value,
+                     f"--path={path}", "--allow-root"],
+                    capture_output=True, text=True, check=False, timeout=30,
+                )
+                if result.returncode != 0:
+                    raise AgentError(
+                        "litespeed_object_cache_config_failed: "
+                        + (result.stderr.strip() or result.stdout.strip() or key)
+                    )
+        config_path = Path(website["document_root"]) / "wp-content" / ".litespeed_conf.dat"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config = {}
+        if config_path.is_file():
+            try:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                config = {}
+        config.update({
+            "object": True,
+            "object-kind": True,
+            "object-host": "redis",
+            "object-port": 6379,
+            "object-db_id": 0,
+            "object-persistent": True,
+            "object-admin": True,
+        })
+        config_path.write_text(json.dumps(config, separators=(",", ":")), encoding="utf-8")
+
+    def _cloudflare_for_wordpress(self, conn, website):
+        domain = conn.execute(
+            "SELECT dns_provider, dns_provider_account_id FROM domains WHERE linked_website_id = ? LIMIT 1",
+            (website["id"],),
+        ).fetchone()
+        if not domain or domain["dns_provider"] != DNS_PROVIDER_CLOUDFLARE:
+            return None
+        provider_row = conn.execute("SELECT id FROM dns_providers WHERE key = ?", (DNS_PROVIDER_CLOUDFLARE,)).fetchone()
+        if not provider_row:
+            return None
+        provider_account = None
+        if domain["dns_provider_account_id"]:
+            provider_account = conn.execute("SELECT * FROM dns_provider_accounts WHERE id = ?", (domain["dns_provider_account_id"],)).fetchone()
+        if not provider_account:
+            provider_account = conn.execute(
+                "SELECT * FROM dns_provider_accounts WHERE provider_id = ? AND status = 'active' ORDER BY id LIMIT 1",
+                (provider_row["id"],),
+            ).fetchone()
+        if not provider_account:
+            return None
+        credential = conn.execute("SELECT encrypted_secret FROM dns_provider_credentials WHERE provider_account_id = ?", (provider_account["id"],)).fetchone()
+        token = decrypt_secret(credential["encrypted_secret"], self.config.jwt_secret) if credential and credential["encrypted_secret"] else ""
+        if not token:
+            return None
+        return CloudflareDNSProvider(token, account_id=provider_account["external_account_id"], api_base=self.config.cloudflare_api_base)
+
+    def configure_wordpress_site(self, conn, job):
+        payload = self.job_payload(job)
+        website = conn.execute("SELECT * FROM websites WHERE id = ?", (job["target_id"],)).fetchone()
+        if not website:
+            raise AgentError("website_not_found")
+        install = conn.execute("SELECT * FROM wordpress_installs WHERE website_id = ?", (website["id"],)).fetchone()
+        if not install:
+            raise AgentError("wordpress_install_not_found")
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (website["account_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        result = {"website_id": website["id"]}
+        if payload.get("install_litespeed_cache"):
+            try:
+                cache = self._install_litespeed_cache(account, website)
+            except Exception as exc:
+                cache = {"status": "error", "error": str(exc)}
+            result["litespeed_cache"] = cache
+            conn.execute("UPDATE wordpress_installs SET litespeed_cache_status = ? WHERE website_id = ?", (cache["status"], website["id"]))
+            object_cache = cache.get("object_cache") or {}
+            if object_cache.get("status"):
+                conn.execute("UPDATE wordpress_installs SET litespeed_object_cache_status = ? WHERE website_id = ?", (object_cache["status"], website["id"]))
+        if payload.get("configure_litespeed_object_cache"):
+            try:
+                if self.config.agent_mode != "docker":
+                    object_cache = {"status": "skipped", "reason": "simulate_mode"}
+                else:
+                    docker = shutil.which("docker") or "docker"
+                    container = f"mp-{account['username']}-web"
+                    path = self._wordpress_container_path(account, website)
+                    active = subprocess.run(
+                        [docker, "exec", container, "wp", "plugin", "is-active", "litespeed-cache", f"--path={path}", "--allow-root"],
+                        capture_output=True, text=True, check=False, timeout=30,
+                    ).returncode == 0
+                    if active:
+                        self._configure_litespeed_object_cache(account, website)
+                        object_cache = {"status": "configured", "backend": "redis", "host": "redis", "port": 6379}
+                    else:
+                        object_cache = {"status": "installed_inactive", "reason": "plugin_not_active"}
+            except Exception as exc:
+                object_cache = {"status": "error", "error": str(exc)}
+            result["litespeed_object_cache"] = object_cache
+            conn.execute("UPDATE wordpress_installs SET litespeed_object_cache_status = ? WHERE website_id = ?", (object_cache.get("status", "error"), website["id"]))
+        if payload.get("configure_cloudflare"):
+            try:
+                provider = self._cloudflare_for_wordpress(conn, website)
+                security = provider.ensure_security_challenge_rule(website["domain"]) if provider else {"status": "skipped", "reason": "cloudflare_not_configured"}
+            except Exception as exc:
+                security = {"status": "error", "error": str(exc)}
+            result["cloudflare_security"] = security
+            security_status = security.get("status", "error")
+            if security.get("type") == "ruleset" and security_status in {"created", "exists"}:
+                security_status = f"ruleset_{security_status}"
+            elif security.get("type") == "pagerule":
+                security_status = "legacy_pagerule"
+            conn.execute("UPDATE wordpress_installs SET cloudflare_security_status = ? WHERE website_id = ?", (security_status, website["id"]))
+        if "manage_wp_cron" in payload:
+            try:
+                cron = self._ensure_wordpress_cron(conn, account, website, bool(payload["manage_wp_cron"]))
+            except Exception as exc:
+                cron = {"enabled": bool(payload["manage_wp_cron"]), "status": "error", "error": str(exc)}
+            result["mangopanel_cron"] = cron
+            cron_enabled = bool(payload["manage_wp_cron"]) and cron.get("status") != "error"
+            conn.execute("UPDATE wordpress_installs SET mangopanel_cron_enabled = ? WHERE website_id = ?", (1 if cron_enabled else 0, website["id"]))
+        conn.execute("UPDATE wordpress_installs SET updated_at = CURRENT_TIMESTAMP WHERE website_id = ?", (website["id"],))
+        return result
+
+    def enqueue_due_wordpress_detections(self, conn):
+        """Schedule one persisted WordPress scan per account every 25 hours."""
+        accounts = conn.execute("SELECT id FROM hosting_accounts WHERE status = 'active' ORDER BY id").fetchall()
+        for account in accounts:
+            active = conn.execute(
+                "SELECT 1 FROM wordpress_detection_runs WHERE account_id = ? AND status IN ('queued', 'running') LIMIT 1",
+                (account["id"],),
+            ).fetchone()
+            if active:
+                continue
+            recent = conn.execute(
+                "SELECT id FROM wordpress_detection_runs WHERE account_id = ? AND status IN ('completed', 'completed_with_errors') AND created_at >= datetime('now', '-25 hours') ORDER BY id DESC LIMIT 1",
+                (account["id"],),
+            ).fetchone()
+            if recent:
+                continue
+            websites = conn.execute("SELECT id FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()
+            if not websites:
+                continue
+            run_id = self.create_wordpress_detection_run(conn, account["id"], [row["id"] for row in websites])
+            create_job(conn, "detect_wordpress_sites", "hosting_account", account["id"], {"run_id": run_id})
+
+    @staticmethod
+    def create_wordpress_detection_run(conn, account_id, website_ids):
+        cur = conn.execute(
+            "INSERT INTO wordpress_detection_runs(account_id, total_sites) VALUES (?, ?)",
+            (account_id, len(website_ids)),
+        )
+        run_id = cur.lastrowid
+        for website_id in website_ids:
+            conn.execute("INSERT OR IGNORE INTO wordpress_detection_tasks(run_id, website_id) VALUES (?, ?)", (run_id, website_id))
+        return run_id
+
+    def detect_wordpress_sites(self, conn, job):
+        payload = self.job_payload(job)
+        run_id = int(payload.get("run_id") or 0)
+        run = conn.execute("SELECT * FROM wordpress_detection_runs WHERE id = ?", (run_id,)).fetchone()
+        if not run:
+            raise AgentError("wordpress_detection_run_not_found")
+        conn.execute(
+            "UPDATE wordpress_detection_runs SET status = 'running', job_id = ?, started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (job["id"], run_id),
+        )
+        conn.commit()
+        tasks = conn.execute(
+            "SELECT t.*, w.domain FROM wordpress_detection_tasks t JOIN websites w ON w.id = t.website_id WHERE t.run_id = ? AND t.status = 'pending' ORDER BY t.id",
+            (run_id,),
+        ).fetchall()
+        errors = 0
+        for task in tasks:
+            conn.execute(
+                "UPDATE wordpress_detection_tasks SET status = 'running', step = 'configuring', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (task["id"],),
+            )
+            conn.execute("UPDATE wordpress_detection_runs SET current_domain = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (task["domain"], run_id))
+            conn.commit()
+            website = conn.execute("SELECT * FROM websites WHERE id = ?", (task["website_id"],)).fetchone()
+            try:
+                root = Path(website["document_root"])
+                if not (root / "wp-config.php").exists() or not (root / "wp-admin").is_dir():
+                    result = {"status": "skipped", "reason": "not_wordpress"}
+                else:
+                    install = conn.execute("SELECT * FROM wordpress_installs WHERE website_id = ?", (website["id"],)).fetchone()
+                    if not install:
+                        # Automatic account-wide scans must register discoveries
+                        # before applying the independent management tasks.
+                        conn.execute(
+                            "INSERT INTO wordpress_installs(website_id, site_title, admin_username, admin_email, status) VALUES (?, ?, 'admin', '', 'detected')",
+                            (website["id"], website["domain"]),
+                        )
+                        install = conn.execute("SELECT * FROM wordpress_installs WHERE website_id = ?", (website["id"],)).fetchone()
+                    task_payload = {
+                        "install_litespeed_cache": install["litespeed_cache_status"] not in {"installed", "activated", "installed_inactive"},
+                        "configure_litespeed_object_cache": install["litespeed_cache_status"] in {"installed", "activated"} and install["litespeed_object_cache_status"] != "configured",
+                        "configure_cloudflare": install["cloudflare_security_status"] not in {"ruleset_created", "ruleset_exists", "mocked", "skipped"},
+                        "manage_wp_cron": not bool(install["mangopanel_cron_enabled"]),
+                    }
+                    if not any(task_payload.values()):
+                        result = {"website_id": website["id"], "status": "skipped", "reason": "already_configured"}
+                    else:
+                        result = self.configure_wordpress_site(
+                            conn,
+                            {"target_id": website["id"], "payload": json.dumps(task_payload)},
+                        )
+                task_status = "completed" if result.get("status") != "error" else "completed_with_errors"
+                if any(isinstance(value, dict) and value.get("status") == "error" for value in result.values()):
+                    task_status = "completed_with_errors"
+                    errors += 1
+                conn.execute(
+                    "UPDATE wordpress_detection_tasks SET status = ?, step = 'complete', result_json = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (task_status, json.dumps(result), task["id"]),
+                )
+            except Exception as exc:
+                errors += 1
+                conn.execute(
+                    "UPDATE wordpress_detection_tasks SET status = 'failed', step = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (str(exc), task["id"]),
+                )
+            completed = conn.execute("SELECT COUNT(*) AS count FROM wordpress_detection_tasks WHERE run_id = ? AND status IN ('completed', 'completed_with_errors', 'failed', 'skipped')", (run_id,)).fetchone()["count"]
+            conn.execute("UPDATE wordpress_detection_runs SET completed_sites = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (completed, run_id))
+            conn.commit()
+        status = "completed_with_errors" if errors else "completed"
+        conn.execute("UPDATE wordpress_detection_runs SET status = ?, current_domain = NULL, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, run_id))
+        return {"run_id": run_id, "status": status, "completed_sites": len(tasks), "errors": errors}
 
     def _wpcli_core_install(self, account, website, payload):
         """Run `wp core install` inside the account's web container via WP-CLI.
@@ -4061,6 +4507,7 @@ def run_agent_all(config=None, limit=25):
 
 
 _PATH_USAGE_CACHE = {}
+_PATH_USAGE_CACHE_TTL = 5 * 60
 _STORAGE_SCAN_CACHE = {}
 _STORAGE_SCAN_CACHE_TTL = 15 * 60
 _STORAGE_SCAN_CACHE_LOCK = threading.Lock()
@@ -4097,7 +4544,7 @@ def path_usage(root):
     now = time.time()
     if root_str in _PATH_USAGE_CACHE:
         cached_ts, cached_val = _PATH_USAGE_CACHE[root_str]
-        if now - cached_ts < 30:
+        if now - cached_ts < _PATH_USAGE_CACHE_TTL:
             return cached_val
 
     total_bytes = 0
@@ -4106,7 +4553,12 @@ def path_usage(root):
         return {"bytes": 0, "inodes": 0}
 
     try:
-        proc = subprocess.run(["du", "-sb", str(root)], capture_output=True, text=True, timeout=2.0)
+        proc = subprocess.run(
+            ["ionice", "-c3", "nice", "-n", "19", "du", "-sb", str(root)],
+            capture_output=True,
+            text=True,
+            timeout=8.0,
+        )
         if proc.returncode == 0 and proc.stdout:
             lines = proc.stdout.strip().splitlines()
             if lines:
@@ -4117,26 +4569,18 @@ def path_usage(root):
         pass
 
     try:
-        proc_in = subprocess.run(["du", "--inodes", "-s", str(root)], capture_output=True, text=True, timeout=4.0)
+        proc_in = subprocess.run(
+            ["ionice", "-c3", "nice", "-n", "19", "du", "--inodes", "-s", str(root)],
+            capture_output=True,
+            text=True,
+            timeout=8.0,
+        )
         if proc_in.returncode == 0 and proc_in.stdout:
             lines = proc_in.stdout.strip().splitlines()
             if lines:
                 parts = lines[0].split()
                 if len(parts) >= 1 and parts[0].isdigit():
                     inodes = int(parts[0])
-    except Exception:
-        pass
-
-    try:
-        for entry in os.walk(str(root), followlinks=False):
-            dirpath, dirnames, filenames = entry
-            inodes += len(dirnames) + len(filenames)
-            for f in filenames:
-                fp = os.path.join(dirpath, f)
-                try:
-                    total_bytes += os.path.getsize(fp)
-                except OSError:
-                    pass
     except Exception:
         pass
 

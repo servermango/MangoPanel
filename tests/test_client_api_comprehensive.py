@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mangopanel.app import MangoHandler, create_jwt
+from mangopanel.app import MangoHandler, client_home, create_jwt
 from mangopanel.config import Config
 from mangopanel.db import connect, seed_dev_data
 
@@ -119,6 +119,25 @@ class ComprehensiveClientAPISecurityTests(unittest.TestCase):
 
         with connect(self.db_path) as conn:
             conn.execute("UPDATE hosting_accounts SET status = 'active' WHERE id = ?", (self.user1_acc["id"],))
+
+    def test_stale_provisioning_job_does_not_show_maintenance_warning(self):
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE jobs SET status = 'failed' WHERE target_type = 'hosting_account' AND target_id = ?",
+                (self.user1_acc["id"],),
+            )
+            conn.execute(
+                """INSERT INTO jobs
+                   (type, status, target_type, target_id, claimed_at, updated_at)
+                   VALUES ('provision_hosting_account', 'running', 'hosting_account', ?,
+                           datetime('now', '-3 days'), datetime('now', '-3 days'))""",
+                (self.user1_acc["id"],),
+            )
+            conn.commit()
+
+            home = client_home(conn, self.user1_id, active_account_id=self.user1_acc["id"])
+
+        self.assertFalse(any(warning["kind"] == "maintenance" for warning in home["warnings"]))
 
     def test_comprehensive_endpoint_crud_flow(self):
         handler = self.make_handler(auth_header=f"Bearer {self.user1_jwt}")

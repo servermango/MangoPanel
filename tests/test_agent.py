@@ -16,6 +16,43 @@ from mangopanel.stack import build_account_runtime
 
 
 class AgentTests(unittest.TestCase):
+    def test_detected_wordpress_site_gets_managed_cron(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = Config()
+            config.db_path = root / "mangopanel.sqlite3"
+            config.data_dir = root
+            config.account_root = root / "accounts"
+            config.agent_mode = "simulate"
+            seed_dev_data(config.db_path, config.account_root)
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT * FROM hosting_accounts ORDER BY id LIMIT 1").fetchone()
+                website = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id LIMIT 1", (account["id"],)).fetchone()
+                document_root = Path(website["document_root"])
+                document_root.mkdir(parents=True, exist_ok=True)
+                (document_root / "wp-admin").mkdir(exist_ok=True)
+                (document_root / "wp-config.php").write_text("<?php\n/* Add any custom values between this line and the \"stop editing\" line. */\n", encoding="utf-8")
+                cur = conn.execute(
+                    "INSERT INTO wordpress_installs(website_id, site_title, admin_username, admin_email, status) VALUES (?, ?, ?, ?, 'detected')",
+                    (website["id"], website["domain"], "admin", "admin@example.test"),
+                )
+                job_id = create_job(conn, "configure_wordpress_site", "website", website["id"], {"manage_wp_cron": True})
+                conn.commit()
+                result = Agent(config).run_job_by_id(job_id)
+                self.assertEqual(result["status"], "succeeded")
+            with connect(config.db_path) as check:
+                cron = check.execute(
+                    "SELECT * FROM cron_jobs WHERE account_id = ? AND command LIKE '%cron event run%'",
+                    (account["id"],),
+                ).fetchone()
+                self.assertIsNotNone(cron)
+                self.assertEqual(cron["schedule"], "*/5 * * * *")
+                self.assertEqual(cron["status"], "enabled")
+                self.assertIn("cron event run", cron["command"])
+                self.assertIn("DISABLE_WP_CRON', true", (document_root / "wp-config.php").read_text(encoding="utf-8"))
+                crontab = account["base_path"] + "/.runtime/stack/cron"
+                self.assertIn("*/5 * * * *", Path(crontab).read_text(encoding="utf-8"))
+
     def test_local_mail_ports_are_unique_per_account(self):
         first = build_account_runtime({"id": 1, "username": "u000001"})
         second = build_account_runtime({"id": 2, "username": "u000002"})
@@ -74,6 +111,9 @@ class AgentTests(unittest.TestCase):
             self.assertIn("docker-mailserver/docker-mailserver", compose_text)
             self.assertIn("127.0.0.1:", compose_text)
             self.assertIn('cpus: "1"', compose_text)
+            self.assertEqual(compose_text.count('cpus:'), 9)
+            self.assertEqual(compose_text.count('cgroup_parent:'), 9)
+            self.assertIn('cpus: "0.25"', compose_text)
             self.assertIn('mangopanel.storage_mb: "10240"', compose_text)
             self.assertIn('mangopanel.inode_limit: "100000"', compose_text)
             self.assertIn('mangopanel.backup_retention_days: "7"', compose_text)

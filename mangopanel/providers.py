@@ -750,26 +750,35 @@ class CloudflareDNSProvider(DNSProvider):
             expression = (
                 '(http.request.uri.path contains "/wp-login.php" or '
                 'http.request.uri.path contains "/xmlrpc.php" or '
+                'http.request.uri.path eq "/wp-cron.php" or '
+                'http.request.uri.path contains "/wp-admin/" or '
+                'http.request.uri.path eq "/wp-admin" or '
+                'http.request.uri.path eq "/wp-admin/admin-ajax.php" or '
+                'http.request.uri.path contains "/wp-json/" or '
                 'http.request.uri.path contains "/administrator" or '
                 'http.request.uri.path contains "/user/login" or '
                 'http.request.uri.path contains "/typo3" or '
                 'http.request.uri.path contains "/ghost" or '
                 'http.request.uri.path eq "/admin" or '
-                'http.request.uri.path starts_with "/admin/")'
+                'http.request.uri.path contains "/admin/")'
             )
             rule_payload = {
+                # Cloudflare renders this action as an interactive/Managed
+                # Challenge in the dashboard; do not substitute a Page Rule.
                 "action": "managed_challenge",
-                "description": "MangoPanel CMS & Admin Login Browser Challenge",
+                "description": "MangoPanel Interactive Challenge - WordPress Login, XML-RPC & Admin Endpoints",
                 "expression": expression,
                 "enabled": True,
             }
 
             # 1. Custom WAF Ruleset API (Modern Cloudflare WAF)
+            entry_error = None
             try:
                 entry_res = self._request("PUT", f"/zones/{zone_id}/rulesets/phases/http_request_firewall_custom/entrypoint", payload={"rules": [rule_payload]})
                 if entry_res and isinstance(entry_res, dict) and "id" in entry_res:
                     return {"status": "created", "type": "ruleset", "zone_id": zone_id}
-            except Exception:
+            except Exception as exc:
+                entry_error = exc
                 try:
                     rulesets = self._request("GET", f"/zones/{zone_id}/rulesets") or []
                     custom_rs = None
@@ -799,46 +808,21 @@ class CloudflareDNSProvider(DNSProvider):
                         self._request("POST", f"/zones/{zone_id}/rulesets", payload=ruleset_payload)
                         return {"status": "created", "type": "ruleset", "zone_id": zone_id}
                 except Exception as w_err:
-                    logging.info("WAF Ruleset API notice for %s, falling back to Page Rules: %s", zone_name, w_err)
-
-            # 2. Fallback: Page Rules API with Browser Integrity Check & High Security
-            target_pattern = f"*{clean_domain}/wp-login.php*"
-            rules = self._request("GET", f"/zones/{zone_id}/pagerules") or []
-            if isinstance(rules, list):
-                for r in rules:
-                    if not isinstance(r, dict):
-                        continue
-                    for t in r.get("targets", []):
-                        val = t.get("constraint", {}).get("value", "")
-                        if ("wp-login.php" in val or "administrator" in val) and clean_domain in val:
-                            return {"status": "exists", "type": "pagerule", "rule_id": r.get("id"), "zone_id": zone_id}
-
-            page_payload = {
-                "targets": [
-                    {
-                        "target": "url",
-                        "constraint": {
-                            "operator": "matches",
-                            "value": target_pattern,
-                        },
+                    # Do not substitute a Page Rule for a WAF Security Rule.
+                    # Page Rules have different semantics and cannot satisfy
+                    # the requested interactive challenge policy.
+                    return {
+                        "status": "error",
+                        "type": "ruleset",
+                        "error": f"Cloudflare Security Rule API failed: {entry_error}; existing ruleset fallback failed: {w_err}",
+                        "zone_id": zone_id,
                     }
-                ],
-                "actions": [
-                    {
-                        "id": "browser_check",
-                        "value": "on",
-                    },
-                    {
-                        "id": "security_level",
-                        "value": "high",
-                    }
-                ],
-                "priority": 2,
-                "status": "active",
+            return {
+                "status": "error",
+                "type": "ruleset",
+                "error": f"Cloudflare Security Rule API returned no usable ruleset result: {entry_error}",
+                "zone_id": zone_id,
             }
-            res = self._request("POST", f"/zones/{zone_id}/pagerules", payload=page_payload)
-            rule_id = res.get("id") if isinstance(res, dict) else None
-            return {"status": "created", "type": "pagerule", "rule_id": rule_id, "zone_id": zone_id}
         except Exception as exc:
             logging.warning("Failed to ensure Cloudflare security challenge rule for %s: %s", zone_name, exc)
             return {"status": "error", "error": str(exc)}

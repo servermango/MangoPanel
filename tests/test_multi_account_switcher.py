@@ -85,6 +85,8 @@ class MultiAccountSwitcherTests(unittest.TestCase):
 
         self.assertEqual(resolve_panel_base_domain({"Host": "seeds.servermango.com"}), "seeds.servermango.com")
         self.assertEqual(resolve_panel_base_domain({"Host": "seeds.servermango.com:8443"}), "seeds.servermango.com")
+        self.assertEqual(resolve_panel_base_domain({"Host": "localhost", "X-Forwarded-Host": "seeds.servermango.com"}), "seeds.servermango.com")
+        self.assertEqual(resolve_panel_base_domain({"Host": "panel.seeds.servermango.com"}), "seeds.servermango.com")
         self.assertEqual(resolve_panel_base_domain({"Host": "127.0.0.1:8000"}), "mango.test")
 
         domain = get_provisioning_test_domain("u004395", {"Host": "seeds.servermango.com"})
@@ -164,4 +166,3 @@ class MultiAccountSwitcherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
