@@ -2,3 +2,11 @@
 	auto_https disable_redirects
 	local_certs
 }
+
+# This is deliberately defined in the mounted base config as well as exposed
+# by the edge container labels. Account stacks import it by name; keeping the
+# definition here makes edge restarts/recreates self-contained.
+(mangopanel-xmlrpc-block) {
+	@xmlrpc path /xmlrpc.php
+	respond @xmlrpc "MangoPanel XML-RPC disabled" 403
+}

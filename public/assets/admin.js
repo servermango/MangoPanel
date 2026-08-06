@@ -58,6 +58,7 @@ createApp({
         status: { overall_status: "unknown", components: [] },
       },
       stacks: [],
+      rebuildingStackIds: {},
       clients: [],
       selectedClientId: "",
       clientSearch: "",
@@ -67,7 +68,7 @@ createApp({
       clientLoginLoadingId: null,
       showClientModal: false,
       plans: [],
-      configuration: { backup_time: "02:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "" },
+      configuration: { backup_time: "02:00", resource_scan_time: "03:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "" },
       modsecRuleset: "baseline",
       modsecApplying: false,
       timezoneOptions: ["UTC", "Europe/London", "Europe/Paris", "Asia/Kolkata", "Asia/Dubai", "Asia/Tokyo", "America/New_York", "America/Los_Angeles", "Australia/Sydney"],
@@ -1359,8 +1360,15 @@ createApp({
             ]);
             break;
           case "plans": {
-            const result = await this.api("/api/admin/plans");
+            // Plan DNS policy controls depend on the provider/account data,
+            // but that data should only be loaded when the Plans tab is in
+            // context. Keep the tab scoped while preserving all selectors.
+            const [result, dnsResult] = await Promise.all([
+              this.api("/api/admin/plans"),
+              this.api("/api/admin/dns-settings"),
+            ]);
             this.plans = result.plans || [];
+            this.dnsSettings = dnsResult.dns_settings || this.dnsSettings;
             break;
           }
           case "reseller-plans":
@@ -1644,6 +1652,28 @@ createApp({
         await this.load();
       } catch (error) {
         this.message = error.message;
+      }
+    },
+    async rebuildAccountStack(stack) {
+      const accountId = stack.account_id || stack.id;
+      const accountName = stack.username || `account #${accountId}`;
+      const confirmed = window.confirm(`Rebuild the ${accountName} stack? Containers may restart, but website files, databases, mail, and account volumes will be preserved. This does not delete account data.`);
+      if (!confirmed) return;
+      this.rebuildingStackIds[accountId] = true;
+      this.message = "";
+      try {
+        const payload = await this.api(`/api/admin/hosting-accounts/${accountId}/stack/rebuild`, { method: "POST", body: "{}" });
+        this.message = `${accountName} stack rebuild queued as job #${payload.job_id}; account data will be preserved.`;
+        if (this.activePage === "system") {
+          delete this.pageLoaded.system;
+          await this.loadPageData("system");
+        } else if (this.activePage === "clients") {
+          await this.loadClients(this.clientPagination.page || 1);
+        }
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        delete this.rebuildingStackIds[accountId];
       }
     },
     registrarByKey(key) {

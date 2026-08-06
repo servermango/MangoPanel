@@ -245,6 +245,8 @@ const app = createApp({
       registeredDomainSort: { key: "expiry", direction: "asc" },
       registeredWhoisModal: { open: false, loading: false, domain: "", activeTab: "registrant", form: {}, currentNameservers: [], defaultNameservers: [], nameserverMode: "default", nameservers: ["", ""], saving: false },
       databases: [],
+      databasesLoading: false,
+      databaseLoadSequence: 0,
       databaseUsers: [],
       databaseGrants: [],
       pgDatabases: [],
@@ -1374,6 +1376,7 @@ const app = createApp({
       const loadGeneration = (this.loadGeneration || 0) + 1;
       this.loadGeneration = loadGeneration;
       this.websitesLoaded = false;
+      this.databasesLoading = true;
       try {
         this.featureStatuses = (await this.api("/api/client/feature-status")).features || {};
         const homePayload = await this.api("/api/client/home");
@@ -1390,6 +1393,7 @@ const app = createApp({
         if (this.home.hosting_account_suspended) {
           this.websites = this.home.websites || [];
           this.websitesLoaded = true;
+          this.databasesLoading = false;
           if (this.activePage === "settings") await this.loadProfile();
           return;
         }
@@ -1409,10 +1413,12 @@ const app = createApp({
         this.registeredDomains = domainsPayload.registered_domains || [];
         if (!this.hasHostingAccount) {
           if (!['dashboard', 'domains', 'dns-zone-editor'].includes(this.activePage)) this.activePage = 'domains';
+          this.databasesLoading = false;
           return;
         }
         this.cacheStatus = { ...this.cacheStatus, ...((await this.api("/api/client/cache/status")).cache_status || {}) };
-        await this.loadDatabases();
+        await this.loadDatabases(loadGeneration);
+        if (loadGeneration !== this.loadGeneration) return;
         await this.loadResourceUsage();
         await this.loadAnalytics();
         await this.loadSshState();
@@ -1456,6 +1462,7 @@ const app = createApp({
           this.activePage = "domains";
         }
       } catch (error) {
+        if (loadGeneration === this.loadGeneration) this.databasesLoading = false;
         this.notify(error.message, "error");
       }
     },
@@ -1543,12 +1550,14 @@ const app = createApp({
       } catch (error) { this.notify(error.message, "error"); }
       finally { modal.saving = false; }
     },
-    async applyDatabasePayload(payload) {
+    async applyDatabasePayload(payload, loadGeneration = null) {
+      if (loadGeneration !== null && loadGeneration !== this.loadGeneration) return;
       this.databases = payload.databases || [];
       this.databaseUsers = payload.database_users || [];
       this.databaseGrants = payload.database_grants || [];
       try {
         const pgPayload = await this.api("/api/client/pg-databases");
+        if (loadGeneration !== null && loadGeneration !== this.loadGeneration) return;
         this.pgDatabases = pgPayload.pg_databases || [];
         this.pgUsers = pgPayload.pg_users || [];
         this.pgGrants = pgPayload.pg_grants || [];
@@ -1771,8 +1780,16 @@ const app = createApp({
         this.notify(err.message || "Failed to remove access", "error");
       }
     },
-    async loadDatabases() {
-      this.applyDatabasePayload(await this.api("/api/client/databases"));
+    async loadDatabases(loadGeneration = null) {
+      const requestSequence = (this.databaseLoadSequence || 0) + 1;
+      this.databaseLoadSequence = requestSequence;
+      this.databasesLoading = true;
+      try {
+        const payload = await this.api("/api/client/databases");
+        await this.applyDatabasePayload(payload, loadGeneration);
+      } finally {
+        if (requestSequence === this.databaseLoadSequence) this.databasesLoading = false;
+      }
     },
     async loadHome() {
       await this.load();

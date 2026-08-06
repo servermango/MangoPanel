@@ -871,6 +871,9 @@
                           <button @click="changeAccountPlan(client, account)" :disabled="Number(account.selected_plan_id) === Number(account.plan_id)">Update Plan</button>
                           <button @click="openAccountDatabases(client, account)">Databases</button>
                           <button @click="toggleAccountStatus(client, account)">{{ ['suspended', 'hard_suspended'].includes(account.status) ? "Unsuspend" : "Soft suspend" }}</button>
+                          <button class="secondary-button" @click="rebuildAccountStack(account)" :disabled="account.status === 'rebuilding' || rebuildingStackIds[account.id]">
+                            {{ rebuildingStackIds[account.id] || account.status === 'rebuilding' ? 'Rebuilding…' : 'Rebuild · preserve data' }}
+                          </button>
                           <button v-if="!['suspended', 'hard_suspended'].includes(account.status)" class="danger-button" @click="hardSuspendAccount(client, account)">Hard suspend</button>
                           <button class="danger-button account-delete-button" @click="deleteHostingAccount(client, account)" title="Delete only this hosting account">Delete hosting account</button>
                         </div>
@@ -3213,6 +3216,7 @@
             <div class="plan-form">
               <div style="display:flex; gap:.5rem; margin-bottom:1rem;"><button class="primary-button" type="button">Backups</button><button class="secondary-button" type="button" disabled>More settings soon</button></div>
               <label>Backup time <input type="time" v-model="configuration.backup_time"><small>Automatic backups start after this time using the queue worker.</small></label>
+              <label>Resource usage scan time <input type="time" v-model="configuration.resource_scan_time"><small>Daily CPU, memory, disk, and inode scans run at this time. Default: 03:00.</small></label>
               <label>System timezone <select v-model="configuration.timezone"><option v-if="configuration.timezone && !timezoneOptions.includes(configuration.timezone)" :value="configuration.timezone">{{ configuration.timezone }} (current)</option><option v-for="zone in timezoneOptions" :key="zone" :value="zone">{{ zone }}</option></select><small>The saved timezone is selected automatically and controls backup and job scheduling.</small></label>
               <label>SSH login message <textarea v-model="configuration.ssh_motd" rows="18" spellcheck="false" style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; resize: vertical;"></textarea><small>One message is used for all account SSH/SFTP logins. Changes are propagated through the queue worker to the existing account containers.</small></label>
               <button class="primary-button plan-submit" type="button" @click="saveConfiguration" :disabled="configurationSaving">{{ configurationSaving ? 'Saving…' : 'Save Configuration' }}</button>

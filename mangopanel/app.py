@@ -492,6 +492,12 @@ def build_tool_redirect_url(host, path, is_https=False):
 def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host, is_https=False):
     forwarded_host = (forwarded_host or "").strip()
     if not forwarded_host:
+        # The persisted runtime may belong to an older stack.  Do not expose
+        # its localhost/dotted file-browser URL to the browser.
+        if tool_name == "filebrowser" and account:
+            public_host = (CONFIG.public_host or "").strip()
+            if public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+                return f"https://files-{account['username']}.{public_host}"
         return runtime_url or ""
 
     host_part = forwarded_host.split(":")[0].lower()
@@ -510,6 +516,19 @@ def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host, is_
     # 2. Accessed via a Domain (Subdomain launch as intended):
     username = account["username"] if account else "user"
     prefix = "files" if tool_name == "filebrowser" else ("pma" if tool_name == "phpmyadmin" else "mail")
+
+    # Filebrowser has one canonical public form.  This also repairs old
+    # persisted values such as files.<account>.<domain> and
+    # files-<account>.localhost when a user launches from the panel.
+    if tool_name == "filebrowser" and host_part not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+        domain_base = host_part
+        if host_part.startswith("panel.") or host_part.startswith("admin."):
+            domain_base = host_part.split(".", 1)[1]
+        if host_part.startswith("files-"):
+            domain_base = host_part.split(".", 1)[1] if "." in host_part else host_part
+        elif host_part.startswith("files."):
+            domain_base = host_part.split(".", 2)[2] if host_part.count(".") >= 2 else host_part
+        return f"https://files-{username}.{domain_base}"
 
     if runtime_url and not "localhost" in runtime_url and not ".nip.io" in runtime_url:
         return runtime_url
@@ -944,6 +963,23 @@ class MangoHandler(BaseHTTPRequestHandler):
             clean_path = suffix or default_path
             if clean_path.rstrip("/") == "/files":
                 clean_path = "/files/"
+
+            # A proxy must not be allowed to turn a tool launch into a
+            # localhost URL.  In particular, some reverse-proxy chains omit
+            # X-Forwarded-Host and leave the panel's 127.0.0.1 host here.
+            # Derive the canonical public file-browser host from the account
+            # instead of sending that unusable host to the user's browser.
+            redirect_host = forwarded_host
+            redirect_host_part = (redirect_host or "").split(":", 1)[0].lower()
+            if tool == "filebrowser" and (
+                not redirect_host_part.startswith("files-")
+                and not redirect_host_part.startswith("files.")
+                or redirect_host_part in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+            ):
+                public_host = (CONFIG.public_host or "").strip()
+                if public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+                    redirect_host = f"files-{acc_dict['username']}.{public_host}"
+                    forwarded_host = redirect_host
             self.send_response(HTTPStatus.FOUND)
             cookie_headers = auth_cookie_headers(access_token, forwarded_host, is_https=self.is_https)
             if tool == "webmail":
@@ -962,7 +998,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 cookie_headers = named_cookie_headers("mp_mail_token", mail_access_token, forwarded_host, 3600, is_https=self.is_https)
             for cookie_header in cookie_headers:
                 self.send_header("Set-Cookie", cookie_header)
-            self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path, is_https=self.is_https))
+            self.send_header("Location", build_tool_redirect_url(redirect_host, clean_path, is_https=self.is_https))
             self.end_headers()
             return
 
@@ -6588,6 +6624,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/configuration" and method == "GET":
                 return self.json_response({"configuration": {
                     "backup_time": get_system_setting(conn, "backup_time", "02:00"),
+                    "resource_scan_time": get_system_setting(conn, "resource_scan_time", "03:00"),
                     "timezone": get_system_setting(conn, "system_timezone", default_system_timezone_name()),
                     "modsecurity_ruleset": get_system_setting(conn, "modsecurity_ruleset", "baseline"),
                     "ssh_motd": get_system_setting(conn, "ssh_motd", DEFAULT_SSH_MOTD),
@@ -6609,12 +6646,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                 backup_time = str(body.get("backup_time", "02:00") or "02:00").strip()
                 if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", backup_time):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_backup_time")
+                resource_scan_time = str(
+                    body.get("resource_scan_time", get_system_setting(conn, "resource_scan_time", "03:00")) or "03:00"
+                ).strip()
+                if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", resource_scan_time):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_resource_scan_time")
                 timezone_name = str(body.get("timezone", body.get("system_timezone", get_system_setting(conn, "system_timezone", default_system_timezone_name()))) or default_system_timezone_name()).strip()
                 try:
                     ZoneInfo(timezone_name)
                 except (ZoneInfoNotFoundError, ValueError):
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_timezone")
                 set_system_setting(conn, "backup_time", backup_time)
+                set_system_setting(conn, "resource_scan_time", resource_scan_time)
                 set_system_setting(conn, "system_timezone", timezone_name)
                 ruleset = str(body.get("modsecurity_ruleset", get_system_setting(conn, "modsecurity_ruleset", "baseline")) or "baseline").lower()
                 if ruleset not in {"baseline", "owasp"}:
@@ -6630,7 +6673,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     motd_job_id = enqueue_agent_job(conn, "apply_ssh_motd", "system", 0, {"motd": motd})
                 apply_system_timezone(conn)
                 log_audit(conn, "admin", actor["id"], "update_configuration", "system_settings", 0, metadata={"backup_time": backup_time, "timezone": timezone_name})
-                return self.json_response({"configuration": {"backup_time": backup_time, "timezone": timezone_name, "modsecurity_ruleset": ruleset, "ssh_motd": motd}, "ssh_motd_job_id": motd_job_id})
+                return self.json_response({"configuration": {"backup_time": backup_time, "resource_scan_time": resource_scan_time, "timezone": timezone_name, "modsecurity_ruleset": ruleset, "ssh_motd": motd}, "ssh_motd_job_id": motd_job_id})
             # Reseller Plans API
             if path == "/api/admin/reseller-plans" and method == "GET":
                 plans = rows_to_dicts(conn.execute("SELECT * FROM reseller_plans ORDER BY id DESC").fetchall())
@@ -8220,6 +8263,42 @@ class MangoHandler(BaseHTTPRequestHandler):
                 log_audit(conn, "admin", actor["id"], "unsuspend_account", "hosting_account", account_id)
                 account = conn.execute("SELECT status FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
                 return self.json_response({"status": account["status"], "job_id": job_id})
+            if path.endswith("/stack/rebuild") and path.startswith("/api/admin/hosting-accounts/") and method == "POST":
+                require_admin_permission(actor, "hosting.manage")
+                account_id = int(path.split("/")[-3])
+                account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+                if not account:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "hosting_account_not_found")
+                if account["status"] in {"deleted", "hard_suspended"}:
+                    raise ApiError(HTTPStatus.CONFLICT, "account_must_be_active_before_stack_rebuild")
+                if account["status"] in {"provisioning", "rebuilding"}:
+                    raise ApiError(HTTPStatus.CONFLICT, "account_stack_operation_in_progress")
+                stack = conn.execute("SELECT id FROM account_stacks WHERE account_id = ?", (account_id,)).fetchone()
+                if not stack:
+                    raise ApiError(HTTPStatus.CONFLICT, "account_stack_not_found_use_provisioning")
+                active_job = conn.execute(
+                    """
+                    SELECT id FROM jobs
+                    WHERE type = 'rebuild_stack' AND target_type = 'hosting_account'
+                      AND target_id = ? AND status IN ('queued', 'running')
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (account_id,),
+                ).fetchone()
+                if active_job:
+                    raise ApiError(HTTPStatus.CONFLICT, "account_stack_operation_in_progress")
+                previous_status = account["status"]
+                conn.execute("UPDATE hosting_accounts SET status = 'rebuilding' WHERE id = ?", (account_id,))
+                conn.execute("UPDATE account_stacks SET status = 'rebuilding', last_error = NULL WHERE account_id = ?", (account_id,))
+                job_id = enqueue_agent_job(
+                    conn,
+                    "rebuild_stack",
+                    "hosting_account",
+                    account_id,
+                    {"preserve_data": True, "previous_status": previous_status, "reason": "admin_requested"},
+                )
+                log_audit(conn, "admin", actor["id"], "rebuild_account_stack", "hosting_account", account_id, metadata={"job_id": job_id, "preserve_data": True})
+                return self.json_response({"job_id": job_id, "account_id": account_id, "status": "rebuilding", "preserve_data": True})
             if path.endswith("/plan") and path.startswith("/api/admin/hosting-accounts/") and method == "PATCH":
                 account_id = int(path.split("/")[-2])
                 body = self.read_json()
@@ -8289,7 +8368,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 ).fetchall()
                 stacks = rows_to_dicts(rows)
                 for stack in stacks:
-                    stack["runtime"] = parse_json_field(stack.get("runtime_json"), {})
+                    # Use the same canonicalized runtime exposed by client
+                    # tool launches; raw persisted JSON may be from a legacy
+                    # stack and can contain dotted/localhost file URLs.
+                    stack["runtime"] = account_runtime(conn, stack["account_id"])
                     stack["services"] = parse_json_field(stack.get("services_json"), [])
                 return self.json_response({"account_stacks": stacks})
             if path == "/api/admin/agent/run-once" and method == "POST":
@@ -10356,7 +10438,20 @@ def migrate_domain_dns_provider(conn, domain, provider_key, provider_account_id,
 
 def account_runtime(conn, account_id):
     row = conn.execute("SELECT runtime_json FROM account_stacks WHERE account_id = ?", (account_id,)).fetchone()
-    return parse_json_field(row["runtime_json"], {}) if row else {}
+    runtime = parse_json_field(row["runtime_json"], {}) if row else {}
+    # Runtime JSON is persisted across account rebuilds.  Older stacks stored
+    # the file browser host as files.<account>.<panel-domain>, while the edge
+    # certificate/route uses files-<account>.<panel-domain>.  Normalize at the
+    # read boundary so existing accounts cannot launch the legacy hostname.
+    account_row = conn.execute("SELECT username FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+    public_host = (runtime.get("public_host") or "").strip()
+    if public_host in {"127.0.0.1", "localhost", "0.0.0.0", "::1", ""}:
+        public_host = (CONFIG.public_host or "").strip()
+    username = (account_row["username"] if account_row else runtime.get("username") or "").strip()
+    if username and public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+        runtime["username"] = username
+        runtime["filebrowser_url"] = f"https://files-{username}.{public_host}"
+    return runtime
 
 
 def localize_client_rows(rows, timezone_name):
@@ -11615,6 +11710,33 @@ add_filter('litespeed_conf_load_option_object-kind', function ($value) {{ return
 add_filter('litespeed_conf_load_option_object-host', function ($value) {{ return 'redis'; }}, 20);
 add_filter('litespeed_conf_load_option_object-port', function ($value) {{ return 6379; }}, 20);
 add_filter('litespeed_conf_load_option_object-db_id', function ($value) {{ return 0; }}, 20);
+// MangoPanel runs due actions from the account-contained cron runner. Avoid
+// Action Scheduler spawning additional frontend loopback requests, which can
+// contend for PHP workers and trigger duplicate shutdown DB work.
+add_filter('action_scheduler_allow_async_request_runner', '__return_false', 20);
+
+// Do not make anonymous public HTML uncacheable because Facebook Pixel emits
+// a server-side _fbp cookie. The Pixel browser script still manages tracking
+// cookies; all other cookies and authenticated/admin requests are preserved.
+function mangopanel_strip_public_fbp_cookie($html) {{
+    if (headers_sent()) return $html;
+    $keep = [];
+    foreach (headers_list() as $header) {{
+        if (stripos($header, 'Set-Cookie:') === 0 && preg_match('/^Set-Cookie:\s*_fbp=/i', $header)) continue;
+        if (stripos($header, 'Set-Cookie:') === 0) $keep[] = substr($header, strlen('Set-Cookie:'));
+    }}
+    if (count($keep) !== count(array_filter(headers_list(), function ($header) {{ return stripos($header, 'Set-Cookie:') === 0; }}))) {{
+        header_remove('Set-Cookie');
+        foreach ($keep as $cookie) header('Set-Cookie:' . $cookie, false);
+    }}
+    return $html;
+}}
+add_action('init', function () {{
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET' && ($_SERVER['REQUEST_METHOD'] ?? '') !== 'HEAD') return;
+    $uri = (string) ($_SERVER['REQUEST_URI'] ?? '');
+    $logged_in = function_exists('is_user_logged_in') && is_user_logged_in();
+    if (!is_admin() && !$logged_in && strpos($uri, '/wp-json/') !== 0 && strpos($uri, '/wp-admin/') !== 0 && strpos($uri, '/wp-login.php') !== 0) ob_start('mangopanel_strip_public_fbp_cookie');
+}});
 
 // Short-lived MangoPanel launch tokens log the owning WordPress administrator in.
 add_action('init', function () {{
@@ -11655,7 +11777,20 @@ def ensure_wordpress_compat(document_root, website_id, admin_username="", admin_
             define_line = f"define('MANGOPANEL_SSO_SECRET', '{secret}');\n"
             marker = "if ( !defined('ABSPATH') )"
             config = config.replace(marker, define_line + "\n" + marker, 1) if marker in config else config + "\n" + define_line
-            wp_config.write_text(config, encoding="utf-8")
+        # WordPress cache drop-ins often persist an absolute plugin path in
+        # wp-config.php. After an account migration that path can point to the
+        # previous account home, causing open_basedir warnings on every PHP
+        # request even though the plugin still exists in the new account.
+        tenweb_dir = root / "wp-content" / "plugins" / "tenweb-speed-optimizer"
+        if tenweb_dir.is_dir():
+            tenweb_path = (tenweb_dir.resolve().as_posix().rstrip("/") + "/")
+            config = re.sub(
+                r"define\(\s*(['\"])TWO_PLUGIN_DIR_CACHE\1\s*,\s*(['\"])[^'\"]*\2\s*\);",
+                lambda m: f"define( 'TWO_PLUGIN_DIR_CACHE', '{tenweb_path}' );",
+                config,
+                count=1,
+            )
+        wp_config.write_text(config, encoding="utf-8")
         return True
     except (OSError, UnicodeError):
         return False
@@ -13722,13 +13857,38 @@ def escape_xml(value):
 
 
 def start_resource_usage_collector(config):
+    # Resource collection walks every account's filesystem (including inode
+    # counts), so it must not run as a frequent background poll.  The setting
+    # is read on every loop so an admin change takes effect without a restart.
+    scan_date = None
+
     def loop():
+        nonlocal scan_date
         while True:
             try:
-                collect_all_resource_usage_samples(config)
+                with connect(config.db_path) as conn:
+                    timezone_name = get_system_setting(conn, "system_timezone", default_system_timezone_name())
+                    scan_time = get_system_setting(conn, "resource_scan_time", "03:00")
+                try:
+                    zone = ZoneInfo(timezone_name)
+                except (ZoneInfoNotFoundError, ValueError):
+                    zone = ZoneInfo(default_system_timezone_name())
+                try:
+                    hour, minute = (int(part) for part in str(scan_time).split(":", 1))
+                except (TypeError, ValueError):
+                    hour, minute = 3, 0
+                now = datetime.now(zone)
+                scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                # Do not launch a catch-up scan immediately when the service
+                # starts after 03:00. The next eligible run is tomorrow.
+                if scan_date is None:
+                    scan_date = now.date()
+                elif now >= scheduled and now.date() != scan_date:
+                    collect_all_resource_usage_samples(config)
+                    scan_date = now.date()
             except Exception as exc:
                 print(f"resource usage collector error: {exc}")
-            time.sleep(60)
+            time.sleep(30)
 
     thread = threading.Thread(target=loop, name="mangopanel-resource-usage", daemon=True)
     thread.start()

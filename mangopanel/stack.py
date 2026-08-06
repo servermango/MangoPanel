@@ -120,8 +120,14 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
     }
     
     if public_host != "127.0.0.1":
-        base["filebrowser_url"] = f"http://files.{username}.{public_host}"
-        base["phpmyadmin_url"] = f"http://pma.{username}.{public_host}"
+        # Use the same hyphenated hostname as the Caddy route and certificate.
+        # The dotted form is retained only as a legacy compatibility alias.
+        base["filebrowser_url"] = f"https://files-{username}.{public_host}"
+        # Keep tool hostnames hyphenated.  The edge's TLS routes and
+        # certificates use pma-<account>.<public-host>; the old dotted form
+        # could load over HTTP but failed with ERR_SSL_PROTOCOL_ERROR when a
+        # browser upgraded it to HTTPS.
+        base["phpmyadmin_url"] = f"http://pma-{username}.{public_host}"
         base["adminer_url"] = f"http://adminer.{username}.{public_host}"
         base["mail_host"] = f"mail.{username}.{public_host}"
         base["mail_backend_host"] = "mailserver"
@@ -434,6 +440,10 @@ def render_mail_edge_manifest(runtime, mailboxes, mail_policy=None):
 
 def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes=None, mail_policy=None, default_page_content=None):
     runtime = runtime or build_account_runtime(account)
+    # Keep the plan's PHP worker quota attached to the vhost render context.
+    # The account row itself intentionally does not duplicate plan settings.
+    vhost_account = dict(account)
+    vhost_account["php_workers"] = plan.get("php_workers", 3) if hasattr(plan, "get") else plan["php_workers"]
     mailboxes = mailboxes or []
     mail_policy = mail_policy or {}
     paths = account_paths(account)
@@ -613,7 +623,7 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         domain = website["domain"]
         domain_dir = vhosts_dir / domain
         domain_dir.mkdir(parents=True, exist_ok=True)
-        (domain_dir / "vhconf.conf").write_text(render_ols_vhconf(account, website), encoding="utf-8")
+        (domain_dir / "vhconf.conf").write_text(render_ols_vhconf(vhost_account, website), encoding="utf-8")
         
     # Generate custom error pages
     errors_dir = paths["stack"] / "errors"
@@ -621,7 +631,10 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     for err_code, err_html in DEFAULT_ERROR_PAGES.items():
         (errors_dir / f"{err_code}.html").write_text(err_html, encoding="utf-8")
 
-    (paths["stack"] / "openlitespeed-httpd.conf").write_text(render_openlitespeed_httpd_config(account, websites), encoding="utf-8")
+    # Keep the server-level LSAPI definitions aligned with the vhost worker
+    # quota. Public connection capacity is independent; PHP concurrency still
+    # follows the plan so high connection counts cannot fork unbounded workers.
+    (paths["stack"] / "openlitespeed-httpd.conf").write_text(render_openlitespeed_httpd_config(vhost_account, websites), encoding="utf-8")
     rules_path = paths["stack"] / "modsecurity-rules.conf"
     existing_rules = rules_path.read_text(encoding="utf-8", errors="replace") if rules_path.exists() else ""
     rules_text = render_modsecurity_rules(websites)
@@ -734,6 +747,18 @@ fi
 if grep -q '^enabled' /etc/mangopanel/ftp.enabled; then
   nohup /usr/sbin/proftpd -n -c /etc/proftpd/mangopanel.conf >/var/log/proftpd-runtime.log 2>&1 </dev/null &
 fi
+# Keep a runaway PHP request from pinning a worker indefinitely. This is a
+# hard 20-second ceiling for request workers; idle workers are handled by
+# OpenLiteSpeed's maxIdleTime setting.
+(
+  while :; do
+    for pid in $(ps -eo pid=,etimes=,args= 2>/dev/null | awk '$2 > 20 && $3 ~ /^lsphp:/ {print $1}'); do
+      kill -TERM "$pid" 2>/dev/null || true
+      (sleep 2; kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true) &
+    done
+    sleep 5
+  done
+) >/dev/null 2>&1 &
 # Keep legacy applications that use localhost:3306 working inside the web
 # container while preserving the normal db:3306 Docker-network path.
 nohup /bin/sh -c 'while ! /usr/bin/socat TCP-LISTEN:3306,bind=127.0.0.1,reuseaddr,fork TCP:db:3306; do sleep 2; done' >/var/log/mysql-loopback-proxy.log 2>&1 </dev/null &
@@ -851,6 +876,10 @@ def container_path(account, host_path):
 
 
 def render_openlitespeed_httpd_config(account, websites):
+    try:
+        php_workers = max(1, min(1000, int(account.get("php_workers", 3) or 3)))
+    except (AttributeError, TypeError, ValueError):
+        php_workers = 3
     base_config = """
 serverName                       MangoPanel
 user                             nobody
@@ -898,8 +927,8 @@ expires {
 }
 
 tuning{
-    maxConnections               10000
-    maxSSLConnections            10000
+    maxConnections               1000000
+    maxSSLConnections            1000000
     connTimeout                  300
     maxKeepAliveReq              10000
     smartKeepAlive               0
@@ -945,8 +974,8 @@ perClientConnLimit{
     dynReqPerSec                             0
     outBandwidth                             0
     inBandwidth                              0
-    softLimit                                10000
-    hardLimit                                10000
+    softLimit                                0
+    hardLimit                                0
     gracePeriod                              15
     banPeriod                                300
 }
@@ -1002,16 +1031,17 @@ module cache {
 extprocessor lsphp_{safe_domain} {{
   type                    lsapi
   address                 uds:///tmp/lshttpd/lsphp_{safe_domain}.sock
-  maxConns                10
-  env                     PHP_LSAPI_CHILDREN=10
+  maxConns                {php_workers}
+  env                     PHP_LSAPI_CHILDREN={php_workers}
   env                     LSAPI_AVOID_FORK=200M
   initTimeout             60
   retryTimeout            0
   persistConn             1
+  maxIdleTime             20
   respBuffer              0
   autoStart               1
   path                    /usr/local/lsws/lsphp{php_ver}/bin/lsphp
-  backlog                 100
+  backlog                 10000
   instances               1
   priority                0
   memSoftLimit            0
@@ -1080,6 +1110,17 @@ def render_modsecurity_rules(websites):
     lines.extend([
         'SecRule REQUEST_URI "@streq /__mangopanel_modsec_probe__" "id:1099990,phase:1,deny,status:403,log"',
         'SecRule REQUEST_URI "@rx (?i)(?:\\.\\./|<script[^>]*>)" "id:1099991,phase:1,deny,status:403,log"',
+        # Caddy is the trusted reverse proxy, so REMOTE_ADDR is normally the
+        # proxy itself. Key the built-in IP blocker by Cloudflare's client IP
+        # when present and fall back to the direct peer for local/direct use.
+        'SecRule REQUEST_HEADERS:CF-Connecting-IP "!^$" "id:1099994,phase:1,pass,nolog,initcol:ip=%{REQUEST_HEADERS:CF-Connecting-IP}"',
+        'SecRule REQUEST_HEADERS:CF-Connecting-IP "^$" "id:1099999,phase:1,pass,nolog,initcol:ip=%{REMOTE_ADDR}"',
+        'SecRule REQUEST_URI "@streq /xmlrpc.php" "id:1099995,phase:1,pass,nolog,chain"',
+        'SecRule REQUEST_METHOD "@streq POST" "setvar:ip.mp_xmlrpc_count=+1,expirevar:ip.mp_xmlrpc_count=60"',
+        'SecRule IP:MP_XMLRPC_COUNT "@gt 2" "id:1099996,phase:1,deny,status:429,log,msg:\'MangoPanel XML-RPC IP block\'"',
+        'SecRule REQUEST_URI "@streq /wp-login.php" "id:1099997,phase:1,pass,nolog,chain"',
+        'SecRule REQUEST_METHOD "@streq POST" "setvar:ip.mp_login_count=+1,expirevar:ip.mp_login_count=300"',
+        'SecRule IP:MP_LOGIN_COUNT "@gt 5" "id:1099998,phase:1,deny,status:429,log,msg:\'MangoPanel login IP block\'"',
         # Elementor sends large, authenticated JSON editor payloads containing
         # HTML, CSS, SVG, and JavaScript. CRS interprets those values as attack
         # signatures, so skip body inspection only for the editor endpoints.
@@ -1093,6 +1134,10 @@ def render_modsecurity_rules(websites):
 def render_ols_vhconf(account, website):
     domain = website["domain"]
     username = account["username"]
+    try:
+        php_workers = max(1, min(1000, int(account.get("php_workers", 3) or 3)))
+    except (AttributeError, TypeError, ValueError):
+        php_workers = 3
     safe_domain = domain.replace(".", "_").replace("-", "_")
 
     # Ensure PHP version is one of the supported versions (82, 83, 84)
@@ -1225,8 +1270,8 @@ context / {{
 extprocessor lsphp_{safe_domain} {{
   type                    lsapi
   address                 uds:///tmp/lshttpd/lsphp_{safe_domain}.sock
-  maxConns                10
-  env                     PHP_LSAPI_CHILDREN=10
+  maxConns                {php_workers}
+  env                     PHP_LSAPI_CHILDREN={php_workers}
   env                     LSAPI_AVOID_FORK=200M
   initTimeout             60
   retryTimeout            0
@@ -1234,7 +1279,7 @@ extprocessor lsphp_{safe_domain} {{
   respBuffer              0
   autoStart               1
   path                    /usr/local/lsws/lsphp{php_ver}/bin/lsphp
-  backlog                 100
+  backlog                 10000
   instances               1
   priority                0
   memSoftLimit            0
@@ -1250,7 +1295,12 @@ scripthandler  {{
 phpIniOverride  {{
   php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
   php_admin_value memory_limit "256M"
-  php_admin_value opcache.enable "{int(account.get('opcache_enabled', 1) or 0)}"
+  php_admin_value opcache.validate_timestamps "0"
+  php_admin_value opcache.revalidate_freq "0"
+  php_admin_value opcache.memory_consumption "256"
+  php_admin_value opcache.max_accelerated_files "20000"
+  php_admin_value mysqli.allow_persistent "0"
+  php_admin_value mysqli.max_persistent "0"
 }}
 
 module cache {{
@@ -1311,6 +1361,10 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
         'caddy_0.reverse_proxy: "{upstreams 80}"',
         'caddy_0.reverse_proxy.header_up: "X-Forwarded-Proto https"',
         'caddy_0.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
+        # Reject XML-RPC at the shared edge before a request enters any
+        # account container. The same rule is also present in ModSecurity as
+        # a defense-in-depth control for direct/origin traffic.
+        'caddy_0.import: "mangopanel-xmlrpc-block"',
     ]
     if domains_public_https:
         labels_list.extend([
@@ -1318,6 +1372,7 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
             'caddy_1.reverse_proxy: "{upstreams 80}"',
             'caddy_1.reverse_proxy.header_up: "X-Forwarded-Proto https"',
             'caddy_1.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
+            'caddy_1.import: "mangopanel-xmlrpc-block"',
         ])
     if domains_local_https:
         labels_list.extend([
@@ -1326,6 +1381,7 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
             'caddy_2.reverse_proxy: "{upstreams 80}"',
             'caddy_2.reverse_proxy.header_up: "X-Forwarded-Proto https"',
             'caddy_2.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
+            'caddy_2.import: "mangopanel-xmlrpc-block"',
         ])
     labels_str = "\n      ".join(labels_list)
 
@@ -1512,7 +1568,7 @@ services:
     cpus: "{service_cpu_count}"
     cgroup_parent: {cpu_group}
     labels:
-      caddy: "mail-{username}.seeds.servermango.com, http://{mail_host}, http://{mail_edge_host}"
+      caddy: "{mail_proxy_domain}"
       caddy.route.0_handle_path: "/assets*"
       caddy.route.0_handle_path.0_rewrite: "* /assets{{uri}}"
       caddy.route.0_handle_path.1_reverse_proxy: "host.docker.internal:8000"
@@ -1604,7 +1660,17 @@ volumes:
     name: mp-{username}-mailserver-state
 """
     import re
-    pub_host = runtime.get("public_host") or "127.0.0.1"
+    pub_host = runtime.get("public_host") or CONFIG.public_host or "127.0.0.1"
+    if pub_host in {"127.0.0.1", "localhost", "0.0.0.0", "::1"} and CONFIG.public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+        pub_host = CONFIG.public_host
+    public_tool_host = pub_host if pub_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"} else None
+    filebrowser_domain = f"files-{username}.{public_tool_host}, http://files-{username}.localhost" if public_tool_host else f"http://files-{username}.localhost"
+    phpmyadmin_domain = f"pma-{username}.{public_tool_host}, http://{runtime['phpmyadmin_url'].split('://')[1]}" if public_tool_host else f"http://{runtime['phpmyadmin_url'].split('://')[1]}"
+    adminer_domain = f"adminer-{username}.{public_tool_host}, http://{runtime['adminer_url'].split('://')[1]}" if public_tool_host else f"http://{runtime['adminer_url'].split('://')[1]}"
+    mail_domains = [f"mail-{username}.{public_tool_host}"] if public_tool_host else []
+    runtime_mail_host = runtime.get("mail_host")
+    if runtime_mail_host and runtime_mail_host not in mail_domains:
+        mail_domains.append(f"http://{runtime_mail_host}")
     composed = composed.format(
         project=project,
         mail_restart=mail_restart,
@@ -1644,6 +1710,7 @@ volumes:
         mail_edge_url=runtime.get("mail_edge_url", f"http://{runtime.get('mail_edge_host', runtime['mail_host'])}"),
         mail_edge_webmail_url=runtime.get("mail_edge_webmail_url", f"http://{runtime.get('mail_edge_host', runtime['mail_host'])}/webmail"),
         mail_edge_login_url=runtime.get("mail_edge_login_url", f"http://{runtime.get('mail_edge_host', runtime['mail_host'])}/webmail/login"),
+        mail_proxy_domain=", ".join(mail_domains) if mail_domains else f"http://mail-{username}.localhost",
         db_name=runtime["db_name"],
         db_user=runtime["db_user"],
         db_password=runtime["db_password"],
@@ -1657,9 +1724,9 @@ volumes:
         object_cache_backend=runtime.get("object_cache_backend", "redis"),
         opcode_cache_backend=runtime.get("opcode_cache_backend", "opcache"),
         phpmyadmin_raw_domain=runtime["phpmyadmin_url"].split("://")[1],
-        filebrowser_domain=f"files-{username}.seeds.servermango.com, http://{runtime['filebrowser_url'].split('://')[1]}" + (f", files-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
-        phpmyadmin_domain=f"pma-{username}.seeds.servermango.com, http://{runtime['phpmyadmin_url'].split('://')[1]}" + (f", pma-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
-        adminer_domain=f"adminer-{username}.seeds.servermango.com, http://{runtime['adminer_url'].split('://')[1]}" + (f", adminer-{username}.{pub_host}" if pub_host and pub_host not in {"127.0.0.1", "localhost", "seeds.servermango.com"} else ""),
+        filebrowser_domain=filebrowser_domain,
+        phpmyadmin_domain=phpmyadmin_domain,
+        adminer_domain=adminer_domain,
         SNAPPYMAIL_APP_VERSION=SNAPPYMAIL_APP_VERSION,
         SNAPPYMAIL_IMAGE=SNAPPYMAIL_IMAGE,
     )

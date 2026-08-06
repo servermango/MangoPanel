@@ -80,15 +80,22 @@ start_service() {
 
   (
     cd "$repo_root"
-    MP_ENV="$mp_env" \
-    MP_DEV_AUTH_TEST_MODE="$dev_auth" \
-    MP_AGENT_MODE="$agent_mode" \
-    MP_AGENT_INLINE=false \
-    MP_HOST="$host" \
-    MP_PUBLIC_HOST="$public_host" \
-    MP_CLIENT_PORT="$client_port" \
-    MP_ADMIN_PORT="$admin_port" \
-    nohup "$python_bin" -m mangopanel.app >>"$log_file" 2>&1 &
+    service_env=(
+      "MP_ENV=$mp_env"
+      "MP_DEV_AUTH_TEST_MODE=$dev_auth"
+      "MP_AGENT_MODE=$agent_mode"
+      "MP_AGENT_INLINE=false"
+      "MP_HOST=$host"
+      "MP_CLIENT_PORT=$client_port"
+      "MP_ADMIN_PORT=$admin_port"
+    )
+    # An empty MP_PUBLIC_HOST must not override mangopanel.config's
+    # environment-aware public-host default.  Overriding it with an empty
+    # value made newly generated tool URLs fall back to localhost.
+    if [[ -n "$public_host" ]]; then
+      service_env+=("MP_PUBLIC_HOST=$public_host")
+    fi
+    nohup env "${service_env[@]}" "$python_bin" -m mangopanel.app >>"$log_file" 2>&1 &
     echo $! >"$pid_file"
   )
 
@@ -114,14 +121,12 @@ stop_service() {
   if systemd_is_running; then
     systemctl stop mangopanel.service >/dev/null 2>&1 || true
     rm -f "$pid_file" "$worker_pid_file"
-    stop_containers
     echo "mangopanel stopped"
     return 0
   fi
 
   if ! [[ -f "$pid_file" ]]; then
     echo "mangopanel is not running"
-    stop_containers
     return
   fi
 
@@ -158,7 +163,9 @@ stop_service() {
     fi
     rm -f "$worker_pid_file"
   fi
-  stop_containers
+  # The panel is control-plane software. Keep hosting stacks and account
+  # databases running across a panel restart/stop; account lifecycle actions
+  # explicitly manage their own Compose stack.
   echo "mangopanel stopped"
 }
 

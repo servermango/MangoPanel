@@ -1081,7 +1081,7 @@
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                   <div>
                     <h3 style="margin:0;"><app-icon name="databases"></app-icon>Databases</h3>
-                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">{{ databases.length }} database{{ databases.length === 1 ? '' : 's' }}</p>
+                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">{{ databasesLoading ? 'Loading databases…' : databases.length + ' database' + (databases.length === 1 ? '' : 's') }}</p>
                   </div>
                   <button class="primary-button" @click="openDbModal('database')"><app-icon name="plus"></app-icon><span>Create Database</span></button>
                 </div>
@@ -1106,7 +1106,8 @@
                           <button class="danger-button" @click="deleteDatabase(database)"><app-icon name="trash"></app-icon></button>
                         </td>
                       </tr>
-                      <tr v-if="!databases.length"><td colspan="4" class="empty-row">No databases created yet. Click "Create Database" to start.</td></tr>
+                      <tr v-if="databasesLoading"><td colspan="4" class="empty-row"><span class="sw-spinner" aria-hidden="true"></span> Loading databases…</td></tr>
+                      <tr v-else-if="!databases.length"><td colspan="4" class="empty-row">No databases created yet. Click "Create Database" to start.</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -1117,7 +1118,7 @@
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                   <div>
                     <h3 style="margin:0;"><app-icon name="user"></app-icon>Database Users</h3>
-                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">{{ databaseUsers.length }} user{{ databaseUsers.length === 1 ? '' : 's' }}</p>
+                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">{{ databasesLoading ? 'Loading users…' : databaseUsers.length + ' user' + (databaseUsers.length === 1 ? '' : 's') }}</p>
                   </div>
                   <button class="primary-button" @click="openDbModal('user')"><app-icon name="plus"></app-icon><span>Create User</span></button>
                 </div>
@@ -1137,7 +1138,8 @@
                           <button class="danger-button" @click="deleteDatabaseUser(user)"><app-icon name="trash"></app-icon></button>
                         </td>
                       </tr>
-                      <tr v-if="!databaseUsers.length"><td colspan="3" class="empty-row">No database users yet.</td></tr>
+                      <tr v-if="databasesLoading"><td colspan="3" class="empty-row"><span class="sw-spinner" aria-hidden="true"></span> Loading database users…</td></tr>
+                      <tr v-else-if="!databaseUsers.length"><td colspan="3" class="empty-row">No database users yet.</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -1170,7 +1172,8 @@
                           <button class="danger-button" @click="deleteDatabaseGrant(grant)"><app-icon name="trash"></app-icon></button>
                         </td>
                       </tr>
-                      <tr v-if="!databaseGrants.length"><td colspan="5" class="empty-row">No user access grants configured.</td></tr>
+                      <tr v-if="databasesLoading"><td colspan="5" class="empty-row"><span class="sw-spinner" aria-hidden="true"></span> Loading access grants…</td></tr>
+                      <tr v-else-if="!databaseGrants.length"><td colspan="5" class="empty-row">No user access grants configured.</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -3378,7 +3381,8 @@
                     </div>
 
                     <div v-if="!shareForm.all_databases" style="display: flex; flex-direction: column; gap: 0.4rem; max-height: 140px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 0.75rem; border-radius: 8px;">
-                      <div v-if="!databases || databases.length === 0" class="muted text-xs">No databases created yet.</div>
+                      <div v-if="databasesLoading" class="muted text-xs"><span class="sw-spinner" aria-hidden="true"></span> Loading databases…</div>
+                      <div v-else-if="!databases || databases.length === 0" class="muted text-xs">No databases created yet.</div>
                       <label v-for="db in databases" :key="db.id" style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;">
                         <input type="checkbox" :value="db.id" v-model="shareForm.database_ids">
                         <span>{{ db.name }}</span>

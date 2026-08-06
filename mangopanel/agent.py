@@ -310,11 +310,16 @@ def cron_wrapper_script(account, cron_job):
             'CRON_ROOT="$BASE_PATH/.runtime/cron"',
             'LOG_PATH="$CRON_ROOT/logs/job-$JOB_ID.log"',
             'STATE_PATH="$CRON_ROOT/state/job-$JOB_ID.state"',
+            'LOCK_PATH="$CRON_ROOT/state/account.lock"',
             'mkdir -p "$CRON_ROOT/logs" "$CRON_ROOT/state"',
+            'exec 9>"$LOCK_PATH"',
+            # Queue jobs for the account instead of dropping them when the
+            # previous site's cron task is still running.
+            'flock 9',
             'cd "$BASE_PATH" || exit 1',
             'STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
             ': > "$LOG_PATH"',
-            'if /bin/sh -lc "$CRON_COMMAND" >>"$LOG_PATH" 2>&1; then',
+            'if timeout --kill-after=5s 20s /bin/sh -lc "$CRON_COMMAND" >>"$LOG_PATH" 2>&1; then',
             "  EXIT_CODE=0",
             "else",
             "  EXIT_CODE=$?",
@@ -417,6 +422,13 @@ def image_runtime_dir(account):
 class Agent:
     def __init__(self, config=None):
         self.config = config or load_config()
+
+    def vhost_account_context(self, conn, account):
+        """Return account data plus the worker quota from its current plan."""
+        context = row_to_dict(account) if hasattr(account, "keys") else dict(account)
+        plan = conn.execute("SELECT php_workers FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+        context["php_workers"] = int(plan["php_workers"] if plan and plan["php_workers"] is not None else 3)
+        return context
 
     def run_once(self):
         with connect(self.config.db_path) as conn:
@@ -787,6 +799,8 @@ class Agent:
         job_type = job["type"]
         if job_type == "provision_hosting_account":
             return self.provision_hosting_account(conn, job["target_id"])
+        if job_type == "rebuild_stack":
+            return self.rebuild_stack(conn, job)
         if job_type == "create_website":
             website = conn.execute("SELECT * FROM websites WHERE id = ?", (job["target_id"],)).fetchone()
             if not website:
@@ -811,7 +825,7 @@ class Agent:
             self.provision_hosting_account(conn, database["account_id"])
             sql = [f"CREATE DATABASE IF NOT EXISTS `{database['name']}`;"]
             if account:
-                runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+                runtime = build_account_runtime(self.vhost_account_context(conn, account), self.config.public_host, self.config.account_port_base)
                 sql.append(f"GRANT ALL PRIVILEGES ON *.* TO {sql_literal(runtime['db_user'])}@'%';")
                 db_dict = row_to_dict(database) if database else {}
                 if db_dict.get("username") and db_dict["username"] != runtime["db_user"]:
@@ -1182,7 +1196,7 @@ class Agent:
         protected = [row_to_dict(row) for row in conn.execute("SELECT * FROM protected_directories WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()]
         hotlink = conn.execute("SELECT * FROM hotlink_settings WHERE account_id = ?", (account["id"],)).fetchone()
         hotlink_domains = sorted({w["domain"] for w in websites} | {x.strip() for x in (hotlink["allowed_domains"] if hotlink else "").splitlines() if x.strip()})
-        account_dict = row_to_dict(account)
+        account_dict = self.vhost_account_context(conn, account)
         for website in websites:
             item = row_to_dict(website)
             item["protected_directories"] = protected
@@ -1869,7 +1883,7 @@ class Agent:
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
-        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(self.vhost_account_context(conn, account), self.config.public_host, self.config.account_port_base)
         hosts = rows_to_dicts(conn.execute("SELECT id, host_ip, created_at FROM remote_mysql_hosts WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         sql = []
         sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(runtime['db_user'])}@'%' IDENTIFIED BY {sql_literal(runtime['db_password'])};")
@@ -1907,7 +1921,7 @@ class Agent:
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account or not sql_statements:
             return
-        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(self.vhost_account_context(conn, account), self.config.public_host, self.config.account_port_base)
         docker = shutil.which("docker")
         if self.config.agent_mode == "simulate":
             return {"simulated": True}
@@ -2016,7 +2030,7 @@ class Agent:
         # OpenLiteSpeed does not consistently apply this feature from a
         # per-directory .htaccess file. Keep that artifact for compatibility,
         # but also render the native vhost rule which is the authoritative path.
-        account_dict = row_to_dict(account)
+        account_dict = self.vhost_account_context(conn, account)
         native_vhosts = []
 
         block_lines = [
@@ -2733,6 +2747,48 @@ class Agent:
                 pass
             return {"status": "applied", "mode": "docker", "output": result.stdout.strip()}
         raise AgentError("unknown_agent_mode: {}".format(self.config.agent_mode))
+
+    def rebuild_stack(self, conn, job):
+        """Recreate one existing Compose stack while retaining account data.
+
+        This intentionally uses Compose ``up`` only.  It must never call
+        ``down --volumes`` or remove the account directory, so bind-mounted
+        website files and named database volumes remain untouched.
+        """
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        stack = conn.execute("SELECT * FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
+        if not stack or not stack["compose_path"]:
+            raise AgentError("account_stack_not_found")
+        compose_path = Path(stack["compose_path"]).resolve()
+        account_path = Path(account["base_path"]).resolve()
+        try:
+            compose_path.relative_to(account_path)
+        except ValueError:
+            raise AgentError("account_stack_path_outside_account")
+        if not compose_path.is_file():
+            raise AgentError("account_stack_compose_not_found")
+
+        payload = self.job_payload(job)
+        previous_status = payload.get("previous_status") or "active"
+        try:
+            plan = conn.execute("SELECT total_cpu_limit FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+            result = self.apply_stack(compose_path, account["username"], plan["total_cpu_limit"] if plan else "2")
+            if previous_status == "suspended":
+                result = dict(result)
+                result.update({"status": "stopped", "stack_stop": self.compose_down(compose_path)})
+            final_stack_status = result.get("status", "applied")
+            conn.execute(
+                "UPDATE account_stacks SET status = ?, last_applied_at = CURRENT_TIMESTAMP, last_error = NULL WHERE account_id = ?",
+                (final_stack_status, account["id"]),
+            )
+            conn.execute("UPDATE hosting_accounts SET status = ? WHERE id = ?", (previous_status, account["id"]))
+            return {"account_id": account["id"], "status": previous_status, "preserve_data": True, "stack": result}
+        except Exception as exc:
+            conn.execute("UPDATE account_stacks SET status = 'error', last_error = ? WHERE account_id = ?", (str(exc)[:1000], account["id"]))
+            conn.execute("UPDATE hosting_accounts SET status = ? WHERE id = ?", (previous_status, account["id"]))
+            raise
 
     def compose_down(self, compose_path):
         if self.config.agent_mode == "simulate":
@@ -4018,7 +4074,7 @@ class Agent:
         # reliably enforce Auth directives loaded from .htaccess.
         websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
         protected = [row_to_dict(row) for row in conn.execute("SELECT * FROM protected_directories WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()]
-        account_dict = row_to_dict(account)
+        account_dict = self.vhost_account_context(conn, account)
         for website in websites:
             item = row_to_dict(website)
             item["protected_directories"] = protected

@@ -9,6 +9,10 @@ services:
     environment:
       - CADDY_INGRESS_NETWORKS=mangopanel-edge
       - CADDY_DOCKER_PROCESS_CADDYFILE=true
+    labels:
+      caddy: "(mangopanel-xmlrpc-block)"
+      caddy.route_0: "/xmlrpc.php"
+      caddy.route_0.respond: "\"MangoPanel XML-RPC disabled\" 403"
     networks:
       - mangopanel-edge
     volumes:
