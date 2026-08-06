@@ -1045,6 +1045,10 @@ class MangoHandler(BaseHTTPRequestHandler):
 
     def public_filebrowser_proxy(self, path):
         clean_path_raw = path.replace("/api/public/filebrowser/proxy", "") or "/files/"
+        # dispatch() passes the parsed path without its query string. Preserve
+        # Filebrowser resource-operation parameters such as action=rename and
+        # destination=... when proxying the request.
+        request_query = urlparse(self.path).query
         clean_path_no_query = urlparse(clean_path_raw).path.rstrip("/")
         is_login_endpoint = clean_path_no_query in {"/files/login", "/login", "/files/api/login", "/api/login"} or clean_path_no_query.endswith("/files/login") or clean_path_no_query.endswith("/api/login")
 
@@ -1138,6 +1142,8 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             container_ip = resolve_container_ip(container_name)
             upstream_url = f"http://{container_ip}:80{clean_path}"
+            if request_query:
+                upstream_url += f"?{request_query}"
 
             req_headers = {}
             for k, v in self.headers.items():
@@ -6585,6 +6591,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 cfg["last_run"] = row_to_dict(conn.execute("SELECT * FROM system_backup_runs ORDER BY id DESC LIMIT 1").fetchone()) if conn.execute("SELECT 1 FROM system_backup_runs LIMIT 1").fetchone() else None
                 return self.json_response({"backup": cfg})
             if path == "/api/admin/system-backup" and method in {"POST", "PATCH"}:
+                require_admin_permission(actor, "system.manage")
                 body = self.read_json()
                 bool_keys = {"local_enabled": "backup_local_enabled", "remote_enabled": "backup_remote_enabled", "db_enabled": "backup_db_enabled", "files_enabled": "backup_files_enabled", "local_remove_enabled": "backup_local_remove_enabled", "remote_remove_enabled": "backup_remote_remove_enabled"}
                 for field, key in bool_keys.items():
@@ -6609,12 +6616,14 @@ class MangoHandler(BaseHTTPRequestHandler):
                 response_config["remote_secret"] = "" if not response_config["remote_secret"] else "••••••••"
                 return self.json_response({"backup": response_config})
             if path == "/api/admin/system-backup/test" and method == "POST":
+                require_admin_permission(actor, "system.manage")
                 try:
                     result = test_remote(backup_config(conn, CONFIG))
                 except Exception as exc:
                     raise ApiError(HTTPStatus.BAD_REQUEST, str(exc))
                 return self.json_response(result)
             if path == "/api/admin/system-backup/run" and method == "POST":
+                require_admin_permission(actor, "system.manage")
                 body = self.read_json()
                 kind = str(body.get("kind") or "all").lower()
                 kinds = ("database",) if kind == "database" else (("files",) if kind == "files" else ("database", "files"))
@@ -6642,6 +6651,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 job_id = enqueue_agent_job(conn, "apply_modsecurity_ruleset", "hosting_account" if account_id else "system", account_id or 0, {"ruleset": ruleset})
                 return self.json_response({"job_id": job_id, "status": "queued", "ruleset": ruleset})
             if path == "/api/admin/configuration" and method in {"POST", "PATCH"}:
+                require_admin_permission(actor, "system.manage")
                 body = self.read_json()
                 backup_time = str(body.get("backup_time", "02:00") or "02:00").strip()
                 if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", backup_time):

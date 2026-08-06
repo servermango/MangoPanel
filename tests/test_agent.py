@@ -118,6 +118,7 @@ class AgentTests(unittest.TestCase):
             self.assertIn('mangopanel.inode_limit: "100000"', compose_text)
             self.assertIn('mangopanel.backup_retention_days: "7"', compose_text)
             self.assertIn("umask 0002", compose_text)
+            self.assertIn("config set --auth.method noauth --perm.rename=true", compose_text)
             self.assertTrue((config.account_root / "u000001" / "account.json").exists())
             web_dockerfile = (config.account_root / "u000001" / ".runtime" / "stack" / "web" / "Dockerfile").read_text(encoding="utf-8")
             self.assertIn("openssh-server", web_dockerfile)

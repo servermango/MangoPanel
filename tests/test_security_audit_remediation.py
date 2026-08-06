@@ -184,6 +184,33 @@ class SecurityAuditRemediationTests(unittest.TestCase):
             handler.exchange_impersonation()
         self.assertEqual(ctx.exception.status, HTTPStatus.UNAUTHORIZED)
 
+    def test_support_admin_cannot_modify_configuration_without_system_manage_permission(self):
+        from mangopanel.app import ApiError, MangoHandler, create_jwt
+
+        support_admin_id = 2
+        token = create_jwt(
+            {"sub": support_admin_id, "actor_type": "admin", "purpose": "access", "jti": "support-admin-test"},
+            self.config.jwt_secret,
+            3600,
+        )
+
+        handler = MangoHandler.__new__(MangoHandler)
+        handler.server = MockServer(self.config)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.headers = {"Authorization": f"Bearer {token}", "Host": "localhost"}
+        handler.query_params = {}
+        handler.read_json = lambda: {"backup_time": "03:00", "resource_scan_time": "04:00", "timezone": "UTC"}
+        handler.send_response = lambda status: None
+        handler.send_header = lambda k, v: None
+        handler.end_headers = lambda: None
+        handler.wfile = type("WFile", (), {"write": lambda self, b: None})()
+
+        actor = handler.require_auth("admin")
+
+        with self.assertRaises(ApiError) as ctx:
+            handler.admin_api("PATCH", "/api/admin/configuration", {}, actor)
+        self.assertEqual(ctx.exception.status, HTTPStatus.FORBIDDEN)
+
     def test_multi_account_ownership_boundary(self):
         with connect(self.config.db_path) as conn:
             conn.execute("INSERT OR IGNORE INTO nodes(id, name, hostname) VALUES (1, 'node1', 'node1.test')")
