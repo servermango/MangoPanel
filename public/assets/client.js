@@ -2,6 +2,57 @@ const { createApp } = Vue;
 
 const CLIENT_ROUTE_PREFIX = "/client";
 
+const DEFAULT_INSTALLER_SCRIPTS = [
+  {
+    id: "wordpress",
+    name: "WordPress",
+    icon: "wordpress",
+    description: "Install WordPress CMS onto your site.",
+    required_fields: [
+      { name: "site_title", label: "Site Title", type: "text", placeholder: "My WordPress Site", default: "My WordPress Site" },
+      { name: "admin_username", label: "Admin Username", type: "text", placeholder: "admin", default: "admin" },
+      { name: "admin_email", label: "Admin Email", type: "email", placeholder: "admin@example.com", default: "admin@example.com" },
+      { name: "admin_password", label: "Admin Password", type: "password", placeholder: "Minimum 8 chars", default: "" },
+    ],
+  },
+  {
+    id: "joomla",
+    name: "Joomla",
+    icon: "network",
+    description: "Install Joomla CMS onto your site.",
+    required_fields: [
+      { name: "site_title", label: "Site Name", type: "text", placeholder: "My Joomla Site", default: "My Joomla Site" },
+      { name: "admin_username", label: "Admin Username", type: "text", placeholder: "admin", default: "admin" },
+      { name: "admin_email", label: "Admin Email", type: "email", placeholder: "admin@example.com", default: "admin@example.com" },
+      { name: "admin_password", label: "Admin Password", type: "password", placeholder: "Minimum 8 chars", default: "" },
+    ],
+  },
+  {
+    id: "phpbb",
+    name: "phpBB",
+    icon: "activity",
+    description: "Install phpBB Forum software onto your site.",
+    required_fields: [
+      { name: "site_title", label: "Forum Name", type: "text", placeholder: "My phpBB Forum", default: "My phpBB Forum" },
+      { name: "admin_username", label: "Admin Username", type: "text", placeholder: "admin", default: "admin" },
+      { name: "admin_email", label: "Admin Email", type: "email", placeholder: "admin@example.com", default: "admin@example.com" },
+      { name: "admin_password", label: "Admin Password", type: "password", placeholder: "Minimum 8 chars", default: "" },
+    ],
+  },
+  {
+    id: "drupal",
+    name: "Drupal",
+    icon: "wrench",
+    description: "Install Drupal CMS onto your site.",
+    required_fields: [
+      { name: "site_title", label: "Site Name", type: "text", placeholder: "My Drupal Site", default: "My Drupal Site" },
+      { name: "admin_username", label: "Admin Username", type: "text", placeholder: "admin", default: "admin" },
+      { name: "admin_email", label: "Admin Email", type: "email", placeholder: "admin@example.com", default: "admin@example.com" },
+      { name: "admin_password", label: "Admin Password", type: "password", placeholder: "Minimum 8 chars", default: "" },
+    ],
+  },
+];
+
 
 const CLIENT_PAGE_TARGETS = new Set([
   "dashboard",
@@ -239,7 +290,7 @@ const app = createApp({
       subdomains: [],
       subdomainDomains: [],
       subdomainUsage: { used: 0, limit: 0 },
-      subdomainWizard: { open: false, label: "", parent_domain_id: "", hosting_mode: "separate", path: "", submitting: false, error: "" },
+      subdomainWizard: { open: false, label: "", parent_domain_id: "", hosting_mode: "separate", path: "", configure_dns: false, submitting: false, building: false, complete: false, createdSubdomain: null, error: "" },
       domains: [],
       registeredDomains: [],
       registeredDomainSort: { key: "expiry", direction: "asc" },
@@ -365,7 +416,7 @@ const app = createApp({
       dbTab: "databases", // 'databases', 'users', 'grants'
       backupWizard: { isOpen: false, step: 1, isRunning: false, progressText: '' },
       installer: {
-        scripts: [],
+        scripts: DEFAULT_INSTALLER_SCRIPTS.map((script) => ({ ...script, required_fields: [...script.required_fields] })),
         selectedScript: null,
         isSubmitting: false,
         form: {
@@ -600,6 +651,14 @@ const app = createApp({
     serverIp() {
       return (this.home && this.home.server_ip) || "157.15.203.66";
     },
+    selectedSubdomainParent() {
+      return (this.subdomainDomains || []).find((domain) => String(domain.id) === String(this.subdomainWizard.parent_domain_id)) || null;
+    },
+    subdomainDnsName() {
+      const label = this.subdomainWizard.label || "subdomain";
+      const parent = this.selectedSubdomainParent;
+      return `${label}.${parent?.name || "your-domain.com"}`;
+    },
     sortedRegisteredDomains() {
       const direction = this.registeredDomainSort.direction === "desc" ? -1 : 1;
       const key = this.registeredDomainSort.key;
@@ -705,8 +764,19 @@ const app = createApp({
       return Math.min(100, limit > 0 ? (used / limit) * 100 : 0).toFixed(1);
     },
     cpuPercent() {
-      const pct = Number(this.home.resources?.cpu_percent ?? 20);
+      const pct = Number(this.home.resources?.cpu_percent ?? this.home.resources?.cpu_load ?? 20);
       return Math.min(100, Math.max(0, pct)).toFixed(1);
+    },
+    cpuLoadDisplay() {
+      const resources = this.home?.resources || {};
+      const value = resources.cpu_percent ?? resources.cpu_load;
+      if (value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value))) {
+        return `${Number(value).toFixed(1)}%`;
+      }
+      return resources.cpu || "—";
+    },
+    cpuLoadStatus() {
+      return this.home?.resources?.cpu || "unknown";
     },
     memoryPercent() {
       const pct = Number(this.home.resources?.memory_percent ?? 35);
@@ -1817,9 +1887,10 @@ const app = createApp({
     async loadInstallerScripts() {
       try {
         const payload = await this.api("/api/client/installer/scripts");
-        this.installer.scripts = payload.scripts || [];
+        this.installer.scripts = payload.scripts?.length ? payload.scripts : DEFAULT_INSTALLER_SCRIPTS;
       } catch (err) {
         console.error("Failed to load scripts:", err);
+        this.installer.scripts = DEFAULT_INSTALLER_SCRIPTS;
       }
     },
     async loadWordPressSites() {
@@ -3154,8 +3225,20 @@ const app = createApp({
       if (major === 7) return "php-badge php-badge--7";
       return "php-badge";
     },
-    openSubdomainWizard() {
-      this.subdomainWizard = { open: true, label: "", parent_domain_id: this.subdomainDomains[0]?.id || "", hosting_mode: "separate", path: "", submitting: false, error: "" };
+    openSubdomainWizard(prefill = {}) {
+      this.subdomainWizard = {
+        open: true,
+        label: prefill.label || "",
+        parent_domain_id: prefill.parent_domain_id || this.subdomainDomains[0]?.id || "",
+        hosting_mode: "separate",
+        path: "",
+        configure_dns: false,
+        submitting: false,
+        building: false,
+        complete: false,
+        createdSubdomain: null,
+        error: "",
+      };
     },
     closeSubdomainWizard() {
       if (!this.subdomainWizard.submitting) this.subdomainWizard.open = false;
@@ -3164,18 +3247,27 @@ const app = createApp({
       const form = this.subdomainWizard;
       if (form.submitting) return;
       form.submitting = true;
+      form.building = true;
+      form.complete = false;
       form.error = "";
       try {
-        await this.api("/api/client/subdomains", { method: "POST", body: JSON.stringify({
+        const startedAt = Date.now();
+        const payload = await this.api("/api/client/subdomains", { method: "POST", body: JSON.stringify({
           subdomain: form.label,
           parent_domain_id: form.parent_domain_id,
           hosting_mode: form.hosting_mode,
           path: form.path,
+          configure_dns: form.configure_dns,
         }) });
-        form.open = false;
+        const remainingAnimationMs = Math.max(0, 900 - (Date.now() - startedAt));
+        if (remainingAnimationMs) await new Promise((resolve) => setTimeout(resolve, remainingAnimationMs));
+        form.createdSubdomain = payload.subdomain;
+        form.building = false;
+        form.complete = true;
         this.notify(`Subdomain ${form.label} created, DNS queued, and SSL issuance started`, "success");
         await this.load();
       } catch (error) {
+        form.building = false;
         form.error = error.message || String(error);
         this.notify(form.error, "error");
       } finally {
@@ -3226,11 +3318,42 @@ const app = createApp({
       this.siteWizard.isOpen = false;
       this.siteWizard.errorMessage = "";
     },
+    findSubdomainParent(domain) {
+      const normalizedDomain = String(domain || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\.$/, "");
+      if (!normalizedDomain || !normalizedDomain.includes(".")) return null;
+
+      const websiteNames = new Set((this.websites || []).map((site) => String(site.domain || "").toLowerCase().replace(/\.$/, "")));
+      return (this.subdomainDomains || [])
+        .filter((parent) => {
+          const parentName = String(parent.name || "").toLowerCase().replace(/\.$/, "");
+          return parentName && websiteNames.has(parentName) && normalizedDomain.endsWith(`.${parentName}`);
+        })
+        .sort((left, right) => String(right.name || "").length - String(left.name || "").length)
+        .map((parent) => {
+          const parentName = String(parent.name).toLowerCase().replace(/\.$/, "");
+          return {
+            parent_domain_id: parent.id,
+            label: normalizedDomain.slice(0, -(parentName.length + 1)),
+          };
+        })
+        .find((match) => match.label);
+    },
     onWizardDomainChange() {
       this.siteWizard.dnsCheckResult = null;
       this.siteWizard.errorMessage = "";
       this.siteWizard.hasReviewedDns = false;
       if (this._domainCheckTimer) clearTimeout(this._domainCheckTimer);
+
+      const subdomainParent = this.findSubdomainParent(this.siteWizard.domain);
+      if (subdomainParent) {
+        this.closeSiteWizard();
+        this.openSubdomainWizard(subdomainParent);
+        return;
+      }
+
       if (this.siteWizard.domain && this.siteWizard.domain.includes(".")) {
         this._domainCheckTimer = setTimeout(() => {
           this.checkDomainDns();

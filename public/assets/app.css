@@ -2950,6 +2950,94 @@ button:disabled:hover {
   font-size: 12px;
 }
 
+/* ─── Subdomain DNS consent ─────────────────────────────── */
+.subdomain-dns-fieldset {
+  display: grid;
+  gap: 8px;
+  border: 0;
+  padding: 0;
+  margin: 4px 0 0;
+}
+
+.subdomain-dns-fieldset legend {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.subdomain-dns-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  cursor: pointer;
+  background: var(--surface-2);
+}
+
+.subdomain-dns-option.selected {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand);
+}
+
+.subdomain-dns-option input {
+  margin-top: 3px;
+}
+
+.subdomain-dns-option span {
+  display: grid;
+  gap: 3px;
+}
+
+.subdomain-dns-option small,
+.subdomain-dns-details p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.subdomain-dns-details {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--brand);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--brand) 8%, var(--surface));
+}
+
+.subdomain-dns-details > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.subdomain-dns-record {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.subdomain-dns-record span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.subdomain-dns-record small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.subdomain-dns-record code {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .subdomain-dns-record {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* ─── MangoPanel Icon Grid ───────────────────────────────────── */
 .mangopanel-section-wrap {
   display: grid;

@@ -53,6 +53,42 @@ class DomainDnsCheckTests(unittest.TestCase):
                 self.assertEqual(status, 409)
                 self.assertIn("exists on another account on this hosting", str(error_res))
 
+    def test_subdomain_dns_consent_updates_existing_a_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            seed_dev_data(config.db_path, config.account_root)
+
+            with connect(config.db_path) as conn:
+                account = conn.execute("SELECT id FROM hosting_accounts WHERE user_id = 1 LIMIT 1").fetchone()
+                parent = conn.execute("SELECT id, name FROM domains WHERE account_id = ? LIMIT 1", (account["id"],)).fetchone()
+                conn.execute(
+                    "INSERT INTO dns_records(domain_id, type, name, value, ttl, system_record, locked) VALUES (?, 'A', ?, '192.0.2.44', 300, 0, 0)",
+                    (parent["id"], "consented-subdomain"),
+                )
+
+            with ClientApiServer(config, panel="client") as server:
+                token = server.login()
+                response = server.request(
+                    "POST",
+                    "/api/client/subdomains",
+                    {
+                        "subdomain": "consented-subdomain",
+                        "parent_domain_id": parent["id"],
+                        "configure_dns": True,
+                    },
+                    token,
+                )
+                self.assertEqual(response["subdomain"]["domain"], "consented-subdomain." + parent["name"])
+
+            with connect(config.db_path) as conn:
+                record = conn.execute(
+                    "SELECT value, system_record, locked FROM dns_records WHERE domain_id = ? AND type = 'A' AND name = ?",
+                    (parent["id"], "consented-subdomain"),
+                ).fetchone()
+                self.assertEqual(record["value"], app_module.get_host_public_ip(conn))
+                self.assertEqual(record["system_record"], 1)
+                self.assertEqual(record["locked"], 1)
+
     def test_cloudflare_dns_domain_check_and_choices(self):
         FakeCloudflareHandler.zones = [
             {
@@ -98,7 +134,29 @@ class DomainDnsCheckTests(unittest.TestCase):
                     check_res = server.request("POST", "/api/client/dns/check-domain", {"domain": "existing-cf.mango.test"}, token)
                     self.assertTrue(check_res["exists"])
                     self.assertEqual(check_res["dns_provider"], "cloudflare")
-                    self.assertEqual(check_res["alert_message"], "This domain already exists in the DNS")
+                    self.assertTrue(check_res["blocked"])
+                    self.assertNotIn("remote_records", check_res)
+                    status, error_res = server.request_error(
+                        "POST",
+                        "/api/client/websites",
+                        {"domain": "existing-cf.mango.test", "dns_action": "keep"},
+                        token,
+                    )
+                    self.assertEqual(status, 409)
+                    self.assertIn("not assigned to your hosting account", str(error_res))
+
+                    # A remote zone is not enough to prove ownership. Once the
+                    # domain is assigned to this account, the DNS choices and
+                    # remote record import become available.
+                    with connect(config.db_path) as conn:
+                        account = conn.execute("SELECT id FROM hosting_accounts WHERE user_id = 1 LIMIT 1").fetchone()
+                        conn.execute(
+                            "INSERT INTO domains(account_id, name, kind, status) VALUES (?, ?, 'managed', 'active')",
+                            (account["id"], "existing-cf.mango.test"),
+                        )
+
+                    check_res = server.request("POST", "/api/client/dns/check-domain", {"domain": "existing-cf.mango.test"}, token)
+                    self.assertTrue(check_res["exists"])
                     self.assertEqual(len(check_res["remote_records"]), 2)
 
                     # 2. Add website with dns_action: 'keep'
@@ -130,4 +188,3 @@ class DomainDnsCheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

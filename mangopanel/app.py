@@ -78,6 +78,12 @@ from .providers import (
 from .registrars import RegistrarError, registrar_for
 from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, validate_git_branch, validate_git_repository_url, verify_jwt, verify_password, verify_totp
 from .backup_service import backup_config, test_remote
+
+
+# Filebrowser performs bulk delete/move operations synchronously.  Large site
+# trees can legitimately take longer than the normal request timeout, so do
+# not report a gateway failure while the upstream operation is still running.
+FILEBROWSER_UPSTREAM_TIMEOUT = 300
 from .snappymail import request_login_session
 from .stack import DEFAULT_SSH_MOTD, build_account_runtime, sync_account_suspension_marker
 
@@ -663,6 +669,15 @@ class MangoHandler(BaseHTTPRequestHandler):
     def dispatch(self, method):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        # Filebrowser uses a trailing slash on POST resource paths to mean
+        # "create directory".  Keep it intact when forwarding filebrowser
+        # requests; otherwise the upstream interprets the request as an
+        # empty-file upload.
+        if parsed.path.endswith("/") and (
+            parsed.path.startswith("/files/")
+            or parsed.path.startswith("/api/public/filebrowser/proxy/")
+        ):
+            path = parsed.path
         self.query_params = parse_qs(parsed.query)
         panel = getattr(self.server, "panel", "combined")
 
@@ -1175,7 +1190,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 method=self.command,
             )
             try:
-                resp = opener.open(req, timeout=10)
+                resp = opener.open(req, timeout=FILEBROWSER_UPSTREAM_TIMEOUT)
                 data = resp.read()
                 status = resp.status
                 resp_headers = resp.headers
@@ -1212,7 +1227,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if "/login" in location or location.endswith("/login"):
                     target_url = f"http://{container_ip}:80/files/"
                     try:
-                        resp2 = opener.open(urllib.request.Request(target_url, headers=req_headers), timeout=10)
+                        resp2 = opener.open(urllib.request.Request(target_url, headers=req_headers), timeout=FILEBROWSER_UPSTREAM_TIMEOUT)
                         data = resp2.read()
                         status = resp2.status
                         resp_headers = resp2.headers
@@ -2893,17 +2908,20 @@ class MangoHandler(BaseHTTPRequestHandler):
                 public_ip = get_host_public_ip(conn)
                 dns_job_id = None
                 dns_record_id = None
+                configure_dns = body.get("configure_dns") is True
                 managed_provider = parent["dns_provider"] in {DNS_PROVIDER_LOCAL, DNS_PROVIDER_LOCAL_POWERDNS, DNS_PROVIDER_CLOUDFLARE}
-                if managed_provider:
+                if configure_dns and managed_provider:
                     record_name = label
                     record = conn.execute("SELECT id, system_record, value FROM dns_records WHERE domain_id = ? AND type = 'A' AND name = ?", (parent_id, record_name)).fetchone()
                     if record:
-                        if not int(record["system_record"] or 0) and str(record["value"]) != str(public_ip):
-                            conn.execute("DELETE FROM websites WHERE id = ?", (website_id,))
-                            raise ApiError(HTTPStatus.CONFLICT, "subdomain_dns_record_conflict")
                         dns_record_id = record["id"]
-                        if int(record["system_record"] or 0):
-                            conn.execute("UPDATE dns_records SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (public_ip, dns_record_id))
+                        # The user explicitly granted permission to manage DNS,
+                        # so an existing A record is updated rather than
+                        # treated as a conflict or blocking subdomain setup.
+                        conn.execute(
+                            "UPDATE dns_records SET value = ?, system_record = 1, locked = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            (public_ip, dns_record_id),
+                        )
                     else:
                         dns_record_id = conn.execute("INSERT INTO dns_records(domain_id, type, name, value, ttl, system_record, locked) VALUES (?, 'A', ?, ?, 300, 1, 1)", (parent_id, record_name, public_ip)).lastrowid
                     dns_job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", parent_id, {"reason": "subdomain_created", "record_id": dns_record_id})
@@ -9523,6 +9541,11 @@ def preview_domain_dns(conn, account, domain_name):
     nameservers = list(dns_assignment.get("nameservers") or [])
 
     if provider_key == DNS_PROVIDER_CLOUDFLARE:
+        if not domain_assigned_to_account(conn, account, domain_name):
+            raise ApiError(
+                HTTPStatus.CONFLICT,
+                "This domain is not assigned to your hosting account or registered to your user. Verify ownership before managing DNS.",
+            )
         provider_account_id = dns_assignment.get("dns_provider_account_id")
         provider_row = conn.execute("SELECT * FROM dns_providers WHERE key = ?", (DNS_PROVIDER_CLOUDFLARE,)).fetchone()
         if provider_row:
@@ -9601,6 +9624,34 @@ def get_cloudflare_provider_for_account(conn, account_id):
     return None, dns_assignment
 
 
+def domain_assigned_to_account(conn, account, domain):
+    """Return whether a domain is assigned to this account or owned by its user."""
+    normalized = sanitize_domain(domain)
+    assigned = conn.execute(
+        "SELECT id FROM domains WHERE lower(name) = lower(?) AND account_id = ?",
+        (normalized, account["id"]),
+    ).fetchone()
+    if assigned:
+        return True
+
+    account_user_id = account["user_id"] if "user_id" in account.keys() else None
+    if not account_user_id:
+        return False
+    registered = conn.execute(
+        """
+        SELECT r.id
+        FROM registrar_domain_records r
+        JOIN registrar_accounts ra ON ra.id = r.registrar_account_id
+        WHERE lower(r.domain_name) = lower(?)
+          AND r.client_user_id = ?
+          AND ra.status != 'deleted'
+        LIMIT 1
+        """,
+        (normalized, account_user_id),
+    ).fetchone()
+    return bool(registered)
+
+
 def check_domain_dns_provider(conn, account, domain_name):
     domain = sanitize_domain(domain_name)
     if not domain:
@@ -9642,6 +9693,14 @@ def check_domain_dns_provider(conn, account, domain_name):
             try:
                 zone = cf.get_zone(domain)
                 if zone and isinstance(zone, dict) and zone.get("id"):
+                    if not domain_assigned_to_account(conn, account, domain):
+                        return {
+                            "exists": True,
+                            "dns_provider": "cloudflare",
+                            "blocked": True,
+                            "alert_message": "This domain already exists in the DNS",
+                            "error_message": "This domain is not assigned to your hosting account or registered to your user. Verify ownership before adding it.",
+                        }
                     remote_records = cf.get_dns_records(zone["id"])
                     return {
                         "exists": True,
@@ -13662,6 +13721,14 @@ def client_home(conn, user_id, active_account_id=None):
     memory_pct = 35.0
 
     if primary_account:
+        # Keep the dashboard's summary current. The collector itself skips
+        # samples newer than 45 seconds, so this is safe for normal dashboard
+        # refreshes while avoiding an expensive Docker/filesystem scan each
+        # time the home payload is requested.
+        try:
+            collect_resource_usage_sample(conn, primary_account)
+        except Exception as exc:
+            logging.warning("Unable to refresh dashboard resource usage: %s", exc)
         ensure_resource_usage_history(conn, primary_account)
         sample = conn.execute(
             """

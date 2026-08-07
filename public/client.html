@@ -9,7 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="icon" type="image/svg+xml" href="/assets/favicon-client.svg">
     <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
-    <link rel="stylesheet" href="/assets/app.css">
+    <link rel="stylesheet" href="/assets/app.css?v=1.0.21">
     <script>
       (function() {
         var t = localStorage.getItem("mp_theme") || "Default";
@@ -338,8 +338,8 @@
                 </div>
                 <div class="resource-bar-wrap"><div class="resource-bar" :style="{ '--pct': cpuPercent + '%' }"></div></div>
                 <div class="resource-summary-nums">
-                  <strong>{{ home.resources.cpu_percent != null ? Number(home.resources.cpu_percent).toFixed(1) + '%' : home.resources.cpu }}</strong>
-                  <small>{{ home.resources.cpu }} load</small>
+                  <strong>{{ cpuLoadDisplay }}</strong>
+                  <small>{{ cpuLoadStatus }} load</small>
                 </div>
               </div>
               <div class="resource-summary-card">
@@ -458,6 +458,7 @@
                     <td>
                       <span class="pill" :class="site.status">{{ site.status }}</span>
                       <small v-if="site.dns_status === 'provider_failed'" class="website-status-detail website-status-error" :title="site.dns_last_error || 'DNS provider sync failed'">Cloudflare sync failed</small>
+                      <small v-else-if="site.is_subdomain && site.dns_status !== 'provider_failed'" class="website-status-detail">Uses parent domain DNS</small>
                       <small v-else-if="!(site.nameservers || []).length" class="website-status-detail">{{ site.dns_provider_label || 'DNS' }} syncing</small>
                     </td>
                     <td><span class="pill" :class="site.ssl_status">{{ site.ssl_status }}</span></td>
@@ -465,7 +466,7 @@
                       <div v-if="(site.nameservers || []).length" class="nameserver-list">
                         <small v-for="nameserver in site.nameservers" :key="nameserver">{{ nameserver }}</small>
                       </div>
-                      <small v-else :title="site.dns_last_error || undefined">{{ site.dns_status === 'provider_failed' ? (site.dns_last_error ? '⚠ ' + site.dns_last_error.slice(0, 80) : 'Cloudflare provider failed') : (site.dns_provider_label === 'Cloudflare' ? 'Waiting for Cloudflare nameservers' : 'DNS pending') }}</small>
+                      <small v-else :title="site.dns_last_error || undefined">{{ site.dns_status === 'provider_failed' ? (site.dns_last_error ? '⚠ ' + site.dns_last_error.slice(0, 80) : 'Cloudflare provider failed') : (site.is_subdomain ? 'Uses parent domain DNS' : (site.dns_provider_label === 'Cloudflare' ? 'Waiting for Cloudflare nameservers' : 'DNS pending')) }}</small>
                     </td>
                     <td>
                       <div class="php-switcher-cell">
@@ -589,7 +590,41 @@
             <div class="table-wrap" v-if="subdomains.length"><table><thead><tr><th>Subdomain</th><th>Parent domain</th><th>Hosting</th><th>Directory</th><th>DNS</th><th>SSL</th><th>Actions</th></tr></thead><tbody><tr v-for="subdomain in subdomains" :key="subdomain.id"><td><strong>{{ subdomain.domain }}</strong></td><td>{{ subdomain.parent_domain || '—' }}</td><td>{{ subdomain.hosting_mode === 'inside' ? 'Inside existing domain' : 'Separate website' }}</td><td><code>{{ subdomain.document_root }}</code></td><td><span class="pill" :class="subdomain.dns_status">{{ subdomain.dns_provider || '—' }} · {{ subdomain.dns_status || 'pending' }}</span></td><td><span class="pill" :class="subdomain.ssl_status">{{ subdomain.ssl_status }}</span></td><td class="actions"><button class="secondary-button" @click="issueSubdomainSsl(subdomain)">Issue SSL</button><button class="ghost-button" @click="deleteSubdomain(subdomain)">Delete</button></td></tr></tbody></table></div>
             <div v-else class="empty-state"><h3>No subdomains yet</h3><p>Add one to host a new site with minimal setup.</p></div>
           </section>
-          <div v-if="subdomainWizard.open" class="modal-overlay" @click.self="closeSubdomainWizard"><div class="modal-panel"><div class="modal-header"><div><span class="eyebrow">Add website flow</span><h2>Add a subdomain</h2></div><button class="close-button" @click="closeSubdomainWizard">×</button></div><form class="form-grid" @submit.prevent="createSubdomain"><label>Subdomain label<input v-model.trim="subdomainWizard.label" required placeholder="app"></label><label>Existing domain<select v-model="subdomainWizard.parent_domain_id" required><option v-for="domain in subdomainDomains" :key="domain.id" :value="domain.id">{{ domain.name }}</option></select></label><label>Host it<select v-model="subdomainWizard.hosting_mode"><option value="separate">As a separate website</option><option value="inside">Inside the existing domain directory</option></select></label><label v-if="subdomainWizard.hosting_mode === 'inside'">Path inside public_html<input v-model.trim="subdomainWizard.path" placeholder="apps/my-app"><small>Relative to the selected domain’s public_html directory.</small></label><p v-if="subdomainWizard.error" class="form-error">{{ subdomainWizard.error }}</p><div class="modal-actions"><button type="button" class="ghost-button" @click="closeSubdomainWizard">Cancel</button><button type="submit" class="primary-button" :disabled="subdomainWizard.submitting">{{ subdomainWizard.submitting ? 'Creating…' : 'Create subdomain' }}</button></div></form></div></div>
+          <div v-if="subdomainWizard.open" class="modal-overlay" @click.self="closeSubdomainWizard">
+            <div class="modal-panel" style="position: relative;" :class="{ 'sw-building': subdomainWizard.building }">
+              <div v-if="subdomainWizard.building" class="sw-building-screen">
+                <div class="sw-crane">
+                  <div class="sw-crane-stars"></div>
+                  <svg class="sw-crane-svg" viewBox="0 0 240 260" xmlns="http://www.w3.org/2000/svg" fill="none">
+                    <rect x="90" y="230" width="60" height="20" rx="4" fill="#fdb528" opacity="0.9"/>
+                    <rect x="113" y="80" width="14" height="155" rx="3" fill="#fdb528"/>
+                    <rect x="40" y="74" width="160" height="10" rx="3" fill="#e8a417"/>
+                    <rect x="40" y="74" width="60" height="10" rx="3" fill="#fdb528" opacity="0.7"/>
+                    <rect x="105" y="60" width="30" height="20" rx="4" fill="#2c3136"/>
+                    <rect x="110" y="64" width="10" height="10" rx="2" fill="#fdb528" opacity="0.6"/>
+                    <line x1="160" y1="84" x2="160" y2="145" stroke="#fdb528" stroke-width="2" class="sw-cable"/>
+                    <path d="M155 145 Q160 155 165 145" stroke="#e8a417" stroke-width="2.5" stroke-linecap="round" class="sw-hook"/>
+                    <rect x="148" y="148" width="24" height="18" rx="3" fill="#245a97" class="sw-load"/>
+                    <rect x="50" y="218" width="80" height="16" rx="2" fill="#fdb528" opacity="0.55"/>
+                    <rect x="58" y="202" width="64" height="16" rx="2" fill="#fdb528" opacity="0.7"/>
+                    <rect x="66" y="186" width="48" height="16" rx="2" fill="#fdb528" opacity="0.85"/>
+                    <line x1="20" y1="250" x2="220" y2="250" stroke="#e3e5e9" stroke-width="1.5" opacity="0.4"/>
+                  </svg>
+                  <p class="sw-building-label">Building your website…</p>
+                  <div class="sw-building-dots"><span></span><span></span><span></span></div>
+                </div>
+              </div>
+              <template v-else>
+                <div class="modal-header"><div><span class="eyebrow">Add website flow</span><h2>{{ subdomainWizard.complete ? 'Website Created!' : 'Add a subdomain' }}</h2></div><button class="close-button" @click="closeSubdomainWizard">×</button></div>
+                <div v-if="subdomainWizard.complete" class="sw-step-content sw-step-done">
+                  <div class="sw-success-banner"><div class="sw-success-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg></div><div><strong>{{ subdomainWizard.createdSubdomain?.domain || subdomainDnsName }} is ready</strong><p>The website has been created. Point your domain using the instructions below.</p></div></div>
+                  <div class="subdomain-dns-details"><div><span class="eyebrow">DNS record</span><strong>{{ subdomainWizard.createdSubdomain?.domain || subdomainDnsName }}</strong></div><p v-if="subdomainWizard.configure_dns">The A record was created and DNS synchronization was queued automatically.</p><p v-else>Add the A record shown in the previous step at your DNS provider.</p></div>
+                  <div class="modal-actions"><button type="button" class="primary-button" @click="closeSubdomainWizard">Done</button></div>
+                </div>
+                <form v-else class="form-grid" @submit.prevent="createSubdomain"><label>Subdomain label<input v-model.trim="subdomainWizard.label" required placeholder="app"></label><label>Existing domain<select v-model="subdomainWizard.parent_domain_id" required><option v-for="domain in subdomainDomains" :key="domain.id" :value="domain.id">{{ domain.name }}</option></select></label><label>Host it<select v-model="subdomainWizard.hosting_mode"><option value="separate">As a separate website</option><option value="inside">Inside the existing domain directory</option></select></label><label v-if="subdomainWizard.hosting_mode === 'inside'">Path inside public_html<input v-model.trim="subdomainWizard.path" placeholder="apps/my-app"><small>Relative to the selected domain’s public_html directory.</small></label><fieldset class="subdomain-dns-fieldset"><legend>DNS setup permission</legend><label class="subdomain-dns-option" :class="{ selected: subdomainWizard.configure_dns }"><input v-model="subdomainWizard.configure_dns" type="radio" :value="true"><span><strong>Let MangoPanel create the A record</strong><small>MangoPanel will add and sync the DNS record automatically when this domain uses managed DNS.</small></span></label><label class="subdomain-dns-option" :class="{ selected: !subdomainWizard.configure_dns }"><input v-model="subdomainWizard.configure_dns" type="radio" :value="false"><span><strong>I will create the DNS record myself</strong><small>No DNS record will be changed by this action.</small></span></label></fieldset><div v-if="!subdomainWizard.configure_dns" class="subdomain-dns-details"><div><span class="eyebrow">DNS record to create</span><strong>{{ subdomainDnsName }}</strong></div><div class="subdomain-dns-record"><span><small>Type</small><code>A</code></span><span><small>Name / Host</small><code>{{ subdomainWizard.label || 'subdomain' }}</code></span><span><small>Value</small><code>{{ serverIp }}</code></span><span><small>TTL</small><code>300</code></span></div><p>After creating the subdomain, add this record at your DNS provider. DNS changes may take a few minutes to propagate.</p></div><p v-if="subdomainWizard.error" class="form-error">{{ subdomainWizard.error }}</p><div class="modal-actions"><button type="button" class="ghost-button" @click="closeSubdomainWizard">Cancel</button><button type="submit" class="primary-button" :disabled="subdomainWizard.submitting">{{ subdomainWizard.submitting ? 'Creating…' : 'Create subdomain' }}</button></div></form>
+              </template>
+            </div>
+          </div>
 
           <!-- ═══════════════════════════════════════════════════════════ HOSTING PLAN -->
           <section v-if="activePage === 'hosting-plan'" class="page-stack hosting-plan-page">
@@ -4211,6 +4246,6 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/client.js?v=1.0.19"></script>
+    <script src="/assets/client.js?v=1.0.21"></script>
   </body>
 </html>
