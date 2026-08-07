@@ -762,6 +762,45 @@ fi
 # Keep legacy applications that use localhost:3306 working inside the web
 # container while preserving the normal db:3306 Docker-network path.
 nohup /bin/sh -c 'while ! /usr/bin/socat TCP-LISTEN:3306,bind=127.0.0.1,reuseaddr,fork TCP:db:3306; do sleep 2; done' >/var/log/mysql-loopback-proxy.log 2>&1 </dev/null &
+# Keep OpenLiteSpeed self-healing if its master process stops while the
+# container's PID 1 is still alive. This is deliberately infrequent and
+# checks only the server status; Docker's healthcheck below reports the same
+# condition to the platform.
+(
+  while :; do
+    sleep 15
+    /usr/local/lsws/bin/lswsctrl status >/dev/null 2>&1 || \
+      /usr/local/lsws/bin/lswsctrl start >/dev/null 2>&1 || true
+  done
+) >/dev/null 2>&1 &
+# Reload OpenLiteSpeed for .htaccess files in each public_html directory and
+# one level below it. inotify is event-driven (no polling); the short lock
+# coalesces bursts from file-manager moves into one graceful reload.
+if command -v inotifywait >/dev/null 2>&1 && [ -d "/home/{username}/domains" ]; then
+  (
+    set --
+    for public_root in /home/{username}/domains/*/public_html; do
+      [ -d "$public_root" ] || continue
+      set -- "$@" "$public_root"
+      for child_dir in "$public_root"/*; do
+        [ -d "$child_dir" ] && set -- "$@" "$child_dir"
+      done
+    done
+    inotifywait -m -q \\
+      -e close_write,moved_to,moved_from,create,delete \\
+      --format '%w%f' --include '(^|/)\\.htaccess$' \\
+      "$@" 2>/dev/null |
+    while IFS= read -r changed_path; do
+      if mkdir /run/mangopanel-htaccess-reload.lock 2>/dev/null; then
+        (
+          sleep 2
+          rmdir /run/mangopanel-htaccess-reload.lock 2>/dev/null || true
+          /usr/local/lsws/bin/lswsctrl reload >/dev/null 2>&1 || true
+        ) &
+      fi
+    done
+  ) >/dev/null 2>&1 &
+fi
 exec /usr/sbin/cron -f
 """.replace("{username}", str(account["username"]))
     runner_path = paths["stack"] / "services-entrypoint.sh"
@@ -783,7 +822,7 @@ RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     lsphp82-opcache lsphp83-opcache lsphp84-opcache \\
     lsphp82-redis lsphp83-redis lsphp84-redis \\
     lsphp82-memcached lsphp83-memcached lsphp84-memcached \\
-    proftpd-basic openssh-server socat \\
+    proftpd-basic openssh-server socat inotify-tools \\
     && rm -rf /var/lib/apt/lists/*
 """
     (web_build_dir / "Dockerfile").write_text(dockerfile_content, encoding="utf-8")
@@ -1398,6 +1437,12 @@ services:
     cpus: "{cpu_count}"
     cgroup_parent: {cpu_group}
     pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/lsws/bin/lswsctrl status >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     entrypoint: ["/bin/sh", "-c", 'umask 0002; groupadd -g {uid} {username} 2>/dev/null || true; usermod -aG {uid} nobody 2>/dev/null || true; exec /entrypoint.sh "$$@"', "--"]
     command: ["/bin/sh", "/usr/local/bin/mangopanel-services.sh"]
     ports:
