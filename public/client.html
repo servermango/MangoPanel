@@ -1317,7 +1317,7 @@
             <div class="panel" v-if="mailboxes.length">
               <h2>Mail Client Settings</h2>
               <ul class="clean-list">
-                <li><strong><app-icon name="email"></app-icon>Shared edge</strong><small><code>{{ mailboxes[0].mail_edge_host }}</code></small></li>
+                <li><strong><app-icon name="email"></app-icon>Mail host</strong><small><code>{{ mailboxes[0].mail_host }}</code></small></li>
                 <li><strong><app-icon name="login"></app-icon>Username</strong><small><code>{{ mailboxes[0].mail_username || mailboxes[0].email }}</code></small></li>
                 <li><strong><app-icon name="terminal"></app-icon>Submission</strong><small><code>{{ mailboxes[0].smtp_host }}:{{ mailboxes[0].smtp_port }}</code> · {{ mailboxes[0].smtp_encryption || 'STARTTLS' }}</small></li>
                 <li><strong><app-icon name="webmail"></app-icon>IMAP</strong><small><code>{{ mailboxes[0].imap_host }}:{{ mailboxes[0].imap_port }}</code> · {{ mailboxes[0].imap_encryption || 'STARTTLS' }}</small></li>

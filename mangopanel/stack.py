@@ -11,7 +11,7 @@ from mangopanel.config import CONFIG, FILEBROWSER_CUSTOM_JS
 
 from .default_page import DEFAULT_PAGE_CONTENT
 from .error_pages import DEFAULT_ERROR_PAGES
-from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes
+from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes, sanitize_mailbox_component
 from .snappymail import SNAPPYMAIL_APP_VERSION, SNAPPYMAIL_IMAGE, ensure_snappymail_layout, load_snappymail_state
 
 
@@ -79,6 +79,11 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "ftp_passive_max": 30001 + (account_id * 2),
         "smtp_port": 1587 + mail_port_offset if use_dev_mail_ports else 587,
         "smtp_tls_port": 1465 + mail_port_offset if use_dev_mail_ports else 465,
+        # SMTP port 25 is the public inbound mail edge. Submission and
+        # mailbox protocols remain account-isolated on their per-account
+        # host ports, but MX delivery must be reachable on the host's
+        # standard SMTP port.
+        "smtp_inbound_port": 25,
         "imap_port": 1143 + mail_port_offset if use_dev_mail_ports else 143,
         "imap_tls_port": 1993 + mail_port_offset if use_dev_mail_ports else 993,
         "pop_port": 1110 + mail_port_offset if use_dev_mail_ports else 110,
@@ -93,11 +98,14 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "phpmyadmin_url": f"http://pma-{username}.localhost",
         "adminer_url": f"http://adminer-{username}.localhost",
         "mail_host": f"mail-{username}.localhost" if public_host == "127.0.0.1" else f"mail.{username}.{public_host}",
-        "mail_backend_host": "mailserver",
+        # Every account mailserver is also attached to the shared edge
+        # network.  The generic Docker alias `mailserver` therefore resolves
+        # to multiple accounts; SnappyMail must use the unique container name.
+        "mail_backend_host": f"mp-{username}-mailserver",
         "mail_backend_imap_port": 993,
         "mail_backend_smtp_port": 465,
         "mail_backend_sieve_port": 4190,
-        "mail_webmail_backend_url": f"http://mail-{username}.localhost" if public_host == "127.0.0.1" else f"http://mail.{username}.{public_host}",
+        "mail_webmail_backend_url": f"http://mail-{username}.localhost" if public_host == "127.0.0.1" else f"https://mail.{username}.{public_host}",
         "mail_webmail_url": f"http://mail-{username}.localhost/webmail" if public_host == "127.0.0.1" else f"http://mail.{username}.{public_host}/webmail",
         "mail_webmail_login_url": f"http://mail-{username}.localhost/webmail/login" if public_host == "127.0.0.1" else f"http://mail.{username}.{public_host}/webmail/login",
         "mail_edge_host": "mail.mango.test" if public_host == "127.0.0.1" else f"mail.{public_host}",
@@ -130,13 +138,13 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         base["phpmyadmin_url"] = f"http://pma-{username}.{public_host}"
         base["adminer_url"] = f"http://adminer.{username}.{public_host}"
         base["mail_host"] = f"mail.{username}.{public_host}"
-        base["mail_backend_host"] = "mailserver"
+        base["mail_backend_host"] = f"mp-{username}-mailserver"
         base["mail_backend_imap_port"] = 993
         base["mail_backend_smtp_port"] = 465
         base["mail_backend_sieve_port"] = 4190
-        base["mail_webmail_backend_url"] = f"http://mail.{username}.{public_host}"
-        base["mail_webmail_url"] = f"http://mail.{username}.{public_host}/webmail"
-        base["mail_webmail_login_url"] = f"http://mail.{username}.{public_host}/webmail/login"
+        base["mail_webmail_backend_url"] = f"https://mail.{username}.{public_host}"
+        base["mail_webmail_url"] = f"https://mail.{username}.{public_host}/webmail"
+        base["mail_webmail_login_url"] = f"https://mail.{username}.{public_host}/webmail/login"
         base["mail_edge_host"] = f"mail.{public_host}"
         base["mail_edge_url"] = f"http://mail.{public_host}"
         base["mail_edge_webmail_url"] = f"http://mail.{public_host}/webmail"
@@ -584,9 +592,57 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     (mailserver_config_dir / "postfix-accounts.cf").write_text(mailserver_payload["accounts"], encoding="utf-8")
     (mailserver_config_dir / "postfix-virtual.cf").write_text(mailserver_payload["aliases"], encoding="utf-8")
     (mailserver_config_dir / "dovecot-quotas.cf").write_text(mailserver_payload["quotas"], encoding="utf-8")
+    opendkim_dir = mailserver_config_dir / "opendkim"
+    opendkim_keys_dir = opendkim_dir / "keys"
+    opendkim_keys_dir.mkdir(parents=True, exist_ok=True)
+    key_table = []
+    signing_table = []
+    for dkim in mail_policy.get("dkim") or []:
+        domain_name = sanitize_mailbox_component(dkim.get("domain"), "domain")
+        selector = sanitize_mailbox_component(dkim.get("selector"), "mango")
+        private_key = str(dkim.get("private_key") or "").strip()
+        if not domain_name or not private_key:
+            continue
+        domain_key_dir = opendkim_keys_dir / domain_name
+        domain_key_dir.mkdir(parents=True, exist_ok=True)
+        (domain_key_dir / f"{selector}.private").write_text(private_key + "\n", encoding="utf-8")
+        key_table.append(f"{selector}._domainkey.{domain_name} {domain_name}:{selector}:/etc/opendkim/keys/{domain_name}/{selector}.private")
+        signing_table.append(f"*@{domain_name} {selector}._domainkey.{domain_name}")
+    (opendkim_dir / "KeyTable").write_text("\n".join(key_table) + ("\n" if key_table else ""), encoding="utf-8")
+    (opendkim_dir / "SigningTable").write_text("\n".join(signing_table) + ("\n" if signing_table else ""), encoding="utf-8")
+    (opendkim_dir / "TrustedHosts").write_text("127.0.0.1\n::1\n172.16.0.0/12\n", encoding="utf-8")
+    (mailserver_config_dir / "fail2ban-jail.cf").write_text(
+        "\n".join(
+            [
+                "[DEFAULT]",
+                "bantime = 1h",
+                "findtime = 10m",
+                "maxretry = 3",
+                "banaction = nftables-multiport",
+                "",
+                "[dovecot]",
+                "enabled = true",
+                "filter = dovecot",
+                "logpath = /var/log/mail/mail.log",
+                "backend = auto",
+                "port = pop3,pop3s,imap,imaps,submission,465,sieve",
+                "action = nftables-multiport[name=dovecot, port=\"25,110,143,465,587,993,995,4190\", protocol=tcp]",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    mail_identity = runtime.get("mail_host") or f"mail-{account['username']}.localhost"
     (mailserver_config_dir / "postfix-main.cf").write_text(
         "\n".join(
             [
+                # Keep the SMTP identity tied to the account hostname even
+                # if an existing container is recreated from an older image
+                # or retains stale container metadata.  This is deliberately
+                # account-scoped; it does not depend on the number of sites
+                # attached to the account.
+                f"myhostname = {mail_identity}",
+                f"smtp_helo_name = {mail_identity}",
                 "message_size_limit = 26214400",
                 "mailbox_size_limit = 0",
                 "recipient_delimiter = +",
@@ -1569,25 +1625,30 @@ services:
     mem_limit: 768m
     cpus: "{service_cpu_count}"
     cgroup_parent: {cpu_group}
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     ports:
-      - "127.0.0.1:{smtp_port}:587"
-      - "127.0.0.1:{smtp_tls_port}:465"
-      - "127.0.0.1:{imap_port}:143"
-      - "127.0.0.1:{imap_tls_port}:993"
-      - "127.0.0.1:{pop_port}:110"
-      - "127.0.0.1:{pop_tls_port}:995"
-      - "127.0.0.1:{sieve_port}:4190"
+      - "0.0.0.0:{smtp_inbound_port}:25"
+      - "0.0.0.0:{smtp_port}:587"
+      - "0.0.0.0:{smtp_tls_port}:465"
+      - "0.0.0.0:{imap_port}:143"
+      - "0.0.0.0:{imap_tls_port}:993"
+      - "0.0.0.0:{pop_port}:110"
+      - "0.0.0.0:{pop_tls_port}:995"
+      - "0.0.0.0:{sieve_port}:4190"
     environment:
       ACCOUNT_PROVISIONER: FILE
       ENABLE_IMAP: "1"
       ENABLE_POP3: "1"
       ENABLE_MANAGESIEVE: "1"
       ENABLE_QUOTAS: "1"
-      ENABLE_FAIL2BAN: "0"
+      ENABLE_FAIL2BAN: "1"
+      FAIL2BAN_BLOCKTYPE: drop
       ENABLE_CLAMAV: "0"
       ENABLE_SPAMASSASSIN: "0"
       ENABLE_POLICYD_SPF: "0"
-      ENABLE_OPENDKIM: "0"
+      ENABLE_OPENDKIM: "1"
       ENABLE_OPENDMARC: "0"
       ENABLE_SRS: "0"
       ENABLE_UPDATE_CHECK: "0"
@@ -1712,10 +1773,15 @@ volumes:
     filebrowser_domain = f"files-{username}.{public_tool_host}, http://files-{username}.localhost" if public_tool_host else f"http://files-{username}.localhost"
     phpmyadmin_domain = f"pma-{username}.{public_tool_host}, http://{runtime['phpmyadmin_url'].split('://')[1]}" if public_tool_host else f"http://{runtime['phpmyadmin_url'].split('://')[1]}"
     adminer_domain = f"adminer-{username}.{public_tool_host}, http://{runtime['adminer_url'].split('://')[1]}" if public_tool_host else f"http://{runtime['adminer_url'].split('://')[1]}"
-    mail_domains = [f"mail-{username}.{public_tool_host}"] if public_tool_host else []
+    # The dotted per-account hostname is the only public webmail entry point.
+    # Do not publish the historical mail-<account> alias, which made it easy
+    # to bypass the canonical account-scoped hostname.
+    mail_domains = [runtime.get("mail_host")] if public_tool_host and runtime.get("mail_host") else []
     runtime_mail_host = runtime.get("mail_host")
     if runtime_mail_host and runtime_mail_host not in mail_domains:
-        mail_domains.append(f"http://{runtime_mail_host}")
+        # Keep the public account mail hostname as a normal Caddy site so it
+        # receives automatic HTTPS. An explicit http:// scheme disables TLS.
+        mail_domains.append(runtime_mail_host)
     composed = composed.format(
         project=project,
         mail_restart=mail_restart,
@@ -1745,6 +1811,7 @@ volumes:
         ftp_passive_max=runtime["ftp_passive_max"],
         smtp_port=runtime["smtp_port"],
         smtp_tls_port=runtime["smtp_tls_port"],
+        smtp_inbound_port=runtime["smtp_inbound_port"],
         imap_port=runtime["imap_port"],
         imap_tls_port=runtime["imap_tls_port"],
         pop_port=runtime["pop_port"],

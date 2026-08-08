@@ -702,6 +702,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 launch_token = self.query_params.get("launch", [""])[0].strip()
                 if launch_token:
                     return self.webmail_launch_redirect(launch_token)
+                if path == "/webmail.html":
+                    return self.serve_file(PUBLIC_DIR / "webmail.html")
                 return self.redirect_response("/")
             if path == "/admin/setup":
                 if panel == "client":
@@ -1510,18 +1512,25 @@ class MangoHandler(BaseHTTPRequestHandler):
 
     def snappymail_launch_url(self, conn, mailbox, password=None):
         runtime = account_runtime(conn, mailbox["account_id"])
-        mail_host = runtime.get("mail_edge_host") or runtime.get("mail_host", "")
+        mail_host = runtime.get("mail_host") or runtime.get("mail_edge_host", "")
         if not mail_host:
             raise ApiError(HTTPStatus.BAD_GATEWAY, "mail_webmail_unavailable")
-        launch_url = mailbox_row_payload(conn, mailbox).get("webmail_url") or runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url") or f"http://{mail_host}/webmail"
-        return launch_url
+        # The panel performs the SSO handoff on /webmail?launch=... and sets
+        # SnappyMail's cookies.  After that handoff the browser must land on
+        # SnappyMail itself; returning to /webmail would route back through
+        # this handler without the one-time launch token and discard the SSO
+        # session by redirecting to the panel root.
+        return f"https://{mail_host}/"
 
     def snappymail_backend_url(self, conn, mailbox):
         runtime = account_runtime(conn, mailbox["account_id"])
-        backend_url = runtime.get("mail_edge_url") or runtime.get("mail_webmail_backend_url") or ""
+        # Webmail sessions are account-scoped.  Never fall back to the shared
+        # mail edge, because that can land a mailbox on another account's
+        # SnappyMail instance.
+        backend_url = runtime.get("mail_webmail_backend_url") or ""
         if backend_url:
             return backend_url
-        mail_host = runtime.get("mail_edge_host") or runtime.get("mail_host", "")
+        mail_host = runtime.get("mail_host", "")
         if not mail_host:
             raise ApiError(HTTPStatus.BAD_GATEWAY, "mail_webmail_unavailable")
         return f"http://{mail_host}"
@@ -2823,14 +2832,13 @@ class MangoHandler(BaseHTTPRequestHandler):
             ) and method == "POST":
                 require_active_account(account)
                 job_id = enqueue_agent_job(conn, "recalculate_usage", "hosting_account", account["id"], {"account_id": account["id"], "reason": "client_requested"})
-                collect_resource_usage_sample(conn, account, force=True)
                 log_activity(conn, actor["id"], "recalculate_usage", {"account_id": account["id"], "job_id": job_id})
                 user_id = account["user_id"] if account else actor["id"]
                 active_account_id = account["id"] if account else None
                 return self.json_response({
                     "ok": True,
                     "job_id": job_id,
-                    "message": "Usage recalculation completed.",
+                    "message": "Usage recalculation queued.",
                     "resources": client_home(conn, user_id, active_account_id=active_account_id)["resources"],
                 })
             if path == "/api/client/php-info" and method == "GET":
@@ -4183,7 +4191,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_account(account)
                 runtime = account_runtime(conn, account["id"])
                 forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
-                raw_url = runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url", "")
+                raw_url = runtime.get("mail_webmail_url", "")
                 launch_url = resolve_tool_launch_url("webmail", raw_url, account, forwarded_host)
                 return self.json_response({"launch_url": launch_url, "expires_in": 3600})
             if path.startswith("/api/client/mailboxes/") and path.endswith("/webmail/launch") and method == "GET":
@@ -4205,10 +4213,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                     3600,
                 )
                 launch_path = f"/webmail?launch={launch_token}"
-                # Keep the first hop on the panel origin. This avoids HTTPS
-                # mixed-content failures and lets the server perform the
-                # authenticated handoff to the configured mail edge.
-                launch_url = launch_path
+                # Start the handoff on the account mail host.  The panel
+                # returns SnappyMail session cookies, and a browser will only
+                # accept those cookies for the account host that is serving
+                # the webmail route.  Starting on the panel origin silently
+                # strands them on the panel domain.
+                mail_webmail_url = runtime.get("mail_webmail_url", "").rstrip("/")
+                if mail_webmail_url.endswith("/webmail"):
+                    launch_url = f"{mail_webmail_url}?launch={launch_token}"
+                else:
+                    launch_url = f"{mail_webmail_url}{launch_path}" if mail_webmail_url else launch_path
                 return self.json_response({"launch_url": launch_url, "expires_in": 3600, "mailbox": mailbox_row_payload(conn, mailbox)})
             if path == "/api/client/databases" and method == "GET":
                 require_account(account)
@@ -10520,6 +10534,26 @@ def account_runtime(conn, account_id):
     if username and public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
         runtime["username"] = username
         runtime["filebrowser_url"] = f"https://files-{username}.{public_host}"
+        # Account mailservers share the edge Docker network, where the short
+        # alias `mailserver` is ambiguous.  Pin SnappyMail to this account's
+        # unique mailserver container name.
+        runtime["mail_backend_host"] = f"mp-{username}-mailserver"
+        # Persisted runtimes can predate production host configuration and
+        # contain development-only mail-uXXXX.localhost values.  Derive the
+        # public per-account MX/mail hostname at the read boundary so the
+        # client panel never instructs customers to publish an unusable MX.
+        mail_host = f"mail.{username}.{public_host}"
+        mail_edge_host = f"mail.{public_host}"
+        runtime["mail_host"] = mail_host
+        # SnappyMail's login handoff is a POST; use the canonical HTTPS host
+        # so the request is not converted into a 308 redirect mid-handoff.
+        runtime["mail_webmail_backend_url"] = f"https://{mail_host}"
+        runtime["mail_webmail_url"] = f"https://{mail_host}/webmail"
+        runtime["mail_webmail_login_url"] = f"https://{mail_host}/webmail/login"
+        runtime["mail_edge_host"] = mail_edge_host
+        runtime["mail_edge_url"] = f"http://{mail_edge_host}"
+        runtime["mail_edge_webmail_url"] = f"http://{mail_edge_host}/webmail"
+        runtime["mail_edge_login_url"] = f"http://{mail_edge_host}/webmail/login"
     return runtime
 
 
@@ -11305,7 +11339,6 @@ def resource_usage_payload(conn, account, window_key):
     if window_key not in RESOURCE_WINDOWS:
         window_key = "30m"
     try:
-        ensure_resource_usage_history(conn, account)
         now = int(time.time())
         start = now - RESOURCE_WINDOWS[window_key]
         rows = rows_to_dicts(
@@ -11319,11 +11352,14 @@ def resource_usage_payload(conn, account, window_key):
                 (account["id"], start),
             ).fetchall()
         )
-        current = rows[-1] if rows else resource_usage_estimate(account)
+        # This is a read-only dashboard endpoint.  Filesystem/Docker usage is
+        # collected by the periodic collector; never calculate it while a
+        # client request is waiting.
+        current = rows[-1] if rows else cached_resource_usage(account)
         samples = downsample_resource_usage(rows, max_points=240)
     except Exception as exc:
         print(f"resource usage payload failed: {exc}")
-        current = resource_usage_estimate(account)
+        current = cached_resource_usage(account)
         samples = []
     return {
         "range": window_key,
@@ -11493,6 +11529,26 @@ def resource_usage_estimate(account):
         "storage_mb": round(float(storage_mb), 2),
         "storage_limit_mb": storage_limit_mb,
         "source": "filesystem",
+    }
+
+
+def cached_resource_usage(account):
+    """Return a cheap dashboard fallback without touching the account disk."""
+    account = dict(account)
+    storage_mb = float(account.get("storage_used_mb") or 0)
+    storage_limit_mb = float(account.get("storage_mb") or 0)
+    memory_limit_mb = float(account.get("memory_mb") or 0)
+    return {
+        "sampled_at": int(time.time()),
+        "cpu_percent": 0.0,
+        "memory_mb": 0.0,
+        "memory_limit_mb": memory_limit_mb,
+        "storage_mb": round(storage_mb, 2),
+        "storage_limit_mb": storage_limit_mb,
+        "inodes_used": int(account.get("inodes_used") or 0),
+        "inodes_limit": int(account.get("inode_limit") or 0),
+        "bandwidth_mb": 0.0,
+        "source": "cached",
     }
 
 
@@ -12056,31 +12112,31 @@ def mailbox_row_payload(conn, mailbox):
     payload.update(mailbox_storage_metrics(payload.get("storage_path"), payload.get("quota_mb", 0)))
     runtime = account_runtime(conn, payload.get("account_id"))
     if runtime:
-        edge_host = runtime.get("mail_edge_host") or runtime.get("mail_host")
-        edge_url = runtime.get("mail_edge_url") or (f"http://{edge_host}" if edge_host else "")
-        payload["smtp_host"] = edge_host
+        mail_host = runtime.get("mail_host") or runtime.get("mail_edge_host")
+        mail_url = runtime.get("mail_webmail_backend_url") or (f"http://{mail_host}" if mail_host else "")
+        payload["smtp_host"] = mail_host
         payload["smtp_port"] = runtime.get("smtp_port")
         payload["smtp_tls_port"] = runtime.get("smtp_tls_port")
         payload["smtp_encryption"] = "STARTTLS" if payload["smtp_port"] not in {0, 465} else "SSL/TLS"
-        payload["imap_host"] = edge_host
+        payload["imap_host"] = mail_host
         payload["imap_port"] = runtime.get("imap_port", runtime.get("smtp_port", 0) + 1)
         payload["imap_tls_port"] = runtime.get("imap_tls_port")
         payload["imap_encryption"] = "STARTTLS" if payload["imap_port"] not in {0, 993} else "SSL/TLS"
-        payload["pop_host"] = edge_host
+        payload["pop_host"] = mail_host
         payload["pop_port"] = runtime.get("pop_port", runtime.get("smtp_port", 0) + 2)
         payload["pop_tls_port"] = runtime.get("pop_tls_port")
         payload["pop_encryption"] = "STARTTLS" if payload["pop_port"] not in {0, 995} else "SSL/TLS"
         payload["sieve_port"] = runtime.get("sieve_port")
-        payload["webmail_url"] = runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url") or (f"http://{edge_host}/webmail" if edge_host else "")
+        payload["webmail_url"] = runtime.get("mail_webmail_url") or runtime.get("mail_edge_webmail_url") or (f"{mail_url}/webmail" if mail_url else "")
         payload["mail_webmail_url"] = payload["webmail_url"]
-        payload["mail_webmail_login_url"] = runtime.get("mail_edge_login_url") or runtime.get("mail_webmail_login_url") or ""
+        payload["mail_webmail_login_url"] = runtime.get("mail_webmail_login_url") or runtime.get("mail_edge_login_url") or ""
         payload["mail_edge_host"] = runtime.get("mail_edge_host") or ""
-        payload["mail_edge_url"] = edge_url
-        payload["mail_edge_webmail_url"] = runtime.get("mail_edge_webmail_url") or (f"{edge_url}/webmail" if edge_url else "")
-        payload["mail_edge_login_url"] = runtime.get("mail_edge_login_url") or (f"{edge_url}/webmail/login" if edge_url else "")
-        payload["mail_host"] = runtime.get("mail_host")
+        payload["mail_edge_url"] = runtime.get("mail_edge_url") or mail_url
+        payload["mail_edge_webmail_url"] = runtime.get("mail_edge_webmail_url") or (f"{payload['mail_edge_url']}/webmail" if payload["mail_edge_url"] else "")
+        payload["mail_edge_login_url"] = runtime.get("mail_edge_login_url") or (f"{payload['mail_edge_url']}/webmail/login" if payload["mail_edge_url"] else "")
+        payload["mail_host"] = mail_host
         payload["mail_username"] = payload.get("email", "")
-        payload["jmap_url"] = f"{edge_url}/api/public/mail-jmap" if edge_url else ""
+        payload["jmap_url"] = f"{mail_url}/api/public/mail-jmap" if mail_url else ""
         mailbox_login_base = payload["mail_webmail_login_url"] or ""
         mailbox_suffix = "/{}".format(payload["id"]) if payload.get("id") else ""
         mailbox_query = "?email={}".format(quote(payload.get("email") or "", safe="")) if payload.get("email") else ""
@@ -12118,12 +12174,14 @@ def client_mailboxes_payload(conn, account_id):
         (account_id,),
     ).fetchall()
     runtime = account_runtime(conn, account_id)
-    mail_host = runtime.get("mail_edge_host") if runtime else ""
+    # The shared edge is for HTTP webmail/JMAP only.  SMTP/IMAP/POP use the
+    # account's public mail hostname and isolated host ports.
+    mail_host = runtime.get("mail_host") if runtime else ""
     imap_port = runtime.get("imap_port", runtime.get("smtp_port", 0) + 1) if runtime else 0
     pop_port = runtime.get("pop_port", runtime.get("smtp_port", 0) + 2) if runtime else 0
-    login_base = runtime.get("mail_edge_login_url") if runtime else ""
-    webmail_base = runtime.get("mail_edge_webmail_url") if runtime else ""
-    jmap_url = f"{runtime.get('mail_edge_url')}/api/public/mail-jmap" if runtime and runtime.get("mail_edge_url") else ""
+    login_base = runtime.get("mail_webmail_login_url") if runtime else ""
+    webmail_base = runtime.get("mail_webmail_url") if runtime else ""
+    jmap_url = f"{runtime.get('mail_webmail_backend_url')}/api/public/mail-jmap" if runtime and runtime.get("mail_webmail_backend_url") else ""
     mail_domains = conn.execute(
         """
         SELECT d.id, d.name, d.status, md.id AS mail_domain_id, md.dkim_selector, md.dkim_public_key, md.status AS mail_status
@@ -12137,6 +12195,7 @@ def client_mailboxes_payload(conn, account_id):
     mailbox_dicts = rows_to_dicts(mailbox_rows)
     for mailbox in mailbox_dicts:
         mailbox.update(mailbox_storage_metrics(mailbox.get("storage_path"), mailbox.get("quota_mb", 0)))
+        mailbox["mail_host"] = mail_host
         mailbox["smtp_host"] = mail_host
         mailbox["smtp_port"] = runtime.get("smtp_port") if runtime else 0
         mailbox["smtp_tls_port"] = runtime.get("smtp_tls_port") if runtime else 0
@@ -13721,15 +13780,9 @@ def client_home(conn, user_id, active_account_id=None):
     memory_pct = 35.0
 
     if primary_account:
-        # Keep the dashboard's summary current. The collector itself skips
-        # samples newer than 45 seconds, so this is safe for normal dashboard
-        # refreshes while avoiding an expensive Docker/filesystem scan each
-        # time the home payload is requested.
-        try:
-            collect_resource_usage_sample(conn, primary_account)
-        except Exception as exc:
-            logging.warning("Unable to refresh dashboard resource usage: %s", exc)
-        ensure_resource_usage_history(conn, primary_account)
+        # Usage is collected by the periodic collector.  Dashboard requests
+        # must remain read-only and must never walk the account filesystem or
+        # query Docker for live statistics.
         sample = conn.execute(
             """
             SELECT storage_mb, storage_limit_mb, inodes_used, inodes_limit, cpu_percent, memory_mb, memory_limit_mb
@@ -13759,8 +13812,9 @@ def client_home(conn, user_id, active_account_id=None):
             if memory_pct > 85:
                 memory_status = "elevated"
         else:
-            inodes_used = int(primary_account.get("inodes_used") or 0)
-            disk_used_mb = round(float(primary_account.get("storage_used_mb") or 0))
+            cached = cached_resource_usage(primary_account)
+            inodes_used = cached["inodes_used"]
+            disk_used_mb = round(cached["storage_mb"])
 
     user_is_reseller = is_user_reseller(conn, user_id)
     return {

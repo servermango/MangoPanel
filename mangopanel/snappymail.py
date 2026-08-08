@@ -272,17 +272,21 @@ def ensure_snappymail_layout(base_path, runtime, domain_names, *, sso_key=None):
     (domains_dir / "disabled").write_text("", encoding="utf-8")
 
     sso_key = sso_key or secrets.token_urlsafe(32)
+    mail_backend_host = str(runtime.get("mail_backend_host") or "").strip()
+    if not mail_backend_host or mail_backend_host == "mailserver":
+        username = str(runtime.get("username") or "").strip()
+        mail_backend_host = f"mp-{username}-mailserver" if username else "mailserver"
     state = {
         "provider": "snappymail",
-        "backend_url": runtime.get("mail_edge_url") or runtime.get("mail_webmail_backend_url", ""),
+        "backend_url": runtime.get("mail_webmail_backend_url") or runtime.get("mail_edge_url", ""),
         "sso_key": sso_key,
-        "mail_host": runtime.get("mail_edge_host") or runtime.get("mail_host", ""),
-        "mail_backend_host": runtime.get("mail_backend_host") or "mailserver",
-        "mail_webmail_url": runtime.get("mail_edge_webmail_url") or runtime.get("mail_webmail_url", ""),
-        "mail_webmail_login_url": runtime.get("mail_edge_login_url") or runtime.get("mail_webmail_login_url", ""),
+        "mail_host": runtime.get("mail_host") or runtime.get("mail_edge_host", ""),
+        "mail_backend_host": mail_backend_host,
+        "mail_webmail_url": runtime.get("mail_webmail_url") or runtime.get("mail_edge_webmail_url", ""),
+        "mail_webmail_login_url": runtime.get("mail_webmail_login_url") or runtime.get("mail_edge_login_url", ""),
     }
     (base / "snappymail.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    (configs_dir / "application.ini").write_text(_render_application_ini(runtime.get("mail_edge_host") or runtime.get("mail_host", "")), encoding="utf-8")
+    (configs_dir / "application.ini").write_text(_render_application_ini(mail_backend_host), encoding="utf-8")
     (configs_dir / f"plugin-{SNAPPYMAIL_DEFAULT_SSO_PLUGIN}.json").write_text(
         json.dumps({"plugin": {"key": sso_key}}, indent=2) + "\n",
         encoding="utf-8",
@@ -303,7 +307,7 @@ def ensure_snappymail_layout(base_path, runtime, domain_names, *, sso_key=None):
         if asset_source.exists():
             shutil.copytree(asset_source, theme_dir / asset_dir_name, dirs_exist_ok=True)
 
-    default_domain = _default_domain_config(runtime.get("mail_backend_host") or "mailserver", runtime)
+    default_domain = _default_domain_config(mail_backend_host, runtime)
     (domains_dir / "default.json").write_text(json.dumps(default_domain, indent=2) + "\n", encoding="utf-8")
     for domain_name in sorted({str(name).lower() for name in domain_names if name}):
         (domains_dir / f"{domain_name}.json").write_text(json.dumps(default_domain, indent=2) + "\n", encoding="utf-8")

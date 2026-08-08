@@ -2550,6 +2550,7 @@ class Agent:
         mail_policy = {
             "daily_email_limit": int(plan["daily_email_limit"] or 0),
             "domains": [],
+            "dkim": [],
             "aliases": rows_to_dicts(aliases),
             "forwarders": rows_to_dicts(forwarders),
             "autoresponders": rows_to_dicts(autoresponders),
@@ -2569,6 +2570,15 @@ class Agent:
                     "catch_all_destination": row["catch_all_destination"] or "",
                 }
             )
+            if row["dkim_private_key"] and row["dkim_public_key"]:
+                mail_policy["dkim"].append(
+                    {
+                        "domain": row["domain_name"],
+                        "selector": row["dkim_selector"] or "mango",
+                        "private_key": row["dkim_private_key"],
+                        "public_key": row["dkim_public_key"],
+                    }
+                )
         default_page_content = get_system_setting(conn, "default_page_content", DEFAULT_PAGE_CONTENT)
         paths = ensure_account_layout(
             row_to_dict(account),
