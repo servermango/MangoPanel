@@ -893,6 +893,10 @@ class Agent:
             return self.update_website_php_ini(conn, job["target_id"])
         if job_type == "purge_cache":
             return self.purge_cache(conn, job)
+        if job_type == "purge_cloudflare_cache":
+            return self.purge_cloudflare_cache(conn, job)
+        if job_type == "set_cloudflare_cache":
+            return self.set_cloudflare_cache(conn, job)
         if job_type == "reset_opcache":
             return self.reset_opcache(conn, job)
         if job_type == "flush_object_cache":
@@ -1205,19 +1209,49 @@ class Agent:
             vhconf = Path(account["base_path"]) / ".runtime" / "stack" / "vhosts" / website["domain"] / "vhconf.conf"
             vhconf.parent.mkdir(parents=True, exist_ok=True)
             vhconf.write_text(render_ols_vhconf(account_dict, item), encoding="utf-8")
+        # Keep the shared Caddy edge labels aligned with the account setting.
+        # The edge has no cache plugin by default, but these explicit headers
+        # make the disabled state authoritative for browsers and intermediaries.
+        stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
+        if stack and Path(stack["compose_path"]).exists():
+            compose_path = Path(stack["compose_path"])
+            compose_text = compose_path.read_text(encoding="utf-8")
+            cache_header = '      caddy_{index}.header: "Cache-Control no-store, no-cache, must-revalidate, max-age=0"'
+            for index in range(3):
+                line = cache_header.format(index=index)
+                compose_text = "\n".join(item for item in compose_text.splitlines() if item.strip() != line.strip())
+            if not int(account["reverse_proxy_cache_enabled"] or 0):
+                lines = compose_text.splitlines()
+                updated_lines = []
+                for line in lines:
+                    updated_lines.append(line)
+                    for index in range(3):
+                        if line.strip() == f'caddy_{index}.import: "mangopanel-xmlrpc-block"':
+                            updated_lines.append(cache_header.format(index=index))
+                compose_text = "\n".join(updated_lines) + ("\n" if compose_text.endswith("\n") else "")
+            compose_path.write_text(compose_text, encoding="utf-8")
         docker = shutil.which("docker") or "docker"
         if self.config.agent_mode == "docker":
             reload_result = subprocess.run([docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"], check=False, capture_output=True, text=True)
             if reload_result.returncode != 0:
                 raise AgentError(reload_result.stderr.strip() or "cache_vhost_reload_failed")
-            stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
             if stack:
                 action = "up" if int(account["object_cache_enabled"] or 0) else "stop"
                 args = [docker, "compose", "-f", stack["compose_path"], action]
                 if action == "up": args.extend(["-d", "redis"])
                 else: args.append("redis")
                 subprocess.run(args, check=False, capture_output=True, text=True)
-        return {"account_id": account["id"], "opcache_enabled": int(account["opcache_enabled"] or 0), "object_cache_enabled": int(account["object_cache_enabled"] or 0), "applied": True}
+                # Reconcile the web container whenever the generated edge
+                # labels change, including when a cache is turned back on.
+                subprocess.run([docker, "compose", "-f", stack["compose_path"], "up", "-d", "web"], check=False, capture_output=True, text=True)
+        return {
+            "account_id": account["id"],
+            "opcache_enabled": int(account["opcache_enabled"] or 0),
+            "object_cache_enabled": int(account["object_cache_enabled"] or 0),
+            "reverse_proxy_cache_enabled": int(account["reverse_proxy_cache_enabled"] or 0),
+            "litespeed_cache_enabled": int(account["litespeed_cache_enabled"] or 0),
+            "applied": True,
+        }
 
     def apply_modsecurity_ruleset(self, conn, job):
         payload = self.job_payload(job); ruleset = str(payload.get("ruleset") or "baseline").lower()
@@ -3573,6 +3607,112 @@ class Agent:
             "purged_paths": purged_paths,
             "artifact_path": report_path,
         }
+
+    def purge_cloudflare_cache(self, conn, job):
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        payload = self.job_payload(job)
+        websites = self.cache_scope_websites(conn, account, payload)
+        website_ids = [website["id"] for website in websites]
+        placeholders = ",".join("?" for _ in website_ids) or "0"
+        rows = conn.execute(
+            f"""
+            SELECT w.id AS website_id, w.domain, d.dns_provider, d.dns_provider_account_id,
+                   d.provider_zone_id, c.encrypted_secret, da.external_account_id
+            FROM websites w
+            LEFT JOIN domains d ON d.linked_website_id = w.id
+            LEFT JOIN dns_provider_accounts da ON da.id = d.dns_provider_account_id
+            LEFT JOIN dns_provider_credentials c ON c.provider_account_id = da.id
+            WHERE w.account_id = ? AND w.id IN ({placeholders})
+            ORDER BY w.domain
+            """,
+            [account["id"], *website_ids],
+        ).fetchall()
+        purged = []
+        skipped = []
+        for row in rows:
+            if row["dns_provider"] != DNS_PROVIDER_CLOUDFLARE:
+                skipped.append({"domain": row["domain"], "reason": "not_cloudflare"})
+                continue
+            if not row["dns_provider_account_id"] or not row["encrypted_secret"]:
+                skipped.append({"domain": row["domain"], "reason": "cloudflare_credentials_missing"})
+                continue
+            token = decrypt_secret(row["encrypted_secret"], self.config.jwt_secret)
+            if not token:
+                skipped.append({"domain": row["domain"], "reason": "cloudflare_credentials_invalid"})
+                continue
+            provider = CloudflareDNSProvider(
+                token,
+                account_id=row["external_account_id"] or None,
+                api_base=self.config.cloudflare_api_base,
+            )
+            zone_id = row["provider_zone_id"]
+            if not zone_id:
+                zone = provider.get_zone(row["domain"])
+                zone_id = zone.get("id") if zone else None
+            if not zone_id:
+                skipped.append({"domain": row["domain"], "reason": "cloudflare_zone_missing"})
+                continue
+            provider.purge_cache(zone_id)
+            purged.append({"domain": row["domain"], "zone_id": zone_id})
+        report_path = self.write_cache_action_report(account, "purge_cloudflare", payload, websites, purged)
+        return {
+            "account_id": account["id"],
+            "website_id": payload.get("website_id"),
+            "purged": bool(purged),
+            "purged_zones": purged,
+            "skipped": skipped,
+            "artifact_path": report_path,
+        }
+
+    def set_cloudflare_cache(self, conn, job):
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        payload = self.job_payload(job)
+        enabled = bool(payload.get("enabled"))
+        websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()
+        website_ids = [website["id"] for website in websites]
+        placeholders = ",".join("?" for _ in website_ids) or "0"
+        rows = conn.execute(
+            f"""
+            SELECT w.domain, d.dns_provider, d.dns_provider_account_id,
+                   d.provider_zone_id, c.encrypted_secret, da.external_account_id
+            FROM websites w
+            LEFT JOIN domains d ON d.linked_website_id = w.id
+            LEFT JOIN dns_provider_accounts da ON da.id = d.dns_provider_account_id
+            LEFT JOIN dns_provider_credentials c ON c.provider_account_id = da.id
+            WHERE w.account_id = ? AND w.id IN ({placeholders})
+            ORDER BY w.domain
+            """,
+            [account["id"], *website_ids],
+        ).fetchall()
+        updated = []
+        skipped = []
+        for row in rows:
+            if row["dns_provider"] != DNS_PROVIDER_CLOUDFLARE:
+                skipped.append({"domain": row["domain"], "reason": "not_cloudflare"})
+                continue
+            if not row["dns_provider_account_id"] or not row["encrypted_secret"]:
+                skipped.append({"domain": row["domain"], "reason": "cloudflare_credentials_missing"})
+                continue
+            token = decrypt_secret(row["encrypted_secret"], self.config.jwt_secret)
+            if not token:
+                skipped.append({"domain": row["domain"], "reason": "cloudflare_credentials_invalid"})
+                continue
+            provider = CloudflareDNSProvider(token, account_id=row["external_account_id"] or None, api_base=self.config.cloudflare_api_base)
+            zone_id = row["provider_zone_id"]
+            if not zone_id:
+                zone = provider.get_zone(row["domain"])
+                zone_id = zone.get("id") if zone else None
+            if not zone_id:
+                skipped.append({"domain": row["domain"], "reason": "cloudflare_zone_missing"})
+                continue
+            provider.set_cache_level(zone_id, enabled)
+            updated.append({"domain": row["domain"], "zone_id": zone_id, "development_mode": "off" if enabled else "on"})
+        report_path = self.write_cache_action_report(account, "set_cloudflare_cache", {**payload, "enabled": enabled}, websites, updated)
+        return {"account_id": account["id"], "enabled": enabled, "updated_zones": updated, "skipped": skipped, "artifact_path": report_path}
 
     def reset_opcache(self, conn, job):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()

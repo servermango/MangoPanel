@@ -2027,6 +2027,9 @@ def ensure_dns_provider_schema(conn):
         "dns_provider_account_id": "INTEGER",
         "opcache_enabled": "INTEGER NOT NULL DEFAULT 1",
         "object_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
+        "reverse_proxy_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
+        "litespeed_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
+        "cloudflare_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
         "timezone": "TEXT NOT NULL DEFAULT 'UTC'",
     })
 

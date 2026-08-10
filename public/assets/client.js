@@ -517,7 +517,7 @@ const app = createApp({
       dnsRecordTypes: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
       newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300, priority: null, proxied: true },
       // Cache Manager
-      cacheStatus: { object_cache: "inactive", opcode_cache: "active", last_purged: null, opcode_cache_backend: "opcache", object_cache_backend: "redis" },
+      cacheStatus: { object_cache: "inactive", opcode_cache: "active", reverse_proxy: "active", litespeed: "active", cloudflare_cache: "active", opcache_enabled: true, object_cache_enabled: true, reverse_proxy_cache_enabled: true, litespeed_cache_enabled: true, cloudflare_cache_enabled: true, last_purged: null, last_cloudflare_purged: null, opcode_cache_backend: "opcache", object_cache_backend: "redis" },
       cachePurging: false,
       // IP Manager
       ipRules: [],
@@ -692,6 +692,10 @@ const app = createApp({
     },
     selectedWebsite() {
       return this.websites.find((site) => String(site.id) === String(this.selectedWebsiteId)) || this.websites[0] || null;
+    },
+    selectedWebsiteUsesCloudflare() {
+      const site = this.selectedWebsite;
+      return Boolean(this.selectedWebsiteId && site && (site.dns_provider === "cloudflare" || site.dns_provider_label === "Cloudflare"));
     },
     mailboxWizardDomain() {
       return (this.mailRouting.mail_domains || []).find((domain) => String(domain.name) === String(this.mailboxWizard.domain)) || null;
@@ -2717,6 +2721,21 @@ const app = createApp({
         this.cachePurging = false;
       }
     },
+    async purgeCloudflareCache(websiteId) {
+      this.cachePurging = true;
+      try {
+        const payload = await this.api("/api/client/cache/cloudflare/purge", {
+          method: "POST",
+          body: JSON.stringify(websiteId ? { website_id: websiteId } : {}),
+        });
+        this.notify(`Cloudflare cache purge queued (job #${payload.job_id})`, "success");
+        this.cacheStatus = { ...this.cacheStatus, last_cloudflare_purged: new Date().toLocaleString() };
+      } catch (error) {
+        this.notify(error.message, "error");
+      } finally {
+        this.cachePurging = false;
+      }
+    },
     async resetOpcodeCache(websiteId) {
       this.cachePurging = true;
       try {
@@ -2750,9 +2769,18 @@ const app = createApp({
     async toggleCache(type, enabled) {
       this.cachePurging = true;
       try {
-        const payload = await this.api("/api/client/cache/toggle", { method: "POST", body: JSON.stringify({ type, enabled }) });
-        this.cacheStatus = { ...this.cacheStatus, [type === "opcache" ? "opcache_enabled" : "object_cache_enabled"]: enabled, [type === "opcache" ? "opcode_cache" : "object_cache"]: enabled ? "pending" : "off" };
-        this.notify(`${type === "opcache" ? "OPcache" : "Object cache"} ${enabled ? "enable" : "disable"} queued (job #${payload.job_id})`, "success");
+        const endpoint = type === "cloudflare" ? "/api/client/cache/cloudflare/toggle" : "/api/client/cache/toggle";
+        const payload = await this.api(endpoint, { method: "POST", body: JSON.stringify(type === "cloudflare" ? { enabled, website_id: this.selectedWebsite?.id } : { type, enabled }) });
+        const fields = {
+          opcache: ["opcache_enabled", "opcode_cache", "OPcache"],
+          object: ["object_cache_enabled", "object_cache", "Object cache"],
+          reverse_proxy: ["reverse_proxy_cache_enabled", "reverse_proxy", "Reverse-Proxy Cache"],
+          litespeed: ["litespeed_cache_enabled", "litespeed", "LiteSpeed Cache"],
+          cloudflare: ["cloudflare_cache_enabled", "cloudflare_cache", "Cloudflare Cache"],
+        }[type];
+        if (!fields) return;
+        this.cacheStatus = { ...this.cacheStatus, [fields[0]]: enabled, [fields[1]]: enabled ? "pending" : "off" };
+        this.notify(`${fields[2]} ${enabled ? "enable" : "disable"} queued (job #${payload.job_id})`, "success");
       } catch (error) { this.notify(error.message, "error"); }
       finally { this.cachePurging = false; }
     },

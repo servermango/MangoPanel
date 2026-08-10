@@ -125,6 +125,9 @@ class AgentTests(unittest.TestCase):
             self.assertIn("lsphp83-opcache", web_dockerfile)
             self.assertIn("lsphp82-opcache", web_dockerfile)
             self.assertIn("lsphp84-opcache", web_dockerfile)
+            self.assertIn("lsphp82-sqlite3", web_dockerfile)
+            self.assertIn("lsphp83-sqlite3", web_dockerfile)
+            self.assertIn("lsphp84-sqlite3", web_dockerfile)
             with connect(config.db_path) as conn:
                 cron_job = conn.execute("SELECT * FROM cron_jobs WHERE account_id = 1 ORDER BY id LIMIT 1").fetchone()
                 self.assertIsNotNone(cron_job)

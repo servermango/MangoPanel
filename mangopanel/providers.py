@@ -561,6 +561,24 @@ class CloudflareDNSProvider(DNSProvider):
                     return zones[0]
         return None
 
+    def purge_cache(self, zone_id):
+        """Purge all cached objects for a Cloudflare zone."""
+        zone_id = str(zone_id or "").strip()
+        if not zone_id:
+            raise DNSProviderError("cloudflare_zone_id_required")
+        return self._request("POST", f"/zones/{zone_id}/purge_cache", payload={"purge_everything": True})
+
+    def set_cache_level(self, zone_id, enabled):
+        """Toggle Cloudflare's supported development-mode cache bypass."""
+        zone_id = str(zone_id or "").strip()
+        if not zone_id:
+            raise DNSProviderError("cloudflare_zone_id_required")
+        # Cloudflare's current Cache Level setting has no permanent "bypass"
+        # value. Development Mode is the supported API-level cache bypass and
+        # is automatically time-limited by Cloudflare.
+        value = "off" if enabled else "on"
+        return self._request("PATCH", f"/zones/{zone_id}/settings/development_mode", payload={"value": value})
+
     def list_zones(self):
         query = {"per_page": 500}
         if self.account_id:

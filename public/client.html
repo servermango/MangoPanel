@@ -294,6 +294,7 @@
               <div class="welcome-actions">
                 <button class="primary-button" @click="openSiteWizard()"><app-icon name="plus"></app-icon>Add Website</button>
                 <button v-if="selectedWebsiteWordPress" class="primary-button" @click="loginToWordPress(selectedWebsiteWordPress)"><app-icon name="wordpress"></app-icon>Login to WP Admin</button>
+                <a v-if="selectedWebsite" class="secondary-button" :href="'https://' + selectedWebsite.domain" target="_blank" rel="noopener"><app-icon name="external"></app-icon>Open Website</a>
               </div>
             </div>
 
@@ -2444,7 +2445,7 @@
               <app-icon name="cache"></app-icon>
               <div>
                 <h2>Cache Manager</h2>
-                <p>Manage object cache and OPcache for {{ selectedWebsite?.domain || 'all sites' }}.</p>
+                <p>Manage the account cache layers for {{ selectedWebsite?.domain || 'all sites' }}.</p>
               </div>
             </div>
 
@@ -2467,6 +2468,33 @@
                 <small>Redis / Memcached</small>
                 <button class="secondary-button compact" @click="toggleCache('object', !cacheStatus.object_cache_enabled)">{{ cacheStatus.object_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
               </div>
+              <div class="cache-status-card" :class="cacheStatus.reverse_proxy">
+                <app-icon name="domains"></app-icon>
+                <div>
+                  <strong>Reverse-Proxy Cache</strong>
+                  <span class="pill">{{ cacheStatus.reverse_proxy }}</span>
+                </div>
+                <small>Edge response caching</small>
+                <button class="secondary-button compact" @click="toggleCache('reverse_proxy', !cacheStatus.reverse_proxy_cache_enabled)">{{ cacheStatus.reverse_proxy_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
+              </div>
+              <div class="cache-status-card" :class="cacheStatus.litespeed">
+                <app-icon name="performance"></app-icon>
+                <div>
+                  <strong>LiteSpeed Cache</strong>
+                  <span class="pill">{{ cacheStatus.litespeed }}</span>
+                </div>
+                <small>OpenLiteSpeed page cache</small>
+                <button class="secondary-button compact" @click="toggleCache('litespeed', !cacheStatus.litespeed_cache_enabled)">{{ cacheStatus.litespeed_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
+              </div>
+              <div v-if="selectedWebsiteUsesCloudflare" class="cache-status-card" :class="cacheStatus.cloudflare_cache">
+                <app-icon name="dns"></app-icon>
+                <div>
+                  <strong>Cloudflare Cache</strong>
+                  <span class="pill">{{ cacheStatus.cloudflare_cache }}</span>
+                </div>
+                <small>Cloudflare development-mode bypass</small>
+                <button class="secondary-button compact" @click="toggleCache('cloudflare', !cacheStatus.cloudflare_cache_enabled)">{{ cacheStatus.cloudflare_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
+              </div>
               <div class="cache-status-card">
                 <app-icon name="activity"></app-icon>
                 <div>
@@ -2480,7 +2508,7 @@
             <div class="cache-actions">
               <div>
                 <h3>Purge Cache</h3>
-                <p class="muted">Clears all cached content for {{ selectedWebsite?.domain || 'the selected site' }}. Pages will be regenerated on next visit.</p>
+                <p class="muted">Clears local cache layers for {{ selectedWebsite?.domain || 'all sites' }}. Pages will be regenerated on next visit.</p>
               </div>
               <div class="cache-buttons">
                 <button class="primary-button" :disabled="cachePurging" @click="purgeCache(selectedWebsite?.id)">
@@ -2494,6 +2522,10 @@
                 <button class="secondary-button" :disabled="cachePurging" @click="flushObjectCache(selectedWebsite?.id)">
                   <app-icon name="databases"></app-icon>
                   <span>Flush Object Cache</span>
+                </button>
+                <button v-if="selectedWebsiteUsesCloudflare" class="secondary-button" :disabled="cachePurging" @click="purgeCloudflareCache(selectedWebsite?.id)">
+                  <app-icon name="dns"></app-icon>
+                  <span>{{ cachePurging ? 'Working…' : 'Purge Cloudflare Cache' }}</span>
                 </button>
               </div>
             </div>

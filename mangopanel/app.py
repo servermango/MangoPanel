@@ -5631,10 +5631,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_active_account(account)
                 body = self.read_json()
                 cache_type = str(body.get("type") or "").strip().lower()
-                if cache_type not in {"opcache", "object"}:
+                if cache_type not in {"opcache", "object", "reverse_proxy", "litespeed"}:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_cache_type")
                 enabled = 1 if bool(body.get("enabled")) else 0
-                column = "opcache_enabled" if cache_type == "opcache" else "object_cache_enabled"
+                columns = {
+                    "opcache": "opcache_enabled",
+                    "object": "object_cache_enabled",
+                    "reverse_proxy": "reverse_proxy_cache_enabled",
+                    "litespeed": "litespeed_cache_enabled",
+                }
+                column = columns[cache_type]
                 conn.execute(f"UPDATE hosting_accounts SET {column} = ? WHERE id = ?", (enabled, account["id"]))
                 job_id = enqueue_agent_job(conn, "set_cache_settings", "hosting_account", account["id"], {"type": cache_type, "enabled": enabled})
                 log_activity(conn, actor["id"], "cache_setting_changed", {"type": cache_type, "enabled": enabled})
@@ -5656,6 +5662,48 @@ class MangoHandler(BaseHTTPRequestHandler):
                 job_id = enqueue_agent_job(conn, "purge_cache", "hosting_account", account["id"], payload)
                 log_activity(conn, actor["id"], "cache_purged", payload)
                 return self.json_response({"job_id": job_id, "status": "queued"})
+            if path == "/api/client/cache/cloudflare/purge" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                website_id = optional_positive_int(body.get("website_id") or "")
+                if not website_id:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_site_required")
+                website = conn.execute(
+                    """SELECT w.id, d.dns_provider FROM websites w
+                       LEFT JOIN domains d ON d.linked_website_id = w.id
+                       WHERE w.id = ? AND w.account_id = ?""",
+                    (website_id, account["id"]),
+                ).fetchone()
+                if not website:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                if website["dns_provider"] != DNS_PROVIDER_CLOUDFLARE:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_not_configured_for_site")
+                payload = {"scope": "website", "website_id": website_id}
+                job_id = enqueue_agent_job(conn, "purge_cloudflare_cache", "hosting_account", account["id"], payload)
+                log_activity(conn, actor["id"], "cloudflare_cache_purged", payload)
+                return self.json_response({"job_id": job_id, "status": "queued"})
+            if path == "/api/client/cache/cloudflare/toggle" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                website_id = optional_positive_int(body.get("website_id") or "")
+                if not website_id:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_site_required")
+                website = conn.execute(
+                    """SELECT w.id, d.dns_provider FROM websites w
+                       LEFT JOIN domains d ON d.linked_website_id = w.id
+                       WHERE w.id = ? AND w.account_id = ?""",
+                    (website_id, account["id"]),
+                ).fetchone()
+                if not website:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                if website["dns_provider"] != DNS_PROVIDER_CLOUDFLARE:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_not_configured_for_site")
+                enabled = bool(body.get("enabled"))
+                conn.execute("UPDATE hosting_accounts SET cloudflare_cache_enabled = ? WHERE id = ?", (1 if enabled else 0, account["id"]))
+                payload = {"enabled": enabled, "website_id": website_id, "scope": "account"}
+                job_id = enqueue_agent_job(conn, "set_cloudflare_cache", "hosting_account", account["id"], payload)
+                log_activity(conn, actor["id"], "cloudflare_cache_setting_changed", payload)
+                return self.json_response({"job_id": job_id, "status": "queued", "enabled": enabled})
             if path == "/api/client/cache/opcache/reset" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -10582,6 +10630,9 @@ def client_cache_status(conn, account):
     report = parse_json_field(report_path.read_text(encoding="utf-8"), {}) if report_path.exists() else {}
     opcache_enabled = int(account["opcache_enabled"] if "opcache_enabled" in account.keys() and account["opcache_enabled"] is not None else 1)
     object_enabled = int(account["object_cache_enabled"] if "object_cache_enabled" in account.keys() and account["object_cache_enabled"] is not None else 1)
+    reverse_proxy_enabled = int(account["reverse_proxy_cache_enabled"] if "reverse_proxy_cache_enabled" in account.keys() and account["reverse_proxy_cache_enabled"] is not None else 1)
+    litespeed_enabled = int(account["litespeed_cache_enabled"] if "litespeed_cache_enabled" in account.keys() and account["litespeed_cache_enabled"] is not None else 1)
+    cloudflare_enabled = int(account["cloudflare_cache_enabled"] if "cloudflare_cache_enabled" in account.keys() and account["cloudflare_cache_enabled"] is not None else 1)
     redis_running = False
     docker = shutil.which("docker")
     if docker:
@@ -10589,12 +10640,21 @@ def client_cache_status(conn, account):
         redis_running = probe.returncode == 0 and probe.stdout.strip().upper() == "PONG"
     opcache_state = "active" if opcache_enabled else "off"
     object_state = "active" if object_enabled and redis_running else "off"
+    reverse_proxy_state = "active" if reverse_proxy_enabled else "off"
+    litespeed_state = "active" if litespeed_enabled else "off"
+    cloudflare_state = "active" if cloudflare_enabled else "off"
     return {
         "cache_status": {
             "opcode_cache": opcache_state,
             "object_cache": object_state,
             "opcache_enabled": bool(opcache_enabled),
             "object_cache_enabled": bool(object_enabled),
+            "reverse_proxy_cache_enabled": bool(reverse_proxy_enabled),
+            "litespeed_cache_enabled": bool(litespeed_enabled),
+            "reverse_proxy": reverse_proxy_state,
+            "litespeed": litespeed_state,
+            "cloudflare_cache_enabled": bool(cloudflare_enabled),
+            "cloudflare_cache": cloudflare_state,
             "object_cache_reachable": redis_running,
             "opcode_cache_backend": runtime.get("opcode_cache_backend", "opcache"),
             "object_cache_backend": runtime.get("object_cache_backend", "redis"),

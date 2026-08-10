@@ -874,6 +874,7 @@ exec /usr/sbin/cron -f
     dockerfile_content = """FROM litespeedtech/openlitespeed:latest
 RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     lsphp82-mysql lsphp83-mysql lsphp84-mysql \\
+    lsphp82-sqlite3 lsphp83-sqlite3 lsphp84-sqlite3 \\
     lsphp82-curl lsphp83-curl lsphp84-curl \\
     lsphp82-opcache lsphp83-opcache lsphp84-opcache \\
     lsphp82-redis lsphp83-redis lsphp84-redis \\
@@ -1245,6 +1246,10 @@ def render_ols_vhconf(account, website):
     base_dir = container_path(account, str(Path(website["document_root"]).parent))
     logs_dir = container_path(account, str(Path(website["document_root"]).parent / "logs"))
     analytics_enabled = int(website.get("analytics_enabled", 1) or 0) != 0
+    opcache_value = account.get("opcache_enabled", 1) if hasattr(account, "get") else account["opcache_enabled"] if "opcache_enabled" in account.keys() else 1
+    litespeed_value = account.get("litespeed_cache_enabled", 1) if hasattr(account, "get") else account["litespeed_cache_enabled"] if "litespeed_cache_enabled" in account.keys() else 1
+    opcache_enabled = 1 if int(opcache_value or 0) else 0
+    litespeed_cache_enabled = 1 if int(litespeed_value or 0) else 0
     hotlink_lines = []
     if int(website.get("hotlink_enabled", 0) or 0):
         hotlink_lines.extend([
@@ -1390,6 +1395,7 @@ scripthandler  {{
 phpIniOverride  {{
   php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
   php_admin_value memory_limit "256M"
+  php_admin_value opcache.enable "{opcache_enabled}"
   php_admin_value opcache.validate_timestamps "0"
   php_admin_value opcache.revalidate_freq "0"
   php_admin_value opcache.memory_consumption "256"
@@ -1399,7 +1405,7 @@ phpIniOverride  {{
 }}
 
 module cache {{
-  enableCache             1
+  enableCache             {litespeed_cache_enabled}
   storagePath             /usr/local/lsws/cachedata
 }}
 """
@@ -1446,6 +1452,13 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
     backup_retention_days = int(plan["backup_retention_days"])
     default_domain = websites[0]["domain"] if websites else "{}.mango.test".format(username)
     project = "mp-{}".format(username)
+    reverse_proxy_value = account.get("reverse_proxy_cache_enabled", 1) if hasattr(account, "get") else account["reverse_proxy_cache_enabled"] if "reverse_proxy_cache_enabled" in account.keys() else 1
+    reverse_proxy_cache_enabled = 1 if int(reverse_proxy_value or 0) else 0
+    # Caddy has no cache by default, but when the account cache is disabled we
+    # explicitly instruct every edge route and downstream cache to bypass it.
+    edge_cache_labels = [
+        'caddy_0.header: "Cache-Control no-store, no-cache, must-revalidate, max-age=0"',
+    ] if not reverse_proxy_cache_enabled else []
 
     labels_list = [
         f'mangopanel.plan: "{plan["name"]}"',
@@ -1461,6 +1474,7 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
         # a defense-in-depth control for direct/origin traffic.
         'caddy_0.import: "mangopanel-xmlrpc-block"',
     ]
+    labels_list.extend(edge_cache_labels)
     if domains_public_https:
         labels_list.extend([
             f'caddy_1: "{domains_public_https}"',
@@ -1469,6 +1483,8 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
             'caddy_1.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
             'caddy_1.import: "mangopanel-xmlrpc-block"',
         ])
+        if not reverse_proxy_cache_enabled:
+            labels_list.append('caddy_1.header: "Cache-Control no-store, no-cache, must-revalidate, max-age=0"')
     if domains_local_https:
         labels_list.extend([
             f'caddy_2: "{domains_local_https}"',
@@ -1478,6 +1494,8 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
             'caddy_2.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
             'caddy_2.import: "mangopanel-xmlrpc-block"',
         ])
+        if not reverse_proxy_cache_enabled:
+            labels_list.append('caddy_2.header: "Cache-Control no-store, no-cache, must-revalidate, max-age=0"')
     labels_str = "\n      ".join(labels_list)
 
     mail_restart = "unless-stopped" if mail_enabled else "no"
