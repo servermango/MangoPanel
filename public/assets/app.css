@@ -2641,6 +2641,14 @@ td small {
   overflow: hidden;
 }
 
+/* The subdomain wizard swaps its contents for an absolutely positioned
+   building screen while the site is being created. Keep the panel sized
+   while that screen is active so the animation remains visible. */
+.modal-panel.sw-building {
+  height: min(600px, 90vh);
+  flex: 0 0 auto;
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;

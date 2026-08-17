@@ -54,6 +54,13 @@ STACK_SERVICES = [
     "adminer",
 ]
 
+SUPPORTED_PHP_VERSIONS = {"74", "80", "81", "82", "83", "84"}
+PHP_LEGACY_IMAGES = {
+    "74": "litespeedtech/openlitespeed:1.7.14-lsphp74",
+    "80": "litespeedtech/openlitespeed:1.7.14-lsphp80",
+    "81": "litespeedtech/openlitespeed:1.8.4-lsphp81",
+}
+
 SHA512_CRYPT_SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./"
 
 
@@ -818,6 +825,12 @@ fi
 # Keep legacy applications that use localhost:3306 working inside the web
 # container while preserving the normal db:3306 Docker-network path.
 nohup /bin/sh -c 'while ! /usr/bin/socat TCP-LISTEN:3306,bind=127.0.0.1,reuseaddr,fork TCP:db:3306; do sleep 2; done' >/var/log/mysql-loopback-proxy.log 2>&1 </dev/null &
+# PHP applications that use the traditional `localhost` MySQL setting do
+# not use TCP; mysqli and PDO resolve it to this Unix socket instead.  Keep
+# that legacy behaviour compatible with the isolated per-account database
+# container without changing application files or database credentials.
+mkdir -p /var/run/mysqld
+nohup /bin/sh -c 'while ! /usr/bin/socat UNIX-LISTEN:/var/run/mysqld/mysqld.sock,fork,reuseaddr,umask=000 TCP:db:3306; do rm -f /var/run/mysqld/mysqld.sock; sleep 2; done' >/var/log/mysql-socket-proxy.log 2>&1 </dev/null &
 # Keep OpenLiteSpeed self-healing if its master process stops while the
 # container's PID 1 is still alive. This is deliberately infrequent and
 # checks only the server status; Docker's healthcheck below reports the same
@@ -871,7 +884,25 @@ exec /usr/sbin/cron -f
     # Generate custom web Dockerfile
     web_build_dir = paths["stack"] / "web"
     web_build_dir.mkdir(parents=True, exist_ok=True)
-    dockerfile_content = """FROM litespeedtech/openlitespeed:latest
+    dockerfile_content = f"""FROM litespeedtech/openlitespeed:latest
+COPY --from={PHP_LEGACY_IMAGES['74']} /usr/local/lsws/lsphp74 /usr/local/lsws/lsphp74
+COPY --from={PHP_LEGACY_IMAGES['80']} /usr/local/lsws/lsphp80 /usr/local/lsws/lsphp80
+COPY --from={PHP_LEGACY_IMAGES['81']} /usr/local/lsws/lsphp81 /usr/local/lsws/lsphp81
+COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libssl.so.1.1* /opt/mangopanel-legacy-libs/
+COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1* /opt/mangopanel-legacy-libs/
+COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libxml2.so.2* /opt/mangopanel-legacy-libs/
+COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libenchant.so.1* /opt/mangopanel-legacy-libs/
+COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libwebp.so.6* /opt/mangopanel-legacy-libs/
+COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libicu*.so.66* /opt/mangopanel-legacy-libs/
+COPY --from={PHP_LEGACY_IMAGES['81']} /usr/lib/x86_64-linux-gnu/libzip.so.4* /opt/mangopanel-legacy-libs/
+# The legacy 7.4 image ships extension ini files whose ImageMagick and IMAP
+# shared-library dependencies are not present in the current base image.  A
+# failed extension load makes LiteSpeed return a blank 500 before the CRM can
+# run.  Keep the runtime stable; applications can still use GD and SMTP, and
+# the extensions can be added later when their matching legacy libraries are
+# bundled explicitly.
+RUN rm -f /usr/local/lsws/lsphp74/etc/php/7.4/mods-available/40-imagick.ini \\
+    /usr/local/lsws/lsphp74/etc/php/7.4/mods-available/imap.ini
 RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     lsphp82-mysql lsphp83-mysql lsphp84-mysql \\
     lsphp82-sqlite3 lsphp83-sqlite3 lsphp84-sqlite3 \\
@@ -1116,11 +1147,12 @@ module cache {
     for website in websites:
         domain = website["domain"]
         safe_domain = domain.replace(".", "_").replace("-", "_")
-        supported_php = {"82", "83", "84"}
+        supported_php = SUPPORTED_PHP_VERSIONS
         php_raw = str(website.get("php_version", "8.2"))
         php_ver = php_raw.replace(".", "")
         if php_ver not in supported_php:
             php_ver = "82"
+        legacy_env = "  env                     LD_LIBRARY_PATH=/opt/mangopanel-legacy-libs\n" if php_ver in {"74", "80", "81"} else ""
 
         blocks.append(
             f"""
@@ -1130,7 +1162,7 @@ extprocessor lsphp_{safe_domain} {{
   maxConns                {php_workers}
   env                     PHP_LSAPI_CHILDREN={php_workers}
   env                     LSAPI_AVOID_FORK=200M
-  initTimeout             60
+{legacy_env}  initTimeout             60
   retryTimeout            0
   persistConn             1
   maxIdleTime             20
@@ -1236,12 +1268,13 @@ def render_ols_vhconf(account, website):
         php_workers = 3
     safe_domain = domain.replace(".", "_").replace("-", "_")
 
-    # Ensure PHP version is one of the supported versions (82, 83, 84)
-    supported_php = {"82", "83", "84"}
+    # Ensure PHP version is one of the supported versions.
+    supported_php = SUPPORTED_PHP_VERSIONS
     php_raw = str(website.get("php_version", "8.2"))
     php_ver = php_raw.replace(".", "")
     if php_ver not in supported_php:
         php_ver = "82"
+    legacy_env = "  env                     LD_LIBRARY_PATH=/opt/mangopanel-legacy-libs\n" if php_ver in {"74", "80", "81"} else ""
     doc_root = container_path(account, website["document_root"])
     base_dir = container_path(account, str(Path(website["document_root"]).parent))
     logs_dir = container_path(account, str(Path(website["document_root"]).parent / "logs"))
@@ -1373,7 +1406,7 @@ extprocessor lsphp_{safe_domain} {{
   maxConns                {php_workers}
   env                     PHP_LSAPI_CHILDREN={php_workers}
   env                     LSAPI_AVOID_FORK=200M
-  initTimeout             60
+{legacy_env}  initTimeout             60
   retryTimeout            0
   persistConn             1
   respBuffer              0

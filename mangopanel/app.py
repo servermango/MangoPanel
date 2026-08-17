@@ -3069,26 +3069,21 @@ class MangoHandler(BaseHTTPRequestHandler):
                 domain = sanitize_domain(body.get("domain", ""))
                 dns_action = body.get("dns_action") or body.get("dns_choice", "keep")
 
-                # A domain is a panel-wide resource. Check ownership before
-                # provider-specific DNS handling so a domain hosted by another
-                # client cannot be claimed through Cloudflare or local DNS.
-                other_website = conn.execute(
-                    "SELECT id FROM websites WHERE domain = ? AND account_id != ?",
-                    (domain, account["id"]),
-                ).fetchone()
-                other_domain = conn.execute(
-                    "SELECT id FROM domains WHERE name = ? AND account_id != ?",
-                    (domain, account["id"]),
-                ).fetchone()
-                if other_website or other_domain:
-                    raise ApiError(
-                        HTTPStatus.CONFLICT,
-                        "This website can't be added to this account because it already exists on another account on this hosting. It must be removed from the other account first. If you think this is an error, please contact support.",
-                    )
-
                 dns_check = check_domain_dns_provider(conn, account, domain)
                 if dns_check.get("exists") and dns_check.get("blocked"):
                     raise ApiError(HTTPStatus.CONFLICT, dns_check["error_message"])
+
+                other_hosted_website = conn.execute(
+                    """
+                    SELECT id FROM websites
+                    WHERE lower(domain) = lower(?) AND account_id != ?
+                      AND lower(COALESCE(status, 'active')) NOT IN ('deleted', 'removed')
+                    LIMIT 1
+                    """,
+                    (domain, account["id"]),
+                ).fetchone()
+                if other_hosted_website:
+                    raise ApiError(HTTPStatus.CONFLICT, "domain_already_hosted_on_another_account")
 
                 existing_website = conn.execute(
                     "SELECT id FROM websites WHERE account_id = ? AND domain = ?",
@@ -3101,6 +3096,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "SELECT id, linked_website_id FROM domains WHERE account_id = ? AND name = ?",
                     (account["id"], domain),
                 ).fetchone()
+                other_unlinked_domain = conn.execute(
+                    "SELECT id FROM domains WHERE name = ? AND account_id != ? AND linked_website_id IS NULL",
+                    (domain, account["id"]),
+                ).fetchone()
+                if other_unlinked_domain:
+                    raise ApiError(HTTPStatus.CONFLICT, "domain_already_registered_to_another_account")
                 if existing_domain and existing_domain["linked_website_id"]:
                     linked_site = conn.execute(
                         "SELECT id FROM websites WHERE id = ?",
@@ -3226,7 +3227,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         resource_type="website", resource_id=website_id,
                     )
                     body = self.read_json()
-                    allowed_php = {"8.2", "8.3", "8.4"}
+                    allowed_php = {"7.4", "8.0", "8.1", "8.2", "8.3", "8.4"}
                     php_version = body.get("php_version", website["php_version"])
                     if php_version not in allowed_php:
                         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_php_version")
@@ -3269,7 +3270,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                     )
                     job_id = None
                     if "php_version" in body:
-                        job_id = enqueue_agent_job(conn, "update_website_php", "website", website_id, {"php_version": php_version})
+                        job_id = enqueue_agent_job(
+                            conn,
+                            "update_website_php",
+                            "website",
+                            website_id,
+                            {"php_version": php_version, "previous_php_version": website["php_version"]},
+                        )
                     elif "php_ini" in body:
                         job_id = enqueue_agent_job(conn, "update_website_php_ini", "website", website_id, {})
                     if "index_enabled" in body:
@@ -3294,7 +3301,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
             if path == "/api/client/php-versions" and method == "GET":
                 require_account(account)
-                return self.json_response({"php_versions": ["8.2", "8.3", "8.4"]})
+                return self.json_response({"php_versions": ["7.4", "8.0", "8.1", "8.2", "8.3", "8.4"]})
             if path == "/api/client/domains" and method == "GET":
                 if account:
                     scope = get_collaborator_scope(conn, actor["id"], account["id"])
@@ -5230,7 +5237,10 @@ class MangoHandler(BaseHTTPRequestHandler):
 
                 # Create database for WordPress
                 db_name = f"{account['username']}_wp_{website_id}"
-                db_user = f"{account['username']}_wp"
+                # Give each WordPress site its own database principal. Reusing
+                # one account-level user makes grants for multiple sites
+                # accumulate on that user and breaks database isolation.
+                db_user = f"{account['username']}_wp_{website_id}"
                 db_password = "dev-db-password-change-me"
                 
                 existing_db = conn.execute("SELECT id FROM databases WHERE name = ?", (db_name,)).fetchone()
@@ -5516,7 +5526,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                         conn.execute("DELETE FROM script_installs WHERE website_id = ? AND script_id = 'wordpress'", (website_id,))
                     
                     db_name = f"{account['username']}_wp_{website_id}"
-                    db_user = f"{account['username']}_wp"
+                    # Keep the database credentials isolated per WordPress
+                    # site; a shared account_wp user would receive grants for
+                    # every WordPress database in the account.
+                    db_user = f"{account['username']}_wp_{website_id}"
                     db_password = "dev-db-password-change-me"
                     
                     existing_db = conn.execute("SELECT id FROM databases WHERE name = ?", (db_name,)).fetchone()
@@ -9714,6 +9727,29 @@ def domain_assigned_to_account(conn, account, domain):
     return bool(registered)
 
 
+def hosted_domain_on_other_account(conn, account_id, domain):
+    """Return whether another account is actively hosting this domain."""
+    normalized = sanitize_domain(domain)
+    return bool(conn.execute(
+        """
+        SELECT w.id
+        FROM websites w
+        WHERE lower(w.domain) = lower(?)
+          AND w.account_id != ?
+          AND lower(COALESCE(w.status, 'active')) NOT IN ('deleted', 'removed')
+        UNION ALL
+        SELECT d.id
+        FROM domains d
+        JOIN websites w ON w.id = d.linked_website_id
+        WHERE lower(d.name) = lower(?)
+          AND d.account_id != ?
+          AND lower(COALESCE(d.status, 'active')) NOT IN ('deleted', 'removed')
+        LIMIT 1
+        """,
+        (normalized, account_id, normalized, account_id),
+    ).fetchone())
+
+
 def check_domain_dns_provider(conn, account, domain_name):
     domain = sanitize_domain(domain_name)
     if not domain:
@@ -9755,7 +9791,7 @@ def check_domain_dns_provider(conn, account, domain_name):
             try:
                 zone = cf.get_zone(domain)
                 if zone and isinstance(zone, dict) and zone.get("id"):
-                    if not domain_assigned_to_account(conn, account, domain):
+                    if hosted_domain_on_other_account(conn, account["id"], domain):
                         return {
                             "exists": True,
                             "dns_provider": "cloudflare",
@@ -9806,12 +9842,15 @@ def check_domain_dns_provider(conn, account, domain_name):
                         existing_in_powerdns = True
 
         if existing_in_db or existing_in_powerdns:
+            blocked = hosted_domain_on_other_account(conn, account["id"], domain)
             return {
                 "exists": True,
                 "dns_provider": provider_key,
-                "blocked": True,
+                "blocked": blocked,
                 "alert_message": "This domain already exists in the DNS",
-                "error_message": "This website can't be added to this account because it already exists on another account on this hosting. It must be removed from the other account first. If you think this is an error, please contact support."
+                **({
+                    "error_message": "This website can't be added to this account because it already exists on another account on this hosting. It must be removed from the other account first. If you think this is an error, please contact support."
+                } if blocked else {}),
             }
 
         return {

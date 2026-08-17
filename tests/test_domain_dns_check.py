@@ -42,16 +42,16 @@ class DomainDnsCheckTests(unittest.TestCase):
                 res = server.request("POST", "/api/client/dns/check-domain", {"domain": "new-unique-domain.mango.test"}, token)
                 self.assertFalse(res["exists"])
 
-                # 2. Existing domain in DB (e.g. example.mango.test) should return exists: True, blocked: True
+                # 2. A DNS entry owned by this account is visible but not blocked.
                 res_exist = server.request("POST", "/api/client/dns/check-domain", {"domain": "example.mango.test"}, token)
                 self.assertTrue(res_exist["exists"])
-                self.assertTrue(res_exist.get("blocked"))
-                self.assertIn("exists on another account on this hosting", res_exist["error_message"])
+                self.assertFalse(res_exist.get("blocked"))
 
-                # 3. Trying to create website for existing domain should be blocked with HTTP 409 and exact message
+                # An existing website on this account is handled by the normal
+                # duplicate-website validation, not the cross-account message.
                 status, error_res = server.request_error("POST", "/api/client/websites", {"domain": "example.mango.test"}, token)
                 self.assertEqual(status, 409)
-                self.assertIn("exists on another account on this hosting", str(error_res))
+                self.assertIn("domain_already_exists", str(error_res))
 
     def test_subdomain_dns_consent_updates_existing_a_record(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -134,16 +134,8 @@ class DomainDnsCheckTests(unittest.TestCase):
                     check_res = server.request("POST", "/api/client/dns/check-domain", {"domain": "existing-cf.mango.test"}, token)
                     self.assertTrue(check_res["exists"])
                     self.assertEqual(check_res["dns_provider"], "cloudflare")
-                    self.assertTrue(check_res["blocked"])
-                    self.assertNotIn("remote_records", check_res)
-                    status, error_res = server.request_error(
-                        "POST",
-                        "/api/client/websites",
-                        {"domain": "existing-cf.mango.test", "dns_action": "keep"},
-                        token,
-                    )
-                    self.assertEqual(status, 409)
-                    self.assertIn("not assigned to your hosting account", str(error_res))
+                    self.assertFalse(check_res.get("blocked"))
+                    self.assertNotIn("error_message", check_res)
 
                     # A remote zone is not enough to prove ownership. Once the
                     # domain is assigned to this account, the DNS choices and

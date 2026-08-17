@@ -9,7 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="icon" type="image/svg+xml" href="/assets/favicon-client.svg">
     <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
-    <link rel="stylesheet" href="/assets/app.css?v=1.0.21">
+    <link rel="stylesheet" href="/assets/app.css?v=1.0.22">
     <script>
       (function() {
         var t = localStorage.getItem("mp_theme") || "Default";
@@ -2210,11 +2210,10 @@
                       :class="{ active: site.php_version === v, switching: phpSwitching[site.id] }"
                       :disabled="phpSwitching[site.id]"
                       @click="switchPhpVersion(site, v)"
-                    >PHP {{ v }}</button>
+                    >{{ phpSwitching[site.id] && phpSwitchTarget[site.id] === v
+                      ? 'Applying PHP ' + v + ' · ' + (phpSwitchCountdowns[site.id] > 0 ? 'Wait ' + phpSwitchCountdowns[site.id] + 's' : 'Finishing…')
+                      : 'PHP ' + v }}</button>
                   </div>
-                  <span v-if="phpSwitching[site.id]" class="php-switch-countdown" role="status">
-                    Applying · {{ phpSwitchCountdowns[site.id] > 0 ? phpSwitchCountdowns[site.id] + 's' : 'Finishing…' }}
-                  </span>
                 </div>
               </div>
               <div v-if="!websites.length" class="empty-state">

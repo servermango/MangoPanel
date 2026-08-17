@@ -96,7 +96,7 @@ const CLIENT_PAGE_TARGETS = new Set([
   "account-sharing",
 ]);
 
-const PHP_VERSIONS = ["8.2", "8.3", "8.4"];
+const PHP_VERSIONS = ["7.4", "8.0", "8.1", "8.2", "8.3", "8.4"];
 
 function pageFromLocation() {
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
@@ -310,8 +310,9 @@ const app = createApp({
       wizardPgDbId: null,
       wizardPgUserId: null,
       // PHP Config
-      phpVersions: ["8.2", "8.3", "8.4"],
+      phpVersions: ["7.4", "8.0", "8.1", "8.2", "8.3", "8.4"],
       phpSwitching: {},
+      phpSwitchTarget: {},
       phpSwitchCountdowns: {},
       phpSwitchTimers: {},
       editingPhpIniSite: null,
@@ -2674,6 +2675,7 @@ const app = createApp({
     async switchPhpVersion(site, version) {
       if (site.php_version === version) return;
       this.phpSwitching = { ...this.phpSwitching, [site.id]: true };
+      this.phpSwitchTarget = { ...this.phpSwitchTarget, [site.id]: version };
       this.phpSwitchCountdowns = { ...this.phpSwitchCountdowns, [site.id]: 60 };
       if (this.phpSwitchTimers[site.id]) window.clearInterval(this.phpSwitchTimers[site.id]);
       const timer = window.setInterval(() => {
@@ -2697,6 +2699,9 @@ const app = createApp({
         const countdowns = { ...this.phpSwitchCountdowns };
         delete countdowns[site.id];
         this.phpSwitchCountdowns = countdowns;
+        const targets = { ...this.phpSwitchTarget };
+        delete targets[site.id];
+        this.phpSwitchTarget = targets;
         const timers = { ...this.phpSwitchTimers };
         delete timers[site.id];
         this.phpSwitchTimers = timers;

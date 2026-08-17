@@ -738,6 +738,14 @@ class Agent:
             log_job_event(conn, job["id"], "Agent completed job", metadata=result)
             return {"job_id": job["id"], "status": "succeeded", "result": result}
         except Exception as exc:
+            if job["type"] == "update_website_php":
+                payload = self.job_payload(job)
+                previous_php_version = payload.get("previous_php_version")
+                if previous_php_version:
+                    conn.execute(
+                        "UPDATE websites SET php_version = ? WHERE id = ?",
+                        (previous_php_version, job["target_id"]),
+                    )
             is_dns_job = job["type"] in {"sync_dns_record", "sync_dns_zone"}
             is_database_job = job["type"] in {
                 "create_database",
@@ -825,10 +833,8 @@ class Agent:
             self.provision_hosting_account(conn, database["account_id"])
             sql = [f"CREATE DATABASE IF NOT EXISTS `{database['name']}`;"]
             if account:
-                runtime = build_account_runtime(self.vhost_account_context(conn, account), self.config.public_host, self.config.account_port_base)
-                sql.append(f"GRANT ALL PRIVILEGES ON *.* TO {sql_literal(runtime['db_user'])}@'%';")
                 db_dict = row_to_dict(database) if database else {}
-                if db_dict.get("username") and db_dict["username"] != runtime["db_user"]:
+                if db_dict.get("username"):
                     sql.append(f"GRANT ALL PRIVILEGES ON `{db_dict['name']}`.* TO {sql_literal(db_dict['username'])}@'%';")
                 sql.append("FLUSH PRIVILEGES;")
             self.execute_mariadb_sql(conn, database["account_id"], sql)
@@ -1114,7 +1120,7 @@ class Agent:
 
     def php_binary_for_version(self, version):
         raw = str(version or "8.3").strip().replace(".", "")
-        if raw not in {"82", "83", "84"}:
+        if raw not in {"74", "80", "81", "82", "83", "84"}:
             raw = "83"
         return f"/usr/local/lsws/lsphp{raw}/bin/lsphp"
 
