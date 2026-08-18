@@ -68,7 +68,7 @@ createApp({
       clientLoginLoadingId: null,
       showClientModal: false,
       plans: [],
-      configuration: { backup_time: "02:00", resource_scan_time: "03:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "" },
+      configuration: { backup_time: "02:00", resource_scan_time: "03:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "", public_host: "" },
       modsecRuleset: "baseline",
       modsecApplying: false,
       timezoneOptions: ["UTC", "Europe/London", "Europe/Paris", "Asia/Kolkata", "Asia/Dubai", "Asia/Tokyo", "America/New_York", "America/Los_Angeles", "Australia/Sydney"],
@@ -262,6 +262,7 @@ createApp({
         plan_id: "",
         node_id: "",
       },
+      provisioningAccount: false,
       newNode: {
         name: "",
         hostname: "",
@@ -1303,7 +1304,8 @@ createApp({
         // Keep the selected value if an older/cached backend response omits
         // newly added configuration fields.
         this.configuration = { ...this.configuration, ...(result.configuration || {}) };
-        this.message = result.ssh_motd_job_id ? `Configuration saved; SSH message update queued (job #${result.ssh_motd_job_id})` : "Configuration saved";
+        const hostJobs = (result.public_host_job_ids || []).length;
+        this.message = hostJobs ? `Configuration saved; ${hostJobs} account route update${hostJobs === 1 ? "" : "s"} queued` : (result.ssh_motd_job_id ? `Configuration saved; SSH message update queued (job #${result.ssh_motd_job_id})` : "Configuration saved");
       } catch (error) {
         this.message = error.message;
       } finally {
@@ -2722,6 +2724,8 @@ createApp({
     },
     async createHostingAccount() {
       this.message = "";
+      if (this.provisioningAccount) return;
+      this.provisioningAccount = true;
       try {
         const payload = await this.api("/api/admin/hosting-accounts", {
           method: "POST",
@@ -2736,6 +2740,8 @@ createApp({
         await this.load();
       } catch (error) {
         this.message = error.message;
+      } finally {
+        this.provisioningAccount = false;
       }
     },
     async registerNode() {

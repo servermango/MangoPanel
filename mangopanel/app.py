@@ -54,6 +54,7 @@ from .db import (
     create_job,
     apply_system_timezone,
     default_system_timezone_name,
+    ensure_local_node,
     get_system_setting,
     init_db,
     log_activity,
@@ -156,6 +157,22 @@ AUTH_ATTEMPT_MAX_FAILURES = 5
 DNS_RECORD_TYPES = {"A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"}
 DNS_PROVIDER_KEYS = {DNS_PROVIDER_LOCAL_POWERDNS, DNS_PROVIDER_CLOUDFLARE}
 DEFAULT_DNS_RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"]
+
+
+def normalize_public_host(value):
+    """Validate the base hostname used for account edge routes and URLs."""
+    host = str(value or "").strip().lower().rstrip(".")
+    if not host or len(host) > 253 or "://" in host or "/" in host or ":" in host:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_public_host")
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    labels = host.split(".")
+    if any(not label or len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) for label in labels):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_public_host")
+    return host
 
 
 class ApiError(Exception):
@@ -2934,7 +2951,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         dns_record_id = conn.execute("INSERT INTO dns_records(domain_id, type, name, value, ttl, system_record, locked) VALUES (?, 'A', ?, ?, 300, 1, 1)", (parent_id, record_name, public_ip)).lastrowid
                     dns_job_id = enqueue_agent_job(conn, "sync_dns_zone", "domain", parent_id, {"reason": "subdomain_created", "record_id": dns_record_id})
                 job_id = enqueue_agent_job(conn, "create_website", "website", website_id, {"domain": domain, "subdomain": True})
-                ssl_job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "local-dev"})
+                ssl_job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto"})
                 log_activity(conn, actor["id"], "subdomain_created", {"website_id": website_id, "domain": domain, "parent_domain": parent["name"], "hosting_mode": mode})
                 return self.json_response({"subdomain": row_to_dict(conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()), "job_id": job_id, "ssl_job_id": ssl_job_id, "dns_job_id": dns_job_id, "dns_record_id": dns_record_id}, HTTPStatus.CREATED)
             match = re.match(r"^/api/client/subdomains/(\d+)$", path)
@@ -3808,7 +3825,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
                 if int(website["is_subdomain"] or 0):
                     require_collaborator_permission(conn, actor["id"], account["id"], "can_edit_subdomains", resource_type="subdomain", resource_id=website_id)
-                job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "local-dev"})
+                job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto"})
                 refreshed = conn.execute("SELECT ssl_status FROM websites WHERE id = ?", (website_id,)).fetchone()
                 order = conn.execute(
                     "SELECT * FROM acme_certificate_orders WHERE account_id = ? AND domain = ? ORDER BY id DESC LIMIT 1",
@@ -3856,13 +3873,15 @@ class MangoHandler(BaseHTTPRequestHandler):
                     if domain_row:
                         conn.execute("UPDATE domains SET nameservers_json = ?, nameserver_source = 'custom', last_registrar_sync_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), domain_row["id"]))
                 observed_a = []
+                observed_ipv4 = []
+                observed_ipv6 = []
                 observed_ns = []
                 dns_sync_job_id = None
                 if auto_update_dns and domain_row:
                     dns_sync_job_id = enqueue_dns_zone_sync(domain_row["id"], {"reason": "connect_auto_update_dns"})
                 dig = shutil.which("dig")
                 if dig:
-                    for record_type, target in (("A", observed_a), ("AAAA", observed_a), ("NS", observed_ns)):
+                    for record_type, target in (("A", observed_ipv4), ("AAAA", observed_ipv6), ("NS", observed_ns)):
                         try:
                             result = subprocess.run([dig, "+short", record_type, domain_name], check=False, capture_output=True, text=True, timeout=8)
                             target.extend(sorted({line.strip().rstrip(".") for line in result.stdout.splitlines() if line.strip()}))
@@ -3870,7 +3889,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                             pass
                 else:
                     try:
-                        observed_a.extend(socket.gethostbyname_ex(domain_name)[2])
+                        observed_ipv4.extend(socket.gethostbyname_ex(domain_name)[2])
                     except OSError:
                         pass
                 domain_row = conn.execute("SELECT * FROM domains WHERE linked_website_id = ?", (website_id,)).fetchone()
@@ -3878,8 +3897,27 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if domain_row and not expected_ns and observed_ns:
                     conn.execute("UPDATE domains SET nameservers_json = ? WHERE id = ?", (json.dumps(observed_ns), domain_row["id"]))
                     expected_ns = observed_ns
+                observed_a = sorted(set(observed_ipv4 + observed_ipv6))
                 ns_ok = bool(observed_ns and (not expected_ns or set(ns.lower() for ns in expected_ns).issubset({ns.lower() for ns in observed_ns})))
-                ip_ok = bool(observed_a)
+                # Merely finding an A/AAAA record is not enough for AutoSSL:
+                # Let's Encrypt must reach this server. A stale AAAA record
+                # is especially harmful because ACME may prefer IPv6 even
+                # when the IPv4 record is correct.
+                ip_ok = bool(observed_ipv4 or observed_ipv6)
+                if domain_row and domain_row["dns_provider"] != DNS_PROVIDER_CLOUDFLARE:
+                    expected_ipv4 = get_host_public_ip(conn)
+                    expected_ipv6 = ""
+                    try:
+                        local_provider = dns_provider_by_key(conn, DNS_PROVIDER_LOCAL_POWERDNS)
+                        local_config = parse_json_field(local_provider["config_json"], {}) if local_provider else {}
+                        expected_ipv6 = str(local_config.get("public_ipv6") or "").strip()
+                    except Exception:
+                        expected_ipv6 = ""
+                    matching_ipv4 = expected_ipv4 in observed_ipv4 if expected_ipv4 else False
+                    matching_ipv6 = expected_ipv6 in observed_ipv6 if expected_ipv6 else False
+                    ip_ok = matching_ipv4 or matching_ipv6
+                    if observed_ipv6 and not matching_ipv6:
+                        ip_ok = False
                 verified = ns_ok or ip_ok
                 job_id = None
                 if verified:
@@ -3888,7 +3926,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                     except Exception as exc:
                         logging.warning("Failed to sync Cloudflare ACME rules on connection-check: %s", exc)
                     job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto", "connection_check": True})
-                    conn.execute("UPDATE websites SET ssl_status = 'active' WHERE id = ?", (website_id,))
+                    if not (CONFIG.agent_mode == "docker" and CONFIG.env != "development"):
+                        conn.execute("UPDATE websites SET ssl_status = 'active' WHERE id = ?", (website_id,))
                 return self.json_response({"verified": verified, "nameservers_verified": ns_ok, "ip_verified": ip_ok, "observed_nameservers": observed_ns, "observed_ips": observed_a, "expected_nameservers": expected_ns, "dns_sync_job_id": dns_sync_job_id, "auto_ssl_job_id": job_id, "nameserver_update": nameserver_update, "message": "DNS is reachable. DNS records and AutoSSL have been queued." if verified else ("Nameservers updated. DNS record sync is queued; SSL will be issued after propagation." if auto_update_dns else "DNS is not pointing to this hosting account yet.")})
             if path == "/api/client/ssl/custom" and method == "POST":
                 require_active_account(account)
@@ -5113,7 +5152,26 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (account["id"],),
                 ).fetchone()
                 if not stack:
-                    raise ApiError(HTTPStatus.NOT_FOUND, "stack_not_found")
+                    status = "provisioning" if account["status"] in {"provisioning", "rebuilding"} else "unavailable"
+                    services = [service_name] if service_name else ["web", "db", "filebrowser", "phpmyadmin"]
+                    return self.json_response({
+                        "account_id": account["id"],
+                        "username": account["username"],
+                        "compose_path": None,
+                        "mode": CONFIG.agent_mode,
+                        "services": [
+                            {
+                                "service": service,
+                                "container": Agent(CONFIG).service_container_name(account, service),
+                                "mode": CONFIG.agent_mode,
+                                "supported": True,
+                                "status": status,
+                                "health": "unknown",
+                                "running": False,
+                            }
+                            for service in services
+                        ],
+                    })
                 payload = Agent(CONFIG).service_status(row_to_dict(account), row_to_dict(stack), service_name or None)
                 return self.json_response(payload)
 
@@ -6730,6 +6788,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "timezone": get_system_setting(conn, "system_timezone", default_system_timezone_name()),
                     "modsecurity_ruleset": get_system_setting(conn, "modsecurity_ruleset", "baseline"),
                     "ssh_motd": get_system_setting(conn, "ssh_motd", DEFAULT_SSH_MOTD),
+                    "public_host": get_system_setting(conn, "public_host", CONFIG.public_host),
                 }})
             if path == "/api/admin/modsecurity/rulesets" and method == "GET":
                 return self.json_response({"rulesets": [{"id": "baseline", "name": "MangoPanel baseline", "description": "Managed high-confidence protection."}, {"id": "owasp", "name": "OWASP CRS 4.0.0", "description": "Downloaded from the official OWASP Core Rule Set release."}]})
@@ -6762,6 +6821,11 @@ class MangoHandler(BaseHTTPRequestHandler):
                 set_system_setting(conn, "backup_time", backup_time)
                 set_system_setting(conn, "resource_scan_time", resource_scan_time)
                 set_system_setting(conn, "system_timezone", timezone_name)
+                current_public_host = get_system_setting(conn, "public_host", CONFIG.public_host)
+                public_host = normalize_public_host(body.get("public_host", current_public_host))
+                public_host_changed = public_host != current_public_host
+                set_system_setting(conn, "public_host", public_host)
+                CONFIG.public_host = public_host
                 ruleset = str(body.get("modsecurity_ruleset", get_system_setting(conn, "modsecurity_ruleset", "baseline")) or "baseline").lower()
                 if ruleset not in {"baseline", "owasp"}:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_modsecurity_ruleset")
@@ -6774,9 +6838,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if motd != current_motd:
                     set_system_setting(conn, "ssh_motd", motd)
                     motd_job_id = enqueue_agent_job(conn, "apply_ssh_motd", "system", 0, {"motd": motd})
+                public_host_job_ids = []
+                if public_host_changed:
+                    accounts = conn.execute(
+                        "SELECT id FROM hosting_accounts WHERE status NOT IN ('suspended', 'hard_suspended') ORDER BY id"
+                    ).fetchall()
+                    public_host_job_ids = [
+                        enqueue_agent_job(conn, "provision_hosting_account", "hosting_account", account["id"], {"public_host_changed": True}, inline=False)
+                        for account in accounts
+                    ]
                 apply_system_timezone(conn)
                 log_audit(conn, "admin", actor["id"], "update_configuration", "system_settings", 0, metadata={"backup_time": backup_time, "timezone": timezone_name})
-                return self.json_response({"configuration": {"backup_time": backup_time, "resource_scan_time": resource_scan_time, "timezone": timezone_name, "modsecurity_ruleset": ruleset, "ssh_motd": motd}, "ssh_motd_job_id": motd_job_id})
+                return self.json_response({"configuration": {"backup_time": backup_time, "resource_scan_time": resource_scan_time, "timezone": timezone_name, "modsecurity_ruleset": ruleset, "ssh_motd": motd, "public_host": public_host}, "ssh_motd_job_id": motd_job_id, "public_host_job_ids": public_host_job_ids})
             # Reseller Plans API
             if path == "/api/admin/reseller-plans" and method == "GET":
                 plans = rows_to_dicts(conn.execute("SELECT * FROM reseller_plans ORDER BY id DESC").fetchall())
@@ -8129,7 +8202,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     """
                     INSERT INTO plans(
                       name, cpu_limit, service_cpu_limit, total_cpu_limit, memory_mb, storage_mb, inode_limit, max_websites, max_subdomains,
-                      max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days,
+                      max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days, backup_schedule,
                       max_processes, php_workers, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
                       frontend_frameworks, backend_frameworks, nodejs_versions, package_managers,
                       dns_default_provider, dns_allowed_providers_json, dns_allowed_provider_accounts_json, dns_default_provider_account_id,
@@ -8138,7 +8211,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_dnssec_allowed, dns_dnssec_required, allow_api_access,
                       is_reseller, max_clients, max_reseller_subplans
                     ) VALUES (
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
@@ -14159,24 +14232,48 @@ def start_worker_daemon(config):
     return thread
 
 
+def start_edge_proxy():
+    """Start the shared Caddy edge proxy for Docker-backed installations."""
+    edge_compose = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose-edge.yml")
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", edge_compose, "up", "-d"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            print(f"Failed to start edge proxy: {result.stderr.strip() or result.stdout.strip()}")
+    except Exception as exc:
+        print(f"Failed to start edge proxy: {exc}")
+
+
 def run():
     CONFIG.data_dir.mkdir(parents=True, exist_ok=True)
     CONFIG.account_root.mkdir(parents=True, exist_ok=True)
     init_db(CONFIG.db_path)
     with connect(CONFIG.db_path) as conn:
+        persisted_public_host = get_system_setting(conn, "public_host", "")
+        if persisted_public_host:
+            CONFIG.public_host = normalize_public_host(persisted_public_host)
         apply_system_timezone(conn)
+    if CONFIG.env != "development":
+        ensure_local_node(
+            CONFIG.db_path,
+            name=os.getenv("MP_NODE_NAME", "local"),
+            hostname=os.getenv("MP_NODE_HOSTNAME", CONFIG.public_host),
+        )
+    if CONFIG.agent_mode == "docker" and CONFIG.env != "development":
+        start_edge_proxy()
     if CONFIG.env == "development":
         seed_dev_data(CONFIG.db_path, CONFIG.account_root)
         agent = Agent(CONFIG)
         agent.run_all()
-        import subprocess, os
-        # Start global Edge Proxy FIRST so the mangopanel-edge network exists
+        import subprocess
+        # Start the shared edge proxy so the mangopanel-edge network exists
         # before any account stacks try to attach to it.
-        edge_compose = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose-edge.yml")
-        try:
-            subprocess.run(["docker", "compose", "-f", edge_compose, "up", "-d"], check=False)
-        except Exception as e:
-            print(f"Failed to start edge proxy: {e}")
+        start_edge_proxy()
         # Ensure the network exists even if caddy isn't running yet
         try:
             subprocess.run(

@@ -3218,6 +3218,7 @@
               <label>Backup time <input type="time" v-model="configuration.backup_time"><small>Automatic backups start after this time using the queue worker.</small></label>
               <label>Resource usage scan time <input type="time" v-model="configuration.resource_scan_time"><small>Daily CPU, memory, disk, and inode scans run at this time. Default: 03:00.</small></label>
               <label>System timezone <select v-model="configuration.timezone"><option v-if="configuration.timezone && !timezoneOptions.includes(configuration.timezone)" :value="configuration.timezone">{{ configuration.timezone }} (current)</option><option v-for="zone in timezoneOptions" :key="zone" :value="zone">{{ zone }}</option></select><small>The saved timezone is selected automatically and controls backup and job scheduling.</small></label>
+              <label>Public hostname <input v-model.trim="configuration.public_host" placeholder="seeds.servermango.com" autocomplete="off"><small>Base hostname for account URLs and the Docker edge proxy. Point a wildcard DNS record such as *.your-hostname to this server. Changing it queues route updates for existing accounts.</small></label>
               <label>SSH login message <textarea v-model="configuration.ssh_motd" rows="18" spellcheck="false" style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; resize: vertical;"></textarea><small>One message is used for all account SSH/SFTP logins. Changes are propagated through the queue worker to the existing account containers.</small></label>
               <button class="primary-button plan-submit" type="button" @click="saveConfiguration" :disabled="configurationSaving">{{ configurationSaving ? 'Saving…' : 'Save Configuration' }}</button>
               <hr>
@@ -3328,7 +3329,10 @@
                   <option v-for="node in dashboard.nodes" :key="node.id" :value="node.id">{{ node.name }}</option>
                 </select>
               </label>
-              <button class="primary-button plan-submit" @click="createHostingAccount" :disabled="!newAccount.user_id || !newAccount.plan_id || !newAccount.node_id">Provision Account</button>
+              <button class="primary-button plan-submit" @click="createHostingAccount" :disabled="provisioningAccount || !newAccount.user_id || !newAccount.plan_id || !newAccount.node_id" :aria-busy="provisioningAccount">
+                <span v-if="provisioningAccount" class="btn-spinner" aria-hidden="true"></span>
+                {{ provisioningAccount ? 'Provisioning…' : 'Provision Account' }}
+              </button>
             </div>
           </section>
 
@@ -3588,7 +3592,7 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/admin.js?v=1.0.11"></script>
+    <script src="/assets/admin.js?v=1.0.12"></script>
     <script>
       (function initAdminLoginInteraction() {
         function attachListeners() {

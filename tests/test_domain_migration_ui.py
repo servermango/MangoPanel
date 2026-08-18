@@ -80,6 +80,36 @@ class DomainMigrationUITests(unittest.TestCase):
                 )
                 self.assertIn("migrated_domain_count", response)
 
+    def test_plan_create_includes_backup_schedule_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self.make_config(Path(tmp))
+            seed_dev_data(config.db_path, config.account_root)
+            token = self.admin_token(config)
+
+            with ClientApiServer(config, panel="admin") as server:
+                response = server.request(
+                    "POST",
+                    "/api/admin/plans",
+                    body={
+                        "name": "Regression Plan",
+                        "cpu_limit": "1",
+                        "memory_mb": 1024,
+                        "storage_mb": 10000,
+                        "inode_limit": 100000,
+                        "max_websites": 10,
+                        "max_databases": 10,
+                        "max_mailboxes": 10,
+                        "max_cron_jobs": 10,
+                        "daily_email_limit": 100,
+                        "backup_retention_days": 7,
+                        "backup_schedule": "weekly",
+                    },
+                    token=token,
+                )
+
+            self.assertEqual(response["plan"]["name"], "Regression Plan")
+            self.assertEqual(response["plan"]["backup_schedule"], "weekly")
+
     def test_bulk_migrate_all_domains(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = self.make_config(Path(tmp))

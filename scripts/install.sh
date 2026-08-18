@@ -226,6 +226,18 @@ wait_for_docker() {
   die "Docker was installed but the daemon is not ready. Start Docker Desktop or the Docker service, then rerun scripts/install.sh."
 }
 
+ensure_mangopanel_network() {
+  if [[ "$mode" != "--full" ]]; then
+    return
+  fi
+
+  if docker network inspect mangopanel-edge >/dev/null 2>&1; then
+    return
+  fi
+
+  docker network create mangopanel-edge >/dev/null || die "Could not create the required Docker network mangopanel-edge."
+}
+
 prefetch_docker_images() {
   local images=(
     "python:3.11-slim"
@@ -352,6 +364,7 @@ StartLimitBurst=10
 Type=simple
 WorkingDirectory=$repo_root
 Environment=MP_ENV=production
+Environment=MP_AGENT_MODE=docker
 Environment=MP_HOST=0.0.0.0
 Environment=MP_PUBLIC_HOST=$public_host
 Environment=MP_CLIENT_PORT=8000
@@ -398,6 +411,8 @@ EOF
   <dict>
     <key>MP_ENV</key>
     <string>production</string>
+    <key>MP_AGENT_MODE</key>
+    <string>docker</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -434,6 +449,7 @@ main() {
   verify_tooling
   ensure_git_repo
   wait_for_docker
+  ensure_mangopanel_network
   if [[ "$mode" == "--full" ]]; then
     prefetch_docker_images
   fi

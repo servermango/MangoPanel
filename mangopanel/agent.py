@@ -790,6 +790,15 @@ class Agent:
                 """,
                 (json.dumps({"error": str(exc)}), job["id"]),
             )
+            if job["type"] == "provision_hosting_account":
+                conn.execute(
+                    """
+                    UPDATE hosting_accounts
+                    SET status = 'error'
+                    WHERE id = ? AND status IN ('provisioning', 'rebuilding')
+                    """,
+                    (job["target_id"],),
+                )
             if job["type"] == "git_deploy":
                 conn.execute(
                     "UPDATE git_deployments SET status = 'failed', last_error = ? WHERE id = ?",
@@ -1831,6 +1840,24 @@ class Agent:
         if not website:
             raise AgentError("website_not_found")
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (website["account_id"],)).fetchone()
+        if self.config.agent_mode == "docker" and self.config.env != "development":
+            # Production HTTPS is terminated by the shared Caddy edge proxy.
+            # Do not create a self-signed/local-development certificate and
+            # report it as active; that masks failed ACME validation and can
+            # produce ERR_SSL_PROTOCOL_ERROR in a fresh installation.
+            conn.execute("UPDATE websites SET ssl_status = 'pending' WHERE id = ?", (website_id,))
+            conn.execute("UPDATE ssl_certificates SET status = 'pending' WHERE website_id = ? AND status != 'custom'", (website_id,))
+            docker = shutil.which("docker")
+            if docker:
+                subprocess.run([docker, "restart", "mangopanel-caddy"], check=False, capture_output=True, text=True, timeout=60)
+            return {
+                "mode": "caddy",
+                "ssl_status": "pending",
+                "website_id": website_id,
+                "domain": website["domain"],
+                "provider": "caddy-acme",
+                "message": "Caddy is obtaining the certificate after DNS validation.",
+            }
         cert_dir = Path(account["base_path"]) / "ssl" / website["domain"]
         cert_dir.mkdir(parents=True, exist_ok=True)
         cert_path = cert_dir / "issued.crt"
@@ -2781,6 +2808,23 @@ class Agent:
             docker = shutil.which("docker")
             if not docker:
                 raise AgentError("docker_not_found")
+            network = subprocess.run(
+                [docker, "network", "inspect", "mangopanel-edge"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if network.returncode != 0:
+                network = subprocess.run(
+                    [docker, "network", "create", "mangopanel-edge"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if network.returncode != 0 and "already exists" not in (network.stderr or "").lower():
+                    raise AgentError(network.stderr.strip() or "docker_edge_network_failed")
             self.ensure_cpu_cgroup(username, total_cpu_limit)
             result = subprocess.run(
                 [docker, "compose", "-f", str(compose_path), "up", "-d", "--build", "--remove-orphans", "--force-recreate"],

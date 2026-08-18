@@ -895,6 +895,27 @@ def init_db(db_path):
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)")
 
 
+def ensure_local_node(db_path, name="local", hostname="localhost", quota_backend="system"):
+    """Ensure a single-node installation has a usable local hosting node.
+
+    Production installs do not use development seed data, but account
+    provisioning still requires at least one node. This is intentionally
+    additive and leaves existing multi-node configurations unchanged.
+    """
+    with connect(db_path) as conn:
+        existing = conn.execute("SELECT id FROM nodes ORDER BY id LIMIT 1").fetchone()
+        if existing:
+            return existing["id"]
+        cur = conn.execute(
+            """
+            INSERT INTO nodes(name, hostname, status, quota_backend)
+            VALUES (?, ?, 'online', ?)
+            """,
+            (str(name or "local").strip() or "local", str(hostname or "localhost").strip() or "localhost", quota_backend),
+        )
+        return cur.lastrowid
+
+
 def ensure_schema(conn):
     # Keep additive migrations here as well as in SCHEMA so already-created
     # databases receive the backup tables without a destructive migration.

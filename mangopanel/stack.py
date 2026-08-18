@@ -1598,7 +1598,7 @@ services:
     mem_limit: 128m
     cpus: "{service_cpu_count}"
     cgroup_parent: {cpu_group}
-    entrypoint: ["/bin/sh", "-c", 'if [ ! -f /config/settings.json ]; then cp -a /defaults/settings.json /config/settings.json; fi; umask 0000; if [ ! -f /database/filebrowser.db ]; then /bin/filebrowser config init -d /database/filebrowser.db --auth.method noauth >/dev/null 2>&1; fi; /bin/filebrowser config set --auth.method noauth --perm.rename=true -d /database/filebrowser.db >/dev/null 2>&1 || true; exec /bin/filebrowser "$$@"', "--"]
+    entrypoint: ["/bin/sh", "-c", 'if [ ! -f /config/settings.json ]; then cp -a /defaults/settings.json /config/settings.json; fi; umask 0000; if [ ! -f /database/filebrowser.db ]; then /bin/filebrowser config init -d /database/filebrowser.db --auth.method noauth >/dev/null 2>&1; fi; /bin/filebrowser config set --auth.method noauth --perm.rename=true -d /database/filebrowser.db >/dev/null 2>&1 || true; if ! /bin/filebrowser users ls -d /database/filebrowser.db 2>/dev/null | grep -q "admin"; then /bin/filebrowser users add admin "$(cat /proc/sys/kernel/random/uuid)" --scope / --perm.admin -d /database/filebrowser.db >/dev/null 2>&1 || true; fi; exec /bin/filebrowser "$$@"', "--"]
     command: ["--config", "/config/settings.json", "--baseURL", "/files", "--root", "/srv", "--address", "0.0.0.0", "--port", "80", "--database", "/database/filebrowser.db"]
     environment:
       FB_BRANDING_DISABLE_USED_PERCENTAGE: "false"
