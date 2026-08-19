@@ -2576,6 +2576,8 @@ class Agent:
             raise AgentError("hosting_account_not_found")
         plan = conn.execute("SELECT * FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
         node = conn.execute("SELECT * FROM nodes WHERE id = ?", (account["node_id"],)).fetchone()
+        if plan and str(plan["analytics_mode"] if "analytics_mode" in plan.keys() else "on").lower() == "disabled":
+            conn.execute("UPDATE websites SET analytics_enabled = 0 WHERE account_id = ?", (account_id,))
         websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()
         hotlink_settings = conn.execute("SELECT * FROM hotlink_settings WHERE account_id = ?", (account_id,)).fetchone()
         hotlink_allowed = [line.strip() for line in (hotlink_settings["allowed_domains"] if hotlink_settings else "").splitlines() if line.strip()]
@@ -4042,7 +4044,11 @@ class Agent:
         if not account:
             raise AgentError("hosting_account_not_found")
         
-        rules = conn.execute("SELECT * FROM ip_rules WHERE account_id = ?", (account_id,)).fetchall()
+        now = int(time.time())
+        rules = conn.execute(
+            "SELECT * FROM ip_rules WHERE account_id = ? AND (expires_at IS NULL OR expires_at > ?)",
+            (account_id, now),
+        ).fetchall()
         
         block_rules = [rule for rule in rules if rule["type"] == "block"]
         htaccess_lines = ["# BEGIN MangoPanel IP Rules", "RewriteEngine On"]
@@ -4434,7 +4440,11 @@ class Agent:
         if not account:
             raise AgentError("hosting_account_not_found")
         summary = self.provision_hosting_account(conn, account["id"], touched_website_id=website_id)
-        analytics_enabled = website["analytics_enabled"] if "analytics_enabled" in website.keys() and website["analytics_enabled"] is not None else 1
+        plan = conn.execute("SELECT analytics_mode FROM plans WHERE id = (SELECT plan_id FROM hosting_accounts WHERE id = ?)", (website["account_id"],)).fetchone()
+        analytics_mode = str(plan["analytics_mode"] if plan and plan["analytics_mode"] else "on").lower()
+        analytics_enabled = 0 if analytics_mode == "disabled" else (website["analytics_enabled"] if "analytics_enabled" in website.keys() and website["analytics_enabled"] is not None else 1)
+        if analytics_mode == "disabled" and website["analytics_enabled"]:
+            conn.execute("UPDATE websites SET analytics_enabled = 0 WHERE id = ?", (website_id,))
         artifact = write_account_json(
             account,
             Path(".runtime") / "analytics" / f"{website['domain']}.json",

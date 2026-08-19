@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS plans (
   frontend_frameworks TEXT NOT NULL DEFAULT 'Angular, Astro, Next.js, Nuxt, Parcel, React, React Router, Svelte, SvelteKit, Vite, Vue.js',
   backend_frameworks TEXT NOT NULL DEFAULT 'Astro, Express, Fastify, Hono, NestJS, Next.js, Nuxt, React Router, SvelteKit',
   allow_api_access INTEGER NOT NULL DEFAULT 0,
+  analytics_mode TEXT NOT NULL DEFAULT 'on',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -187,6 +188,9 @@ ON access_logs(account_id, domain, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_access_logs_website_time
 ON access_logs(website_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_access_logs_created_at_domain
+ON access_logs(created_at, domain);
 
 CREATE TABLE IF NOT EXISTS websites (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -457,6 +461,9 @@ CREATE TABLE IF NOT EXISTS ip_rules (
   account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
   ip TEXT NOT NULL,
   type TEXT NOT NULL,
+  expires_at INTEGER,
+  source TEXT NOT NULL DEFAULT 'manual',
+  reason TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(account_id, ip)
 );
@@ -1176,6 +1183,15 @@ def ensure_schema(conn):
             "dedicated_ip_id": "INTEGER REFERENCES server_ips(id)",
         },
     )
+    ensure_table_columns(
+        conn,
+        "ip_rules",
+        {
+            "expires_at": "INTEGER",
+            "source": "TEXT NOT NULL DEFAULT 'manual'",
+            "reason": "TEXT NOT NULL DEFAULT ''",
+        },
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS server_ips (
@@ -1234,6 +1250,15 @@ def ensure_schema(conn):
         ON access_logs(website_id, created_at)
         """
     )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_access_logs_created_at_domain
+        ON access_logs(created_at, domain)
+        """
+    )
+    # The earlier single-column index was not covering for the traffic
+    # history query and caused an extra table lookup per matching row.
+    conn.execute("DROP INDEX IF EXISTS idx_access_logs_created_at")
     ensure_table_columns(
         conn,
         "jobs",
@@ -1435,6 +1460,7 @@ def ensure_schema(conn):
     })
     ensure_table_columns(conn, "plans", {
         "allow_api_access": "INTEGER NOT NULL DEFAULT 0",
+        "analytics_mode": "TEXT NOT NULL DEFAULT 'on'",
         "service_cpu_limit": "TEXT NOT NULL DEFAULT '0.25'",
         "total_cpu_limit": "TEXT NOT NULL DEFAULT '2'",
     })

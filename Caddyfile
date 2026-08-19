@@ -9,4 +9,8 @@
 (mangopanel-xmlrpc-block) {
 	@xmlrpc path /xmlrpc.php
 	respond @xmlrpc "MangoPanel XML-RPC disabled" 403
+	# Reject common cloud-credential and repository probes at the edge so
+	# scanners cannot force WordPress to bootstrap on every request.
+	@cloud_probe path /.env* /.git/* /git/config /git/HEAD /aws/* /aws.json /aws-* /k8s/* /latest/meta-data/* /firebase* /service-account* /google-* /gcp-* /credentials* /config/credentials* /config/gcp-credentials* /config/aws* /config/jenkins.xml /.aws/* /.gcloud/* /.github/* /.jenkins/* /jenkins/* /jenkins/credentials.xml /jenkins/Jenkinsfile /actuator/* /server-status /cgi-bin/* /wp-config* /wp-plain.php /atomlib.php /shell.php /ops.php /chosen.php /classwithtostring.php /admin.php /file.php /file1.php /file5.php /file6.php /wp-file.php /wp-access.php /wp-conflg.php /wp-2019.php /wp-content/config.php /wp-content/plugins/hellopress/wp_filemanager.php /wp-content/plugins/pwnd/pwnd.php /wp-content/plugins/pwnd-1/pwnd.php /wp-content/plugins/pwnd-2/pwnd.php /wp-content/plugins/fix/up.php /wp-content/plugins/seoplugins/mar.php /wp-content/themes/twenty/twenty.php /wp-content/themes/aahana/json.php /wp-includes/wp-class.php /wp-includes/css/wp-conflg.php /wp-content/uploads/index.php /ALFA_DATA/alfacgiapi/perl.alfa
+	respond @cloud_probe "Not Found" 404
 }

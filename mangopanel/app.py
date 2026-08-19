@@ -92,6 +92,163 @@ from .stack import DEFAULT_SSH_MOTD, build_account_runtime, sync_account_suspens
 CONFIG = load_config()
 PUBLIC_DIR = Path(__file__).resolve().parent.parent / "public"
 SERVICE_VAR_DIR = Path(__file__).resolve().parent.parent / "var"
+
+# Keep this list aligned with the universal Caddy probe matcher. One match is
+# enough for a short block because these are high-confidence reconnaissance paths.
+UNIVERSAL_PROBE_PATHS = (
+    "/.env*", "/.git/*", "/git/config", "/git/HEAD", "/aws/*", "/aws.json", "/aws-*",
+    "/k8s/*", "/latest/meta-data/*", "/firebase*", "/service-account*", "/google-*", "/gcp-*",
+    "/credentials*", "/config/credentials*", "/config/gcp-credentials*", "/config/aws*",
+    "/config/jenkins.xml", "/.aws/*", "/.gcloud/*", "/.github/*", "/.jenkins/*", "/jenkins/*",
+    "/jenkins/credentials.xml", "/jenkins/Jenkinsfile", "/actuator/*", "/server-status", "/cgi-bin/*",
+    "/wp-config*", "/wp-plain.php", "/atomlib.php", "/shell.php", "/ops.php", "/chosen.php",
+    "/classwithtostring.php", "/admin.php", "/file.php", "/file1.php", "/file5.php", "/file6.php",
+    "/wp-file.php", "/wp-access.php", "/wp-conflg.php", "/wp-2019.php", "/wp-content/config.php",
+    "/wp-content/plugins/hellopress/wp_filemanager.php", "/wp-content/plugins/pwnd/pwnd.php",
+    "/wp-content/plugins/pwnd-1/pwnd.php", "/wp-content/plugins/pwnd-2/pwnd.php",
+    "/wp-content/plugins/fix/up.php", "/wp-content/plugins/seoplugins/mar.php",
+    "/wp-content/themes/twenty/twenty.php", "/wp-content/themes/aahana/json.php",
+    "/wp-includes/wp-class.php", "/wp-includes/css/wp-conflg.php", "/wp-content/uploads/index.php",
+    "/ALFA_DATA/alfacgiapi/perl.alfa",
+)
+TRUSTED_CLOUDFLARE_RANGES = tuple(ipaddress.ip_network(value) for value in (
+    "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "104.16.0.0/13",
+    "104.24.0.0/14", "108.162.192.0/18", "131.0.72.0/22", "141.101.64.0/18",
+    "162.158.0.0/15", "172.64.0.0/13", "173.245.48.0/20", "188.114.96.0/20",
+    "190.93.240.0/20", "197.234.240.0/22", "198.41.128.0/17", "2400:cb00::/32",
+    "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+    "2a06:98c0::/29", "2c0f:f248::/32",
+))
+
+
+def _probe_path_matches(path):
+    path = str(path or "").split("?", 1)[0]
+    return any(path.startswith(pattern[:-1]) if pattern.endswith("*") else path == pattern
+               for pattern in UNIVERSAL_PROBE_PATHS)
+
+
+def _header_value(headers, name):
+    for key, value in (headers or {}).items():
+        if str(key).lower() == name.lower():
+            if isinstance(value, list):
+                value = value[0] if value else ""
+            return str(value).split(",", 1)[0].strip()
+    return ""
+
+
+def _public_ip(value):
+    try:
+        address = ipaddress.ip_address(str(value).strip())
+    except ValueError:
+        return None
+    if any((address.is_private, address.is_loopback, address.is_reserved,
+            address.is_unspecified, address.is_multicast)):
+        return None
+    return str(address)
+
+
+def _probe_log_entry(line):
+    try:
+        entry = json.loads(line)
+        request = entry.get("request") or {}
+        path = request.get("uri", "")
+        if not _probe_path_matches(path):
+            return None
+        host = str(request.get("host", "")).split(":", 1)[0].lower().rstrip(".")
+        if not host:
+            return None
+        remote_ip = _public_ip(request.get("remote_ip", ""))
+        try:
+            remote_address = ipaddress.ip_address(request.get("remote_ip", ""))
+        except ValueError:
+            remote_address = None
+        cf_ip = _public_ip(_header_value(request.get("headers"), "cf-connecting-ip"))
+        trusted_proxy = remote_address and any(remote_address in network for network in TRUSTED_CLOUDFLARE_RANGES)
+        client_ip = cf_ip if trusted_proxy else remote_ip
+        return (host, client_ip, str(path).split("?", 1)[0]) if client_ip else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def start_probe_block_monitor(config):
+    """Turn one universal probe hit into a five-minute client IP rule."""
+    def loop():
+        seen = set()
+        while True:
+            try:
+                log_result = subprocess.run(
+                    ["docker", "logs", "--since", "10s", "--tail", "500", "mangopanel-caddy"],
+                    capture_output=True, text=True, timeout=8,
+                )
+                output = log_result.stdout + log_result.stderr
+                hits = []
+                for line in output.splitlines():
+                    hit = _probe_log_entry(line)
+                    if hit and hit not in seen:
+                        seen.add(hit)
+                        hits.append(hit)
+                if len(seen) > 10000:
+                    seen.clear()
+
+                now = int(time.time())
+                with connect(config.db_path) as conn:
+                    expired = conn.execute(
+                        "SELECT id, account_id FROM ip_rules WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                        (now,),
+                    ).fetchall()
+                    expired_accounts = {int(row["account_id"]) for row in expired}
+                    if expired:
+                        conn.executemany("DELETE FROM ip_rules WHERE id = ?", [(row["id"],) for row in expired])
+                        for account_id in expired_accounts:
+                            enqueue_agent_job(conn, "sync_ip_rules", "hosting_account", account_id, {"reason": "probe_block_expired"})
+
+                    for host, client_ip, path in hits:
+                        website = conn.execute(
+                            "SELECT account_id FROM websites WHERE lower(domain) = ? LIMIT 1", (host,)
+                        ).fetchone()
+                        if not website and host.startswith("www."):
+                            website = conn.execute(
+                                "SELECT account_id FROM websites WHERE lower(domain) = ? LIMIT 1", (host[4:],)
+                            ).fetchone()
+                        if not website:
+                            continue
+                        account_id = int(website["account_id"])
+                        allowed = conn.execute(
+                            "SELECT 1 FROM ip_rules WHERE account_id = ? AND ip = ? AND type = 'allow' LIMIT 1",
+                            (account_id, client_ip),
+                        ).fetchone()
+                        if allowed:
+                            continue
+                        expires_at = now + 300
+                        existing = conn.execute(
+                            "SELECT id, source FROM ip_rules WHERE account_id = ? AND ip = ?",
+                            (account_id, client_ip),
+                        ).fetchone()
+                        if existing and existing["source"] == "manual":
+                            continue
+                        if existing:
+                            conn.execute(
+                                "UPDATE ip_rules SET type = 'block', expires_at = ?, source = 'automatic_probe', reason = ? WHERE id = ?",
+                                (expires_at, path, existing["id"]),
+                            )
+                        else:
+                            conn.execute(
+                                "INSERT INTO ip_rules(account_id, ip, type, expires_at, source, reason) VALUES (?, ?, 'block', ?, 'automatic_probe', ?)",
+                                (account_id, client_ip, expires_at, path),
+                            )
+                        rule = conn.execute(
+                            "SELECT id FROM ip_rules WHERE account_id = ? AND ip = ?", (account_id, client_ip)
+                        ).fetchone()
+                        log_audit(conn, "system", 0, "automatic_probe_ip_block", "ip_rule", rule["id"], client_ip,
+                                  {"host": host, "path": path, "expires_at": expires_at})
+                        enqueue_agent_job(conn, "sync_ip_rules", "hosting_account", account_id, {"reason": "automatic_probe", "ip": client_ip})
+            except Exception as exc:
+                logging.getLogger(__name__).warning("probe block monitor error: %s", exc)
+            time.sleep(5)
+
+    thread = threading.Thread(target=loop, name="mangopanel-probe-blocks", daemon=True)
+    thread.start()
+    return thread
 FEATURE_STATUS = {
     "dashboard": {"status": "functional", "label": "Functional"},
     "wordpress-manager": {"status": "functional", "label": "Functional"},
@@ -2925,9 +3082,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                     relative_path = ""
                     document_root = f"{account['base_path']}/domains/{domain}/public_html"
                 cur = conn.execute(
-                    """INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status, created_by_user_id, is_subdomain, parent_domain_id, hosting_mode, subdomain_path)
-                       VALUES (?, ?, ?, ?, 'missing', 'active', ?, 1, ?, ?, ?)""",
-                    (account["id"], domain, document_root, body.get("php_version", "8.3"), actor["id"], parent_id, mode, relative_path or None),
+                    """INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status, analytics_enabled, created_by_user_id, is_subdomain, parent_domain_id, hosting_mode, subdomain_path)
+                       VALUES (?, ?, ?, ?, 'missing', 'active', ?, ?, 1, ?, ?, ?)""",
+                    (account["id"], domain, document_root, body.get("php_version", "8.3"), default_analytics_enabled(conn, account["id"]), actor["id"], parent_id, mode, relative_path or None),
                 )
                 website_id = cur.lastrowid
                 public_ip = get_host_public_ip(conn)
@@ -3025,7 +3182,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                         (actor["id"],),
                     ).fetchall()
                 websites = rows_to_dicts(rows)
+                analytics_mode, analytics_available = account_analytics_policy(conn, account["id"]) if account else ("on", True)
                 for website in websites:
+                    website["analytics_mode"] = analytics_mode
+                    website["analytics_available"] = analytics_available
                     registrar_assignment = conn.execute(
                         """SELECT r.id, r.domain_name, r.nameservers_json, ra.label AS account_label
                            FROM registrar_domain_records r
@@ -3130,10 +3290,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 document_root = f"{account['base_path']}/domains/{domain}/public_html"
                 cur = conn.execute(
                     """
-                    INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status, created_by_user_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status, analytics_enabled, created_by_user_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (account["id"], domain, document_root, body.get("php_version", "8.3"), "missing", "active", actor["id"]),
+                    (account["id"], domain, document_root, body.get("php_version", "8.3"), "missing", "active", default_analytics_enabled(conn, account["id"]), actor["id"]),
                 )
                 website_id = cur.lastrowid
                 dns_assignment = default_domain_dns_assignment(conn, account["id"])
@@ -3244,6 +3404,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         resource_type="website", resource_id=website_id,
                     )
                     body = self.read_json()
+                    analytics_mode, analytics_available = account_analytics_policy(conn, account["id"])
                     allowed_php = {"7.4", "8.0", "8.1", "8.2", "8.3", "8.4"}
                     php_version = body.get("php_version", website["php_version"])
                     if php_version not in allowed_php:
@@ -3278,8 +3439,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_analytics_enabled")
                         if analytics_enabled not in {0, 1}:
                             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_analytics_enabled")
+                        if analytics_mode == "disabled" and analytics_enabled:
+                            raise ApiError(HTTPStatus.FORBIDDEN, "analytics_disabled_for_plan")
                     else:
-                        analytics_enabled = int(website["analytics_enabled"] if website["analytics_enabled"] is not None else 1)
+                        analytics_enabled = 0 if analytics_mode == "disabled" else int(website["analytics_enabled"] if website["analytics_enabled"] is not None else 1)
                         
                     conn.execute(
                         "UPDATE websites SET php_version = ?, status = ?, php_ini = ?, index_enabled = ?, modsec_enabled = ?, analytics_enabled = ? WHERE id = ?",
@@ -6043,7 +6206,7 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             if path == "/api/client/ip-rules" and method == "GET":
                 require_account(account)
-                rules = conn.execute("SELECT id, ip, type, created_at FROM ip_rules WHERE account_id = ?", (account["id"],)).fetchall()
+                rules = conn.execute("SELECT id, ip, type, expires_at, source, reason, created_at FROM ip_rules WHERE account_id = ?", (account["id"],)).fetchall()
                 return self.json_response({"ip_rules": [dict(r) for r in rules]})
 
             if path == "/api/client/ip-rules" and method == "POST":
@@ -6066,7 +6229,7 @@ class MangoHandler(BaseHTTPRequestHandler):
 
                 job_id = enqueue_agent_job(conn, "sync_ip_rules", "hosting_account", account["id"], {})
                 log_activity(conn, actor["id"], "ip_rule_added", {"ip": ip_val, "type": rule_type})
-                return self.json_response({"id": rule_id, "ip": ip_val, "type": rule_type, "status": "active", "job_id": job_id}, HTTPStatus.CREATED)
+                return self.json_response({"id": rule_id, "ip": ip_val, "type": rule_type, "expires_at": None, "source": "manual", "reason": "", "status": "active", "job_id": job_id}, HTTPStatus.CREATED)
 
             match = re.match(r"^/api/client/ip-rules/(\d+)$", path)
             if match and method == "DELETE":
@@ -8208,13 +8371,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_default_provider, dns_allowed_providers_json, dns_allowed_provider_accounts_json, dns_default_provider_account_id,
                       dns_customer_editable, dns_max_records_per_domain, dns_allowed_record_types_json,
                       dns_min_ttl, dns_wildcard_records_allowed, dns_cloudflare_proxy_allowed,
-                      dns_dnssec_allowed, dns_dnssec_required, allow_api_access,
+                      dns_dnssec_allowed, dns_dnssec_required, allow_api_access, analytics_mode,
                       is_reseller, max_clients, max_reseller_subplans
                     ) VALUES (
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
@@ -8256,6 +8419,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["dns_dnssec_allowed"],
                         plan["dns_dnssec_required"],
                         plan["allow_api_access"],
+                        plan["analytics_mode"],
                         plan["is_reseller"],
                         plan["max_clients"],
                         plan["max_reseller_subplans"],
@@ -8274,6 +8438,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if not existing:
                     raise ApiError(HTTPStatus.NOT_FOUND, "plan_not_found")
                 body = self.read_json()
+                if "analytics_mode" not in body:
+                    body["analytics_mode"] = existing["analytics_mode"] if "analytics_mode" in existing.keys() else "on"
                 plan = validate_plan_payload(body)
                 validate_plan_dns_accounts(conn, plan)
                 duplicate = conn.execute("SELECT id FROM plans WHERE name = ? AND id != ?", (plan["name"], plan_id)).fetchone()
@@ -8289,7 +8455,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                       dns_default_provider = ?, dns_allowed_providers_json = ?, dns_allowed_provider_accounts_json = ?, dns_default_provider_account_id = ?,
                       dns_customer_editable = ?, dns_max_records_per_domain = ?, dns_allowed_record_types_json = ?,
                       dns_min_ttl = ?, dns_wildcard_records_allowed = ?, dns_cloudflare_proxy_allowed = ?,
-                      dns_dnssec_allowed = ?, dns_dnssec_required = ?, allow_api_access = ?,
+                      dns_dnssec_allowed = ?, dns_dnssec_required = ?, allow_api_access = ?, analytics_mode = ?,
                       is_reseller = ?, max_clients = ?, max_reseller_subplans = ?
                     WHERE id = ?
                     """,
@@ -8303,6 +8469,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["dns_customer_editable"], plan["dns_max_records_per_domain"], plan["dns_allowed_record_types_json"],
                         plan["dns_min_ttl"], plan["dns_wildcard_records_allowed"], plan["dns_cloudflare_proxy_allowed"],
                         plan["dns_dnssec_allowed"], plan["dns_dnssec_required"], plan["allow_api_access"],
+                        plan["analytics_mode"],
                         plan["is_reseller"], plan["max_clients"], plan["max_reseller_subplans"], plan_id,
                     ),
                 )
@@ -8333,6 +8500,22 @@ class MangoHandler(BaseHTTPRequestHandler):
                             job_id = migrate_domain_dns_provider(conn, d, target_provider, target_account_id, "admin:{}".format(actor["id"]))
                             job_ids.append(job_id)
                             migrated_domain_count += 1
+                if plan["analytics_mode"] == "disabled":
+                    affected_sites = conn.execute(
+                        """
+                        SELECT w.id FROM websites w
+                        JOIN hosting_accounts ha ON ha.id = w.account_id
+                        WHERE ha.plan_id = ? AND COALESCE(w.analytics_enabled, 1) != 0
+                        """,
+                        (plan_id,),
+                    ).fetchall()
+                    if affected_sites:
+                        conn.execute(
+                            "UPDATE websites SET analytics_enabled = 0 WHERE account_id IN (SELECT id FROM hosting_accounts WHERE plan_id = ?)",
+                            (plan_id,),
+                        )
+                        for site in affected_sites:
+                            job_ids.append(enqueue_agent_job(conn, "sync_website_analytics", "website", site["id"], {"plan_policy": "disabled"}))
                 log_audit(conn, "admin", actor["id"], "update_plan", "plan", plan_id, metadata={"name": plan["name"], "apply_to_existing_accounts": apply_to_accounts, "migrate_existing_domains": migrate_existing_domains, "migrated_domains": migrated_domain_count})
                 updated = conn.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
                 return self.json_response({"plan": row_to_dict(updated), "updated_account_count": len(job_ids), "migrated_domain_count": migrated_domain_count, "job_ids": job_ids})
@@ -8812,10 +8995,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 document_root = str(CONFIG.account_root / username / "domains" / domain / "public_html")
                 website_id = conn.execute(
                     """
-                    INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status, analytics_enabled)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (account_id, domain, document_root, "8.3", "missing", "active"),
+                    (account_id, domain, document_root, "8.3", "missing", "active", default_analytics_enabled(conn, account_id)),
                 ).lastrowid
                 dns_assignment = default_domain_dns_assignment(conn, account_id)
                 domain_id = conn.execute(
@@ -9228,6 +9411,22 @@ def require_active_account(account):
         raise ApiError(HTTPStatus.FORBIDDEN, message)
     if account["status"] in {"provisioning", "rebuilding"}:
         raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "account_maintenance_in_progress")
+
+
+def account_analytics_policy(conn, account_id):
+    plan = conn.execute(
+        "SELECT COALESCE(analytics_mode, 'on') AS analytics_mode FROM hosting_accounts ha JOIN plans p ON p.id = ha.plan_id WHERE ha.id = ?",
+        (account_id,),
+    ).fetchone()
+    mode = str(plan["analytics_mode"] if plan else "on").lower()
+    if mode not in {"off", "on", "disabled"}:
+        mode = "on"
+    return mode, mode != "disabled"
+
+
+def default_analytics_enabled(conn, account_id):
+    mode, _available = account_analytics_policy(conn, account_id)
+    return 0 if mode in {"off", "disabled"} else 1
 
 
 def require_plan_capacity(conn, account_id, resource_table, plan_column, error):
@@ -11086,11 +11285,14 @@ ANALYTICS_FILTERS = {
 
 
 def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-countries"):
+    analytics_mode, analytics_available = account_analytics_policy(conn, account_id)
     websites = rows_to_dicts(conn.execute("SELECT id, domain, status, analytics_enabled FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
     selected = select_analytics_website(websites, website_id)
     filter_key = filter_key if filter_key in ANALYTICS_FILTERS else "top-countries"
     if not selected:
-        return empty_analytics_payload(filter_key)
+        return empty_analytics_payload(filter_key, analytics_mode=analytics_mode, analytics_available=analytics_available)
+    if not analytics_available:
+        return empty_analytics_payload(filter_key, analytics_mode=analytics_mode, analytics_available=False, domain=selected["domain"], website_id=selected["id"])
     analytics_enabled = int(selected.get("analytics_enabled", 1) or 0) != 0
 
     params = [account_id, selected["id"]]
@@ -11154,6 +11356,8 @@ def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-
         "domain": selected["domain"],
         "website_id": selected["id"],
         "analytics_enabled": analytics_enabled,
+        "analytics_mode": analytics_mode,
+        "analytics_available": analytics_available,
         "filters": [{"key": key, "label": label} for key, label in ANALYTICS_FILTERS.items()],
         "filter": filter_key,
         "summary": {
@@ -11182,11 +11386,13 @@ def select_analytics_website(websites, website_id):
     return websites[0]
 
 
-def empty_analytics_payload(filter_key):
+def empty_analytics_payload(filter_key, analytics_mode="on", analytics_available=True, domain="", website_id=None):
     return {
-        "domain": "",
-        "website_id": None,
-        "analytics_enabled": True,
+        "domain": domain,
+        "website_id": website_id,
+        "analytics_enabled": False if analytics_mode == "disabled" else True,
+        "analytics_mode": analytics_mode,
+        "analytics_available": analytics_available,
         "filters": [{"key": key, "label": label} for key, label in ANALYTICS_FILTERS.items()],
         "filter": filter_key,
         "summary": {"total_requests": 0, "unique_ip_addresses": 0, "bandwidth_bytes": 0, "error_4xx": 0, "error_5xx": 0},
@@ -11244,8 +11450,19 @@ def panel_access_log_website(domain):
 
 
 def collect_hosted_access_logs(conn, account_id):
-    websites = conn.execute("SELECT id, account_id, domain, document_root FROM websites WHERE account_id = ?", (account_id,)).fetchall()
+    websites = conn.execute(
+        """
+        SELECT w.id, w.account_id, w.domain, w.document_root, COALESCE(w.analytics_enabled, 1) AS analytics_enabled,
+               COALESCE(p.analytics_mode, 'on') AS analytics_mode
+        FROM websites w JOIN hosting_accounts ha ON ha.id = w.account_id
+        JOIN plans p ON p.id = ha.plan_id
+        WHERE w.account_id = ?
+        """,
+        (account_id,),
+    ).fetchall()
     for website in websites:
+        if website["analytics_mode"] == "disabled" or not int(website["analytics_enabled"]):
+            continue
         log_path = Path(website["document_root"]).parent / "logs" / "access.log"
         if not log_path.exists():
             continue
@@ -11335,8 +11552,18 @@ def collect_daily_panel_access_log_metadata(conn):
     imported = 0
     for account in conn.execute("SELECT id FROM hosting_accounts WHERE status = 'active'").fetchall():
         collect_hosted_access_logs(conn, account["id"])
-    websites = conn.execute("SELECT id, account_id, domain, document_root FROM websites WHERE status = 'active'").fetchall()
+    websites = conn.execute(
+        """
+        SELECT w.id, w.account_id, w.domain, w.document_root, COALESCE(w.analytics_enabled, 1) AS analytics_enabled,
+               COALESCE(p.analytics_mode, 'on') AS analytics_mode
+        FROM websites w JOIN hosting_accounts ha ON ha.id = w.account_id
+        JOIN plans p ON p.id = ha.plan_id
+        WHERE w.status = 'active'
+        """
+    ).fetchall()
     for website in websites:
+        if website["analytics_mode"] == "disabled" or not int(website["analytics_enabled"]):
+            continue
         log_path = Path(website["document_root"]).parent / "logs" / "mangopanel-access.jsonl"
         if not log_path.exists():
             continue
@@ -13016,6 +13243,9 @@ def validate_plan_payload(body):
     dns_dnssec_allowed = 1 if body.get("dns_dnssec_allowed", False) else 0
     dns_dnssec_required = 1 if body.get("dns_dnssec_required", False) else 0
     allow_api_access = 1 if body.get("allow_api_access", False) else 0
+    analytics_mode = str(body.get("analytics_mode", "on") or "on").strip().lower()
+    if analytics_mode not in {"off", "on", "disabled"}:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_analytics_mode")
     is_reseller = 1 if body.get("is_reseller", False) else 0
     max_clients = positive_int(body.get("max_clients", 0), "invalid_max_clients", minimum=0, maximum=1000000)
     max_reseller_subplans = positive_int(body.get("max_reseller_subplans", 0), "invalid_max_reseller_subplans", minimum=0, maximum=100000)
@@ -13061,6 +13291,7 @@ def validate_plan_payload(body):
         "dns_dnssec_allowed": dns_dnssec_allowed,
         "dns_dnssec_required": dns_dnssec_required,
         "allow_api_access": allow_api_access,
+        "analytics_mode": analytics_mode,
         "is_reseller": is_reseller,
         "max_clients": max_clients,
         "max_reseller_subplans": max_reseller_subplans,
@@ -13227,10 +13458,10 @@ def create_initial_hosting_account(conn, user_id, request_headers=None):
     document_root = str(CONFIG.account_root / username / "domains" / domain / "public_html")
     website_id = conn.execute(
         """
-        INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO websites(account_id, domain, document_root, php_version, ssl_status, status, analytics_enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (account_id, domain, document_root, "8.3", "missing", "active"),
+        (account_id, domain, document_root, "8.3", "missing", "active", default_analytics_enabled(conn, account_id)),
     ).lastrowid
     dns_assignment = default_domain_dns_assignment(conn, account_id)
     domain_id = conn.execute(
@@ -14288,6 +14519,7 @@ def run():
         agent.apply_all_accounts()
     start_resource_usage_collector(CONFIG)
     start_worker_daemon(CONFIG)
+    start_probe_block_monitor(CONFIG)
     if CONFIG.client_port == CONFIG.admin_port:
         raise RuntimeError("MP_CLIENT_PORT and MP_ADMIN_PORT must be different so client and admin panels stay separate.")
 

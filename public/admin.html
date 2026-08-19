@@ -2430,6 +2430,14 @@
                   <label>DNS records/domain <input v-model.number="newPlan.dns_max_records_per_domain" type="number" min="0"></label>
                   <label>Minimum DNS TTL <input v-model.number="newPlan.dns_min_ttl" type="number" min="60"></label>
                   <label class="plan-account-update" style="margin-top:0.5rem;"><input v-model="newPlan.allow_api_access" type="checkbox"> Allow Client API Access (API Keys)</label>
+                  <label>Analytics policy
+                    <select v-model="newPlan.analytics_mode">
+                      <option value="off">Keep off by default (user can enable)</option>
+                      <option value="on">Keep on by default</option>
+                      <option value="disabled">Disabled in this plan</option>
+                    </select>
+                    <small>Controls access-log collection and whether customers can enable analytics.</small>
+                  </label>
                   <label v-if="editingPlanId" class="plan-account-update" style="margin-top:0.5rem;"><input v-model="applyPlanToExistingAccounts" type="checkbox"> Update existing accounts under this plan (re-sync)</label>
                   <label v-if="editingPlanId" class="plan-account-update" style="margin-top:0.5rem;"><input v-model="migratePlanDomains" type="checkbox"> Migrate all existing domains on this plan to {{ providerLabel(newPlan.dns_default_provider) }}</label>
                 </div>

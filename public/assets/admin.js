@@ -232,6 +232,7 @@ createApp({
         dns_dnssec_allowed: false,
         dns_dnssec_required: false,
         allow_api_access: false,
+        analytics_mode: "on",
         is_reseller: false,
         max_clients: 0,
         max_reseller_subplans: 0,
@@ -2053,6 +2054,7 @@ createApp({
           dns_cloudflare_proxy_allowed: false,
           dns_dnssec_allowed: false,
           dns_dnssec_required: false,
+          analytics_mode: "on",
         };
         await this.load();
       } catch (error) {
@@ -2086,6 +2088,7 @@ createApp({
         dns_dnssec_allowed: Boolean(plan.dns_dnssec_allowed),
         dns_dnssec_required: Boolean(plan.dns_dnssec_required),
         allow_api_access: Boolean(plan.allow_api_access),
+        analytics_mode: plan.analytics_mode || "on",
         is_reseller: Boolean(plan.is_reseller),
         max_clients: plan.max_clients || 0,
         max_reseller_subplans: plan.max_reseller_subplans || 0,

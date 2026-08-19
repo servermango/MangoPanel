@@ -838,7 +838,7 @@ nohup /bin/sh -c 'while ! /usr/bin/socat UNIX-LISTEN:/var/run/mysqld/mysqld.sock
 (
   while :; do
     sleep 15
-    /usr/local/lsws/bin/lswsctrl status >/dev/null 2>&1 || \
+    /usr/local/lsws/bin/lswsctrl status 2>/dev/null | /usr/bin/grep -q 'litespeed is running with PID' || \
       /usr/local/lsws/bin/lswsctrl start >/dev/null 2>&1 || true
   done
 ) >/dev/null 2>&1 &
@@ -1545,7 +1545,7 @@ services:
     cgroup_parent: {cpu_group}
     pids_limit: 256
     healthcheck:
-      test: ["CMD-SHELL", "/usr/local/lsws/bin/lswsctrl status >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "/usr/local/lsws/bin/lswsctrl status 2>/dev/null | /usr/bin/grep -q 'litespeed is running with PID'"]
       interval: 30s
       timeout: 5s
       retries: 3

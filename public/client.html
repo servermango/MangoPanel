@@ -997,16 +997,17 @@
               <label class="toggle-label">
                 <div
                   class="toggle-switch"
-                  :class="{ active: selectedWebsite && Number(selectedWebsite.analytics_enabled) !== 0, saving: selectedWebsite && selectedWebsite.savingAnalytics }"
-                  @click="toggleAnalyticsTracking(selectedWebsite)"
+                  :class="{ active: selectedWebsite && Number(selectedWebsite.analytics_enabled) !== 0, saving: selectedWebsite && selectedWebsite.savingAnalytics, disabled: selectedWebsite && selectedWebsite.analytics_available === false }"
+                  @click="selectedWebsite && selectedWebsite.analytics_available !== false && toggleAnalyticsTracking(selectedWebsite)"
                   role="switch"
                   :aria-checked="selectedWebsite && Number(selectedWebsite.analytics_enabled) !== 0"
                 >
                   <div class="toggle-knob"></div>
                 </div>
-                <span>{{ selectedWebsite ? (selectedWebsite.savingAnalytics ? 'Saving analytics setting…' : (Number(selectedWebsite.analytics_enabled) !== 0 ? 'Analytics tracking enabled' : 'Analytics tracking paused')) : 'Select a site to manage analytics' }}</span>
+                <span>{{ selectedWebsite ? (selectedWebsite.analytics_available === false ? 'Analytics disabled by plan' : (selectedWebsite.savingAnalytics ? 'Saving analytics setting…' : (Number(selectedWebsite.analytics_enabled) !== 0 ? 'Analytics tracking enabled' : 'Analytics tracking paused'))) : 'Select a site to manage analytics' }}</span>
               </label>
-              <small v-if="selectedWebsite">Turn this off to stop new access-log collection for the selected site and reduce account overhead.</small>
+              <small v-if="selectedWebsite && selectedWebsite.analytics_available !== false">Turn this off to stop new access-log collection for the selected site and reduce account overhead.</small>
+              <small v-if="selectedWebsite && selectedWebsite.analytics_available === false">Analytics and access-log collection are unavailable under this hosting plan.</small>
             </div>
             <div class="metric-grid analytics-metrics">
               <div class="metric"><app-icon name="website"></app-icon><span>Domain shown</span><strong>{{ analytics.domain || "-" }}</strong><small>selected website</small></div>
@@ -1032,7 +1033,11 @@
                 </li>
                 <li v-if="!analytics.top_countries.length"><span>No access logs yet</span><strong>0</strong></li>
               </ol>
-              <div v-if="selectedWebsite && Number(selectedWebsite.analytics_enabled) === 0" class="info-box" style="margin-top: 1rem;">
+              <div v-if="selectedWebsite && selectedWebsite.analytics_available === false" class="info-box" style="margin-top: 1rem;">
+                <app-icon name="info"></app-icon>
+                <p>Analytics is disabled by this hosting plan. Contact your administrator to choose a plan that includes analytics.</p>
+              </div>
+              <div v-else-if="selectedWebsite && Number(selectedWebsite.analytics_enabled) === 0" class="info-box" style="margin-top: 1rem;">
                 <app-icon name="info"></app-icon>
                 <p>Analytics is paused for this site. Existing history stays visible, but new requests will not be collected until you turn it back on.</p>
               </div>
@@ -2592,7 +2597,7 @@
                     <tbody>
                       <tr v-for="rule in ipRules.filter(r => r.type === 'block')" :key="rule.ip">
                         <td><code>{{ rule.ip }}</code></td>
-                        <td><span class="pill danger">Blocked</span></td>
+                        <td><span class="pill danger">{{ rule.source === 'automatic_probe' ? 'Blocked for 5 min' : 'Blocked' }}</span><small v-if="rule.reason" class="muted">{{ rule.reason }}</small></td>
                         <td class="actions"><button class="danger-button" @click="deleteIpRule(rule)"><app-icon name="trash"></app-icon></button></td>
                       </tr>
                       <tr v-if="!ipRules.filter(r => r.type === 'block').length"><td colspan="3" class="empty-row">No blocked IPs.</td></tr>
