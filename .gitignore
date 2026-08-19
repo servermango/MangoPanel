@@ -6,6 +6,7 @@ __pycache__/
 !.env.example
 var/
 user_files/
+backups/
 .quarantine/
 __MACOSX/
 *.sqlite
