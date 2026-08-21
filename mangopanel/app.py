@@ -12239,6 +12239,29 @@ add_filter('litespeed_conf_load_option_object-db_id', function ($value) {{ retur
 // contend for PHP workers and trigger duplicate shutdown DB work.
 add_filter('action_scheduler_allow_async_request_runner', '__return_false', 20);
 
+// Invalidate MangoPanel's object/page caches when WordPress data or executable
+// code changes. OPcache timestamp validation handles PHP files; these hooks
+// handle cached posts, settings, menus, widgets, plugins, and themes.
+function mangopanel_invalidate_cache() {{
+    if (function_exists('wp_cache_flush')) @wp_cache_flush();
+    if (!headers_sent()) {{
+        header('X-LiteSpeed-Purge: *', false);
+        header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0', false);
+    }}
+}}
+add_action('save_post', function ($post_id, $post, $update) {{
+    if (wp_is_post_revision($post_id) || wp_is_post_autosave($post_id)) return;
+    mangopanel_invalidate_cache();
+}}, 99, 3);
+add_action('deleted_post', 'mangopanel_invalidate_cache', 99);
+add_action('created_term', 'mangopanel_invalidate_cache', 99);
+add_action('edited_term', 'mangopanel_invalidate_cache', 99);
+add_action('delete_term', 'mangopanel_invalidate_cache', 99);
+add_action('activated_plugin', 'mangopanel_invalidate_cache', 99);
+add_action('deactivated_plugin', 'mangopanel_invalidate_cache', 99);
+add_action('switch_theme', 'mangopanel_invalidate_cache', 99);
+add_action('upgrader_process_complete', 'mangopanel_invalidate_cache', 99);
+
 // Do not make anonymous public HTML uncacheable because Facebook Pixel emits
 // a server-side _fbp cookie. The Pixel browser script still manages tracking
 // cookies; all other cookies and authenticated/admin requests are preserved.

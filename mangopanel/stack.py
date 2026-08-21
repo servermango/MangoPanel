@@ -1429,7 +1429,10 @@ phpIniOverride  {{
   php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
   php_admin_value memory_limit "256M"
   php_admin_value opcache.enable "{opcache_enabled}"
-  php_admin_value opcache.validate_timestamps "0"
+  # Keep OPcache enabled while checking changed PHP files on every request.
+  # This preserves bytecode performance without making plugin/theme edits
+  # invisible until a PHP worker restart.
+  php_admin_value opcache.validate_timestamps "1"
   php_admin_value opcache.revalidate_freq "0"
   php_admin_value opcache.memory_consumption "256"
   php_admin_value opcache.max_accelerated_files "20000"
