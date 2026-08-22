@@ -257,6 +257,7 @@ const app = createApp({
       notificationsOpen: false,
       sessionExpired: false,
       loadingServices: false,
+      phpWorkers: { loading: false, mode: "max_per_site", max_workers: 4, plan_default_workers: 4, websites: [] },
       serviceStatusMap: {},
       availableServices: [
         { id: "web", name: "Web Server (OpenLiteSpeed)", icon: "website", description: "Serves PHP and static files." },
@@ -518,8 +519,9 @@ const app = createApp({
       dnsRecordTypes: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"],
       newDnsRecord: { domain_id: "", type: "A", name: "@", value: "", ttl: 300, priority: null, proxied: true },
       // Cache Manager
-      cacheStatus: { object_cache: "inactive", opcode_cache: "active", reverse_proxy: "active", litespeed: "active", cloudflare_cache: "active", opcache_enabled: true, object_cache_enabled: true, reverse_proxy_cache_enabled: true, litespeed_cache_enabled: true, cloudflare_cache_enabled: true, last_purged: null, last_cloudflare_purged: null, opcode_cache_backend: "opcache", object_cache_backend: "redis" },
+      cacheStatus: { object_cache: "inactive", opcode_cache: "active", reverse_proxy: "active", litespeed: "active", cloudflare_cache: "active", opcache_enabled: true, object_cache_enabled: true, reverse_proxy_cache_enabled: true, litespeed_cache_enabled: true, cloudflare_cache_enabled: true, last_purged: null, last_cloudflare_purged: null, opcode_cache_backend: "opcache", object_cache_backend: "redis", pending: {} },
       cachePurging: false,
+      cachePendingTimer: null,
       // IP Manager
       ipRules: [],
       newIpRule: { ip: "", type: "block" },
@@ -619,6 +621,7 @@ const app = createApp({
   },
   unmounted() {
     if (this.resourcePoll) window.clearInterval(this.resourcePoll);
+    if (this.cachePendingTimer) window.clearTimeout(this.cachePendingTimer);
     this.stopWordPressDetectionPolling();
   },
   computed: {
@@ -1491,7 +1494,6 @@ const app = createApp({
           this.databasesLoading = false;
           return;
         }
-        this.cacheStatus = { ...this.cacheStatus, ...((await this.api("/api/client/cache/status")).cache_status || {}) };
         await this.loadDatabases(loadGeneration);
         if (loadGeneration !== this.loadGeneration) return;
         await this.loadResourceUsage();
@@ -1525,6 +1527,7 @@ const app = createApp({
         await this.fetchCollaborators();
         if (this.activePage === "services") {
           await this.loadServicesStatus();
+          await this.loadPhpWorkerSettings();
         }
         if (this.websites && this.websites.length > 0) {
           if (!this.selectedWebsiteId || !this.websites.some((site) => String(site.id) === String(this.selectedWebsiteId))) {
@@ -1533,6 +1536,7 @@ const app = createApp({
         } else {
           this.selectedWebsiteId = "";
         }
+        await this.loadCacheStatus(this.selectedWebsite?.id || null);
         if (!this.hasHostingAccount && !["dashboard", "domains", "dns-zone-editor"].includes(this.activePage)) {
           this.activePage = "domains";
         }
@@ -1887,6 +1891,30 @@ const app = createApp({
         }, {});
       } catch (error) {
         this.notify(error.message, "error");
+      }
+    },
+    async loadPhpWorkerSettings() {
+      try {
+        const payload = await this.api("/api/client/services/php-workers");
+        this.phpWorkers = { ...this.phpWorkers, ...payload, websites: payload.websites || [] };
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async savePhpWorkerSettings() {
+      this.phpWorkers.loading = true;
+      try {
+        const payload = {
+          mode: this.phpWorkers.mode,
+          max_workers: Number(this.phpWorkers.max_workers || this.phpWorkers.plan_default_workers || 1),
+          website_workers: this.phpWorkers.mode === "per_site" ? this.phpWorkers.websites.map((site) => ({ website_id: site.id, workers: Number(site.workers || 1) })) : [],
+        };
+        const result = await this.api("/api/client/services/php-workers", { method: "POST", body: JSON.stringify(payload) });
+        appToast(result.status === "queued" ? "PHP worker settings saved and applying now." : "PHP worker settings saved.", "success");
+      } catch (error) {
+        appToast(error.message, "error");
+      } finally {
+        this.phpWorkers.loading = false;
       }
     },
     async loadInstallerScripts() {
@@ -2711,6 +2739,26 @@ const app = createApp({
       }
     },
     // Cache Manager
+    async loadCacheStatus(websiteId = null) {
+      const query = websiteId ? `?website_id=${encodeURIComponent(websiteId)}` : "";
+      try {
+        const payload = await this.api(`/api/client/cache/status${query}`);
+        this.cacheStatus = { ...this.cacheStatus, ...(payload.cache_status || {}) };
+        if (this.cachePendingTimer) window.clearTimeout(this.cachePendingTimer);
+        if (Object.keys(this.cacheStatus.pending || {}).length) {
+          this.cachePendingTimer = window.setTimeout(() => {
+            this.loadCacheStatus(this.selectedWebsite?.id || null);
+          }, 1500);
+        } else {
+          this.cachePendingTimer = null;
+        }
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    cachePending(type) {
+      return Boolean(this.cacheStatus.pending && this.cacheStatus.pending[type]);
+    },
     async purgeCache(websiteId) {
       this.cachePurging = true;
       try {
@@ -2775,7 +2823,11 @@ const app = createApp({
       this.cachePurging = true;
       try {
         const endpoint = type === "cloudflare" ? "/api/client/cache/cloudflare/toggle" : "/api/client/cache/toggle";
-        const payload = await this.api(endpoint, { method: "POST", body: JSON.stringify(type === "cloudflare" ? { enabled, website_id: this.selectedWebsite?.id } : { type, enabled }) });
+        const global = type === "object" || type === "reverse_proxy";
+        const body = type === "cloudflare"
+          ? { enabled, website_id: this.selectedWebsite?.id }
+          : { type, enabled, ...(global ? {} : { website_id: this.selectedWebsite?.id }) };
+        const payload = await this.api(endpoint, { method: "POST", body: JSON.stringify(body) });
         const fields = {
           opcache: ["opcache_enabled", "opcode_cache", "OPcache"],
           object: ["object_cache_enabled", "object_cache", "Object cache"],
@@ -2784,7 +2836,9 @@ const app = createApp({
           cloudflare: ["cloudflare_cache_enabled", "cloudflare_cache", "Cloudflare Cache"],
         }[type];
         if (!fields) return;
-        this.cacheStatus = { ...this.cacheStatus, [fields[0]]: enabled, [fields[1]]: enabled ? "pending" : "off" };
+        const pending = { ...(this.cacheStatus.pending || {}), [type]: { job_id: payload.job_id, status: "queued" } };
+        this.cacheStatus = { ...this.cacheStatus, [fields[0]]: enabled, [fields[1]]: "pending", pending };
+        await this.loadCacheStatus(this.selectedWebsite?.id || null);
         this.notify(`${fields[2]} ${enabled ? "enable" : "disable"} queued (job #${payload.job_id})`, "success");
       } catch (error) { this.notify(error.message, "error"); }
       finally { this.cachePurging = false; }
@@ -4356,6 +4410,7 @@ const app = createApp({
       this.siteSearchQuery = "";
       if (this.activePage === "analytics") this.loadAnalytics();
       if (this.activePage === "php-info") this.loadPhpInfo();
+      if (this.activePage === "cache-manager") this.loadCacheStatus(this.selectedWebsite?.id || null);
     },
     toggleAccountSwitcher() {
       this.accountSwitcherOpen = !this.accountSwitcherOpen;
@@ -4786,8 +4841,14 @@ const app = createApp({
       if (newVal === "remote-mysql" && this.remoteMysqlHosts.length === 0) {
         this.loadRemoteMysqlHosts();
       }
-      if (newVal === "services" && Object.keys(this.serviceStatusMap).length === 0) {
-        this.loadServicesStatus();
+      if (newVal === "services") {
+        if (Object.keys(this.serviceStatusMap).length === 0) {
+          this.loadServicesStatus();
+        }
+        this.loadPhpWorkerSettings();
+      }
+      if (newVal === "cache-manager") {
+        this.loadCacheStatus(this.selectedWebsite?.id || null);
       }
       if (newVal === "site-builder" && this.siteBuilderTemplates.length === 0) {
         this.loadSiteBuilderTemplates();

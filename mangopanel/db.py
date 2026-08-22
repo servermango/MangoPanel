@@ -135,6 +135,8 @@ CREATE TABLE IF NOT EXISTS hosting_accounts (
   username TEXT NOT NULL UNIQUE,
   base_path TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'provisioning',
+  php_workers_mode TEXT NOT NULL DEFAULT 'max_per_site',
+  php_workers_max_per_site INTEGER,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -200,6 +202,12 @@ CREATE TABLE IF NOT EXISTS websites (
   php_version TEXT NOT NULL DEFAULT '8.3',
   ssl_status TEXT NOT NULL DEFAULT 'missing',
   status TEXT NOT NULL DEFAULT 'active',
+  opcache_enabled INTEGER,
+  object_cache_enabled INTEGER,
+  reverse_proxy_cache_enabled INTEGER,
+  litespeed_cache_enabled INTEGER,
+  cloudflare_cache_enabled INTEGER,
+  php_workers_limit INTEGER,
   created_by_user_id INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -2073,11 +2081,25 @@ def ensure_dns_provider_schema(conn):
         "dns_provider": "TEXT",
         "dns_provider_account_id": "INTEGER",
         "opcache_enabled": "INTEGER NOT NULL DEFAULT 1",
-        "object_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
-        "reverse_proxy_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
+        # Shared object/reverse-proxy caching is opt-in by default. Site-level
+        # nullable fields can still override the account policy explicitly.
+        "object_cache_enabled": "INTEGER NOT NULL DEFAULT 0",
+        "reverse_proxy_cache_enabled": "INTEGER NOT NULL DEFAULT 0",
         "litespeed_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
         "cloudflare_cache_enabled": "INTEGER NOT NULL DEFAULT 1",
         "timezone": "TEXT NOT NULL DEFAULT 'UTC'",
+        "php_workers_mode": "TEXT NOT NULL DEFAULT 'max_per_site'",
+        "php_workers_max_per_site": "INTEGER",
+    })
+    ensure_table_columns(conn, "websites", {
+        # NULL retains the account default for legacy websites. A concrete
+        # value is an explicit per-site cache policy.
+        "opcache_enabled": "INTEGER",
+        "object_cache_enabled": "INTEGER",
+        "reverse_proxy_cache_enabled": "INTEGER",
+        "litespeed_cache_enabled": "INTEGER",
+        "cloudflare_cache_enabled": "INTEGER",
+        "php_workers_limit": "INTEGER",
     })
 
 
@@ -2309,10 +2331,13 @@ def seed_dev_data(db_path, account_root=None):
 
         conn.execute(
             """
-            INSERT OR IGNORE INTO hosting_accounts(user_id, plan_id, node_id, username, base_path, status)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO hosting_accounts(
+              user_id, plan_id, node_id, username, base_path, status,
+              opcache_enabled, object_cache_enabled, reverse_proxy_cache_enabled,
+              litespeed_cache_enabled, cloudflare_cache_enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, plan_id, node_id, "u000001", account_base_path, "active"),
+            (user_id, plan_id, node_id, "u000001", account_base_path, "active", 1, 0, 0, 1, 1),
         )
         account_id = conn.execute("SELECT id FROM hosting_accounts WHERE username = ?", ("u000001",)).fetchone()["id"]
 

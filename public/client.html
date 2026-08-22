@@ -1250,6 +1250,19 @@
                 </button>
               </div>
             </div>
+            <div class="card" style="margin-top:1.5rem; padding:1.5rem;">
+              <div style="display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
+                <div><h3 style="margin:0;">PHP workers settings</h3><p style="margin:.35rem 0 0; color:var(--text-secondary);">Worker limits apply to each site independently. Unlimited remains constrained by the hosting account’s available CPU and memory.</p></div>
+                <button class="primary-button" @click="savePhpWorkerSettings" :disabled="phpWorkers.loading">{{ phpWorkers.loading ? 'Saving…' : 'Save settings' }}</button>
+              </div>
+              <div style="display:grid; gap:.75rem; margin-top:1rem;">
+                <label style="display:flex; gap:.6rem; align-items:flex-start;"><input type="radio" value="unlimited" v-model="phpWorkers.mode"><span><strong>Let any site use any number of PHP workers</strong><small style="display:block; color:var(--text-secondary);">Use only when the account has enough capacity.</small></span></label>
+                <label style="display:flex; gap:.6rem; align-items:flex-start;"><input type="radio" value="per_site" v-model="phpWorkers.mode"><span><strong>Define workers per site</strong><small style="display:block; color:var(--text-secondary);">Set a separate maximum for every site below.</small></span></label>
+                <label style="display:flex; gap:.6rem; align-items:flex-start;"><input type="radio" value="max_per_site" v-model="phpWorkers.mode"><span><strong>Set a max limit per site</strong><small style="display:block; color:var(--text-secondary);">The same maximum applies to all sites.</small></span></label>
+              </div>
+              <label v-if="phpWorkers.mode === 'max_per_site'" style="display:block; max-width:18rem; margin-top:1rem;">Maximum workers per site<input type="number" min="1" max="1000" v-model.number="phpWorkers.max_workers"></label>
+              <div v-if="phpWorkers.mode === 'per_site'" class="table-wrap" style="margin-top:1rem;"><table><thead><tr><th>Website</th><th>Maximum PHP workers</th></tr></thead><tbody><tr v-for="site in phpWorkers.websites" :key="site.id"><td>{{ site.domain }}</td><td><input type="number" min="1" max="1000" v-model.number="site.workers" style="max-width:9rem;"></td></tr></tbody></table></div>
+            </div>
           </section>
 
           <!-- ═══════════════════════════════════════════════════════════ ACTIVITY -->
@@ -2449,55 +2462,55 @@
               <app-icon name="cache"></app-icon>
               <div>
                 <h2>Cache Manager</h2>
-                <p>Manage the account cache layers for {{ selectedWebsite?.domain || 'all sites' }}.</p>
+                <p>Manage cache layers for {{ selectedWebsite?.domain || 'all sites' }}.</p>
               </div>
             </div>
 
             <div class="cache-status-grid">
-              <div class="cache-status-card" :class="cacheStatus.opcode_cache">
+              <div class="cache-status-card" :class="cachePending('opcache') ? 'pending' : cacheStatus.opcode_cache">
                 <app-icon name="performance"></app-icon>
                 <div>
                   <strong>OPcache</strong>
-                  <span class="pill">{{ cacheStatus.opcode_cache }}</span>
+                  <span class="pill">{{ cachePending('opcache') ? 'pending' : cacheStatus.opcode_cache }}</span>
                 </div>
                 <small>PHP bytecode caching</small>
-                <button class="secondary-button compact" @click="toggleCache('opcache', !cacheStatus.opcache_enabled)">{{ cacheStatus.opcache_enabled ? 'Turn off' : 'Turn on' }}</button>
+                <button class="secondary-button compact" :disabled="cachePurging || cachePending('opcache')" @click="toggleCache('opcache', !cacheStatus.opcache_enabled)"><span v-if="cachePending('opcache')" class="btn-spinner"></span>{{ cachePending('opcache') ? 'Applying…' : (cacheStatus.opcache_enabled ? 'Turn off' : 'Turn on') }}</button>
               </div>
-              <div class="cache-status-card" :class="cacheStatus.object_cache">
+              <div class="cache-status-card" :class="cachePending('object') ? 'pending' : cacheStatus.object_cache">
                 <app-icon name="databases"></app-icon>
                 <div>
-                  <strong>Object Cache</strong>
-                  <span class="pill">{{ cacheStatus.object_cache }}</span>
+                  <strong>Object Cache <span class="muted">(Global)</span></strong>
+                  <span class="pill">{{ cachePending('object') ? 'pending' : cacheStatus.object_cache }}</span>
                 </div>
-                <small>Redis / Memcached</small>
-                <button class="secondary-button compact" @click="toggleCache('object', !cacheStatus.object_cache_enabled)">{{ cacheStatus.object_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
+                <small><span class="muted">(Global)</span> Redis service is shared by all sites in this account.</small>
+                <button class="secondary-button compact" :disabled="cachePurging || cachePending('object')" @click="toggleCache('object', !cacheStatus.object_cache_enabled)"><span v-if="cachePending('object')" class="btn-spinner"></span>{{ cachePending('object') ? 'Applying…' : (cacheStatus.object_cache_enabled ? 'Turn off' : 'Turn on') }}</button>
               </div>
-              <div class="cache-status-card" :class="cacheStatus.reverse_proxy">
+              <div class="cache-status-card" :class="cachePending('reverse_proxy') ? 'pending' : cacheStatus.reverse_proxy">
                 <app-icon name="domains"></app-icon>
                 <div>
-                  <strong>Reverse-Proxy Cache</strong>
-                  <span class="pill">{{ cacheStatus.reverse_proxy }}</span>
+                  <strong>Reverse-Proxy Cache <span class="muted">(Global)</span></strong>
+                  <span class="pill">{{ cachePending('reverse_proxy') ? 'pending' : cacheStatus.reverse_proxy }}</span>
                 </div>
-                <small>Edge response caching</small>
-                <button class="secondary-button compact" @click="toggleCache('reverse_proxy', !cacheStatus.reverse_proxy_cache_enabled)">{{ cacheStatus.reverse_proxy_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
+                <small><span class="muted">(Global)</span> Edge response caching is configured for all sites in this account.</small>
+                <button class="secondary-button compact" :disabled="cachePurging || cachePending('reverse_proxy')" @click="toggleCache('reverse_proxy', !cacheStatus.reverse_proxy_cache_enabled)"><span v-if="cachePending('reverse_proxy')" class="btn-spinner"></span>{{ cachePending('reverse_proxy') ? 'Applying…' : (cacheStatus.reverse_proxy_cache_enabled ? 'Turn off' : 'Turn on') }}</button>
               </div>
-              <div class="cache-status-card" :class="cacheStatus.litespeed">
+              <div class="cache-status-card" :class="cachePending('litespeed') ? 'pending' : cacheStatus.litespeed">
                 <app-icon name="performance"></app-icon>
                 <div>
                   <strong>LiteSpeed Cache</strong>
-                  <span class="pill">{{ cacheStatus.litespeed }}</span>
+                  <span class="pill">{{ cachePending('litespeed') ? 'pending' : cacheStatus.litespeed }}</span>
                 </div>
                 <small>OpenLiteSpeed page cache</small>
-                <button class="secondary-button compact" @click="toggleCache('litespeed', !cacheStatus.litespeed_cache_enabled)">{{ cacheStatus.litespeed_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
+                <button class="secondary-button compact" :disabled="cachePurging || cachePending('litespeed')" @click="toggleCache('litespeed', !cacheStatus.litespeed_cache_enabled)"><span v-if="cachePending('litespeed')" class="btn-spinner"></span>{{ cachePending('litespeed') ? 'Applying…' : (cacheStatus.litespeed_cache_enabled ? 'Turn off' : 'Turn on') }}</button>
               </div>
-              <div v-if="selectedWebsiteUsesCloudflare" class="cache-status-card" :class="cacheStatus.cloudflare_cache">
+              <div v-if="selectedWebsiteUsesCloudflare" class="cache-status-card" :class="cachePending('cloudflare') ? 'pending' : cacheStatus.cloudflare_cache">
                 <app-icon name="dns"></app-icon>
                 <div>
                   <strong>Cloudflare Cache</strong>
-                  <span class="pill">{{ cacheStatus.cloudflare_cache }}</span>
+                  <span class="pill">{{ cachePending('cloudflare') ? 'pending' : cacheStatus.cloudflare_cache }}</span>
                 </div>
                 <small>Cloudflare development-mode bypass</small>
-                <button class="secondary-button compact" @click="toggleCache('cloudflare', !cacheStatus.cloudflare_cache_enabled)">{{ cacheStatus.cloudflare_cache_enabled ? 'Turn off' : 'Turn on' }}</button>
+                <button class="secondary-button compact" :disabled="cachePurging || cachePending('cloudflare')" @click="toggleCache('cloudflare', !cacheStatus.cloudflare_cache_enabled)"><span v-if="cachePending('cloudflare')" class="btn-spinner"></span>{{ cachePending('cloudflare') ? 'Applying…' : (cacheStatus.cloudflare_cache_enabled ? 'Turn off' : 'Turn on') }}</button>
               </div>
               <div class="cache-status-card">
                 <app-icon name="activity"></app-icon>
@@ -4282,6 +4295,6 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/client.js?v=1.0.21"></script>
+    <script src="/assets/client.js?v=1.0.24"></script>
   </body>
 </html>

@@ -5303,6 +5303,44 @@ class MangoHandler(BaseHTTPRequestHandler):
                 log_activity(conn, actor["id"], "service_restarted", {"account_id": account["id"], "service": service_name})
                 return self.json_response({"success": True, "job_id": job_id})
 
+            if path == "/api/client/services/php-workers" and method == "GET":
+                require_account(account)
+                plan = conn.execute("SELECT php_workers FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+                websites = conn.execute("SELECT id, domain, php_workers_limit FROM websites WHERE account_id = ? ORDER BY domain", (account["id"],)).fetchall()
+                mode = str(account["php_workers_mode"] or "max_per_site")
+                default_workers = int(plan["php_workers"] or 3) if plan else 3
+                maximum = int(account["php_workers_max_per_site"] or default_workers)
+                return self.json_response({"mode": mode, "max_workers": maximum, "plan_default_workers": default_workers, "websites": [{"id": row["id"], "domain": row["domain"], "workers": row["php_workers_limit"] if row["php_workers_limit"] is not None else default_workers} for row in websites]})
+
+            if path == "/api/client/services/php-workers" and method == "POST":
+                require_active_account(account)
+                body = self.read_json()
+                mode = str(body.get("mode") or "").strip().lower()
+                if mode not in {"unlimited", "per_site", "max_per_site"}:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_php_workers_mode")
+                max_workers = positive_int(body.get("max_workers", 1), "invalid_php_workers", minimum=1, maximum=1000)
+                entries = body.get("website_workers") or []
+                if not isinstance(entries, list):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_website_workers")
+                known = {row["id"] for row in conn.execute("SELECT id FROM websites WHERE account_id = ?", (account["id"],)).fetchall()}
+                updates = []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_website_workers")
+                    website_id = positive_int(entry.get("website_id"), "invalid_website_id")
+                    if website_id not in known:
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                    updates.append((positive_int(entry.get("workers"), "invalid_php_workers", minimum=1, maximum=1000), website_id))
+                if mode == "per_site" and len({website_id for _, website_id in updates}) != len(known):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "workers_required_for_each_website")
+                conn.execute("UPDATE hosting_accounts SET php_workers_mode = ?, php_workers_max_per_site = ? WHERE id = ?", (mode, max_workers, account["id"]))
+                if updates:
+                    conn.executemany("UPDATE websites SET php_workers_limit = ? WHERE id = ?", updates)
+                payload = {"mode": mode, "max_workers": max_workers, "website_workers": [{"website_id": website_id, "workers": workers} for workers, website_id in updates]}
+                job_id = enqueue_agent_job(conn, "apply_php_worker_settings", "hosting_account", account["id"], payload)
+                log_activity(conn, actor["id"], "php_worker_settings_changed", payload)
+                return self.json_response({"status": "queued", "job_id": job_id, **payload})
+
             if path == "/api/client/services/status" and method == "GET":
                 require_account(account)
                 service_name = query.get("service", [""])[0].strip()
@@ -5860,7 +5898,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"activity": localize_client_rows(rows_to_dicts(rows), account["timezone"] if account and "timezone" in account.keys() else "UTC")})
             if path == "/api/client/cache/status" and method == "GET":
                 require_account(account)
-                return self.json_response(client_cache_status(conn, account))
+                website_id = optional_positive_int(query.get("website_id", [""])[0])
+                website = None
+                if website_id:
+                    website = conn.execute(
+                        "SELECT * FROM websites WHERE id = ? AND account_id = ?",
+                        (website_id, account["id"]),
+                    ).fetchone()
+                    if not website:
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                return self.json_response(client_cache_status(conn, account, website))
             if path == "/api/client/cache/toggle" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -5875,10 +5922,30 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "litespeed": "litespeed_cache_enabled",
                 }
                 column = columns[cache_type]
-                conn.execute(f"UPDATE hosting_accounts SET {column} = ? WHERE id = ?", (enabled, account["id"]))
-                job_id = enqueue_agent_job(conn, "set_cache_settings", "hosting_account", account["id"], {"type": cache_type, "enabled": enabled})
-                log_activity(conn, actor["id"], "cache_setting_changed", {"type": cache_type, "enabled": enabled})
-                return self.json_response({"job_id": job_id, "status": "queued", "type": cache_type, "enabled": bool(enabled)})
+                if cache_type in {"object", "reverse_proxy"}:
+                    # Redis is one service per account and the edge proxy is
+                    # rendered once per account stack, so these controls are
+                    # intentionally global. Keep website rows synchronized so
+                    # later vhost/container reconciliation cannot resurrect a
+                    # stale site-level value.
+                    conn.execute(f"UPDATE hosting_accounts SET {column} = ? WHERE id = ?", (enabled, account["id"]))
+                    conn.execute(f"UPDATE websites SET {column} = ? WHERE account_id = ?", (enabled, account["id"]))
+                    payload = {"type": cache_type, "enabled": enabled, "scope": "account"}
+                else:
+                    website_id = optional_positive_int(body.get("website_id") or "")
+                    if not website_id:
+                        raise ApiError(HTTPStatus.BAD_REQUEST, "website_id_required")
+                    website = conn.execute(
+                        "SELECT id FROM websites WHERE id = ? AND account_id = ?",
+                        (website_id, account["id"]),
+                    ).fetchone()
+                    if not website:
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                    conn.execute(f"UPDATE websites SET {column} = ? WHERE id = ?", (enabled, website_id))
+                    payload = {"type": cache_type, "enabled": enabled, "website_id": website_id, "scope": "website"}
+                job_id = enqueue_agent_job(conn, "set_cache_settings", "hosting_account", account["id"], payload)
+                log_activity(conn, actor["id"], "cache_setting_changed", payload)
+                return self.json_response({"job_id": job_id, "status": "queued", "type": cache_type, "enabled": bool(enabled), "scope": payload["scope"], **({"website_id": website_id} if "website_id" in payload else {})})
             if path == "/api/client/cache/purge" and method == "POST":
                 require_active_account(account)
                 body = self.read_json()
@@ -5933,8 +6000,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if website["dns_provider"] != DNS_PROVIDER_CLOUDFLARE:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "cloudflare_not_configured_for_site")
                 enabled = bool(body.get("enabled"))
-                conn.execute("UPDATE hosting_accounts SET cloudflare_cache_enabled = ? WHERE id = ?", (1 if enabled else 0, account["id"]))
-                payload = {"enabled": enabled, "website_id": website_id, "scope": "account"}
+                conn.execute("UPDATE websites SET cloudflare_cache_enabled = ? WHERE id = ?", (1 if enabled else 0, website_id))
+                payload = {"enabled": enabled, "website_id": website_id, "scope": "website"}
                 job_id = enqueue_agent_job(conn, "set_cloudflare_cache", "hosting_account", account["id"], payload)
                 log_activity(conn, actor["id"], "cloudflare_cache_setting_changed", payload)
                 return self.json_response({"job_id": job_id, "status": "queued", "enabled": enabled})
@@ -6692,8 +6759,14 @@ class MangoHandler(BaseHTTPRequestHandler):
                 base_path = str(CONFIG.account_root / username)
 
                 cur = conn.execute(
-                    "INSERT INTO hosting_accounts(user_id, plan_id, node_id, username, base_path, status) VALUES (?, ?, ?, ?, ?, ?)",
-                    (user_id, plan_id, node["id"], username, base_path, "active"),
+                    """
+                    INSERT INTO hosting_accounts(
+                      user_id, plan_id, node_id, username, base_path, status,
+                      opcache_enabled, object_cache_enabled, reverse_proxy_cache_enabled,
+                      litespeed_cache_enabled, cloudflare_cache_enabled
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (user_id, plan_id, node["id"], username, base_path, "active", 1, 0, 0, 1, 1),
                 )
                 conn.commit()
                 created = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -8985,10 +9058,13 @@ class MangoHandler(BaseHTTPRequestHandler):
                 base_path = str(CONFIG.account_root / username)
                 cur = conn.execute(
                     """
-                    INSERT INTO hosting_accounts(user_id, plan_id, node_id, username, base_path, status)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO hosting_accounts(
+                      user_id, plan_id, node_id, username, base_path, status,
+                      opcache_enabled, object_cache_enabled, reverse_proxy_cache_enabled,
+                      litespeed_cache_enabled, cloudflare_cache_enabled
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (user_id, plan_id, node_id, username, base_path, "provisioning"),
+                    (user_id, plan_id, node_id, username, base_path, "provisioning", 1, 0, 0, 1, 1),
                 )
                 account_id = cur.lastrowid
                 domain = get_provisioning_test_domain(username, request_headers=self.headers)
@@ -10935,15 +11011,22 @@ def localize_client_rows(rows, timezone_name):
     return rows
 
 
-def client_cache_status(conn, account):
+def client_cache_status(conn, account, website=None):
     runtime = account_runtime(conn, account["id"])
     report_path = Path(account["base_path"]) / ".runtime" / "cache" / "last_action.json"
     report = parse_json_field(report_path.read_text(encoding="utf-8"), {}) if report_path.exists() else {}
-    opcache_enabled = int(account["opcache_enabled"] if "opcache_enabled" in account.keys() and account["opcache_enabled"] is not None else 1)
-    object_enabled = int(account["object_cache_enabled"] if "object_cache_enabled" in account.keys() and account["object_cache_enabled"] is not None else 1)
-    reverse_proxy_enabled = int(account["reverse_proxy_cache_enabled"] if "reverse_proxy_cache_enabled" in account.keys() and account["reverse_proxy_cache_enabled"] is not None else 1)
-    litespeed_enabled = int(account["litespeed_cache_enabled"] if "litespeed_cache_enabled" in account.keys() and account["litespeed_cache_enabled"] is not None else 1)
-    cloudflare_enabled = int(account["cloudflare_cache_enabled"] if "cloudflare_cache_enabled" in account.keys() and account["cloudflare_cache_enabled"] is not None else 1)
+    def website_or_account(column):
+        if website is not None and column in website.keys() and website[column] is not None:
+            return website[column]
+        return account[column] if column in account.keys() and account[column] is not None else 1
+
+    # OPcache, LiteSpeed page cache, and Cloudflare cache are site-scoped.
+    # Object cache and reverse-proxy cache remain account-scoped by design.
+    opcache_enabled = int(website_or_account("opcache_enabled"))
+    object_enabled = int(account["object_cache_enabled"] if "object_cache_enabled" in account.keys() and account["object_cache_enabled"] is not None else 0)
+    reverse_proxy_enabled = int(account["reverse_proxy_cache_enabled"] if "reverse_proxy_cache_enabled" in account.keys() and account["reverse_proxy_cache_enabled"] is not None else 0)
+    litespeed_enabled = int(website_or_account("litespeed_cache_enabled"))
+    cloudflare_enabled = int(website_or_account("cloudflare_cache_enabled"))
     redis_running = False
     docker = shutil.which("docker")
     if docker:
@@ -10954,6 +11037,33 @@ def client_cache_status(conn, account):
     reverse_proxy_state = "active" if reverse_proxy_enabled else "off"
     litespeed_state = "active" if litespeed_enabled else "off"
     cloudflare_state = "active" if cloudflare_enabled else "off"
+    pending = {}
+    pending_rows = conn.execute(
+        """
+        SELECT id, type, status, payload
+        FROM jobs
+        WHERE target_type = 'hosting_account' AND target_id = ?
+          AND status IN ('queued', 'running')
+          AND type IN ('set_cache_settings', 'set_cloudflare_cache')
+        ORDER BY id DESC
+        """,
+        (account["id"],),
+    ).fetchall()
+    for row in pending_rows:
+        payload = parse_json_field(row["payload"], {})
+        if row["type"] == "set_cloudflare_cache":
+            cache_type = "cloudflare"
+        else:
+            cache_type = str(payload.get("type") or "").strip().lower()
+        if cache_type not in {"opcache", "object", "reverse_proxy", "litespeed", "cloudflare"} or cache_type in pending:
+            continue
+        requested_website_id = payload.get("website_id")
+        is_global = payload.get("scope") == "account" or not requested_website_id
+        if website is not None and not is_global and str(requested_website_id) != str(website["id"]):
+            continue
+        if website is None and not is_global:
+            continue
+        pending[cache_type] = {"job_id": row["id"], "status": row["status"]}
     return {
         "cache_status": {
             "opcode_cache": opcache_state,
@@ -10972,6 +11082,9 @@ def client_cache_status(conn, account):
             "last_purged": report.get("purged_at"),
             "last_action": report.get("action"),
             "last_action_scope": report.get("scope"),
+            "website_id": website["id"] if website is not None else None,
+            "scope": "website" if website is not None else "account",
+            "pending": pending,
         }
     }
 
@@ -13471,10 +13584,13 @@ def create_initial_hosting_account(conn, user_id, request_headers=None):
     base_path = str(CONFIG.account_root / username)
     cur = conn.execute(
         """
-        INSERT INTO hosting_accounts(user_id, plan_id, node_id, username, base_path, status)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO hosting_accounts(
+          user_id, plan_id, node_id, username, base_path, status,
+          opcache_enabled, object_cache_enabled, reverse_proxy_cache_enabled,
+          litespeed_cache_enabled, cloudflare_cache_enabled
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (user_id, plan["id"], node["id"], username, base_path, "provisioning"),
+        (user_id, plan["id"], node["id"], username, base_path, "provisioning", 1, 0, 0, 1, 1),
     )
     account_id = cur.lastrowid
     domain = get_provisioning_test_domain(username, request_headers=request_headers)

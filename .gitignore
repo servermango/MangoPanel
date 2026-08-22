@@ -23,3 +23,7 @@ __MACOSX/
 dist/
 node_modules/
 .venv/
+
+# Local installation scripts and site-specific overrides
+/.mango-*
+/.dailypunjabheadline*

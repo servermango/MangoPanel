@@ -56,7 +56,7 @@ from .providers import (
 )
 from .security import decrypt_secret
 from .backup_service import create_system_backup, backup_config
-from .stack import DEFAULT_SSH_MOTD, STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, render_modsecurity_rules, render_ols_vhconf, stack_summary, sync_account_suspension_marker
+from .stack import DEFAULT_SSH_MOTD, STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, render_modsecurity_rules, render_openlitespeed_httpd_config, render_ols_vhconf, stack_summary, sync_account_suspension_marker
 
 
 class AgentError(Exception):
@@ -918,6 +918,8 @@ class Agent:
             return self.flush_object_cache(conn, job)
         if job_type == "set_cache_settings":
             return self.set_cache_settings(conn, job)
+        if job_type == "apply_php_worker_settings":
+            return self.apply_php_worker_settings(conn, job)
         if job_type == "apply_modsecurity_ruleset":
             return self.apply_modsecurity_ruleset(conn, job)
         if job_type == "apply_ssh_motd":
@@ -1127,6 +1129,25 @@ class Agent:
     def cache_report_path(self, account):
         return self.account_runtime_dir(account, "cache", "last_action.json")
 
+    @staticmethod
+    def object_cache_database(website):
+        """Return a stable non-zero Redis database number for one website.
+
+        Redis remains one service per hosting account. Redis databases keep
+        site keys and scoped flushes separate without creating extra
+        containers or volumes. DB 0 is reserved for account-level use.
+        """
+        return 1 + ((int(website["id"]) - 1) % 255)
+
+    @staticmethod
+    def effective_cache_setting(account, website, column):
+        """Use a website override when present, otherwise retain legacy defaults."""
+        value = website[column] if hasattr(website, "keys") and column in website.keys() else website.get(column) if hasattr(website, "get") else None
+        if value is None:
+            default = 0 if column in {"object_cache_enabled", "reverse_proxy_cache_enabled"} else 1
+            value = account[column] if hasattr(account, "keys") and column in account.keys() else account.get(column, default)
+        return int(value or 0)
+
     def php_binary_for_version(self, version):
         raw = str(version or "8.3").strip().replace(".", "")
         if raw not in {"74", "80", "81", "82", "83", "84"}:
@@ -1163,12 +1184,9 @@ class Agent:
         report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         return str(report_path)
 
-    def clear_cache_directories(self, base_path, websites):
+    def clear_cache_directories(self, base_path, websites, clear_account_cache=False):
         purged_paths = []
-        account_cache_dirs = [
-            base_path / ".runtime" / "cache",
-            base_path / ".runtime" / "cachedata",
-        ]
+        account_cache_dirs = [base_path / ".runtime" / "cache"] if clear_account_cache else []
         for cache_dir in account_cache_dirs:
             removed = self.clear_directory_contents(cache_dir)
             if removed:
@@ -1177,7 +1195,9 @@ class Agent:
 
         for website in websites:
             root = Path(website["document_root"]).resolve()
+            safe_domain = str(website["domain"]).replace(".", "_").replace("-", "_")
             website_cache_dirs = [
+                base_path / ".runtime" / "cachedata" / safe_domain,
                 root / "cache",
                 root / ".cache",
                 root / "tmp" / "cache",
@@ -1198,7 +1218,8 @@ class Agent:
             docker = shutil.which("docker")
             if docker:
                 for website in websites:
-                    php_bin = self.php_binary_for_version(website.get("php_version"))
+                    php_version = website["php_version"] if "php_version" in website.keys() else None
+                    php_bin = self.php_binary_for_version(php_version)
                     script = f"{php_bin} -d opcache.enable_cli=1 -r 'function_exists(\"opcache_reset\") ? opcache_reset() : false;'"
                     subprocess.run(
                         [docker, "exec", f"mp-{account['username']}-web", "sh", "-lc", script],
@@ -1206,6 +1227,29 @@ class Agent:
                     )
                     commands.append({"php_binary": php_bin, "website_id": website["id"]})
         return commands
+
+    def clear_litespeed_cache_backend(self, account, websites):
+        """Remove the actual per-domain OLS cache files from the web container."""
+        cleared = []
+        if self.config.agent_mode != "docker":
+            return cleared
+        docker = shutil.which("docker")
+        if not docker:
+            return cleared
+        container = f"mp-{account['username']}-web"
+        for website in websites:
+            safe_domain = str(website["domain"]).replace(".", "_").replace("-", "_")
+            cache_path = f"/usr/local/lsws/cachedata/{safe_domain}"
+            result = subprocess.run(
+                [docker, "exec", container, "sh", "-lc", f"if [ -d '{cache_path}' ]; then find '{cache_path}' -mindepth 1 -maxdepth 1 -exec rm -rf -- {{}} +; fi"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise AgentError(result.stderr.strip() or result.stdout.strip() or "litespeed_cache_purge_failed")
+            cleared.append(cache_path)
+        return cleared
 
     def set_cache_settings(self, conn, job):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
@@ -1251,7 +1295,7 @@ class Agent:
             if reload_result.returncode != 0:
                 raise AgentError(reload_result.stderr.strip() or "cache_vhost_reload_failed")
             if stack:
-                action = "up" if int(account["object_cache_enabled"] or 0) else "stop"
+                action = "up" if any(self.effective_cache_setting(account, website, "object_cache_enabled") for website in websites) else "stop"
                 args = [docker, "compose", "-f", stack["compose_path"], action]
                 if action == "up": args.extend(["-d", "redis"])
                 else: args.append("redis")
@@ -1267,6 +1311,41 @@ class Agent:
             "litespeed_cache_enabled": int(account["litespeed_cache_enabled"] or 0),
             "applied": True,
         }
+
+    def apply_php_worker_settings(self, conn, job):
+        """Render only worker-related OLS files and reload the web service."""
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+        if not account:
+            raise AgentError("hosting_account_not_found")
+        plan = conn.execute("SELECT * FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+        if not plan:
+            raise AgentError("plan_not_found")
+        raw_websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()
+        protected = [row_to_dict(row) for row in conn.execute("SELECT * FROM protected_directories WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()]
+        hotlink = conn.execute("SELECT * FROM hotlink_settings WHERE account_id = ?", (account["id"],)).fetchone()
+        hotlink_domains = sorted({row["domain"] for row in raw_websites} | {item.strip() for item in (hotlink["allowed_domains"] if hotlink else "").splitlines() if item.strip()})
+        websites = []
+        for row in raw_websites:
+            item = row_to_dict(row)
+            item["protected_directories"] = protected
+            item["hotlink_enabled"] = int(hotlink["enabled"]) if hotlink else 0
+            item["hotlink_domains"] = hotlink_domains
+            websites.append(item)
+        context = self.vhost_account_context(conn, account)
+        stack = Path(account["base_path"]) / ".runtime" / "stack"
+        vhosts = stack / "vhosts"
+        (stack / "openlitespeed-httpd.conf").write_text(render_openlitespeed_httpd_config(context, websites), encoding="utf-8")
+        for website in websites:
+            path = vhosts / website["domain"] / "vhconf.conf"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(render_ols_vhconf(context, website), encoding="utf-8")
+        if self.config.agent_mode == "docker":
+            docker = shutil.which("docker") or "docker"
+            reload_result = subprocess.run([docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"], check=False, capture_output=True, text=True)
+            if reload_result.returncode != 0:
+                raise AgentError(reload_result.stderr.strip() or "php_worker_reload_failed")
+        payload = self.job_payload(job)
+        return {"account_id": account["id"], "mode": context.get("php_workers_mode", "max_per_site"), "max_workers": context.get("php_workers_max_per_site"), "website_workers": [{"website_id": site["id"], "domain": site["domain"], "workers": site.get("php_workers_limit")} for site in websites], "applied": True, "requested": payload}
 
     def apply_modsecurity_ruleset(self, conn, job):
         payload = self.job_payload(job); ruleset = str(payload.get("ruleset") or "baseline").lower()
@@ -1349,20 +1428,26 @@ class Agent:
             applied.append(account["id"])
         return {"accounts": applied, "motd_length": len(motd)}
 
-    def flush_object_cache_backend(self, account):
+    def flush_object_cache_backend(self, account, websites):
+        if not any(self.effective_cache_setting(account, website, "object_cache_enabled") for website in websites):
+            return {"backend": "redis", "flushed": True, "mode": "disabled"}
         result = {"backend": "redis", "flushed": True, "mode": "filesystem"}
         if self.config.agent_mode == "docker":
             docker = shutil.which("docker")
             if docker:
-                exec_result = subprocess.run(
-                    [docker, "exec", f"mp-{account['username']}-redis", "redis-cli", "FLUSHDB"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
+                exec_result = None
+                for website in websites:
+                    exec_result = subprocess.run(
+                        [docker, "exec", f"mp-{account['username']}-redis", "redis-cli", "-n", str(self.object_cache_database(website)), "FLUSHDB"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if exec_result.returncode != 0:
+                        break
                 result["mode"] = "redis"
-                result["flushed"] = exec_result.returncode == 0
-                if exec_result.returncode != 0:
+                result["flushed"] = bool(exec_result) and exec_result.returncode == 0
+                if exec_result and exec_result.returncode != 0:
                     raise AgentError(exec_result.stderr.strip() or exec_result.stdout.strip() or "redis_flush_failed")
         return result
 
@@ -3023,7 +3108,7 @@ class Agent:
                 raise AgentError("litespeed_cache_install_failed: " + (result.stderr.strip() or result.stdout.strip()))
             status = "installed"
         self._configure_litespeed_object_cache(account, website)
-        return {"status": status, "object_cache": {"status": "configured", "backend": "redis", "host": "redis", "port": 6379}}
+        return {"status": status, "object_cache": {"status": "configured", "backend": "redis", "host": "redis", "port": 6379, "database": self.object_cache_database(website)}}
 
     def _configure_litespeed_object_cache(self, account, website):
         """Point LiteSpeed Cache's object cache at the account-local Redis service."""
@@ -3039,7 +3124,7 @@ class Agent:
                 ("object-kind", "true"),
                 ("object-host", "redis"),
                 ("object-port", "6379"),
-                ("object-db_id", "0"),
+                ("object-db_id", str(self.object_cache_database(website))),
                 ("object-persistent", "true"),
                 ("object-admin", "true"),
             ):
@@ -3066,7 +3151,7 @@ class Agent:
             "object-kind": True,
             "object-host": "redis",
             "object-port": 6379,
-            "object-db_id": 0,
+            "object-db_id": self.object_cache_database(website),
             "object-persistent": True,
             "object-admin": True,
         })
@@ -3648,9 +3733,10 @@ class Agent:
         payload = self.job_payload(job)
         base_path = Path(account["base_path"]).resolve()
         websites = self.cache_scope_websites(conn, account, payload)
-        purged_paths = self.clear_cache_directories(base_path, websites)
+        purged_paths = self.clear_cache_directories(base_path, websites, clear_account_cache=not bool(payload.get("website_id")))
+        purged_paths.extend(self.clear_litespeed_cache_backend(account, websites))
         self.reset_opcache_backend(account, websites)
-        self.flush_object_cache_backend(account)
+        self.flush_object_cache_backend(account, websites)
         report_path = self.write_cache_action_report(account, "purge_all", payload, websites, purged_paths)
         return {
             "account_id": account["id"],
@@ -3724,7 +3810,7 @@ class Agent:
             raise AgentError("hosting_account_not_found")
         payload = self.job_payload(job)
         enabled = bool(payload.get("enabled"))
-        websites = conn.execute("SELECT * FROM websites WHERE account_id = ? ORDER BY id", (account["id"],)).fetchall()
+        websites = self.cache_scope_websites(conn, account, payload)
         website_ids = [website["id"] for website in websites]
         placeholders = ",".join("?" for _ in website_ids) or "0"
         rows = conn.execute(
@@ -3792,12 +3878,12 @@ class Agent:
             raise AgentError("hosting_account_not_found")
         payload = self.job_payload(job)
         websites = self.cache_scope_websites(conn, account, payload)
-        result = self.flush_object_cache_backend(account)
+        result = self.flush_object_cache_backend(account, websites)
         base_path = Path(account["base_path"]).resolve()
         object_cache_dir = base_path / ".runtime" / "cache" / "object-cache"
         object_cache_dir.mkdir(parents=True, exist_ok=True)
-        purged_paths = self.clear_directory_contents(object_cache_dir)
-        purged_paths.extend(self.clear_cache_directories(base_path, websites))
+        purged_paths = self.clear_directory_contents(object_cache_dir) if not payload.get("website_id") else []
+        purged_paths.extend(self.clear_cache_directories(base_path, websites, clear_account_cache=not bool(payload.get("website_id"))))
         report_path = self.write_cache_action_report(account, "flush_object_cache", payload, websites, purged_paths)
         result.update(
             {

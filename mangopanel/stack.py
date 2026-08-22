@@ -1002,11 +1002,32 @@ def container_path(account, host_path):
     return str(Path("/home") / account["username"] / rel)
 
 
-def render_openlitespeed_httpd_config(account, websites):
+def php_worker_limit(account, website=None):
+    """Resolve the worker ceiling for one website in an account stack."""
     try:
-        php_workers = max(1, min(1000, int(account.get("php_workers", 3) or 3)))
+        default = max(1, min(1000, int(account.get("php_workers", 3) or 3)))
     except (AttributeError, TypeError, ValueError):
-        php_workers = 3
+        default = 3
+    mode = str(account.get("php_workers_mode", "max_per_site") or "max_per_site")
+    if mode == "unlimited":
+        return 1000
+    if mode == "per_site" and website is not None:
+        try:
+            configured = website.get("php_workers_limit")
+            if configured is not None:
+                return max(1, min(1000, int(configured)))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    try:
+        configured = account.get("php_workers_max_per_site")
+        if configured is not None:
+            return max(1, min(1000, int(configured)))
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return default
+
+
+def render_openlitespeed_httpd_config(account, websites):
     base_config = """
 serverName                       MangoPanel
 user                             nobody
@@ -1146,6 +1167,7 @@ module cache {
     
     for website in websites:
         domain = website["domain"]
+        php_workers = php_worker_limit(account, website)
         safe_domain = domain.replace(".", "_").replace("-", "_")
         supported_php = SUPPORTED_PHP_VERSIONS
         php_raw = str(website.get("php_version", "8.2"))
@@ -1262,10 +1284,7 @@ def render_modsecurity_rules(websites):
 def render_ols_vhconf(account, website):
     domain = website["domain"]
     username = account["username"]
-    try:
-        php_workers = max(1, min(1000, int(account.get("php_workers", 3) or 3)))
-    except (AttributeError, TypeError, ValueError):
-        php_workers = 3
+    php_workers = php_worker_limit(account, website)
     safe_domain = domain.replace(".", "_").replace("-", "_")
 
     # Ensure PHP version is one of the supported versions.
@@ -1279,8 +1298,14 @@ def render_ols_vhconf(account, website):
     base_dir = container_path(account, str(Path(website["document_root"]).parent))
     logs_dir = container_path(account, str(Path(website["document_root"]).parent / "logs"))
     analytics_enabled = int(website.get("analytics_enabled", 1) or 0) != 0
-    opcache_value = account.get("opcache_enabled", 1) if hasattr(account, "get") else account["opcache_enabled"] if "opcache_enabled" in account.keys() else 1
-    litespeed_value = account.get("litespeed_cache_enabled", 1) if hasattr(account, "get") else account["litespeed_cache_enabled"] if "litespeed_cache_enabled" in account.keys() else 1
+    # Cache controls may be supplied for an individual website. Existing
+    # accounts without a website-level override inherit their account default.
+    opcache_value = website.get("opcache_enabled")
+    if opcache_value is None:
+        opcache_value = account.get("opcache_enabled", 1) if hasattr(account, "get") else account["opcache_enabled"] if "opcache_enabled" in account.keys() else 1
+    litespeed_value = website.get("litespeed_cache_enabled")
+    if litespeed_value is None:
+        litespeed_value = account.get("litespeed_cache_enabled", 1) if hasattr(account, "get") else account["litespeed_cache_enabled"] if "litespeed_cache_enabled" in account.keys() else 1
     opcache_enabled = 1 if int(opcache_value or 0) else 0
     litespeed_cache_enabled = 1 if int(litespeed_value or 0) else 0
     hotlink_lines = []
@@ -1434,7 +1459,10 @@ phpIniOverride  {{
   # invisible until a PHP worker restart.
   php_admin_value opcache.validate_timestamps "1"
   php_admin_value opcache.revalidate_freq "0"
-  php_admin_value opcache.memory_consumption "256"
+  # This is deliberately per-vhost. A shared hosting account can contain
+  # many sites, so a 256 MB OPcache reservation for every domain exhausts the
+  # account before normal PHP traffic is considered.
+  php_admin_value opcache.memory_consumption "64"
   php_admin_value opcache.max_accelerated_files "20000"
   php_admin_value mysqli.allow_persistent "0"
   php_admin_value mysqli.max_persistent "0"
@@ -1442,7 +1470,9 @@ phpIniOverride  {{
 
 module cache {{
   enableCache             {litespeed_cache_enabled}
-  storagePath             /usr/local/lsws/cachedata
+  # Keep page-cache files in a domain-specific directory even though the web
+  # container and its volume are shared by this hosting account.
+  storagePath             /usr/local/lsws/cachedata/{safe_domain}
 }}
 """
 
@@ -1488,7 +1518,7 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
     backup_retention_days = int(plan["backup_retention_days"])
     default_domain = websites[0]["domain"] if websites else "{}.mango.test".format(username)
     project = "mp-{}".format(username)
-    reverse_proxy_value = account.get("reverse_proxy_cache_enabled", 1) if hasattr(account, "get") else account["reverse_proxy_cache_enabled"] if "reverse_proxy_cache_enabled" in account.keys() else 1
+    reverse_proxy_value = account.get("reverse_proxy_cache_enabled", 0) if hasattr(account, "get") else account["reverse_proxy_cache_enabled"] if "reverse_proxy_cache_enabled" in account.keys() else 0
     reverse_proxy_cache_enabled = 1 if int(reverse_proxy_value or 0) else 0
     # Caddy has no cache by default, but when the account cache is disabled we
     # explicitly instruct every edge route and downstream cache to bypass it.
@@ -1587,7 +1617,9 @@ services:
     mem_limit: 128m
     cpus: "{service_cpu_count}"
     cgroup_parent: {cpu_group}
-    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    # One Redis service and its /data volume are retained per account. The
+    # extra logical databases isolate individual sites within that service.
+    command: ["redis-server", "--databases", "256", "--save", "60", "1", "--appendonly", "yes"]
     volumes:
       - {base_path}/.runtime/stack/redis:/data
     networks:
@@ -1752,7 +1784,7 @@ services:
     image: mariadb:10.11
     container_name: mp-{username}-db
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 1536m
     cpus: "{service_cpu_count}"
     cgroup_parent: {cpu_group}
     labels:
