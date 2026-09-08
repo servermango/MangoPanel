@@ -3160,60 +3160,222 @@
             </div>
           </section>
 
-          <section v-if="activePage === 'system-backup'" class="panel">
-            <div class="section-head backup-page-intro"><div><h2>System Backup</h2><p>Protect the complete control-plane database and all generated user and website data. Website archives include MySQL and PostgreSQL database directories.</p></div></div>
-            <div class="backup-layout">
-              <div class="backup-card">
-                <h3>Backup schedules</h3>
-                <p>Each backup type can run on its own schedule and time.</p>
-                <div class="backup-card-grid">
-                  <div class="backup-card">
-                    <label class="backup-toggle"><input type="checkbox" v-model="systemBackup.db_enabled"><span>System database<small>Complete SQLite database backup.</small></span></label>
-                    <div class="backup-fields" style="margin-top:.85rem;">
-                      <label>Frequency<select v-model="systemBackup.db_frequency"><option value="disabled">Disabled</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label>
-                      <label>Run at <input type="time" v-model="systemBackup.db_time"></label>
+          <section v-if="activePage === 'system-backup'" class="panel backup-panel">
+            <div class="section-head backup-page-intro">
+              <div>
+                <h2>System Backup Management</h2>
+                <p>Protect control-plane databases and user site archives with automated scheduling, local storage, and S3 offsite backups.</p>
+              </div>
+            </div>
+
+            <!-- Sub-tab Navigation Bar -->
+            <div class="pill-tabs config-subtabs" style="margin-bottom: 1.5rem;">
+              <button type="button" :class="{ active: backupTab === 'schedules' }" @click="backupTab = 'schedules'">
+                <app-icon name="settings"></app-icon> <span>Schedules & Retention</span>
+              </button>
+              <button type="button" :class="{ active: backupTab === 'storage' }" @click="backupTab = 'storage'">
+                <app-icon name="storage"></app-icon> <span>Storage Destinations</span>
+              </button>
+              <button type="button" :class="{ active: backupTab === 'actions' }" @click="backupTab = 'actions'">
+                <app-icon name="activity"></app-icon> <span>Manual Run & Status</span>
+              </button>
+              <button type="button" @click="goTo('configuration')" class="secondary-button" style="margin-left: auto; border: 1px dashed var(--line); font-size: 13px;">
+                <app-icon name="settings"></app-icon> <span>Configuration →</span>
+              </button>
+            </div>
+
+            <!-- Tab 1: Schedules & Retention -->
+            <div v-if="backupTab === 'schedules'" class="backup-tab-content">
+              <div class="config-card">
+                <div class="config-card-header">
+                  <h3><app-icon name="settings"></app-icon> Automated Backup Schedules</h3>
+                  <p>Configure automated creation intervals and daily execution start times for system DB and user website data.</p>
+                </div>
+
+                <div class="config-grid">
+                  <!-- System Database Schedule -->
+                  <div class="backup-schedule-card">
+                    <label class="backup-toggle">
+                      <input type="checkbox" v-model="systemBackup.db_enabled">
+                      <span><strong>System Database Backup</strong><small>Complete SQLite control-plane database backup.</small></span>
+                    </label>
+                    <div class="config-grid" style="margin-top: 1rem;" v-if="systemBackup.db_enabled">
+                      <div class="config-field">
+                        <label>Frequency</label>
+                        <select v-model="systemBackup.db_frequency">
+                          <option value="disabled">Disabled</option>
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="monthly">Monthly</option>
+                        </select>
+                      </div>
+                      <div class="config-field">
+                        <label>Start Time</label>
+                        <input type="time" v-model="systemBackup.db_time">
+                      </div>
                     </div>
                   </div>
-                  <div class="backup-card">
-                    <label class="backup-toggle"><input type="checkbox" v-model="systemBackup.files_enabled"><span>User and website archives<small>Per-user and per-website files plus databases.</small></span></label>
-                    <div class="backup-fields" style="margin-top:.85rem;">
-                      <label>Frequency<select v-model="systemBackup.files_frequency"><option value="disabled">Disabled</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label>
-                      <label>Run at <input type="time" v-model="systemBackup.files_time"></label>
+
+                  <!-- User & Website Archives Schedule -->
+                  <div class="backup-schedule-card">
+                    <label class="backup-toggle">
+                      <input type="checkbox" v-model="systemBackup.files_enabled">
+                      <span><strong>User & Website Archives</strong><small>Per-user files, website document roots, and database dumps.</small></span>
+                    </label>
+                    <div class="config-grid" style="margin-top: 1rem;" v-if="systemBackup.files_enabled">
+                      <div class="config-field">
+                        <label>Frequency</label>
+                        <select v-model="systemBackup.files_frequency">
+                          <option value="disabled">Disabled</option>
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="monthly">Monthly</option>
+                        </select>
+                      </div>
+                      <div class="config-field">
+                        <label>Start Time</label>
+                        <input type="time" v-model="systemBackup.files_time">
+                      </div>
                     </div>
                   </div>
                 </div>
-                <div class="backup-fields" style="margin-top:1rem; max-width:50%;"><label>Retention period (days)<input type="number" min="1" max="3650" v-model.number="systemBackup.retention_days"></label></div>
-              </div>
 
-              <div class="backup-card-grid">
-                <div class="backup-card">
-                  <h3>Local storage</h3><p>Keep archives on this server independently of offsite storage.</p>
-                  <label class="backup-toggle"><input type="checkbox" v-model="systemBackup.local_enabled"><span>Enable local backups<small>Write completed archives to the local path.</small></span></label>
-                  <label class="backup-toggle" style="margin-top:.65rem;"><input type="checkbox" v-model="systemBackup.local_remove_enabled"><span>Remove expired local backups<small>Use the retention period above.</small></span></label>
-                  <label style="margin-top:.85rem;">Local backup path<input v-model="systemBackup.local_path" placeholder="/var/lib/mangopanel/system-backups"></label>
+                <div class="config-grid single-col" style="margin-top: 1rem;">
+                  <div class="config-field" style="max-width: 320px;">
+                    <label>Retention Period (Days)</label>
+                    <input type="number" min="1" max="3650" v-model.number="systemBackup.retention_days">
+                    <small>Completed archives older than this threshold are automatically purged.</small>
+                  </div>
                 </div>
-                <div class="backup-card">
-                  <h3>Offsite S3-compatible storage</h3><p>Upload archives to AWS S3, DigitalOcean Spaces, MinIO, or another compatible provider.</p>
-                  <label class="backup-toggle"><input type="checkbox" v-model="systemBackup.remote_enabled"><span>Enable offsite backups<small>Local and offsite storage may be enabled together.</small></span></label>
-                  <label class="backup-toggle" style="margin-top:.65rem;"><input type="checkbox" v-model="systemBackup.remote_remove_enabled"><span>Remove expired offsite backups<small>Delete remote objects after the retention period.</small></span></label>
-                  <div class="backup-fields" style="margin-top:.85rem;">
-                    <label class="full">Endpoint<input v-model="systemBackup.remote_endpoint" placeholder="https://s3.amazonaws.com"></label>
-                    <label>Bucket<input v-model="systemBackup.remote_bucket"></label><label>Region<input v-model="systemBackup.remote_region" placeholder="us-east-1"></label>
-                    <label>Access key<input v-model="systemBackup.remote_access_key" autocomplete="off"></label><label>Secret key<input v-model="systemBackup.remote_secret" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved secret"></label>
-                    <label class="full">Object prefix<input v-model="systemBackup.remote_prefix" placeholder="mangopanel"></label>
+
+                <div class="config-card-footer">
+                  <button class="primary-button" type="button" @click="saveSystemBackup" :disabled="systemBackupSaving">
+                    {{ systemBackupSaving ? 'Saving…' : 'Save Backup Schedules' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 2: Storage Destinations -->
+            <div v-if="backupTab === 'storage'" class="backup-tab-content">
+              <div class="config-grid">
+                <!-- Local Storage -->
+                <div class="config-card">
+                  <div class="config-card-header">
+                    <h3><app-icon name="storage"></app-icon> Local Server Storage</h3>
+                    <p>Store generated archive files directly on the local filesystem.</p>
+                  </div>
+                  <div class="config-grid single-col">
+                    <label class="backup-toggle">
+                      <input type="checkbox" v-model="systemBackup.local_enabled">
+                      <span><strong>Enable Local Backups</strong><small>Write completed archives to the designated local path.</small></span>
+                    </label>
+                    <label class="backup-toggle" style="margin-top: .5rem;">
+                      <input type="checkbox" v-model="systemBackup.local_remove_enabled">
+                      <span><strong>Purge Expired Local Backups</strong><small>Delete local archives past retention threshold.</small></span>
+                    </label>
+                    <div class="config-field" style="margin-top: .75rem;">
+                      <label>Local Backup Storage Path</label>
+                      <input v-model="systemBackup.local_path" placeholder="/var/lib/mangopanel/system-backups">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Remote S3 Storage -->
+                <div class="config-card">
+                  <div class="config-card-header">
+                    <h3><app-icon name="networking"></app-icon> Offsite S3-Compatible Storage</h3>
+                    <p>Upload archives to AWS S3, DigitalOcean Spaces, MinIO, or Cloudflare R2.</p>
+                  </div>
+                  <div class="config-grid single-col">
+                    <label class="backup-toggle">
+                      <input type="checkbox" v-model="systemBackup.remote_enabled">
+                      <span><strong>Enable Offsite S3 Backups</strong><small>Local and offsite backups can be enabled simultaneously.</small></span>
+                    </label>
+                    <label class="backup-toggle" style="margin-top: .5rem;">
+                      <input type="checkbox" v-model="systemBackup.remote_remove_enabled">
+                      <span><strong>Purge Expired Offsite Objects</strong><small>Delete remote S3 objects past retention threshold.</small></span>
+                    </label>
+
+                    <div class="config-grid" style="margin-top: .75rem;">
+                      <div class="config-field full">
+                        <label>S3 Endpoint URL</label>
+                        <input v-model="systemBackup.remote_endpoint" placeholder="https://s3.amazonaws.com">
+                      </div>
+                      <div class="config-field">
+                        <label>Bucket Name</label>
+                        <input v-model="systemBackup.remote_bucket" placeholder="my-backup-bucket">
+                      </div>
+                      <div class="config-field">
+                        <label>Region</label>
+                        <input v-model="systemBackup.remote_region" placeholder="us-east-1">
+                      </div>
+                      <div class="config-field">
+                        <label>Access Key ID</label>
+                        <input v-model="systemBackup.remote_access_key" autocomplete="off">
+                      </div>
+                      <div class="config-field">
+                        <label>Secret Access Key</label>
+                        <input v-model="systemBackup.remote_secret" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved secret">
+                      </div>
+                      <div class="config-field full">
+                        <label>Object Prefix Path</label>
+                        <input v-model="systemBackup.remote_prefix" placeholder="mangopanel">
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <div class="backup-card">
-                <h3>Actions</h3><p>Save settings before running a backup. Manual jobs use the same archive and storage configuration.</p>
-                <div class="backup-actions">
-                  <button class="primary-button" type="button" @click="saveSystemBackup" :disabled="systemBackupSaving">{{ systemBackupSaving ? 'Saving…' : 'Save Settings' }}</button>
-                  <button class="secondary-button" type="button" @click="testSystemBackupStorage" :disabled="systemBackupTesting">{{ systemBackupTesting ? 'Testing…' : 'Test Remote Credentials' }}</button>
-                  <button class="secondary-button" type="button" @click="runSystemBackup('database')" :disabled="systemBackupRunning">Run Database Backup</button>
-                  <button class="secondary-button" type="button" @click="runSystemBackup('files')" :disabled="systemBackupRunning">Run Files Backup</button>
-                  <button class="primary-button" type="button" @click="runSystemBackup('all')" :disabled="systemBackupRunning">Run Full Backup</button>
-                  <p v-if="systemBackup.last_run" class="backup-last-run">Last run: {{ systemBackup.last_run.status }} · {{ systemBackup.last_run.created_at }}</p>
+              <div class="config-card-footer" style="margin-top: 1rem; background: var(--surface-1, var(--surface)); border: 1px solid var(--line); border-radius: 10px; padding: 16px;">
+                <button class="secondary-button" type="button" @click="testSystemBackupStorage" :disabled="systemBackupTesting">
+                  {{ systemBackupTesting ? 'Testing…' : 'Test Remote Credentials' }}
+                </button>
+                <button class="primary-button" type="button" style="margin-left: 12px;" @click="saveSystemBackup" :disabled="systemBackupSaving">
+                  {{ systemBackupSaving ? 'Saving…' : 'Save Storage Settings' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Tab 3: Manual Run & Status -->
+            <div v-if="backupTab === 'actions'" class="backup-tab-content">
+              <div class="config-card">
+                <div class="config-card-header">
+                  <h3><app-icon name="activity"></app-icon> Manual Backup Triggers & History</h3>
+                  <p>Execute immediate backup tasks on demand and monitor previous execution status.</p>
+                </div>
+
+                <div class="config-grid" style="align-items: stretch;">
+                  <div class="config-card" style="background: var(--surface-2, var(--surface));">
+                    <h4 style="margin:0 0 12px 0; font-size:15px; font-weight:700;">Manual Trigger Actions</h4>
+                    <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">Select the scope of data to archive and trigger a background worker task.</p>
+                    <div style="display:flex; flex-wrap:wrap; gap:10px;">
+                      <button class="secondary-button" type="button" @click="runSystemBackup('database')" :disabled="systemBackupRunning">
+                        Run Database Backup
+                      </button>
+                      <button class="secondary-button" type="button" @click="runSystemBackup('files')" :disabled="systemBackupRunning">
+                        Run Files Backup
+                      </button>
+                      <button class="primary-button" type="button" @click="runSystemBackup('all')" :disabled="systemBackupRunning">
+                        Run Full Backup
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="config-card" style="background: var(--surface-2, var(--surface));">
+                    <h4 style="margin:0 0 12px 0; font-size:15px; font-weight:700;">Last Execution Status</h4>
+                    <div v-if="systemBackup.last_run" class="last-run-box">
+                      <span class="pill" :class="systemBackup.last_run.status === 'completed' ? 'active' : ''">
+                        {{ systemBackup.last_run.status }}
+                      </span>
+                      <p style="margin:8px 0 0 0; font-size:13px; color:var(--muted);">
+                        Triggered at: <strong>{{ systemBackup.last_run.created_at }}</strong>
+                      </p>
+                    </div>
+                    <div v-else style="font-size:13px; color:var(--muted);">
+                      No recorded manual executions in the current session log.
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

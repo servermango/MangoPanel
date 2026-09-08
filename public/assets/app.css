@@ -6666,3 +6666,38 @@ label:has(> input[type="radio"]) {
   line-height: 1.5;
 }
 
+.backup-schedule-card {
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+}
+
+.backup-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.backup-toggle span strong {
+  display: block;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.backup-toggle span small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.last-run-box {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+

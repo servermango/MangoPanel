@@ -75,6 +75,7 @@ createApp({
       timezoneOptions: ["UTC", "Europe/London", "Europe/Paris", "Asia/Kolkata", "Asia/Dubai", "Asia/Tokyo", "America/New_York", "America/Los_Angeles", "Australia/Sydney"],
       configurationSaving: false,
       systemBackup: { local_enabled: true, local_remove_enabled: true, remote_enabled: false, remote_remove_enabled: false, db_enabled: true, files_enabled: true, db_frequency: "daily", files_frequency: "daily", db_time: "02:00", files_time: "03:00", local_path: "", remote_endpoint: "", remote_bucket: "", remote_region: "us-east-1", remote_access_key: "", remote_secret: "", remote_prefix: "mangopanel", retention_days: 30, last_run: null },
+      backupTab: "schedules",
       systemBackupSaving: false,
       systemBackupTesting: false,
       systemBackupRunning: false,
