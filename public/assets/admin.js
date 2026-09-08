@@ -69,6 +69,7 @@ createApp({
       showClientModal: false,
       plans: [],
       configuration: { backup_time: "02:00", resource_scan_time: "03:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "", public_host: "" },
+      configTab: "general",
       modsecRuleset: "baseline",
       modsecApplying: false,
       timezoneOptions: ["UTC", "Europe/London", "Europe/Paris", "Asia/Kolkata", "Asia/Dubai", "Asia/Tokyo", "America/New_York", "America/Los_Angeles", "Australia/Sydney"],

@@ -3219,21 +3219,153 @@
             </div>
           </section>
 
-          <section v-if="activePage === 'configuration'" class="panel">
-            <div class="section-head"><div><h2>Configuration</h2><p>Platform-wide defaults. More control-plane settings can be added as tabs here.</p></div></div>
-            <div class="plan-form">
-              <div style="display:flex; gap:.5rem; margin-bottom:1rem;"><button class="primary-button" type="button">Backups</button><button class="secondary-button" type="button" disabled>More settings soon</button></div>
-              <label>Backup time <input type="time" v-model="configuration.backup_time"><small>Automatic backups start after this time using the queue worker.</small></label>
-              <label>Resource usage scan time <input type="time" v-model="configuration.resource_scan_time"><small>Daily CPU, memory, disk, and inode scans run at this time. Default: 03:00.</small></label>
-              <label>System timezone <select v-model="configuration.timezone"><option v-if="configuration.timezone && !timezoneOptions.includes(configuration.timezone)" :value="configuration.timezone">{{ configuration.timezone }} (current)</option><option v-for="zone in timezoneOptions" :key="zone" :value="zone">{{ zone }}</option></select><small>The saved timezone is selected automatically and controls backup and job scheduling.</small></label>
-              <label>Public hostname <input v-model.trim="configuration.public_host" placeholder="seeds.servermango.com" autocomplete="off"><small>Base hostname for account URLs and the Docker edge proxy. Point a wildcard DNS record such as *.your-hostname to this server. Changing it queues route updates for existing accounts.</small></label>
-              <label>SSH login message <textarea v-model="configuration.ssh_motd" rows="18" spellcheck="false" style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; resize: vertical;"></textarea><small>One message is used for all account SSH/SFTP logins. Changes are propagated through the queue worker to the existing account containers.</small></label>
-              <button class="primary-button plan-submit" type="button" @click="saveConfiguration" :disabled="configurationSaving">{{ configurationSaving ? 'Saving…' : 'Save Configuration' }}</button>
-              <hr>
-              <h3>ModSecurity rules</h3>
-              <p class="muted">Rules are applied inside each account’s existing web container. OWASP CRS is downloaded from its official release and may increase blocking/latency; test before applying broadly.</p>
-              <label>Ruleset <select v-model="modsecRuleset"><option value="baseline">MangoPanel baseline</option><option value="owasp">OWASP CRS 4.0.0</option></select></label>
-              <button class="primary-button plan-submit" type="button" @click="applyModsecRules" :disabled="modsecApplying">{{ modsecApplying ? 'Applying…' : 'Download and apply rules' }}</button>
+          <section v-if="activePage === 'configuration'" class="panel config-panel">
+            <div class="section-head">
+              <div>
+                <h2>Platform Configuration</h2>
+                <p>Manage system-wide defaults, edge network routing, Web Application Firewall (WAF), and SSH access message.</p>
+              </div>
+            </div>
+
+            <!-- Sub-tab Navigation Bar -->
+            <div class="pill-tabs config-subtabs" style="margin-bottom: 1.5rem;">
+              <button type="button" :class="{ active: configTab === 'general' }" @click="configTab = 'general'">
+                <app-icon name="settings"></app-icon> <span>General & Schedules</span>
+              </button>
+              <button type="button" :class="{ active: configTab === 'network' }" @click="configTab = 'network'">
+                <app-icon name="networking"></app-icon> <span>Public Hostname</span>
+              </button>
+              <button type="button" :class="{ active: configTab === 'security' }" @click="configTab = 'security'">
+                <app-icon name="security"></app-icon> <span>Security & WAF</span>
+              </button>
+              <button type="button" :class="{ active: configTab === 'ssh' }" @click="configTab = 'ssh'">
+                <app-icon name="cpu"></app-icon> <span>SSH Welcome MOTD</span>
+              </button>
+              <button type="button" @click="goTo('system-backup')" class="secondary-button" style="margin-left: auto; border: 1px dashed var(--line); font-size: 13px;">
+                <app-icon name="storage"></app-icon> <span>System Backups →</span>
+              </button>
+            </div>
+
+            <!-- Tab 1: General & Schedules -->
+            <div v-if="configTab === 'general'" class="config-tab-content">
+              <div class="config-card">
+                <div class="config-card-header">
+                  <h3><app-icon name="settings"></app-icon> System Timezone & Automated Schedules</h3>
+                  <p>Configure control-plane execution timing for daily backups, resource tracking scans, and cron scheduling.</p>
+                </div>
+                <div class="config-grid">
+                  <div class="config-field">
+                    <label>System Timezone</label>
+                    <select v-model="configuration.timezone">
+                      <option v-if="configuration.timezone && !timezoneOptions.includes(configuration.timezone)" :value="configuration.timezone">
+                        {{ configuration.timezone }} (current)
+                      </option>
+                      <option v-for="zone in timezoneOptions" :key="zone" :value="zone">{{ zone }}</option>
+                    </select>
+                    <small>The saved timezone controls job scheduling and automated task execution.</small>
+                  </div>
+
+                  <div class="config-field">
+                    <label>Automatic Backup Start Time</label>
+                    <input type="time" v-model="configuration.backup_time">
+                    <small>Automatic scheduled backups begin after this time via the queue worker.</small>
+                  </div>
+
+                  <div class="config-field">
+                    <label>Resource Usage Scan Time</label>
+                    <input type="time" v-model="configuration.resource_scan_time">
+                    <small>Daily CPU, memory, disk, and inode scans run at this time. Default: 03:00.</small>
+                  </div>
+                </div>
+                <div class="config-card-footer">
+                  <button class="primary-button" type="button" @click="saveConfiguration" :disabled="configurationSaving">
+                    {{ configurationSaving ? 'Saving…' : 'Save General Settings' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 2: Public Hostname -->
+            <div v-if="configTab === 'network'" class="config-tab-content">
+              <div class="config-card">
+                <div class="config-card-header">
+                  <h3><app-icon name="networking"></app-icon> Edge Proxy & Public Hostname</h3>
+                  <p>Base domain for account tool URLs (`files-user.domain.com`, `pma-user.domain.com`) and edge SSL routing.</p>
+                </div>
+                <div class="config-grid single-col">
+                  <div class="config-field">
+                    <label>Public Hostname</label>
+                    <input v-model.trim="configuration.public_host" placeholder="seeds.servermango.com" autocomplete="off">
+                    <small>Point a wildcard DNS record (such as <code>*.your-hostname.com</code>) to this server's public IP address. Changing this value automatically queues route updates for existing hosting accounts.</small>
+                  </div>
+
+                  <div class="config-info-box">
+                    <strong>Generated Subdomain Format Preview:</strong>
+                    <div class="subdomain-preview-list">
+                      <span class="pill">File Manager: <code>files-{username}.{{ configuration.public_host || 'your-domain.com' }}</code></span>
+                      <span class="pill">Database Manager: <code>pma-{username}.{{ configuration.public_host || 'your-domain.com' }}</code></span>
+                      <span class="pill">Webmail: <code>mail-{username}.{{ configuration.public_host || 'your-domain.com' }}</code></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="config-card-footer">
+                  <button class="primary-button" type="button" @click="saveConfiguration" :disabled="configurationSaving">
+                    {{ configurationSaving ? 'Saving…' : 'Save Hostname Settings' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 3: Security & WAF -->
+            <div v-if="configTab === 'security'" class="config-tab-content">
+              <div class="config-card">
+                <div class="config-card-header">
+                  <h3><app-icon name="security"></app-icon> ModSecurity Web Application Firewall</h3>
+                  <p>WAF rulesets applied to account web containers for real-time attack prevention.</p>
+                </div>
+                <div class="config-grid single-col">
+                  <div class="config-field">
+                    <label>ModSecurity Ruleset</label>
+                    <select v-model="modsecRuleset">
+                      <option value="baseline">MangoPanel Baseline (Recommended - Fast & Low False Positives)</option>
+                      <option value="owasp">OWASP CRS 4.0.0 (Comprehensive Strict Protection)</option>
+                    </select>
+                    <small>Rules are compiled and injected directly into each account’s OpenLiteSpeed/Nginx web container.</small>
+                  </div>
+
+                  <div class="config-info-box warning" v-if="modsecRuleset === 'owasp'">
+                    <strong>OWASP CRS 4.0.0 Notice:</strong>
+                    <p>OWASP Core Rule Set provides strict enterprise protection against SQLi, XSS, and RCE, but may increase memory usage and trigger occasional false positives on complex Web applications. Test before applying in production.</p>
+                  </div>
+                </div>
+                <div class="config-card-footer">
+                  <button class="primary-button" type="button" @click="applyModsecRules" :disabled="modsecApplying">
+                    {{ modsecApplying ? 'Applying…' : 'Download and Apply Ruleset' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 4: SSH Welcome MOTD -->
+            <div v-if="configTab === 'ssh'" class="config-tab-content">
+              <div class="config-card">
+                <div class="config-card-header">
+                  <h3><app-icon name="cpu"></app-icon> SSH / SFTP Welcome Banner (MOTD)</h3>
+                  <p>Global login message displayed to account users upon establishing SSH or SFTP sessions.</p>
+                </div>
+                <div class="config-grid single-col">
+                  <div class="config-field">
+                    <label>SSH Message of the Day</label>
+                    <textarea v-model="configuration.ssh_motd" rows="14" spellcheck="false" class="motd-textarea" placeholder="Welcome to MangoPanel Server..."></textarea>
+                    <small>Changes are propagated through the queue worker to all existing account containers.</small>
+                  </div>
+                </div>
+                <div class="config-card-footer">
+                  <button class="primary-button" type="button" @click="saveConfiguration" :disabled="configurationSaving">
+                    {{ configurationSaving ? 'Saving…' : 'Save SSH MOTD Message' }}
+                  </button>
+                </div>
+              </div>
             </div>
           </section>
 
