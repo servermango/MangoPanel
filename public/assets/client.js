@@ -64,6 +64,7 @@ const CLIENT_PAGE_TARGETS = new Set([
   "security",
   "domains",
   "website",
+  "website-details",
   "files",
   "databases",
   "email",
@@ -321,6 +322,7 @@ const app = createApp({
       phpIniSaving: false,
       resourceUsage: { range: "30m", windows: ["1m", "5m", "10m", "30m", "2h", "1d", "7d", "30d"], current: {}, samples: [] },
       resourceRange: "30m",
+      hostingPlanRangeInitialized: false,
       resourcePoll: null,
       resourceUsageLoading: false,
       analytics: {
@@ -401,12 +403,13 @@ const app = createApp({
       },
       dbModal: null,
       dbSubmitting: false,
-      newDatabase: { name: "", username: "" },
+      newDatabase: { name: "", username: "", website_id: "" },
       newDatabaseUser: { username: "", password: "" },
       newDatabaseGrant: { database_id: "", user_id: "", selectedPrivileges: ["ALL"] },
-      databaseWizard: { name: "", username: "", password: "", selectedPrivileges: ["ALL"] },
+      databaseWizard: { name: "", username: "", password: "", website_id: "", selectedPrivileges: ["ALL"] },
       databasePrivilegeOptions: ["ALL", "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX", "REFERENCES", "EXECUTE", "TRIGGER", "CREATE VIEW", "SHOW VIEW", "EVENT", "CREATE ROUTINE", "ALTER ROUTINE", "CREATE TEMPORARY TABLES", "LOCK TABLES"],
       editingDatabase: null,
+      databaseAssignmentWebsiteId: "",
       editingDatabaseUser: null,
       editingDatabaseGrant: null,
       // DB Wizard
@@ -415,7 +418,9 @@ const app = createApp({
       wizardDbName: "",
       wizardDbUser: "",
       wizardDbPass: "",
+      wizardWebsiteId: "",
       dbTab: "databases", // 'databases', 'users', 'grants'
+      databaseWebsiteFilter: "",
       backupWizard: { isOpen: false, step: 1, isRunning: false, progressText: '' },
       installer: {
         scripts: DEFAULT_INSTALLER_SCRIPTS.map((script) => ({ ...script, required_fields: [...script.required_fields] })),
@@ -439,8 +444,10 @@ const app = createApp({
       wordpressDetectionPolling: false,
       siteWizard: { isOpen: false, step: 1, type: 'blank', domain: '', site_title: 'My Site', admin_username: 'admin', admin_email: '', admin_password: '', allow_overwrite: false, createdWebsite: null, createdDomainNameservers: [], dnsCheckResult: null, dnsAction: 'keep', isCheckingDns: false, isSubmitting: false, isBuilding: false, errorMessage: '', dnsTab: 'records' },
       connectWizard: { isOpen: false, website: null, method: 'nameservers', auto_update_dns: false, checking: false, result: null },
+      websiteErrorModal: { isOpen: false, website: null, error: "" },
       sshState: { enabled: false, toggling: false, loaded: false, hasPassword: false, settingPassword: false, newPassword: null, passwordModal: false, passwordInput: "", passwordError: "" },
       ftpState: { enabled: true, toggling: false, loaded: false },
+      siteSslModal: { isOpen: false, website: null },
       sslModal: { isOpen: false, website_id: "", crt: "", key: "", isSubmitting: false, errorMessage: "" },
       issuingSsl: {},
       mailboxes: [],
@@ -697,6 +704,15 @@ const app = createApp({
     selectedWebsite() {
       return this.websites.find((site) => String(site.id) === String(this.selectedWebsiteId)) || this.websites[0] || null;
     },
+    websiteDetailDomain() {
+      const site = this.selectedWebsite;
+      return site ? this.domains.find((domain) => String(domain.name).toLowerCase() === String(site.domain).toLowerCase()) || null : null;
+    },
+    websiteDetailSubdomains() {
+      const parentDomain = this.websiteDetailDomain;
+      if (!parentDomain) return [];
+      return this.subdomains.filter((subdomain) => String(subdomain.parent_domain_id) === String(parentDomain.id));
+    },
     selectedWebsiteUsesCloudflare() {
       const site = this.selectedWebsite;
       return Boolean(this.selectedWebsiteId && site && (site.dns_provider === "cloudflare" || site.dns_provider_label === "Cloudflare"));
@@ -760,6 +776,10 @@ const app = createApp({
         ].filter(Boolean).join(" ").toLowerCase();
         return searchable.includes(query);
       });
+    },
+    filteredDatabases() {
+      if (!this.databaseWebsiteFilter) return this.databases;
+      return this.databases.filter((database) => String(database.website_id || "") === String(this.databaseWebsiteFilter));
     },
     diskPercent() {
       const used = Number(this.home.resources.disk_used_mb || 0);
@@ -924,7 +944,7 @@ const app = createApp({
       for (const script of this.installer.scripts || []) {
         add("App", script.name, "App Installer", () => this.openInstallerModal(script));
       }
-      for (const site of this.websites) add("Site", site.domain, site.status, () => this.goTo("website"));
+      for (const site of this.websites) add("Site", site.domain, site.status, () => this.openWebsiteDetails(site));
       for (const domain of this.domains) add("Domain", domain.name, domain.status, () => this.goTo("domains"));
       for (const database of this.databases) add("Database", database.name, database.username, () => this.goTo("databases"));
       for (const user of this.databaseUsers) add("Database user", user.username, user.status, () => this.goTo("databases"));
@@ -1470,6 +1490,9 @@ const app = createApp({
         }
         if (this.home.hosting_account_suspended) {
           this.websites = this.home.websites || [];
+          if (this.databaseWebsiteFilter && !this.websites.some((site) => String(site.id) === String(this.databaseWebsiteFilter))) {
+            this.databaseWebsiteFilter = "";
+          }
           this.websitesLoaded = true;
           this.databasesLoading = false;
           if (this.activePage === "settings") await this.loadProfile();
@@ -1478,6 +1501,9 @@ const app = createApp({
         const websitesPayload = this.hasHostingAccount ? await this.api("/api/client/websites") : { websites: [] };
         if (loadGeneration !== this.loadGeneration) return;
         this.websites = websitesPayload.websites || [];
+        if (this.databaseWebsiteFilter && !this.websites.some((site) => String(site.id) === String(this.databaseWebsiteFilter))) {
+          this.databaseWebsiteFilter = "";
+        }
         this.websitesLoaded = true;
         if (this.hasHostingAccount) this.loadActiveWordPressDetection();
         if (this.hasHostingAccount) {
@@ -1496,6 +1522,10 @@ const app = createApp({
         }
         await this.loadDatabases(loadGeneration);
         if (loadGeneration !== this.loadGeneration) return;
+        if (this.activePage === "hosting-plan" && !this.hostingPlanRangeInitialized) {
+          this.resourceRange = "7d";
+          this.hostingPlanRangeInitialized = true;
+        }
         await this.loadResourceUsage();
         await this.loadAnalytics();
         await this.loadSshState();
@@ -3578,10 +3608,42 @@ const app = createApp({
         }
 
         this.siteWizard.step = 4; // Website Added step
-        await this.refresh();
+        // The create request has already committed the website.  A transient
+        // error while refreshing the list must not turn that successful
+        // creation into a misleading "Failed to fetch" message.
+        try {
+          await this.refresh();
+        } catch (refreshErr) {
+          console.warn("Website created, but refreshing the website list failed:", refreshErr);
+          this.notify("Website created. The list will update when it reconnects.", "warning");
+        }
       } catch (err) {
-        this.siteWizard.errorMessage = err.message || String(err);
-        this.notify(String(err.message || err), "error");
+        // A proxy or browser connection can close after the API has committed
+        // the row. Reconcile once before reporting a hard failure so a
+        // successful create is not retried and shown as an error.
+        const errorText = String(err && (err.message || err) || "");
+        const mayHaveCommitted = /failed to fetch|network|empty response|unexpected end/i.test(errorText);
+        let recovered = false;
+        if (mayHaveCommitted) {
+          try {
+            await this.refresh();
+            const requestedDomain = String(this.siteWizard.domain || "").trim().toLowerCase();
+            const existing = this.websites.find((site) => String(site.domain || "").trim().toLowerCase() === requestedDomain);
+            if (existing) {
+              this.siteWizard.createdWebsite = existing;
+              this.siteWizard.createdDomainNameservers = existing.nameservers || [];
+              this.siteWizard.step = 4;
+              this.notify("Website created. Provisioning will continue in the background.", "success");
+              recovered = true;
+            }
+          } catch (reconcileErr) {
+            console.warn("Unable to reconcile website creation after a connection error:", reconcileErr);
+          }
+        }
+        if (!recovered) {
+          this.siteWizard.errorMessage = errorText;
+          this.notify(errorText, "error");
+        }
       } finally {
         this.siteWizard.isSubmitting = false;
         this.siteWizard.isBuilding = false;
@@ -3602,11 +3664,44 @@ const app = createApp({
         this.notify(error.message, "error");
       }
     },
+    openWebsiteDetails(site) {
+      if (!site) return;
+      this.selectedWebsiteId = site.id;
+      this.goTo("website-details");
+    },
+    openWebsiteFiles(site) {
+      if (!site) return;
+      this.selectedWebsiteId = String(site.id);
+      const domainName = site.domain || (this.selectedWebsite && this.selectedWebsite.domain) || "";
+      this.launch("files", domainName ? "/domains/" + domainName : "/domains");
+    },
+    openWebsitePhpConfiguration(site) {
+      this.selectedWebsiteId = site.id;
+      this.goTo("php-configuration");
+    },
+    openWebsiteDatabases(site) {
+      if (!site) return;
+      this.selectedWebsiteId = site.id;
+      this.databaseWebsiteFilter = String(site.id);
+      this.dbTab = "databases";
+      this.goTo("databases");
+    },
+    openWebsiteDns(site) {
+      this.selectedWebsiteId = site.id;
+      const domain = this.domains.find((item) => String(item.name).toLowerCase() === String(site.domain).toLowerCase());
+      if (!domain) {
+        this.notify("DNS information is not available for this website.", "error");
+        return;
+      }
+      this.selectedDomainId = domain.id;
+      this.newDnsRecord.domain_id = domain.id;
+      this.goTo("dns-zone-editor");
+    },
     // Database Modals
     openDbModal(type) {
       this.dbSubmitting = false;
       this.dbModal = type;
-      this.newDatabase = { name: "", username: "" };
+      this.newDatabase = { name: "", username: "", website_id: this.databaseWebsiteFilter || "" };
       this.newDatabaseUser = { username: "", password: "" };
       this.newDatabaseGrant = { database_id: "", user_id: "", selectedPrivileges: ["ALL"] };
     },
@@ -3614,6 +3709,7 @@ const app = createApp({
       if (this.dbSubmitting) return;
       this.dbModal = null;
       this.editingDatabase = null;
+      this.databaseAssignmentWebsiteId = "";
       this.editingDatabaseUser = null;
       this.editingDatabaseGrant = null;
       this.dbSubmitting = false;
@@ -3625,6 +3721,29 @@ const app = createApp({
       this.dbSubmitting = false;
       this.editingDatabase = { ...database };
       this.dbModal = 'edit_database';
+    },
+    openAssignWebsiteModal(database) {
+      this.dbSubmitting = false;
+      this.editingDatabase = { ...database };
+      this.databaseAssignmentWebsiteId = "";
+      this.dbModal = 'assign_website';
+    },
+    async saveDatabaseWebsiteAssignment() {
+      if (!this.editingDatabase || !this.databaseAssignmentWebsiteId || this.dbSubmitting) return;
+      this.dbSubmitting = true;
+      try {
+        const payload = await this.api(`/api/client/databases/${this.editingDatabase.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ website_id: this.databaseAssignmentWebsiteId }),
+        });
+        this.applyDatabasePayload(payload);
+        this.notify(`Database ${this.editingDatabase.name} assigned to the website`, "success");
+        this.closeDbModal();
+      } catch (error) {
+        this.notify(String(error), "error");
+      } finally {
+        this.dbSubmitting = false;
+      }
     },
     async saveEditDatabase() {
       if (!this.editingDatabase || !this.editingDatabase.name || this.dbSubmitting) return;
@@ -3848,7 +3967,7 @@ const app = createApp({
     },
     openDatabaseWizard() {
       this.dbSubmitting = false;
-      this.databaseWizard = { name: "", username: "", password: "", selectedPrivileges: ["ALL"] };
+      this.databaseWizard = { name: "", username: "", password: "", website_id: this.databaseWebsiteFilter || "", selectedPrivileges: ["ALL"] };
       this.dbModal = "wizard";
     },
     async submitDatabaseWizard() {
@@ -3856,7 +3975,7 @@ const app = createApp({
       if (!form.name || !form.username || !form.password || this.dbSubmitting) return;
       this.dbSubmitting = true;
       try {
-        await this.api("/api/client/database-wizard", { method: "POST", body: JSON.stringify({ name: form.name, username: form.username, password: form.password, privileges: this.serializeDatabasePrivileges(form.selectedPrivileges) }) });
+        await this.api("/api/client/database-wizard", { method: "POST", body: JSON.stringify({ name: form.name, username: form.username, password: form.password, website_id: form.website_id, privileges: this.serializeDatabasePrivileges(form.selectedPrivileges) }) });
         this.notify("Database, user, and access grant created successfully", "success");
         this.closeDbModal();
         await this.refresh();
@@ -3878,7 +3997,7 @@ const app = createApp({
         } else if (this.dbWizardStep === 2) {
           this.dbWizardStep = 3;
         } else if (this.dbWizardStep === 3) {
-          await this.api("/api/client/database-wizard", { method: "POST", body: JSON.stringify({ name: this.wizardDbName, username: this.wizardDbUser, password: this.wizardDbPass, privileges: "ALL" }) });
+          await this.api("/api/client/database-wizard", { method: "POST", body: JSON.stringify({ name: this.wizardDbName, username: this.wizardDbUser, password: this.wizardDbPass, website_id: this.wizardWebsiteId, privileges: "ALL" }) });
           await this.refresh();
           this.dbWizardStep = 4;
         }
@@ -3894,6 +4013,7 @@ const app = createApp({
       this.wizardDbName = "";
       this.wizardDbUser = "";
       this.wizardDbPass = "";
+      this.wizardWebsiteId = "";
       this.activePage = "databases";
     },
     // Backup Wizard
@@ -4368,7 +4488,14 @@ const app = createApp({
 
       this.activePage = target;
       this.userMenuOpen = false;
-      if (target === "performance") {
+      if (target === "hosting-plan") {
+        if (!this.hostingPlanRangeInitialized) {
+          this.resourceRange = "7d";
+          this.hostingPlanRangeInitialized = true;
+        }
+        this.loadResourceUsage();
+        if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }
+      } else if (target === "performance") {
         this.refreshResourceUsage();
         if (!this.resourcePoll) this.resourcePoll = window.setInterval(() => this.loadResourceUsage(), 10000);
       } else if (target === "analytics") {
@@ -4381,7 +4508,7 @@ const app = createApp({
         this.loadDiskUsage();
         if (this.resourcePoll) { window.clearInterval(this.resourcePoll); this.resourcePoll = null; }
       } else if (target === "dns-zone-editor") {
-        if (this.domains.length) this.selectedDomainId = this.domains[0].id;
+        if (!this.selectedDomainId && this.domains.length) this.selectedDomainId = this.domains[0].id;
         this.newDnsRecord.domain_id = this.selectedDomainId;
         this.loadDnsRecords();
         this.loadDnsProviderOptions();
@@ -4579,6 +4706,42 @@ const app = createApp({
       navigator.clipboard.writeText(this.sshState.newPassword).then(() => {
         this.notify("Password copied to clipboard", "success");
       }).catch(() => {});
+    },
+
+    openSiteSslModal(website) {
+      if (!website) return;
+      this.siteSslModal.website = website;
+      this.siteSslModal.isOpen = true;
+    },
+    openWebsiteErrorModal(website) {
+      if (!website) return;
+      const error = String(website.dns_last_error || website.provider_state?.last_error || website.error || "DNS provider sync failed");
+      this.websiteErrorModal = { isOpen: true, website, error };
+    },
+    closeWebsiteErrorModal() {
+      this.websiteErrorModal = { isOpen: false, website: null, error: "" };
+    },
+    closeSiteSslModal() {
+      this.siteSslModal.isOpen = false;
+      this.siteSslModal.website = null;
+    },
+    installFreeSslFromSiteModal() {
+      const website = this.siteSslModal.website;
+      if (!website) return;
+      this.closeSiteSslModal();
+      return this.issueFreeSsl(website);
+    },
+    openCustomSslFromSiteModal() {
+      const website = this.siteSslModal.website;
+      if (!website) return;
+      this.closeSiteSslModal();
+      this.openCustomSslModal(website);
+    },
+    checkSiteSslDnsFromModal() {
+      const website = this.siteSslModal.website;
+      if (!website) return;
+      this.closeSiteSslModal();
+      return this.checkDomainSslDns(website);
     },
 
     openCustomSslModal(website) {

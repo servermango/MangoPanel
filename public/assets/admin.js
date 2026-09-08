@@ -1785,7 +1785,7 @@ createApp({
       try {
         await this.api(`/api/admin/registrar-domain-records/${modal.record.id}/manage`, { method: "POST", body: JSON.stringify({ user_id: modal.user_id || null, nameservers: modal.nameservers.filter((item) => String(item || "").trim()) }) });
         modal.open = false;
-        this.message = "Registrar domain association updated";
+        this.message = "Registrar nameservers updated at the provider";
         this.loadRegistrarDashboard();
       } catch (error) { this.message = error.message; }
       finally { modal.saving = false; }

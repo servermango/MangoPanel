@@ -330,6 +330,7 @@ CREATE TABLE IF NOT EXISTS databases (
   account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),
   name TEXT NOT NULL UNIQUE,
   username TEXT NOT NULL,
+  website_id INTEGER REFERENCES websites(id),
   status TEXT NOT NULL DEFAULT 'active',
   size_mb INTEGER NOT NULL DEFAULT 0,
   created_by_user_id INTEGER REFERENCES users(id),
@@ -2100,6 +2101,9 @@ def ensure_dns_provider_schema(conn):
         "litespeed_cache_enabled": "INTEGER",
         "cloudflare_cache_enabled": "INTEGER",
         "php_workers_limit": "INTEGER",
+    })
+    ensure_table_columns(conn, "databases", {
+        "website_id": "INTEGER",
     })
 
 

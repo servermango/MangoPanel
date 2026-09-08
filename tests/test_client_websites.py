@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,14 +20,15 @@ class ClientWebsiteTests(unittest.TestCase):
                 job_id = delete_client_website(conn, account, website)
 
                 self.assertIsNone(conn.execute("SELECT id FROM websites WHERE id = ?", (website["id"],)).fetchone())
-                domain = conn.execute("SELECT linked_website_id FROM domains WHERE name = ?", (website["domain"],)).fetchone()
-                self.assertIsNotNone(domain)
-                self.assertIsNone(domain["linked_website_id"])
+                domain = conn.execute("SELECT id FROM domains WHERE name = ?", (website["domain"],)).fetchone()
+                self.assertIsNone(domain)
                 job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
                 self.assertEqual(job["type"], "delete_website")
                 self.assertEqual(job["status"], "succeeded")
                 self.assertEqual(job["target_type"], "hosting_account")
                 self.assertEqual(job["target_id"], account["id"])
+                payload = json.loads(job["payload"])
+                self.assertEqual(payload["removed_domain"]["name"], website["domain"])
                 artifact = Path(account["base_path"]) / ".runtime" / "simulated" / "deleted-websites" / "{}.json".format(website["domain"])
                 self.assertTrue(artifact.exists())
 

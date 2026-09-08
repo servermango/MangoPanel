@@ -42,6 +42,7 @@ from .agent import (
     get_live_ram_io,
     get_system_ram_history,
     path_usage,
+    _storage_mb_with_fallback,
     run_storage_cleanup,
     save_storage_alert_settings,
     update_server_ip,
@@ -564,6 +565,11 @@ def auth_cookie_headers(token, host_header, is_https=False):
     return [auth_cookie_header(token, host_header, CONFIG.token_ttl_seconds, is_https=is_https)]
 
 
+def tool_access_cookie_headers(token, host_header, is_https=False):
+    """Use a separate host cookie so panel and tool sessions cannot collide."""
+    return named_cookie_headers("mp_tool_token", token, host_header, 600, is_https=is_https)
+
+
 def named_cookie_header(name, token, host_header, max_age=None, is_https=False):
     cookie_domain = get_cookie_domain(host_header)
     domain_attr = f"; Domain={cookie_domain}" if cookie_domain else ""
@@ -867,6 +873,9 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/signup":
                 return self.serve_file(PUBLIC_DIR / "signup.html")
             if method == "GET" and (path in {"/login", "/login.html"}):
+                forwarded_host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(":")[0].strip().lower()
+                if forwarded_host.startswith("files-") or forwarded_host.startswith("files."):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
                 return self.serve_file(PUBLIC_DIR / "login.html")
             if method == "GET" and (path in {"/webmail", "/webmail.html"} or path.startswith("/webmail/login")):
                 if panel == "admin":
@@ -1030,6 +1039,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             return self.extract_file_archive()
         if (path.startswith("/api/public/filebrowser/proxy") or path.startswith("/files/")) and method in {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}:
             return self.public_filebrowser_proxy(path)
+        if (path.startswith("/api/public/phpmyadmin/proxy") or path.startswith("/db/")) and method in {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}:
+            return self.public_phpmyadmin_proxy(path)
         if path.startswith("/auth/") and method == "GET":
             return self.public_tool_launch(path)
         if path.startswith("/api/public/tool-launch/") and method == "GET":
@@ -1148,31 +1159,50 @@ class MangoHandler(BaseHTTPRequestHandler):
                 "INSERT INTO sessions(actor_type, actor_id, token_id, expires_at) VALUES (?, ?, ?, ?)",
                 (actor_type, actor_id, access_payload["jti"], int(time.time()) + 600),
             )
-            default_path = "/files/" if tool == "filebrowser" else "/db/"
+            default_path = "/files/files/" if tool == "filebrowser" else "/db/"
             if tool == "webmail":
                 default_path = "/webmail"
             clean_path = suffix or default_path
-            if clean_path.rstrip("/") == "/files":
-                clean_path = "/files/"
+            if tool == "filebrowser":
+                clean_p = clean_path.rstrip("/")
+                if clean_p in {"/files", "/files/files"}:
+                    clean_path = "/files/files/"
+                elif clean_path.startswith("/files/files/"):
+                    clean_path = "/files/files/" + clean_path[len("/files/files/"):].lstrip("/")
+                elif clean_path.startswith("/files/"):
+                    clean_path = "/files/files/" + clean_path[len("/files/"):].lstrip("/")
+
+            if tool == "phpmyadmin":
+                clean_p = clean_path.rstrip("/")
+                if clean_p in {"", "/db"}:
+                    clean_path = "/db/"
 
             # A proxy must not be allowed to turn a tool launch into a
             # localhost URL.  In particular, some reverse-proxy chains omit
             # X-Forwarded-Host and leave the panel's 127.0.0.1 host here.
-            # Derive the canonical public file-browser host from the account
+            # Derive the canonical public tool host from the account
             # instead of sending that unusable host to the user's browser.
             redirect_host = forwarded_host
             redirect_host_part = (redirect_host or "").split(":", 1)[0].lower()
-            if tool == "filebrowser" and (
-                not redirect_host_part.startswith("files-")
-                and not redirect_host_part.startswith("files.")
+            prefix = "files" if tool == "filebrowser" else ("pma" if tool == "phpmyadmin" else "mail")
+            if (
+                not redirect_host_part.startswith(f"{prefix}-")
+                and not redirect_host_part.startswith(f"{prefix}.")
                 or redirect_host_part in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
             ):
                 public_host = (CONFIG.public_host or "").strip()
                 if public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
-                    redirect_host = f"files-{acc_dict['username']}.{public_host}"
-                    forwarded_host = redirect_host
+                    canonical_host = f"{prefix}-{acc_dict['username']}.{public_host}"
+                    if redirect_host_part != canonical_host:
+                        target_url = f"https://{canonical_host}/auth/{token}"
+                        if clean_path:
+                            target_url += clean_path if clean_path.startswith("/") else "/" + clean_path
+                        self.send_response(HTTPStatus.FOUND)
+                        self.send_header("Location", target_url)
+                        self.end_headers()
+                        return
             self.send_response(HTTPStatus.FOUND)
-            cookie_headers = auth_cookie_headers(access_token, forwarded_host, is_https=self.is_https)
+            cookie_headers = tool_access_cookie_headers(access_token, forwarded_host, is_https=self.is_https)
             if tool == "webmail":
                 mail_access_token = create_jwt(
                     {
@@ -1253,7 +1283,7 @@ class MangoHandler(BaseHTTPRequestHandler):
         token = None
         cookie_header = self.headers.get("Cookie", "")
         if cookie_header:
-            m = re.search(r'(?:^|;\s*)(?:mp_auth|mp_client_token)=([^;]+)', cookie_header)
+            m = re.search(r'(?:^|;\s*)(?:mp_tool_token|mp_auth|mp_client_token)=([^;]+)', cookie_header)
             if m:
                 token = m.group(1).strip()
         if not token:
@@ -1433,6 +1463,100 @@ class MangoHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             self.record_access_log(status, len(data))
 
+    def public_phpmyadmin_proxy(self, path):
+        forwarded_host = self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")
+        username = None
+        if forwarded_host:
+            match = re.match(r"^(?:files|pma|mail)[-.](\w+)\.", forwarded_host)
+            if match:
+                username = match.group(1)
+
+        token = None
+        cookie_header = self.headers.get("Cookie", "")
+        if cookie_header:
+            m = re.search(r'(?:^|;\s*)(?:mp_tool_token|mp_auth|mp_client_token)=([^;]+)', cookie_header)
+            if m:
+                token = m.group(1).strip()
+        if not token:
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth.removeprefix("Bearer ").strip()
+
+        with connect(CONFIG.db_path) as conn:
+            account = None
+            if username:
+                account = conn.execute("SELECT * FROM hosting_accounts WHERE username = ? AND status = 'active'", (username,)).fetchone()
+            if not account and token:
+                payload = verify_jwt(token, CONFIG.jwt_secret)
+                if payload and payload.get("sub"):
+                    actor_id = payload["sub"]
+                    account = conn.execute("SELECT * FROM hosting_accounts WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1", (actor_id,)).fetchone()
+            if not account:
+                account = conn.execute("SELECT * FROM hosting_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").fetchone()
+            if not account:
+                raise ApiError(HTTPStatus.NOT_FOUND, "account_not_found")
+
+            container_name = f"mp-{account['username']}-phpmyadmin"
+            clean_path = path.replace("/api/public/phpmyadmin/proxy", "") or "/db/"
+            if not clean_path.startswith("/"):
+                clean_path = "/" + clean_path
+
+            request_query = urlparse(self.path).query
+            container_ip = resolve_container_ip(container_name)
+            upstream_url = f"http://{container_ip}:80{clean_path}"
+            if request_query:
+                upstream_url += f"?{request_query}"
+
+            req_headers = {}
+            for k, v in self.headers.items():
+                kl = k.lower()
+                if kl not in {"host", "content-length", "accept-encoding"}:
+                    req_headers[k] = v
+            req_headers["Accept-Encoding"] = "identity"
+
+            import urllib.request
+
+            class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                    return None
+
+            opener = urllib.request.build_opener(NoRedirectHandler)
+            request_body = None
+            if self.command in {"POST", "PUT", "PATCH"}:
+                try:
+                    content_length = int(self.headers.get("Content-Length", "0") or 0)
+                except (TypeError, ValueError):
+                    content_length = 0
+                if content_length > 0:
+                    request_body = self.rfile.read(content_length)
+            req = urllib.request.Request(
+                upstream_url,
+                data=request_body,
+                headers=req_headers,
+                method=self.command,
+            )
+            try:
+                resp = opener.open(req, timeout=10)
+                data = resp.read()
+                status = resp.status
+                resp_headers = resp.headers
+            except urllib.error.HTTPError as e:
+                data = e.read()
+                status = e.code
+                resp_headers = e.headers
+            except Exception as e:
+                raise ApiError(HTTPStatus.BAD_GATEWAY, f"phpmyadmin_proxy_error: {e}")
+
+            self.send_response(status)
+            for hk, hv in resp_headers.items():
+                if hk.lower() not in {"content-length", "transfer-encoding", "content-encoding"}:
+                    self.send_header(hk, hv)
+
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            self.record_access_log(status, len(data))
+
     def extract_file_archive(self, account=None, actor=None):
         body = self.read_json()
         raw_path = body.get("path", "").strip()
@@ -1489,7 +1613,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 cookie_header = self.headers.get("Cookie", "")
                 from http.cookies import SimpleCookie
                 cookies = SimpleCookie(cookie_header)
-                token_cookie = cookies.get("mp_client_token") or cookies.get("mp_auth")
+                token_cookie = cookies.get("mp_tool_token") or cookies.get("mp_client_token") or cookies.get("mp_auth")
                 if token_cookie:
                     payload = verify_jwt(token_cookie.value, CONFIG.jwt_secret)
                     if payload and payload.get("sub"):
@@ -2251,7 +2375,7 @@ class MangoHandler(BaseHTTPRequestHandler):
         from http.cookies import SimpleCookie
         cookie_header = self.headers.get("Cookie", "")
         cookies = SimpleCookie(cookie_header)
-        token_cookie = cookies.get("mp_client_token")
+        token_cookie = cookies.get("mp_tool_token") or cookies.get("mp_client_token") or cookies.get("mp_auth")
         token = token_cookie.value if token_cookie else None
 
         if not token:
@@ -2273,17 +2397,6 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if forwarded_uri:
                     uri_path = urlparse(forwarded_uri).path.rstrip("/")
                     is_login_request = is_login_request or uri_path in {"/login", "/files/login", "/api/login", "/files/api/login"} or uri_path.endswith("/login")
-
-        # Filebrowser configured with noauth still performs a login bootstrap
-        # request from its SPA.  The endpoint only issues Filebrowser's
-        # noauth client token; it does not authenticate a MangoPanel user.
-        # Allow the bootstrap through the forward-auth subrequest so the SPA
-        # can initialize instead of navigating to /login.  All actual files
-        # routes remain protected by the normal panel-token check below.
-        if is_login_request:
-            self.send_response(HTTPStatus.OK)
-            self.end_headers()
-            return
 
         if forwarded_uri and (
             forwarded_uri.startswith("/files/static/")
@@ -2310,6 +2423,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 username = match.group(1)
 
         if not token:
+            if is_login_request or (forwarded_host and (forwarded_host.startswith("files-") or forwarded_host.startswith("files."))):
+                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
             if "text/html" in self.headers.get("Accept", ""):
                 redirect_host = CONFIG.public_host
                 if forwarded_host:
@@ -2331,6 +2446,8 @@ class MangoHandler(BaseHTTPRequestHandler):
 
         payload = verify_jwt(token, CONFIG.jwt_secret)
         if not payload or payload.get("purpose") not in {"access", "tool_launch"}:
+            if is_login_request or (forwarded_host and (forwarded_host.startswith("files-") or forwarded_host.startswith("files."))):
+                raise ApiError(HTTPStatus.FORBIDDEN, "access_denied")
             if "text/html" in self.headers.get("Accept", ""):
                 redirect_host = CONFIG.public_host
                 if forwarded_host:
@@ -2440,7 +2557,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     )
                     clean_path = strip_magic_launch_segment(forwarded_uri)
                     self.send_response(HTTPStatus.FOUND)
-                    for cookie_header in auth_cookie_headers(access_token, forwarded_host, is_https=self.is_https):
+                    for cookie_header in tool_access_cookie_headers(access_token, forwarded_host, is_https=self.is_https):
                         self.send_header("Set-Cookie", cookie_header)
                     self.send_header("Location", build_tool_redirect_url(forwarded_host, clean_path, is_https=self.is_https))
                     self.end_headers()
@@ -3087,6 +3204,12 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (account["id"], domain, document_root, body.get("php_version", "8.3"), default_analytics_enabled(conn, account["id"]), actor["id"], parent_id, mode, relative_path or None),
                 )
                 website_id = cur.lastrowid
+                # Create the folder immediately. Provisioning is queued and
+                # may be delayed or fail while Docker is being rebuilt; the
+                # committed website must still have a File Browser target.
+                Path(document_root).mkdir(parents=True, exist_ok=True)
+                Path(document_root).parent.joinpath("logs").mkdir(parents=True, exist_ok=True)
+                Path(document_root).parent.joinpath("tmp").mkdir(parents=True, exist_ok=True)
                 public_ip = get_host_public_ip(conn)
                 dns_job_id = None
                 dns_record_id = None
@@ -3296,6 +3419,11 @@ class MangoHandler(BaseHTTPRequestHandler):
                     (account["id"], domain, document_root, body.get("php_version", "8.3"), "missing", "active", default_analytics_enabled(conn, account["id"]), actor["id"]),
                 )
                 website_id = cur.lastrowid
+                # Materialize the root before the asynchronous provisioning
+                # job so a new site is usable even while the stack is queued.
+                Path(document_root).mkdir(parents=True, exist_ok=True)
+                Path(document_root).parent.joinpath("logs").mkdir(parents=True, exist_ok=True)
+                Path(document_root).parent.joinpath("tmp").mkdir(parents=True, exist_ok=True)
                 dns_assignment = default_domain_dns_assignment(conn, account["id"])
                 if dns_check.get("exists") and dns_check.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE and dns_check.get("dns_provider_account_id"):
                     dns_assignment["dns_provider_account_id"] = dns_check["dns_provider_account_id"]
@@ -3598,7 +3726,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         raise ApiError(HTTPStatus.BAD_REQUEST, "two_to_four_nameservers_required")
                     account = conn.execute("SELECT ra.*, rp.key AS provider_key FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id WHERE ra.id = ?", (record["registrar_account_id"],)).fetchone()
                     try:
-                        result = registrar_for(account["provider_key"], registrar_account_settings(conn, account)).update_nameservers(domain_name, nameservers)
+                        result = registrar_for(account["provider_key"], registrar_account_settings(conn, account)).update_nameservers(domain_name, nameservers, record["registrar_domain_id"])
                     except NotImplementedError:
                         result = {"local_only": True, "reason": "provider_nameserver_update_not_supported"}
                     except RegistrarError as exc:
@@ -4027,7 +4155,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     if len(nameservers) < 2:
                         raise ApiError(HTTPStatus.BAD_REQUEST, "dns_nameservers_not_ready")
                     try:
-                        nameserver_update = registrar_for(registrar_record["provider_key"], registrar_account_settings(conn, registrar_record)).update_nameservers(domain_name, nameservers)
+                        nameserver_update = registrar_for(registrar_record["provider_key"], registrar_account_settings(conn, registrar_record)).update_nameservers(domain_name, nameservers, registrar_record["registrar_domain_id"])
                     except NotImplementedError:
                         raise ApiError(HTTPStatus.BAD_GATEWAY, "domain_provider_nameserver_update_not_supported")
                     except RegistrarError as exc:
@@ -4314,10 +4442,16 @@ class MangoHandler(BaseHTTPRequestHandler):
                 )
                 launch_url = f"{base_url}/auth/{launch_token}"
                 if requested_path:
-                    _, rel_path = normalize_account_relative_path(account, requested_path, allow_empty=True)
+                    clean_req = requested_path.strip()
+                    if clean_req.rstrip("/") in {"/files", "files", "/", ""}:
+                        rel_path = ""
+                    else:
+                        if clean_req.startswith("/files/"):
+                            clean_req = clean_req[len("/files/"):]
+                        _, rel_path = normalize_account_relative_path(account, clean_req, allow_empty=True)
                     launch_url += "/files"
                     if rel_path:
-                        launch_url += f"/{rel_path}"
+                        launch_url += f"/{rel_path.lstrip('/')}"
                 usage = conn.execute(
                     "SELECT storage_mb, storage_limit_mb FROM resource_usage_samples WHERE account_id = ? ORDER BY sampled_at DESC LIMIT 1",
                     (account["id"],)
@@ -4534,6 +4668,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                 username = validate_db_identifier(body.get("username"), "invalid_database_username")
                 password = validate_db_password(body.get("password"))
                 privileges = validate_db_privileges(body.get("privileges", "ALL"))
+                website_id = optional_positive_int(body.get("website_id"))
+                if website_id:
+                    require_owned_website(conn, account["id"], website_id, actor["id"])
                 if conn.execute("SELECT id FROM databases WHERE name = ?", (name,)).fetchone():
                     raise ApiError(HTTPStatus.CONFLICT, "database_name_already_exists")
                 existing_user = conn.execute(
@@ -4543,8 +4680,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if existing_user and int(existing_user["account_id"]) != int(account["id"]):
                     raise ApiError(HTTPStatus.CONFLICT, "database_user_already_exists")
                 db_cur = conn.execute(
-                    "INSERT INTO databases(account_id, name, username, status, created_by_user_id) VALUES (?, ?, ?, ?, ?)",
-                    (account["id"], name, username, "active", actor["id"]),
+                    "INSERT INTO databases(account_id, name, username, website_id, status, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (account["id"], name, username, website_id, "active", actor["id"]),
                 )
                 if existing_user:
                     user_id = int(existing_user["id"])
@@ -4581,11 +4718,14 @@ class MangoHandler(BaseHTTPRequestHandler):
                 name = validate_db_identifier(body.get("name") or f"{account['username']}_app", "invalid_database_name")
                 username = validate_db_identifier(body.get("username") or name, "invalid_database_username")
                 password = body.get("password")
+                website_id = optional_positive_int(body.get("website_id"))
+                if website_id:
+                    require_owned_website(conn, account["id"], website_id, actor["id"])
                 if conn.execute("SELECT id FROM databases WHERE name = ?", (name,)).fetchone():
                     raise ApiError(HTTPStatus.CONFLICT, "database_name_already_exists")
                 cur = conn.execute(
-                    "INSERT INTO databases(account_id, name, username, status, created_by_user_id) VALUES (?, ?, ?, ?, ?)",
-                    (account["id"], name, username, "active", actor["id"]),
+                    "INSERT INTO databases(account_id, name, username, website_id, status, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (account["id"], name, username, website_id, "active", actor["id"]),
                 )
                 db_id = cur.lastrowid
                 user_id = None
@@ -4629,12 +4769,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                     status = body.get("status", database["status"])
                     if status not in {"active", "suspended"}:
                         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_database_status")
+                    website_id = database["website_id"]
+                    if "website_id" in body:
+                        website_id = optional_positive_int(body.get("website_id"))
+                        if website_id:
+                            require_owned_website(conn, account["id"], website_id, actor["id"])
                     duplicate = conn.execute("SELECT id FROM databases WHERE name = ? AND id != ?", (name, database_id)).fetchone()
                     if duplicate:
                         raise ApiError(HTTPStatus.CONFLICT, "database_name_already_exists")
                     conn.execute(
-                        "UPDATE databases SET name = ?, status = ? WHERE id = ?",
-                        (name, status, database_id),
+                        "UPDATE databases SET name = ?, status = ?, website_id = ? WHERE id = ?",
+                        (name, status, website_id, database_id),
                     )
                     job_id = enqueue_agent_job(conn, "update_database", "database", database_id, {"name": name, "status": status})
                     log_activity(conn, actor["id"], "database_updated", {"name": name})
@@ -7953,10 +8098,31 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if client_user_id and not conn.execute("SELECT id FROM users WHERE id = ? AND status = 'active'", (client_user_id,)).fetchone():
                     raise ApiError(HTTPStatus.NOT_FOUND, "assigned_client_not_found")
                 nameservers = [str(value).strip().rstrip(".").lower() for value in (body.get("nameservers") or []) if str(value).strip()]
-                if len(nameservers) > 4:
-                    raise ApiError(HTTPStatus.BAD_REQUEST, "too_many_nameservers")
+                if len(nameservers) < 2 or len(nameservers) > 4:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "two_to_four_nameservers_required")
+                registrar_account = conn.execute(
+                    "SELECT ra.*, rp.key AS provider_key FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id WHERE ra.id = ? AND ra.status = 'active'",
+                    (record["registrar_account_id"],),
+                ).fetchone()
+                if not registrar_account:
+                    raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_account_unavailable")
+                try:
+                    provider_result = registrar_for(
+                        registrar_account["provider_key"],
+                        registrar_account_settings(conn, registrar_account),
+                    ).update_nameservers(record["domain_name"], nameservers, record["registrar_domain_id"])
+                except (RegistrarError, NotImplementedError) as exc:
+                    conn.execute(
+                        "UPDATE registrar_accounts SET last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (str(exc)[:500], registrar_account["id"]),
+                    )
+                    raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_nameserver_update_failed: " + str(exc)[:180]) from exc
                 conn.execute("UPDATE registrar_domain_records SET client_user_id = ?, domain_id = NULL, nameservers_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (client_user_id, json.dumps(nameservers), record_id))
-                return self.json_response({"updated": True, "record_id": record_id})
+                conn.execute(
+                    "UPDATE registrar_accounts SET last_error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (registrar_account["id"],),
+                )
+                return self.json_response({"updated": True, "record_id": record_id, "provider_result": provider_result})
             if path == "/api/admin/registrar-domain-records/bulk-manage" and method == "POST":
                 body = self.read_json()
                 ids = [optional_positive_int(value) for value in (body.get("ids") or [])]
@@ -9461,12 +9627,28 @@ def default_registrar_nameservers(conn):
 
 def update_domain_registrar_nameservers(conn, domain, nameservers, source="custom"):
     result = {"status": "updated_locally", "nameservers": nameservers}
+    registrar_account_id = domain["registrar_account_id"] if "registrar_account_id" in domain.keys() else None
+    if registrar_account_id:
+        account = conn.execute(
+            "SELECT ra.*, rp.key AS provider_key FROM registrar_accounts ra JOIN registrar_providers rp ON rp.id = ra.provider_id WHERE ra.id = ? AND ra.status = 'active'",
+            (registrar_account_id,),
+        ).fetchone()
+        if not account:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_account_unavailable")
+        try:
+            order_id = domain["registrar_domain_id"] if "registrar_domain_id" in domain.keys() else None
+            result = registrar_for(account["provider_key"], registrar_account_settings(conn, account)).update_nameservers(domain["name"], nameservers, order_id)
+        except (RegistrarError, NotImplementedError) as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_nameserver_update_failed: " + str(exc)[:180]) from exc
+        conn.execute("UPDATE domains SET nameservers_json = ?, nameserver_source = ?, registrar_state_json = ?, last_registrar_sync_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), source, json.dumps(result), domain["id"]))
+        return result
     reg_id = domain["registrar_provider_id"] if "registrar_provider_id" in domain.keys() else None
     if reg_id:
         provider = conn.execute("SELECT * FROM registrar_providers WHERE id = ? AND status = 'active'", (reg_id,)).fetchone()
         if provider:
             try:
-                result = registrar_for(provider["key"], registrar_settings(conn, provider)).update_nameservers(domain["name"], nameservers)
+                order_id = domain["registrar_domain_id"] if "registrar_domain_id" in domain.keys() else None
+                result = registrar_for(provider["key"], registrar_settings(conn, provider)).update_nameservers(domain["name"], nameservers, order_id)
             except RegistrarError as exc:
                 raise ApiError(HTTPStatus.BAD_GATEWAY, "registrar_nameserver_update_failed: " + str(exc)[:180])
     conn.execute("UPDATE domains SET nameservers_json = ?, nameserver_source = ?, registrar_state_json = ?, last_registrar_sync_at = CURRENT_TIMESTAMP WHERE id = ?", (json.dumps(nameservers), source, json.dumps(result), domain["id"]))
@@ -11867,7 +12049,7 @@ def resource_usage_payload(conn, account, window_key):
         # This is a read-only dashboard endpoint.  Filesystem/Docker usage is
         # collected by the periodic collector; never calculate it while a
         # client request is waiting.
-        current = rows[-1] if rows else cached_resource_usage(account)
+        current = _resource_sample_with_storage_fallback(conn, account["id"], rows[-1]) if rows else cached_resource_usage(account)
         samples = downsample_resource_usage(rows, max_points=240)
     except Exception as exc:
         print(f"resource usage payload failed: {exc}")
@@ -11879,6 +12061,22 @@ def resource_usage_payload(conn, account, window_key):
         "current": current,
         "samples": samples,
     }
+
+
+def _resource_sample_with_storage_fallback(conn, account_id, sample):
+    """Avoid showing zero when a large filesystem scan timed out."""
+    if not sample:
+        return sample
+    current = dict(sample)
+    if float(current.get("storage_mb") or 0) > 0 or int(current.get("inodes_used") or 0) <= 0:
+        return current
+    previous = conn.execute(
+        "SELECT storage_mb FROM resource_usage_samples WHERE account_id = ? AND storage_mb > 0 ORDER BY sampled_at DESC LIMIT 1",
+        (account_id,),
+    ).fetchone()
+    if previous and previous["storage_mb"] is not None:
+        current["storage_mb"] = round(float(previous["storage_mb"]), 2)
+    return current
 
 
 def ensure_resource_usage_history(conn, account):
@@ -11933,7 +12131,7 @@ def collect_resource_usage_sample(conn, account, force=False):
     sample = docker_resource_usage(account) or resource_usage_estimate(account)
     base_path = Path(account["base_path"])
     path_info = path_usage(base_path) if base_path.exists() else {"bytes": 0, "inodes": 0}
-    storage_mb = round(path_info["bytes"] / (1024 * 1024), 2)
+    storage_mb = _storage_mb_with_fallback(conn, account["id"], path_info)
     inodes_used = int(path_info["inodes"])
     storage_limit_mb = float(account["storage_mb"] if "storage_mb" in account.keys() and account["storage_mb"] is not None else sample.get("storage_limit_mb") or 0)
     inodes_limit = int(account["inode_limit"] if "inode_limit" in account.keys() and account["inode_limit"] is not None else 0)
@@ -12194,10 +12392,15 @@ def client_databases_payload(conn, account_id, user_id=None):
                 (account_id,),
             ).fetchall()
         )
+    website_domains = {
+        int(row["id"]): row["domain"]
+        for row in conn.execute("SELECT id, domain FROM websites WHERE account_id = ?", (account_id,)).fetchall()
+    }
     grants_by_database = {}
     for grant in grants:
         grants_by_database.setdefault(grant["database_id"], []).append(grant)
     for database in databases:
+        database["website_domain"] = website_domains.get(int(database["website_id"])) if database.get("website_id") else None
         database_grants = grants_by_database.get(database["id"], [])
         primary_user = database_grants[0]["username"] if database_grants else database["username"]
         database["grants"] = database_grants
@@ -12433,6 +12636,11 @@ def ensure_wordpress_compat(document_root, website_id, admin_username="", admin_
         mu_dir.mkdir(parents=True, exist_ok=True)
         (mu_dir / "mangopanel-compat.php").write_text(wordpress_compat_plugin(secret), encoding="utf-8")
         config = wp_config.read_text(encoding="utf-8")
+        fs_method_pattern = re.compile(r"define\(\s*(['\"])FS_METHOD\1\s*,\s*(['\"])[^'\"]*\2\s*\)\s*;", re.I)
+        if fs_method_pattern.search(config):
+            config = fs_method_pattern.sub("define('FS_METHOD', 'direct');", config, count=1)
+        else:
+            config = config.replace("<?php", "<?php\ndefine('FS_METHOD', 'direct');\n", 1)
         if "MANGOPANEL_SSO_SECRET" not in config:
             define_line = f"define('MANGOPANEL_SSO_SECRET', '{secret}');\n"
             marker = "if ( !defined('ABSPATH') )"
@@ -13723,9 +13931,10 @@ def delete_client_website(conn, account, website):
     website_id = website["id"]
     domain = website["domain"]
     domain_row = conn.execute(
-        "SELECT id FROM domains WHERE account_id = ? AND name = ?",
+        "SELECT * FROM domains WHERE account_id = ? AND name = ?",
         (account["id"], domain),
     ).fetchone()
+    removed_domain = row_to_dict(domain_row) if domain_row else None
     if domain_row:
         domain_id = domain_row["id"]
         conn.execute("DELETE FROM dns_records WHERE domain_id = ?", (domain_id,))
@@ -13744,16 +13953,34 @@ def delete_client_website(conn, account, website):
 
 
         conn.execute("UPDATE acme_certificate_orders SET domain_id = NULL WHERE domain_id = ?", (domain_id,))
+        # A website deletion also releases its managed domain.  Leaving an
+        # unlinked row here reserves the name for the old account and blocks
+        # a customer from adding it to another account later.
+        conn.execute("UPDATE websites SET parent_domain_id = NULL WHERE parent_domain_id = ?", (domain_id,))
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registrar_domains'").fetchone():
+            conn.execute("UPDATE registrar_domains SET domain_id = NULL WHERE domain_id = ?", (domain_id,))
+        conn.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
     conn.execute("DELETE FROM redirects WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM script_installs WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM wordpress_installs WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE access_logs SET website_id = NULL WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE acme_certificate_orders SET website_id = NULL WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE ssl_certificates SET website_id = NULL, status = 'removed' WHERE website_id = ?", (website_id,))
-    conn.execute("UPDATE domains SET linked_website_id = NULL WHERE linked_website_id = ?", (website_id,))
     conn.execute("DELETE FROM websites WHERE id = ?", (website_id,))
 
-    return enqueue_agent_job(conn, "delete_website", "hosting_account", account["id"], {"removed_website_id": website_id, "domain": domain})
+    return enqueue_agent_job(
+        conn,
+        "delete_website",
+        "hosting_account",
+        account["id"],
+        {
+            "removed_website_id": website_id,
+            "domain": domain,
+            # The worker runs after the database record has gone, so retain
+            # the DNS assignment it needs to remove the authoritative zone.
+            "removed_domain": removed_domain,
+        },
+    )
 
 
 def admin_clients_payload(conn):
@@ -14335,7 +14562,7 @@ def client_home(conn, user_id, active_account_id=None):
             (primary_account["id"],),
         ).fetchone()
         if sample:
-            s_dict = row_to_dict(sample)
+            s_dict = _resource_sample_with_storage_fallback(conn, primary_account["id"], sample)
             disk_used_mb = round(s_dict["storage_mb"])
             if s_dict.get("storage_limit_mb"):
                 disk_limit_mb = round(s_dict["storage_limit_mb"])

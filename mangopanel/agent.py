@@ -822,6 +822,15 @@ class Agent:
             website = conn.execute("SELECT * FROM websites WHERE id = ?", (job["target_id"],)).fetchone()
             if not website:
                 raise AgentError("website_not_found")
+            # Materialize the document root before running the full account
+            # provisioning workflow.  The latter can fail after generating
+            # the stack (for example when Docker cannot bind a shared mail
+            # port), but a successfully-created website row must still have
+            # a usable folder for File Browser and a later retry.
+            document_root = Path(str(website["document_root"])).resolve()
+            document_root.mkdir(parents=True, exist_ok=True)
+            document_root.parent.joinpath("logs").mkdir(parents=True, exist_ok=True)
+            document_root.parent.joinpath("tmp").mkdir(parents=True, exist_ok=True)
             return self.provision_hosting_account(conn, website["account_id"], touched_website_id=website["id"])
         if job_type == "delete_website":
             return self.delete_website(conn, job)
@@ -2633,6 +2642,7 @@ class Agent:
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
+        dns_cleanup = self.delete_removed_domain_dns(conn, account, payload.get("removed_domain"), payload.get("domain"))
         summary = self.provision_hosting_account(conn, account["id"])
         artifact = self.write_simulated_json(
             account,
@@ -2642,6 +2652,7 @@ class Agent:
                 "account_id": account["id"],
                 "removed_website_id": payload.get("removed_website_id"),
                 "domain": payload.get("domain"),
+                "dns_cleanup": dns_cleanup,
                 "stack_status": summary.get("status"),
             },
         )
@@ -2651,9 +2662,38 @@ class Agent:
             "account_id": account["id"],
             "removed_website_id": payload.get("removed_website_id"),
             "domain": payload.get("domain"),
+            "dns_cleanup": dns_cleanup,
             "artifact_path": artifact,
             "stack_status": summary.get("status"),
         }
+
+    def delete_removed_domain_dns(self, conn, account, removed_domain, fallback_domain):
+        """Delete the authoritative zone after a website releases its domain.
+
+        The domain row is intentionally removed before the asynchronous job is
+        dispatched so another account can claim it immediately.  The saved
+        domain snapshot supplies the worker with the provider assignment that
+        would otherwise no longer be available.
+        """
+        domain = dict(removed_domain or {})
+        domain_name = str(domain.get("name") or fallback_domain or "").strip().lower()
+        if not domain_name:
+            return {"status": "skipped", "reason": "domain_missing"}
+
+        domain.setdefault("name", domain_name)
+        provider, provider_key, _, _ = self.resolve_dns_provider(conn, domain)
+        try:
+            provider_state = provider.delete_zone(domain_name)
+        except DNSProviderError as exc:
+            raise AgentError("dns_zone_delete_failed: {}".format(exc)) from exc
+
+        runtime_dns_dir = Path(account["base_path"]) / ".runtime" / "dns"
+        for artifact in (runtime_dns_dir / "zones" / "{}.zone".format(domain_name), runtime_dns_dir / "{}.json".format(domain_name)):
+            try:
+                artifact.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return {"provider": provider_key, **provider_state}
 
     def provision_hosting_account(self, conn, account_id, touched_website_id=None, apply_stack=True):
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
@@ -4072,9 +4112,12 @@ class Agent:
                     wp_cfg_path = Path(root) / "wp-config.php"
                     try:
                         text = wp_cfg_path.read_text(encoding="utf-8")
-                        if "FS_METHOD" not in text:
+                        fs_method_pattern = re.compile(r"define\(\s*(['\"])FS_METHOD\1\s*,\s*(['\"])[^'\"]*\2\s*\)\s*;", re.I)
+                        if fs_method_pattern.search(text):
+                            text = fs_method_pattern.sub("define('FS_METHOD', 'direct');", text, count=1)
+                        else:
                             text = text.replace("<?php", "<?php\ndefine('FS_METHOD', 'direct');\n", 1)
-                            wp_cfg_path.write_text(text, encoding="utf-8")
+                        wp_cfg_path.write_text(text, encoding="utf-8")
                     except Exception:
                         pass
                     try:
@@ -4806,7 +4849,7 @@ class Agent:
         for account in accounts:
             base_path = Path(account["base_path"])
             usage = path_usage(base_path)
-            storage_mb = round(usage["bytes"] / (1024 * 1024), 2)
+            storage_mb = _storage_mb_with_fallback(conn, account["id"], usage)
             inodes_used = int(usage["inodes"])
             plan_storage_limit = float(account.get("storage_mb") or 0)
             plan_inode_limit = int(account.get("inode_limit") or 0)
@@ -4864,6 +4907,11 @@ _STORAGE_SCAN_CACHE = {}
 _STORAGE_SCAN_CACHE_TTL = 15 * 60
 _STORAGE_SCAN_CACHE_LOCK = threading.Lock()
 
+try:
+    _PATH_USAGE_TIMEOUT_SECONDS = max(8.0, float(os.getenv("MP_STORAGE_SCAN_TIMEOUT_SECONDS", "60")))
+except (TypeError, ValueError):
+    _PATH_USAGE_TIMEOUT_SECONDS = 60.0
+
 
 def _cached_storage_scan(cache_key):
     """Cache expensive storage scans shared by the admin and overview panels."""
@@ -4902,14 +4950,15 @@ def path_usage(root):
     total_bytes = 0
     inodes = 0
     if not root.exists():
-        return {"bytes": 0, "inodes": 0}
+        return {"bytes": 0, "inodes": 0, "complete": True}
 
+    size_complete = False
     try:
         proc = subprocess.run(
             ["ionice", "-c3", "nice", "-n", "19", "du", "-sb", str(root)],
             capture_output=True,
             text=True,
-            timeout=8.0,
+            timeout=_PATH_USAGE_TIMEOUT_SECONDS,
         )
         if proc.returncode == 0 and proc.stdout:
             lines = proc.stdout.strip().splitlines()
@@ -4917,6 +4966,7 @@ def path_usage(root):
                 parts = lines[0].split()
                 if len(parts) >= 1 and parts[0].isdigit():
                     total_bytes = int(parts[0])
+                    size_complete = True
     except Exception:
         pass
 
@@ -4925,7 +4975,7 @@ def path_usage(root):
             ["ionice", "-c3", "nice", "-n", "19", "du", "--inodes", "-s", str(root)],
             capture_output=True,
             text=True,
-            timeout=8.0,
+            timeout=_PATH_USAGE_TIMEOUT_SECONDS,
         )
         if proc_in.returncode == 0 and proc_in.stdout:
             lines = proc_in.stdout.strip().splitlines()
@@ -4936,9 +4986,25 @@ def path_usage(root):
     except Exception:
         pass
 
-    res = {"bytes": total_bytes, "inodes": inodes}
+    # A timed-out byte scan can still return a valid inode count. Mark the
+    # result incomplete so quota/resource collectors can retain the last
+    # known byte total instead of replacing it with a misleading zero.
+    res = {"bytes": total_bytes, "inodes": inodes, "complete": size_complete}
     _PATH_USAGE_CACHE[root_str] = (now, res)
     return res
+
+
+def _storage_mb_with_fallback(conn, account_id, usage):
+    """Keep a prior byte total when a large-tree scan times out."""
+    if usage.get("complete", True):
+        return round(float(usage.get("bytes") or 0) / (1024 * 1024), 2)
+    previous = conn.execute(
+        "SELECT storage_mb FROM resource_usage_samples WHERE account_id = ? AND storage_mb > 0 ORDER BY sampled_at DESC LIMIT 1",
+        (account_id,),
+    ).fetchone()
+    if previous and previous["storage_mb"] is not None:
+        return round(float(previous["storage_mb"]), 2)
+    return 0.0
 
 
 @_cached_storage_scan("df")
@@ -6031,7 +6097,7 @@ def get_account_storage_quotas(conn, config=None):
         acct_dir = base_user_files / acct["username"]
         usage = path_usage(acct_dir) if acct_dir.exists() else {"bytes": 0, "inodes": 0}
         
-        used_mb = round(usage["bytes"] / (1024 * 1024), 2)
+        used_mb = _storage_mb_with_fallback(conn, acct["id"], usage)
         limit_mb = acct["plan_storage_mb"] or 10240
         storage_pct = round((used_mb / limit_mb) * 100, 1) if limit_mb > 0 else 0.0
         

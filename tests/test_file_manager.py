@@ -80,7 +80,7 @@ class FileManagerComprehensiveTests(unittest.TestCase):
                 )
                 self.assertEqual(status, HTTPStatus.OK)
 
-                # Test launch to specific domain subpath (e.g. /files/domains/upnewsdesk.com)
+                # Test launch to specific domain subpath (e.g. /files/files/domains/upnewsdesk.com)
                 status, headers, _ = server.request_raw(
                     "GET",
                     f"/api/public/tool-launch/filebrowser/auth/{auth_path}/files/domains/upnewsdesk.com",
@@ -88,7 +88,7 @@ class FileManagerComprehensiveTests(unittest.TestCase):
                     extra_headers={"X-Forwarded-Host": "files-u000001.seeds.servermango.com"},
                 )
                 self.assertEqual(status, HTTPStatus.FOUND)
-                self.assertEqual(headers["Location"], "http://files-u000001.seeds.servermango.com/files/domains/upnewsdesk.com")
+                self.assertEqual(headers["Location"], "http://files-u000001.seeds.servermango.com/files/files/domains/upnewsdesk.com")
 
     # -------------------------------------------------------------------------
     # Requirement 2: Domain isolation access control based on permissions

@@ -9,7 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="icon" type="image/svg+xml" href="/assets/favicon-client.svg">
     <link id="theme-style" rel="stylesheet" href="/assets/Default.css">
-    <link rel="stylesheet" href="/assets/app.css?v=1.0.22">
+    <link rel="stylesheet" href="/assets/app.css?v=1.0.26">
     <script>
       (function() {
         var t = localStorage.getItem("mp_theme") || "Default";
@@ -434,7 +434,7 @@
             <div class="website-table-toolbar">
               <label class="website-table-search">
                 <app-icon name="search"></app-icon>
-                <input v-model="websiteTableSearchQuery" type="search" placeholder="Search websites, status, DNS, SSL, PHP…" aria-label="Search websites table">
+                <input v-model="websiteTableSearchQuery" type="search" placeholder="Search websites, status, DNS, SSL…" aria-label="Search websites table">
               </label>
               <small v-if="websiteTableSearchQuery">Showing {{ filteredWebsites.length }} of {{ websites.length }}</small>
             </div>
@@ -445,59 +445,109 @@
                     <th>Domain</th>
                     <th>Status</th>
                     <th>SSL</th>
-                    <th>Nameservers</th>
-                    <th>PHP Version</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="site in filteredWebsites" :key="site.id">
+                  <tr v-if="!websitesLoaded"><td colspan="4" class="empty-row website-table-loading"><span class="sw-spinner" aria-hidden="true"></span><span>Loading websites…</span></td></tr>
+                  <tr v-for="site in filteredWebsites" :key="site.id" class="website-list-row" tabindex="0" @click="!$event.target.closest('.actions, .path-info-tooltip') && openWebsiteDetails(site)" @keydown.enter.prevent="openWebsiteDetails(site)" @keydown.space.prevent="openWebsiteDetails(site)">
                     <td class="site-info-cell">
-                      <strong>{{ site.domain }}</strong>
-                      <small class="truncate-path" :title="site.document_root">{{ site.document_root }}</small>
+                      <strong>
+                        <a class="website-domain-link" :href="site.public_url" target="_blank" rel="noreferrer" data-tooltip="Open website" aria-label="Open website" @click.stop>{{ site.domain }}</a>
+                        <span class="path-info-tooltip" :data-tooltip="site.document_root" :aria-label="'Document root: ' + site.document_root" role="img" tabindex="0"><app-icon name="info"></app-icon></span>
+                      </strong>
                     </td>
                     <td>
                       <span class="pill" :class="site.status">{{ site.status }}</span>
-                      <small v-if="site.dns_status === 'provider_failed'" class="website-status-detail website-status-error" :title="site.dns_last_error || 'DNS provider sync failed'">Cloudflare sync failed</small>
-                      <small v-else-if="site.is_subdomain && site.dns_status !== 'provider_failed'" class="website-status-detail">Uses parent domain DNS</small>
+                      <button v-if="site.dns_status === 'provider_failed' || site.status === 'error' || site.dns_last_error || site.last_error || site.error" type="button" class="website-status-error-button" @click.stop="openWebsiteErrorModal(site)" :aria-label="'Show error for ' + site.domain" data-tooltip="Show the exact error">
+                        <app-icon name="warning"></app-icon><span>{{ site.dns_status === 'provider_failed' ? 'Cloudflare sync failed' : 'Website error' }}</span>
+                      </button>
+                      <small v-else-if="site.is_subdomain" class="website-status-detail">Uses parent domain DNS</small>
                       <small v-else-if="!(site.nameservers || []).length" class="website-status-detail">{{ site.dns_provider_label || 'DNS' }} syncing</small>
                     </td>
                     <td><span class="pill" :class="site.ssl_status">{{ site.ssl_status }}</span></td>
-                    <td>
-                      <div v-if="(site.nameservers || []).length" class="nameserver-list">
-                        <small v-for="nameserver in site.nameservers" :key="nameserver">{{ nameserver }}</small>
-                      </div>
-                      <small v-else :title="site.dns_last_error || undefined">{{ site.dns_status === 'provider_failed' ? (site.dns_last_error ? '⚠ ' + site.dns_last_error.slice(0, 80) : 'Cloudflare provider failed') : (site.is_subdomain ? 'Uses parent domain DNS' : (site.dns_provider_label === 'Cloudflare' ? 'Waiting for Cloudflare nameservers' : 'DNS pending')) }}</small>
-                    </td>
-                    <td>
-                      <div class="php-switcher-cell">
-                        <select
-                          :value="site.php_version"
-                          :disabled="phpSwitching[site.id]"
-                          class="php-version-select"
-                          @change="switchPhpVersion(site, $event.target.value)"
-                        >
-                          <option v-for="v in phpVersions" :key="v" :value="v">PHP {{ v }}</option>
-                        </select>
-                        <span v-if="phpSwitching[site.id]" class="php-switching-indicator" role="status">
-                          {{ phpSwitchCountdowns[site.id] > 0 ? phpSwitchCountdowns[site.id] + 's' : 'Finishing…' }}
-                        </span>
-                      </div>
-                    </td>
                     <td class="actions">
-                      <a class="table-icon-button" :href="site.public_url" target="_blank" rel="noreferrer" data-tooltip="Open website" aria-label="Open website"><app-icon name="external"></app-icon></a>
-                      <button class="table-icon-button" @click="issueSsl(site)" data-tooltip="Issue or renew SSL" aria-label="Issue or renew SSL"><app-icon name="ssl"></app-icon></button>
-                      <button class="table-icon-button" @click="migrateWebsiteDnsProvider(site)" :data-tooltip="site.dns_provider_label === 'Cloudflare' ? 'Switch to Local DNS' : 'Switch to Cloudflare'" :aria-label="site.dns_provider_label === 'Cloudflare' ? 'Switch to Local DNS' : 'Switch to Cloudflare'"><app-icon name="dns"></app-icon></button>
-                      <button class="table-icon-button table-icon-button-primary" @click="openConnectWizard(site)" data-tooltip="Connect to hosting" aria-label="Connect to hosting"><app-icon name="link"></app-icon></button>
-                      <button class="table-icon-button" @click="launch('files', '/files')" data-tooltip="Open files" aria-label="Open files"><app-icon name="files"></app-icon></button>
-                      <button class="table-icon-button" @click="launch('phpmyadmin')" data-tooltip="Open database manager" aria-label="Open database manager"><app-icon name="phpmyadmin"></app-icon></button>
-                      <button class="table-icon-button table-icon-button-danger" @click="deleteWebsite(site)" data-tooltip="Delete website" aria-label="Delete website"><app-icon name="trash"></app-icon></button>
+                      <button class="table-icon-button" @click="openWebsiteFiles(site)" data-tooltip="Open this website's files" aria-label="Open this website's files"><app-icon name="files"></app-icon><span>Files</span></button>
+                      <button class="table-icon-button" @click="openWebsiteDatabases(site)" data-tooltip="View databases for this website" aria-label="View databases for this website"><app-icon name="phpmyadmin"></app-icon><span>DB</span></button>
+                      <button class="table-icon-button" @click="openSiteSslModal(site)" data-tooltip="View SSL status and actions" aria-label="View SSL status and actions"><app-icon name="ssl"></app-icon><span>SSL</span></button>
+                      <button class="table-icon-button" @click="openWebsiteDns(site)" data-tooltip="Manage DNS records" aria-label="Manage DNS records"><app-icon name="dns"></app-icon><span>DNS</span></button>
+                      <button class="table-icon-button table-icon-button-primary" :class="{ 'table-icon-button-active': site.status === 'active' }" @click="openConnectWizard(site)" :data-tooltip="site.status === 'active' ? 'Website connected' : 'Connect to hosting'" :aria-label="site.status === 'active' ? 'Website connected' : 'Connect to hosting'"><app-icon :name="site.status === 'active' ? 'check' : 'link'"></app-icon><span>Connect</span></button>
+                      <details class="table-action-menu">
+                        <summary class="table-icon-button table-icon-button-danger" data-tooltip="More actions" aria-label="More actions"><span class="table-action-menu-ellipsis" aria-hidden="true">⋮</span><span class="sr-only">More actions</span></summary>
+                        <div class="table-action-menu-panel">
+                          <button class="table-action-menu-delete" @click="deleteWebsite(site)"><app-icon name="trash"></app-icon><span>Delete</span></button>
+                        </div>
+                      </details>
                     </td>
                   </tr>
-                  <tr v-if="!filteredWebsites.length"><td colspan="6" class="empty-row">{{ websites.length ? 'No websites match your search.' : 'No websites yet. Add one above.' }}</td></tr>
+                  <tr v-if="websitesLoaded && !filteredWebsites.length"><td colspan="4" class="empty-row">{{ websites.length ? 'No websites match your search.' : 'No websites yet. Add one above.' }}</td></tr>
                 </tbody>
               </table>
             </div>
+          </section>
+
+          <section v-if="activePage === 'website-details'" class="panel website-details-page">
+            <template v-if="selectedWebsite">
+              <div class="website-detail-header">
+                <div>
+                  <button class="link-button website-detail-back" @click="goTo('website')">Back to Websites</button>
+                  <h2>{{ selectedWebsite.domain }}</h2>
+                  <p>Website-specific controls and hosting information.</p>
+                </div>
+                <div class="website-detail-header-actions">
+                  <a class="secondary-button" :href="selectedWebsite.public_url" target="_blank" rel="noreferrer"><app-icon name="external"></app-icon><span>Open Website</span></a>
+                  <button class="primary-button" @click="openWebsiteFiles(selectedWebsite)"><app-icon name="files"></app-icon><span>Open Files</span></button>
+                </div>
+              </div>
+
+              <div class="website-detail-grid">
+                <article class="website-detail-card">
+                  <h3>Website</h3>
+                  <dl>
+                    <div><dt>Domain</dt><dd>{{ selectedWebsite.domain }}</dd></div>
+                    <div><dt>Document root</dt><dd class="website-detail-path">{{ selectedWebsite.document_root }}</dd></div>
+                    <div><dt>Status</dt><dd><span class="pill" :class="selectedWebsite.status">{{ selectedWebsite.status }}</span></dd></div>
+                    <div><dt>PHP version</dt><dd>PHP {{ selectedWebsite.php_version }}</dd></div>
+                  </dl>
+                </article>
+                <article class="website-detail-card">
+                  <h3>DNS &amp; SSL</h3>
+                  <dl>
+                    <div><dt>SSL</dt><dd><span class="pill" :class="selectedWebsite.ssl_status">{{ selectedWebsite.ssl_status }}</span></dd></div>
+                    <div><dt>DNS provider</dt><dd>{{ selectedWebsite.dns_provider_label || selectedWebsite.dns_provider || 'Pending' }}</dd></div>
+                    <div><dt>DNS status</dt><dd>{{ selectedWebsite.dns_status || 'Pending' }}</dd></div>
+                    <div><dt>Nameservers</dt><dd>{{ (selectedWebsite.nameservers || []).join(', ') || 'Not available yet' }}</dd></div>
+                  </dl>
+                </article>
+                <article class="website-detail-card website-detail-subdomains">
+                  <h3>Subdomains</h3>
+                  <ul v-if="websiteDetailSubdomains.length" class="website-detail-subdomain-list">
+                    <li v-for="subdomain in websiteDetailSubdomains" :key="subdomain.id">
+                      <div><strong>{{ subdomain.domain }}</strong><small>{{ subdomain.hosting_mode === 'inside' ? 'Inside this website' : 'Separate website' }}</small></div>
+                      <button class="ghost-button" @click="launch('files', '/domains/' + subdomain.domain)">Files</button>
+                    </li>
+                  </ul>
+                  <p v-else class="muted">No subdomains are attached to this website.</p>
+                  <button class="secondary-button" @click="goTo('subdomains')"><app-icon name="plus"></app-icon><span>Manage Subdomains</span></button>
+                </article>
+              </div>
+
+              <div class="website-detail-actions">
+                <h3>Actions</h3>
+                <div class="website-detail-action-grid">
+                  <button @click="openWebsiteFiles(selectedWebsite)"><app-icon name="files"></app-icon><span>File Manager</span><small>Open this website's folder</small></button>
+                  <button @click="openWebsitePhpConfiguration(selectedWebsite)"><app-icon name="php"></app-icon><span>PHP Configuration</span><small>PHP {{ selectedWebsite.php_version }}</small></button>
+                  <button @click="openWebsiteDns(selectedWebsite)"><app-icon name="dns"></app-icon><span>DNS Manager</span><small>Records and nameservers</small></button>
+                  <button @click="migrateWebsiteDnsProvider(selectedWebsite)"><app-icon name="dns"></app-icon><span>Switch DNS Provider</span><small>{{ selectedWebsite.dns_provider_label || 'DNS' }}</small></button>
+                  <button @click="openSiteSslModal(selectedWebsite)"><app-icon name="ssl"></app-icon><span>SSL</span><small>View status and certificate actions</small></button>
+                  <button @click="openConnectWizard(selectedWebsite)"><app-icon name="link"></app-icon><span>Connect</span><small>Verify domain connection</small></button>
+                  <button @click="launch('phpmyadmin')"><app-icon name="phpmyadmin"></app-icon><span>Database Manager</span><small>Open phpMyAdmin</small></button>
+                  <button v-if="selectedWebsiteWordPress" @click="loginToWordPress(selectedWebsiteWordPress)"><app-icon name="wordpress"></app-icon><span>WordPress Admin</span><small>Sign in to WordPress</small></button>
+                  <button class="website-detail-action-danger" @click="deleteWebsite(selectedWebsite)"><app-icon name="trash"></app-icon><span>Delete Website</span><small>Remove this website and its DNS</small></button>
+                </div>
+              </div>
+            </template>
+            <div v-else class="empty-state"><h3>Website not found</h3><p>Choose a website from the Websites list to see its details.</p><button class="secondary-button" @click="goTo('website')">Back to Websites</button></div>
           </section>
 
           <!-- ═══════════════════════════════════════════════════════════ FILES -->
@@ -531,9 +581,9 @@
               </div>
 
               <!-- Standard Mode Card 3: Selected Domain -->
-              <div v-if="!isCollaboratorRestrictedWebsites" class="panel file-access-card" :class="{ disabled: !selectedWebsiteId }" @click="selectedWebsiteId ? launch('files', '/domains/' + selectedWebsiteLabel) : null">
+              <div v-if="!isCollaboratorRestrictedWebsites" class="panel file-access-card" :class="{ disabled: !selectedWebsiteId || !selectedWebsite }" @click="(selectedWebsiteId && selectedWebsite) ? launch('files', '/domains/' + selectedWebsite.domain) : null">
                 <div class="large-icon"><app-icon name="website"></app-icon></div>
-                <h3>Access files of domain {{ selectedWebsiteLabel !== 'All sites' ? selectedWebsiteLabel : '[select domain]' }}</h3>
+                <h3>Access files of domain {{ (selectedWebsiteId && selectedWebsite) ? selectedWebsite.domain : '[select domain]' }}</h3>
               </div>
 
               <!-- Restricted Collaborator Cards: Allowed Domains Only -->
@@ -1091,16 +1141,15 @@
 
           <!-- ═══════════════════════════════════════════════════════════ DATABASES -->
           <section v-if="activePage === 'databases'" class="panel glass-panel">
-            <div class="section-head" style="margin-bottom: 1.5rem; text-align: center;">
+            <div class="section-head database-page-header">
               <div>
                 <h2 style="font-size: 28px; font-weight: 800; margin-bottom: 8px;">Databases</h2>
                 <p class="muted">Manage your MySQL databases, users, and remote access grants.</p>
               </div>
-            </div>
-
-            <div v-if="dbTab === 'databases'" class="premium-card" style="display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:1rem;">
-              <div><h3 style="margin:0;">Database Wizard</h3><p class="muted" style="margin:4px 0 0;">Create a database, user, password, and access grant in one step.</p></div>
-              <button class="primary-button" @click="openDatabaseWizard"><app-icon name="plus"></app-icon>Open Wizard</button>
+              <div class="database-page-actions">
+                <button class="primary-button" @click="openDatabaseWizard"><app-icon name="plus"></app-icon><span>Open Wizard</span></button>
+                <button class="secondary-button" @click="launch('phpmyadmin')"><app-icon name="phpmyadmin"></app-icon><span>phpMyAdmin</span></button>
+              </div>
             </div>
 
             <!-- Sub-tabs for clean layout -->
@@ -1122,16 +1171,28 @@
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                   <div>
                     <h3 style="margin:0;"><app-icon name="databases"></app-icon>Databases</h3>
-                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">{{ databasesLoading ? 'Loading databases…' : databases.length + ' database' + (databases.length === 1 ? '' : 's') }}</p>
+                    <p class="muted" style="margin: 4px 0 0; font-size: 13px;">{{ databasesLoading ? 'Loading databases…' : filteredDatabases.length + ' database' + (filteredDatabases.length === 1 ? '' : 's') }}</p>
                   </div>
-                  <button class="primary-button" @click="openDbModal('database')"><app-icon name="plus"></app-icon><span>Create Database</span></button>
+                  <div class="database-table-actions">
+                    <label class="database-domain-filter">Domain
+                      <select v-model="databaseWebsiteFilter" aria-label="Filter databases by domain">
+                        <option value="">All domains</option>
+                        <option v-for="site in websites" :key="'db-filter-' + site.id" :value="String(site.id)">{{ site.domain }}</option>
+                      </select>
+                    </label>
+                    <button class="primary-button" @click="openDbModal('database')"><app-icon name="plus"></app-icon><span>Create Database</span></button>
+                  </div>
                 </div>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>Name</th><th>Status</th><th>Connection Details</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>Name</th><th>Website</th><th>Status</th><th>Connection Details</th><th>Actions</th></tr></thead>
                     <tbody>
-                      <tr v-for="database in databases" :key="database.id">
+                      <tr v-for="database in filteredDatabases" :key="database.id">
                         <td><strong>{{ database.name }}</strong></td>
+                        <td>
+                          <span v-if="database.website_domain" class="database-website-label">{{ database.website_domain }}</span>
+                          <button v-else type="button" class="small-button" @click="openAssignWebsiteModal(database)">Assign a website</button>
+                        </td>
                         <td>
                           <span class="pill" :class="database.status === 'active' ? 'ok' : 'suspended'">
                             {{ database.status }}
@@ -1147,8 +1208,8 @@
                           <button class="danger-button" @click="deleteDatabase(database)"><app-icon name="trash"></app-icon></button>
                         </td>
                       </tr>
-                      <tr v-if="databasesLoading"><td colspan="4" class="empty-row"><span class="sw-spinner" aria-hidden="true"></span> Loading databases…</td></tr>
-                      <tr v-else-if="!databases.length"><td colspan="4" class="empty-row">No databases created yet. Click "Create Database" to start.</td></tr>
+                      <tr v-if="databasesLoading"><td colspan="5" class="empty-row"><span class="sw-spinner" aria-hidden="true"></span> Loading databases…</td></tr>
+                      <tr v-else-if="!filteredDatabases.length"><td colspan="5" class="empty-row">{{ databases.length ? 'No databases match this domain.' : 'No databases created yet. Click "Create Database" to start.' }}</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -2215,8 +2276,10 @@
             <div class="php-version-list">
               <div v-for="site in websites" :key="site.id" class="php-version-row">
                 <div class="php-version-site">
-                  <strong>{{ site.domain }}</strong>
-                  <small>{{ site.document_root }}</small>
+                  <strong>
+                    {{ site.domain }}
+                    <span class="path-info-tooltip" :data-tooltip="site.document_root" :aria-label="'Document root: ' + site.document_root" role="img" tabindex="0"><app-icon name="info"></app-icon></span>
+                  </strong>
                 </div>
                 <div class="php-switcher-group" style="display: flex; gap: 8px; align-items: center;">
                   <button class="secondary-button" @click="openPhpIniModal(site)" style="padding: 4px 10px; font-size: 13px;">Configure INI</button>
@@ -3066,6 +3129,9 @@
                 <label style="display:block; margin: 1rem 0;">New Database Name
                   <input v-model="wizardDbName" type="text" placeholder="e.g. app_data" style="margin-top:0.5rem; width:100%;">
                 </label>
+                <label style="display:block; margin: 1rem 0;">Website (optional)
+                  <select v-model="wizardWebsiteId" style="margin-top:0.5rem; width:100%;"><option value="">All websites</option><option v-for="site in websites" :key="'legacy-wizard-site-' + site.id" :value="String(site.id)">{{ site.domain }}</option></select>
+                </label>
                 <button class="primary-button" @click="wizardNextStep" :disabled="!wizardDbName || dbWizardSubmitting">
                   <span v-if="dbWizardSubmitting" class="btn-spinner"></span>
                   <span>{{ dbWizardSubmitting ? 'Loading...' : 'Next Step' }}</span>
@@ -3697,6 +3763,55 @@
             </div>
           </div>
 
+          <!-- Website SSL Status Modal -->
+          <div v-if="siteSslModal.isOpen && siteSslModal.website" class="modal-overlay" @click.self="closeSiteSslModal">
+            <div class="modal-panel" style="max-width: 520px;">
+              <div class="modal-header">
+                <div>
+                  <span class="eyebrow">SSL / TLS</span>
+                  <h2>{{ siteSslModal.website.domain }}</h2>
+                </div>
+                <button class="close-button" @click="closeSiteSslModal" aria-label="Close SSL status">×</button>
+              </div>
+              <div class="modal-body">
+                <dl class="site-ssl-detail-list">
+                  <div>
+                    <dt>SSL status</dt>
+                    <dd>
+                      <span class="status-badge" :class="{
+                        'badge-success': siteSslModal.website.ssl_status === 'active' || siteSslModal.website.ssl_status === 'custom' || siteSslModal.website.ssl_status === 'local-dev',
+                        'badge-warning': siteSslModal.website.ssl_status === 'pending',
+                        'badge-disabled': siteSslModal.website.ssl_status === 'missing' || !siteSslModal.website.ssl_status
+                      }">
+                        {{ siteSslModal.website.ssl_status === 'custom' ? 'Custom SSL Active' : ((siteSslModal.website.ssl_status === 'active' || siteSslModal.website.ssl_status === 'local-dev') ? 'SSL Active' : (siteSslModal.website.ssl_status === 'pending' ? 'Pending' : 'Missing / Unsecured')) }}
+                      </span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Certificate type</dt>
+                    <dd>{{ siteSslModal.website.ssl_status === 'custom' ? 'Custom Certificate' : ((siteSslModal.website.ssl_status === 'active' || siteSslModal.website.ssl_status === 'local-dev') ? 'Let\'s Encrypt / AutoSSL' : 'None') }}</dd>
+                  </div>
+                </dl>
+              </div>
+              <div class="modal-footer" style="justify-content: flex-end; flex-wrap: wrap; gap: 8px;">
+                <button
+                  class="ghost-button"
+                  @click="installFreeSslFromSiteModal"
+                  :disabled="issuingSsl[siteSslModal.website.id]"
+                >
+                  <span v-if="issuingSsl[siteSslModal.website.id]" class="btn-spinner"></span>
+                  <span>{{ issuingSsl[siteSslModal.website.id] ? 'Issuing...' : 'Install Free SSL' }}</span>
+                </button>
+                <button class="ghost-button" @click="openCustomSslFromSiteModal">Custom SSL</button>
+                <button
+                  class="ghost-button"
+                  @click="checkSiteSslDnsFromModal"
+                  :disabled="issuingSsl[siteSslModal.website.id]"
+                >Check DNS</button>
+              </div>
+            </div>
+          </div>
+
           <!-- Website Wizard Modal (Full-screen redesign) -->
           <div v-if="siteWizard.isOpen" class="sw-overlay" @click.self="closeSiteWizard">
             <div class="sw-panel" :class="{ 'sw-building': siteWizard.isBuilding }">
@@ -4023,6 +4138,21 @@
             </div>
           </div>
 
+          <!-- Website provider error details -->
+          <div v-if="websiteErrorModal.isOpen" class="modal-overlay website-error-overlay" @click.self="closeWebsiteErrorModal">
+            <div class="modal-panel website-error-panel" role="dialog" aria-modal="true" aria-labelledby="website-error-title">
+              <div class="modal-header">
+                <div><span class="eyebrow">Website status</span><h2 id="website-error-title">Error for {{ websiteErrorModal.website?.domain }}</h2></div>
+                <button class="close-button" @click="closeWebsiteErrorModal" aria-label="Close error details">×</button>
+              </div>
+              <div class="modal-body">
+                <p class="website-error-summary"><app-icon name="warning"></app-icon><strong>The provider reported an error while syncing this website.</strong></p>
+                <pre class="website-error-detail">{{ websiteErrorModal.error }}</pre>
+              </div>
+              <div class="modal-footer"><button class="primary-button" @click="closeWebsiteErrorModal">Close</button></div>
+            </div>
+          </div>
+
           <!-- Full-screen domain connection wizard -->
           <div v-if="connectWizard.isOpen" class="modal-overlay connect-wizard-overlay">
             <div class="modal-panel connect-wizard-panel">
@@ -4034,21 +4164,20 @@
                 <p class="muted">Choose one method, update it at your registrar or DNS provider, then return here and verify. Nameservers are preferred because MangoPanel manages the complete DNS zone.</p>
                 <div class="connect-method-grid">
                   <label :class="{ selected: connectWizard.method === 'nameservers' }"><input type="radio" v-model="connectWizard.method" value="nameservers"><strong>Use nameservers (Recommended)</strong><small>Delegate the domain to the nameservers shown in your domain setup.</small></label>
-                  <label :class="{ selected: connectWizard.method === 'dns' }"><input type="radio" v-model="connectWizard.method" value="dns"><strong>Use DNS records</strong><small>Keep your current nameservers and add the required A/AAAA records.</small></label>
-                  <label :class="{ selected: connectWizard.method === 'ip' }"><input type="radio" v-model="connectWizard.method" value="ip"><strong>Point directly by IP</strong><small>Update the domain A record to the hosting IP.</small></label>
+                  <label :class="{ selected: connectWizard.method === 'dns' }"><input type="radio" v-model="connectWizard.method" value="dns"><strong>Use DNS records</strong><small>Keep your current nameservers and point the A records to {{ serverIp }}.</small></label>
                 </div>
                 <div v-if="connectWizard.website?.registrar_assigned" class="connect-auto-dns-option"><label><input type="checkbox" v-model="connectWizard.auto_update_dns"><span><strong>Automatically Update my DNS</strong><small>Use the domain provider API to update this assigned domain’s nameservers to the configured Local DNS or Cloudflare nameservers.</small></span></label></div>
                 <div class="info-box connect-instructions" v-if="connectWizard.method === 'nameservers'">
                   <app-icon name="dns"></app-icon><div><strong>Replace the domain nameservers</strong><p>At your registrar, replace the existing nameservers with:</p><code v-for="ns in (connectWizard.website?.nameservers || [])" :key="ns">{{ ns }}</code><p v-if="!(connectWizard.website?.nameservers || []).length">Nameservers are still being prepared. Refresh the page after the DNS provider finishes provisioning.</p></div>
                 </div>
                 <div class="info-box connect-instructions" v-else>
-                  <app-icon name="info"></app-icon><div><strong>Update DNS for {{ connectWizard.website?.domain }}</strong><p>Create an <code>A</code> record for <code>@</code> and, if needed, <code>www</code>, pointing to the hosting IP shown by your provider. Keep the current nameservers.</p><code>{{ sshInfo.host }}</code></div>
+                  <app-icon name="info"></app-icon><div><strong>Update DNS for {{ connectWizard.website?.domain }}</strong><p>Create an <code>A</code> record for <code>@</code> and, if needed, <code>www</code>, pointing to this hosting IP. Keep the current nameservers.</p><code>{{ serverIp }}</code></div>
                 </div>
                 <div v-if="connectWizard.result" class="info-box" :class="connectWizard.result.verified ? 'success-box' : 'warning-box'">
                   <app-icon :name="connectWizard.result.verified ? 'check' : 'warning'"></app-icon><div><strong>{{ connectWizard.result.message }}</strong><small v-if="connectWizard.result.dns_sync_job_id">DNS record sync queued (job #{{ connectWizard.result.dns_sync_job_id }})</small><small v-if="connectWizard.result.auto_ssl_job_id">AutoSSL queued (job #{{ connectWizard.result.auto_ssl_job_id }})</small><small v-if="connectWizard.result.observed_ips?.length">Detected IPs: {{ connectWizard.result.observed_ips.join(', ') }}</small><small v-if="connectWizard.result.observed_nameservers?.length">Detected nameservers: {{ connectWizard.result.observed_nameservers.join(', ') }}</small></div>
                 </div>
               </div>
-              <div class="modal-footer"><button class="ghost-button" @click="closeConnectWizard">Close</button><button class="primary-button" @click="verifyWebsiteConnection" :disabled="connectWizard.checking">{{ connectWizard.checking ? 'Checking DNS…' : 'I have updated nameservers / IP' }}</button></div>
+              <div class="modal-footer"><button class="ghost-button" @click="closeConnectWizard">Close</button><button class="primary-button" @click="verifyWebsiteConnection" :disabled="connectWizard.checking">{{ connectWizard.checking ? 'Checking DNS…' : 'I have updated DNS' }}</button></div>
             </div>
           </div>
 
@@ -4163,6 +4292,7 @@
                 <h2 v-if="dbModal === 'grant'">Grant Access</h2>
                 <h2 v-if="dbModal === 'wizard'">Database Wizard</h2>
                 <h2 v-if="dbModal === 'edit_database'">Edit Database</h2>
+                <h2 v-if="dbModal === 'assign_website'">Assign Website</h2>
                 <h2 v-if="dbModal === 'change_password'">Reset Database Password</h2>
                 <h2 v-if="dbModal === 'edit_grant'">Edit Database Privileges</h2>
                 <button class="close-button" @click="closeDbModal">×</button>
@@ -4175,6 +4305,9 @@
                   <label>Database Name <input v-model="databaseWizard.name" placeholder="u000001_app" autocomplete="off"></label>
                   <label>Database User <input v-model="databaseWizard.username" placeholder="u000001_app" autocomplete="off"></label>
                   <label>Password <input v-model="databaseWizard.password" type="password" placeholder="At least 8 characters" autocomplete="new-password"></label>
+                  <label>Website (optional)
+                    <select v-model="databaseWizard.website_id"><option value="">All websites</option><option v-for="site in websites" :key="'wizard-site-' + site.id" :value="String(site.id)">{{ site.domain }}</option></select>
+                  </label>
                   <fieldset style="grid-column:1 / -1;"><legend>Privileges</legend><div class="checkbox-grid"><label v-for="privilege in databasePrivilegeOptions" :key="'wizard-' + privilege"><input type="checkbox" :value="privilege" v-model="databaseWizard.selectedPrivileges" @change="normalizePrivilegeSelection(databaseWizard, privilege)"> {{ privilege === 'ALL' ? 'All privileges' : privilege }}</label></div></fieldset>
                 </div>
               </div>
@@ -4184,6 +4317,9 @@
                 <div class="form-grid">
                   <label>Database Name <input v-model="newDatabase.name" placeholder="u000001_app"></label>
                   <label>Username (optional) <input v-model="newDatabase.username" placeholder="legacy default user"></label>
+                  <label>Website (optional)
+                    <select v-model="newDatabase.website_id"><option value="">All websites</option><option v-for="site in websites" :key="'database-site-' + site.id" :value="String(site.id)">{{ site.domain }}</option></select>
+                  </label>
                 </div>
               </div>
               
@@ -4225,6 +4361,17 @@
                     </select>
                   </label>
                 </div>
+              </div>
+
+              <!-- Assign an existing database to a website -->
+              <div class="modal-body" v-if="dbModal === 'assign_website' && editingDatabase">
+                <p class="muted">Associate <strong>{{ editingDatabase.name }}</strong> with a website for easier organization.</p>
+                <label>Website
+                  <select v-model="databaseAssignmentWebsiteId">
+                    <option value="" disabled>Select website</option>
+                    <option v-for="site in websites" :key="'assign-site-' + site.id" :value="String(site.id)">{{ site.domain }}</option>
+                  </select>
+                </label>
               </div>
 
               <!-- Change Password -->
@@ -4278,6 +4425,10 @@
                   <span v-if="dbSubmitting" class="btn-spinner"></span>
                   <span>{{ dbSubmitting ? 'Saving Database...' : 'Save Database' }}</span>
                 </button>
+                <button v-if="dbModal === 'assign_website'" class="primary-button" @click="saveDatabaseWebsiteAssignment" :disabled="!databaseAssignmentWebsiteId || dbSubmitting">
+                  <span v-if="dbSubmitting" class="btn-spinner"></span>
+                  <span>{{ dbSubmitting ? 'Assigning Website...' : 'Assign Website' }}</span>
+                </button>
                 <button v-if="dbModal === 'change_password'" class="primary-button" @click="saveChangePassword" :disabled="!editingDatabaseUser.newPassword || dbSubmitting">
                   <span v-if="dbSubmitting" class="btn-spinner"></span>
                   <span>{{ dbSubmitting ? 'Resetting Password...' : 'Reset Password' }}</span>
@@ -4295,6 +4446,6 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/client.js?v=1.0.24"></script>
+    <script src="/assets/client.js?v=1.0.26"></script>
   </body>
 </html>

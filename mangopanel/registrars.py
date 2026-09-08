@@ -14,7 +14,9 @@ def _request(method, url, headers=None, data=None, timeout=20):
     payload = None
     request_headers = {"Accept": "application/json", **(headers or {})}
     if data is not None:
-        payload = urlencode(data).encode("utf-8")
+        # ResellerClub accepts repeated query/form keys (not a Python list
+        # representation) for parameters such as `ns`.
+        payload = urlencode(data, doseq=True).encode("utf-8")
         request_headers["Content-Type"] = "application/x-www-form-urlencoded"
     try:
         request = Request(url, data=payload, headers=request_headers, method=method)
@@ -62,7 +64,7 @@ class Registrar:
     def __init__(self, settings):
         self.settings = settings or {}
 
-    def update_nameservers(self, domain, nameservers):
+    def update_nameservers(self, domain, nameservers, order_id=None):
         raise NotImplementedError
 
     def register(self, domain, nameservers, years=1, contacts=None):
@@ -181,9 +183,12 @@ class ResellerClubRegistrar(Registrar):
             pass
         return result
 
-    def update_nameservers(self, domain, nameservers):
-        result = self._call("domains/modify-ns", {"domain-name": domain, "name-server1": nameservers[0], "name-server2": nameservers[1]})
-        if isinstance(result, dict) and result.get("status") == "Failed":
+    def update_nameservers(self, domain, nameservers, order_id=None):
+        order_id = order_id or self.settings.get("order_id")
+        if not order_id:
+            raise RegistrarError("registrar_order_id_required")
+        result = self._call("domains/modify-ns", {"order-id": order_id, "ns": nameservers})
+        if isinstance(result, dict) and str(result.get("status", "")).lower() in {"failed", "error"}:
             raise RegistrarError(str(result))
         return {"provider": self.key, "response": result}
 
@@ -265,7 +270,7 @@ class DomainNameAPIRegistrar(Registrar):
             pass
         return result
 
-    def update_nameservers(self, domain, nameservers):
+    def update_nameservers(self, domain, nameservers, order_id=None):
         result = self._call("PUT", "domains/dns/name-server", payload={"domainName": domain, "nameServers": nameservers})
         return {"provider": self.key, "response": result}
 
@@ -340,7 +345,7 @@ class CloudflareRegistrar(Registrar):
                 raise RegistrarError("cloudflare_registrar_access_required: " + str(exc)) from exc
         raise RegistrarError("cloudflare_account_id_required_for_registrar_sync")
 
-    def update_nameservers(self, domain, nameservers):
+    def update_nameservers(self, domain, nameservers, order_id=None):
         raise RegistrarError("Cloudflare assigns nameservers; use the DNS provider zone operation instead")
 
 
