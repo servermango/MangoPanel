@@ -3403,6 +3403,9 @@
               <button type="button" :class="{ active: configTab === 'ssh' }" @click="configTab = 'ssh'">
                 <app-icon name="cpu"></app-icon> <span>SSH Welcome MOTD</span>
               </button>
+              <button type="button" :class="{ active: configTab === 'updates' }" @click="configTab = 'updates'">
+                <app-icon name="activity"></app-icon> <span>Updates</span>
+              </button>
               <button type="button" @click="goTo('system-backup')" class="secondary-button" style="margin-left: auto; border: 1px dashed var(--line); font-size: 13px;">
                 <app-icon name="storage"></app-icon> <span>System Backups →</span>
               </button>
@@ -3416,6 +3419,12 @@
                   <p>Configure control-plane execution timing for daily backups, resource tracking scans, and cron scheduling.</p>
                 </div>
                 <div class="config-grid">
+                  <div class="config-field">
+                    <label>Communication Email Address</label>
+                    <input type="email" v-model.trim="configuration.admin_email" placeholder="admin@example.com">
+                    <small>Primary administrator email for system alerts, update summaries, and rollback notifications.</small>
+                  </div>
+
                   <div class="config-field">
                     <label>System Timezone</label>
                     <select v-model="configuration.timezone">
@@ -3525,6 +3534,108 @@
                 <div class="config-card-footer">
                   <button class="primary-button" type="button" @click="saveConfiguration" :disabled="configurationSaving">
                     {{ configurationSaving ? 'Saving…' : 'Save SSH MOTD Message' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 5: Automatic Updates -->
+            <div v-if="configTab === 'updates'" class="config-tab-content">
+              <div class="config-card">
+                <div class="config-card-header">
+                  <h3><app-icon name="activity"></app-icon> Automatic GitHub System Updates & Rollback Protection</h3>
+                  <p>Configure automated repository update pulls, health checks, and email notifications.</p>
+                </div>
+
+                <div class="config-grid single-col">
+                  <!-- Enable/Disable Switch -->
+                  <div class="backup-schedule-card">
+                    <label class="backup-toggle">
+                      <input type="checkbox" v-model="configuration.auto_updates_enabled">
+                      <span>
+                        <strong>Enable Automatic System Updates</strong>
+                        <small>Creates a system root cron task to fetch & pull commits from GitHub at your configured schedule.</small>
+                      </span>
+                    </label>
+
+                    <!-- Schedule configuration -->
+                    <div class="config-grid" style="margin-top: 1.25rem;" v-if="configuration.auto_updates_enabled">
+                      <div class="config-field">
+                        <label>Pull Frequency</label>
+                        <select v-model="configuration.auto_update_frequency">
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="monthly">Monthly</option>
+                          <option value="never">Never (Disabled)</option>
+                        </select>
+                        <small>How often the root update runner checks for new GitHub commits.</small>
+                      </div>
+
+                      <div class="config-field" v-if="configuration.auto_update_frequency === 'weekly'">
+                        <label>Day of Week</label>
+                        <select v-model="configuration.auto_update_day_of_week">
+                          <option value="1">Monday</option>
+                          <option value="2">Tuesday</option>
+                          <option value="3">Wednesday</option>
+                          <option value="4">Thursday</option>
+                          <option value="5">Friday</option>
+                          <option value="6">Saturday</option>
+                          <option value="0">Sunday</option>
+                        </select>
+                      </div>
+
+                      <div class="config-field" v-if="configuration.auto_update_frequency === 'monthly'">
+                        <label>Day of Month</label>
+                        <select v-model="configuration.auto_update_day_of_month">
+                          <option v-for="d in 28" :key="d" :value="String(d)">{{ d }}{{ d === 1 ? 'st' : (d === 2 ? 'nd' : (d === 3 ? 'rd' : 'th')) }} of month</option>
+                        </select>
+                      </div>
+
+                      <div class="config-field" v-if="configuration.auto_update_frequency !== 'never'">
+                        <label>Update Execution Time</label>
+                        <input type="time" v-model="configuration.auto_update_time">
+                        <small>Time of day (system timezone) when updates are pulled.</small>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Email Notification Checkbox -->
+                  <div class="config-field" style="margin-top: 0.5rem;">
+                    <label class="backup-toggle">
+                      <input type="checkbox" v-model="configuration.update_email_notify">
+                      <span>
+                        <strong>Receive Email About Updates</strong>
+                        <small>Sends an update summary or rollback alert email to <code>{{ configuration.admin_email || 'configured communication email' }}</code>.</small>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="config-card-footer">
+                  <button class="primary-button" type="button" @click="saveConfiguration" :disabled="configurationSaving">
+                    {{ configurationSaving ? 'Saving…' : 'Save Update Settings' }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Manual Execution Card -->
+              <div class="config-card" style="margin-top: 1.5rem;">
+                <div class="config-card-header">
+                  <h3><app-icon name="code"></app-icon> Manual Update Execution & Self-Healing Rollback</h3>
+                  <p>Trigger an immediate repository check and system restart with automatic rollback verification.</p>
+                </div>
+                <div class="config-grid single-col">
+                  <div class="config-info-box">
+                    <strong>Current Installed Commit:</strong> <code>{{ configuration.current_commit || 'HEAD' }}</code>
+                    <p style="margin: 6px 0 0 0; font-size: 12px; color: var(--muted);">
+                      If an update fails health verification after pulling new commits, MangoPanel automatically executes a <code>git reset --hard</code> to restore the working tree to the previous working commit.
+                    </p>
+                  </div>
+                </div>
+                <div class="config-card-footer">
+                  <button class="secondary-button" type="button" @click="runAutoUpdateNow" :disabled="autoUpdating">
+                    <span v-if="autoUpdating" class="btn-spinner"></span>
+                    {{ autoUpdating ? 'Running Update Check…' : 'Check & Run Update Now' }}
                   </button>
                 </div>
               </div>

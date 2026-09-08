@@ -68,8 +68,9 @@ createApp({
       clientLoginLoadingId: null,
       showClientModal: false,
       plans: [],
-      configuration: { backup_time: "02:00", resource_scan_time: "03:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "", public_host: "" },
+      configuration: { backup_time: "02:00", resource_scan_time: "03:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "", public_host: "", admin_email: "", auto_updates_enabled: true, auto_update_frequency: "daily", auto_update_day_of_week: "1", auto_update_day_of_month: "1", auto_update_time: "04:00", update_email_notify: true, current_commit: "" },
       configTab: "general",
+      autoUpdating: false,
       modsecRuleset: "baseline",
       modsecApplying: false,
       timezoneOptions: ["UTC", "Europe/London", "Europe/Paris", "Asia/Kolkata", "Asia/Dubai", "Asia/Tokyo", "America/New_York", "America/Los_Angeles", "Australia/Sydney"],
@@ -1313,6 +1314,20 @@ createApp({
         this.message = error.message;
       } finally {
         this.configurationSaving = false;
+      }
+    },
+    async runAutoUpdateNow() {
+      this.autoUpdating = true;
+      try {
+        const result = await this.api("/api/admin/auto-update/run", { method: "POST", body: "{}" });
+        this.message = result.message || `Update completed: ${result.status}`;
+        if (result.new_commit) {
+          this.configuration.current_commit = result.new_commit;
+        }
+      } catch (error) {
+        this.message = error.message;
+      } finally {
+        this.autoUpdating = false;
       }
     },
     async loadSystemBackup() {

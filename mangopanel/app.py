@@ -78,6 +78,8 @@ from .providers import (
     _relative_name,
 )
 from .registrars import RegistrarError, registrar_for
+from .auto_update import execute_auto_update, get_current_commit, sync_auto_update_cron
+
 from .security import create_jwt, decrypt_secret, encrypt_secret, generate_totp_secret, hash_password, validate_git_branch, validate_git_repository_url, verify_jwt, verify_password, verify_totp
 from .backup_service import backup_config, test_remote
 
@@ -7170,7 +7172,19 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "modsecurity_ruleset": get_system_setting(conn, "modsecurity_ruleset", "baseline"),
                     "ssh_motd": get_system_setting(conn, "ssh_motd", DEFAULT_SSH_MOTD),
                     "public_host": get_system_setting(conn, "public_host", CONFIG.public_host),
+                    "admin_email": get_system_setting(conn, "admin_email", ""),
+                    "auto_updates_enabled": str(get_system_setting(conn, "auto_updates_enabled", "1")) in {"1", "true", "True"},
+                    "auto_update_frequency": get_system_setting(conn, "auto_update_frequency", "daily"),
+                    "auto_update_day_of_week": get_system_setting(conn, "auto_update_day_of_week", "1"),
+                    "auto_update_day_of_month": get_system_setting(conn, "auto_update_day_of_month", "1"),
+                    "auto_update_time": get_system_setting(conn, "auto_update_time", "04:00"),
+                    "update_email_notify": str(get_system_setting(conn, "update_email_notify", "1")) in {"1", "true", "True"},
+                    "current_commit": get_current_commit(),
                 }})
+            if path == "/api/admin/auto-update/run" and method == "POST":
+                require_admin_permission(actor, "system.manage")
+                res = execute_auto_update(force=True)
+                return self.json_response(res)
             if path == "/api/admin/modsecurity/rulesets" and method == "GET":
                 return self.json_response({"rulesets": [{"id": "baseline", "name": "MangoPanel baseline", "description": "Managed high-confidence protection."}, {"id": "owasp", "name": "OWASP CRS 4.0.0", "description": "Downloaded from the official OWASP Core Rule Set release."}]})
             if path == "/api/admin/modsecurity/rulesets/apply" and method == "POST":
@@ -7228,9 +7242,64 @@ class MangoHandler(BaseHTTPRequestHandler):
                         enqueue_agent_job(conn, "provision_hosting_account", "hosting_account", account["id"], {"public_host_changed": True}, inline=False)
                         for account in accounts
                     ]
+                admin_email = str(body.get("admin_email", get_system_setting(conn, "admin_email", "")) or "").strip()
+                if admin_email and ("@" not in admin_email or "." not in admin_email):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_admin_email")
+                set_system_setting(conn, "admin_email", admin_email)
+
+                auto_updates_enabled_val = body.get("auto_updates_enabled")
+                if auto_updates_enabled_val is not None:
+                    auto_updates_enabled = "1" if auto_updates_enabled_val in {True, "1", 1, "true", "True"} else "0"
+                    set_system_setting(conn, "auto_updates_enabled", auto_updates_enabled)
+                else:
+                    auto_updates_enabled = str(get_system_setting(conn, "auto_updates_enabled", "1"))
+
+                auto_update_frequency = str(body.get("auto_update_frequency", get_system_setting(conn, "auto_update_frequency", "daily")) or "daily").lower()
+                if auto_update_frequency not in {"daily", "weekly", "monthly", "never"}:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_auto_update_frequency")
+                set_system_setting(conn, "auto_update_frequency", auto_update_frequency)
+
+                auto_update_day_of_week = str(body.get("auto_update_day_of_week", get_system_setting(conn, "auto_update_day_of_week", "1")) or "1").strip()
+                set_system_setting(conn, "auto_update_day_of_week", auto_update_day_of_week)
+
+                auto_update_day_of_month = str(body.get("auto_update_day_of_month", get_system_setting(conn, "auto_update_day_of_month", "1")) or "1").strip()
+                set_system_setting(conn, "auto_update_day_of_month", auto_update_day_of_month)
+
+                auto_update_time = str(body.get("auto_update_time", get_system_setting(conn, "auto_update_time", "04:00")) or "04:00").strip()
+                if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", auto_update_time):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_auto_update_time")
+                set_system_setting(conn, "auto_update_time", auto_update_time)
+
+                update_email_notify_val = body.get("update_email_notify")
+                if update_email_notify_val is not None:
+                    update_email_notify = "1" if update_email_notify_val in {True, "1", 1, "true", "True"} else "0"
+                    set_system_setting(conn, "update_email_notify", update_email_notify)
+                else:
+                    update_email_notify = str(get_system_setting(conn, "update_email_notify", "1"))
+
+                sync_auto_update_cron(conn)
                 apply_system_timezone(conn)
-                log_audit(conn, "admin", actor["id"], "update_configuration", "system_settings", 0, metadata={"backup_time": backup_time, "timezone": timezone_name})
-                return self.json_response({"configuration": {"backup_time": backup_time, "resource_scan_time": resource_scan_time, "timezone": timezone_name, "modsecurity_ruleset": ruleset, "ssh_motd": motd, "public_host": public_host}, "ssh_motd_job_id": motd_job_id, "public_host_job_ids": public_host_job_ids})
+                log_audit(conn, "admin", actor["id"], "update_configuration", "system_settings", 0, metadata={"backup_time": backup_time, "timezone": timezone_name, "auto_updates_enabled": auto_updates_enabled})
+                return self.json_response({
+                    "configuration": {
+                        "backup_time": backup_time,
+                        "resource_scan_time": resource_scan_time,
+                        "timezone": timezone_name,
+                        "modsecurity_ruleset": ruleset,
+                        "ssh_motd": motd,
+                        "public_host": public_host,
+                        "admin_email": admin_email,
+                        "auto_updates_enabled": auto_updates_enabled in {"1", "true", "True"},
+                        "auto_update_frequency": auto_update_frequency,
+                        "auto_update_day_of_week": auto_update_day_of_week,
+                        "auto_update_day_of_month": auto_update_day_of_month,
+                        "auto_update_time": auto_update_time,
+                        "update_email_notify": update_email_notify in {"1", "true", "True"},
+                        "current_commit": get_current_commit(),
+                    },
+                    "ssh_motd_job_id": motd_job_id,
+                    "public_host_job_ids": public_host_job_ids,
+                })
             # Reseller Plans API
             if path == "/api/admin/reseller-plans" and method == "GET":
                 plans = rows_to_dicts(conn.execute("SELECT * FROM reseller_plans ORDER BY id DESC").fetchall())
