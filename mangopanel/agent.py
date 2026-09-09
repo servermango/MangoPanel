@@ -2054,23 +2054,7 @@ class Agent:
             sql.append(f"GRANT ALL PRIVILEGES ON `{runtime['db_name']}`.* TO {sql_literal(runtime['db_user'])}@{sql_literal(host['host_ip'])};")
         sql.append("FLUSH PRIVILEGES;")
         if self.config.agent_mode == "docker":
-            docker = shutil.which("docker")
-            if docker:
-                subprocess.run(
-                    [
-                        docker,
-                        "exec",
-                        f"mp-{account['username']}-db",
-                        "mariadb",
-                        "-uroot",
-                        f"-p{runtime['db_root_password']}",
-                        "-e",
-                        "\n".join(sql),
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
+            self.execute_mariadb_sql(conn, account_id, sql)
         artifact = write_account_json(
             account,
             Path(".runtime") / "mysql-remote" / "report.json",
@@ -2097,15 +2081,14 @@ class Agent:
             command = [
                 docker,
                 "exec",
+                "-i",
                 container_name,
                 "mariadb",
                 "-uroot",
                 f"-p{runtime['db_root_password']}",
-                "-e",
-                sql_body,
             ]
             for attempt in range(30):
-                proc = subprocess.run(command, check=False, capture_output=True, text=True)
+                proc = subprocess.run(command, input=sql_body, check=False, capture_output=True, text=True)
                 if proc.returncode == 0:
                     return {"executed": True}
                 error_text = proc.stderr.strip() or proc.stdout.strip()
