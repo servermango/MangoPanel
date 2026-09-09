@@ -854,9 +854,6 @@ class Agent:
                 master_user = f"{account['username']}_app"
                 sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(master_user)}@'%';")
                 sql.append(f"GRANT ALL PRIVILEGES ON *.* TO {sql_literal(master_user)}@'%';")
-                db_dict = row_to_dict(database) if database else {}
-                if db_dict.get("username"):
-                    sql.append(f"GRANT ALL PRIVILEGES ON `{db_dict['name']}`.* TO {sql_literal(db_dict['username'])}@'%';")
                 sql.append("FLUSH PRIVILEGES;")
             self.execute_mariadb_sql(conn, database["account_id"], sql)
             return {"database_id": database["id"], "name": database["name"], "created": True}
@@ -2840,14 +2837,6 @@ class Agent:
         if not databases:
             return
 
-        db_users = conn.execute("SELECT id, username FROM database_users WHERE account_id = ? AND status = 'active'", (account_id,)).fetchall()
-        for db in databases:
-            for u in db_users:
-                conn.execute(
-                    "INSERT OR IGNORE INTO database_grants(database_id, user_id, privileges, status) VALUES (?, ?, 'ALL', 'active')",
-                    (db["id"], u["id"]),
-                )
-
         sql = []
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if account:
@@ -2858,6 +2847,7 @@ class Agent:
         for db in databases:
             sql.append(f"CREATE DATABASE IF NOT EXISTS `{db['name']}`;")
 
+        db_users = conn.execute("SELECT id, username FROM database_users WHERE account_id = ? AND status = 'active'", (account_id,)).fetchall()
         for u in db_users:
             sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(u['username'])}@'%';")
 

@@ -4718,7 +4718,8 @@ class MangoHandler(BaseHTTPRequestHandler):
                 require_inode_capacity(conn, account["id"])
                 body = self.read_json()
                 name = validate_db_identifier(body.get("name") or f"{account['username']}_app", "invalid_database_name")
-                username = validate_db_identifier(body.get("username") or name, "invalid_database_username")
+                raw_username = (body.get("username") or "").strip()
+                username = validate_db_identifier(raw_username, "invalid_database_username") if raw_username else ""
                 password = body.get("password")
                 website_id = optional_positive_int(body.get("website_id"))
                 if website_id:
