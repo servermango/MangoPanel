@@ -833,38 +833,17 @@ mkdir -p /var/run/mysqld
 nohup /bin/sh -c 'while ! /usr/bin/socat UNIX-LISTEN:/var/run/mysqld/mysqld.sock,fork,reuseaddr,umask=000 TCP:db:3306; do rm -f /var/run/mysqld/mysqld.sock; sleep 2; done' >/var/log/mysql-socket-proxy.log 2>&1 </dev/null &
 # Keep OpenLiteSpeed self-healing if its master process stops while the
 # container's PID 1 is still alive. A Docker restart policy only runs when
-# PID 1 exits; merely reporting an unhealthy container is not enough. Run
-# cron as a child so a failed OLS restart can terminate this supervisor and
-# let Docker recreate the web container.
+# PID 1 exits; merely reporting an unhealthy container is not enough.
+# The supervisor runs as the main foreground process. If OpenLiteSpeed cannot
+# be revived, exiting this script terminates /entrypoint.sh (PID 1) so Docker
+# automatically recreates and restores the web container.
 lsws_status() {
   /usr/local/lsws/bin/lswsctrl status 2>/dev/null | /usr/bin/grep -q 'litespeed is running with PID'
 }
 
 /usr/sbin/cron -f &
 cron_pid=$!
-(
-  while :; do
-    if ! kill -0 "$cron_pid" 2>/dev/null; then
-      exit 0
-    fi
-    if ! lsws_status; then
-      printf '%s OpenLiteSpeed is down; attempting restart\\n' "$(date -Is)" >>/var/log/mangopanel-lsws-supervisor.log 2>/dev/null || true
-      if ! /usr/local/lsws/bin/lswsctrl start >>/var/log/mangopanel-lsws-supervisor.log 2>&1; then
-        printf '%s OpenLiteSpeed restart failed; restarting container\\n' "$(date -Is)" >>/var/log/mangopanel-lsws-supervisor.log 2>/dev/null || true
-        kill -TERM "$cron_pid" 2>/dev/null || true
-        exit 1
-      fi
-      sleep 5
-      if ! lsws_status; then
-        printf '%s OpenLiteSpeed did not become ready; restarting container\\n' "$(date -Is)" >>/var/log/mangopanel-lsws-supervisor.log 2>/dev/null || true
-        kill -TERM "$cron_pid" 2>/dev/null || true
-        exit 1
-      fi
-    fi
-    sleep 15
-  done
-) >/dev/null 2>&1 &
-watchdog_pid=$!
+
 # Reload OpenLiteSpeed for .htaccess files in each public_html directory and
 # one level below it. inotify is event-driven (no polling); the short lock
 # coalesces bursts from file-manager moves into one graceful reload.
@@ -893,10 +872,28 @@ if command -v inotifywait >/dev/null 2>&1 && [ -d "/home/{username}/domains" ]; 
     done
   ) >/dev/null 2>&1 &
 fi
-wait "$cron_pid"
-cron_status=$?
-kill "$watchdog_pid" 2>/dev/null || true
-exit "$cron_status"
+
+while :; do
+  if ! kill -0 "$cron_pid" 2>/dev/null; then
+    /usr/sbin/cron -f &
+    cron_pid=$!
+  fi
+  if ! lsws_status; then
+    printf '%s OpenLiteSpeed is down; attempting restart\\n' "$(date -Is)" >>/var/log/mangopanel-lsws-supervisor.log 2>/dev/null || true
+    if ! /usr/local/lsws/bin/lswsctrl start >>/var/log/mangopanel-lsws-supervisor.log 2>&1; then
+      printf '%s OpenLiteSpeed restart failed; restarting container\\n' "$(date -Is)" >>/var/log/mangopanel-lsws-supervisor.log 2>/dev/null || true
+      kill -9 "$cron_pid" 2>/dev/null || true
+      exit 1
+    fi
+    sleep 5
+    if ! lsws_status; then
+      printf '%s OpenLiteSpeed did not become ready; restarting container\\n' "$(date -Is)" >>/var/log/mangopanel-lsws-supervisor.log 2>/dev/null || true
+      kill -9 "$cron_pid" 2>/dev/null || true
+      exit 1
+    fi
+  fi
+  sleep 15
+done
 """.replace("{username}", str(account["username"]))
     runner_path = paths["stack"] / "services-entrypoint.sh"
     runner_path.write_text(service_runner, encoding="utf-8")
@@ -1604,7 +1601,7 @@ services:
     mem_limit: {memory}
     cpus: "{cpu_count}"
     cgroup_parent: {cpu_group}
-    pids_limit: 256
+    pids_limit: 2048
     healthcheck:
       test: ["CMD-SHELL", "/usr/local/lsws/bin/lswsctrl status 2>/dev/null | /usr/bin/grep -q 'litespeed is running with PID'"]
       interval: 30s
