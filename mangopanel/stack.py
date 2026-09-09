@@ -811,11 +811,11 @@ if grep -q '^enabled' /etc/mangopanel/ftp.enabled; then
   nohup /usr/sbin/proftpd -n -c /etc/proftpd/mangopanel.conf >/var/log/proftpd-runtime.log 2>&1 </dev/null &
 fi
 # Keep a runaway PHP request from pinning a worker indefinitely. This is a
-# hard 20-second ceiling for request workers; idle workers are handled by
+# hard 120-second ceiling for request workers; idle workers are handled by
 # OpenLiteSpeed's maxIdleTime setting.
 (
   while :; do
-    for pid in $(ps -eo pid=,etimes=,args= 2>/dev/null | awk '$2 > 20 && $3 ~ /^lsphp:/ {print $1}'); do
+    for pid in $(ps -eo pid=,etimes=,args= 2>/dev/null | awk '$2 > 120 && $3 ~ /^lsphp:/ {print $1}'); do
       kill -TERM "$pid" 2>/dev/null || true
       (sleep 2; kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true) &
     done
@@ -1207,7 +1207,7 @@ extprocessor lsphp_{safe_domain} {{
   maxConns                {php_workers}
   env                     PHP_LSAPI_CHILDREN={php_workers}
   env                     LSAPI_AVOID_FORK=200M
-{legacy_env}  initTimeout             60
+{legacy_env}  initTimeout             120
   retryTimeout            0
   persistConn             1
   maxIdleTime             20
@@ -1454,7 +1454,7 @@ extprocessor lsphp_{safe_domain} {{
   maxConns                {php_workers}
   env                     PHP_LSAPI_CHILDREN={php_workers}
   env                     LSAPI_AVOID_FORK=200M
-{legacy_env}  initTimeout             60
+{legacy_env}  initTimeout             120
   retryTimeout            0
   persistConn             1
   respBuffer              0
@@ -1478,6 +1478,8 @@ phpIniOverride  {{
   php_admin_value memory_limit "256M"
   php_admin_value upload_max_filesize "10M"
   php_admin_value post_max_size "10M"
+  php_value max_execution_time "120"
+  php_value max_input_time "120"
   php_admin_value opcache.enable "{opcache_enabled}"
   # Keep OPcache enabled while checking changed PHP files on every request.
   # This preserves bytecode performance without making plugin/theme edits

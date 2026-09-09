@@ -319,7 +319,7 @@ def cron_wrapper_script(account, cron_job):
             'cd "$BASE_PATH" || exit 1',
             'STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
             ': > "$LOG_PATH"',
-            'if timeout --kill-after=5s 20s /bin/sh -lc "$CRON_COMMAND" >>"$LOG_PATH" 2>&1; then',
+            'if timeout --kill-after=10s 120s /bin/sh -lc "$CRON_COMMAND" >>"$LOG_PATH" 2>&1; then',
             "  EXIT_CODE=0",
             "else",
             "  EXIT_CODE=$?",
