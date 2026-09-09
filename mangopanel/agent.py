@@ -851,6 +851,9 @@ class Agent:
             self.provision_hosting_account(conn, database["account_id"])
             sql = [f"CREATE DATABASE IF NOT EXISTS `{database['name']}`;"]
             if account:
+                master_user = f"{account['username']}_app"
+                sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(master_user)}@'%';")
+                sql.append(f"GRANT ALL PRIVILEGES ON *.* TO {sql_literal(master_user)}@'%';")
                 db_dict = row_to_dict(database) if database else {}
                 if db_dict.get("username"):
                     sql.append(f"GRANT ALL PRIVILEGES ON `{db_dict['name']}`.* TO {sql_literal(db_dict['username'])}@'%';")
@@ -2846,6 +2849,12 @@ class Agent:
                 )
 
         sql = []
+        account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+        if account:
+            master_user = f"{account['username']}_app"
+            sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(master_user)}@'%';")
+            sql.append(f"GRANT ALL PRIVILEGES ON *.* TO {sql_literal(master_user)}@'%';")
+
         for db in databases:
             sql.append(f"CREATE DATABASE IF NOT EXISTS `{db['name']}`;")
 
