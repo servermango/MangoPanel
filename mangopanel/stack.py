@@ -459,6 +459,7 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
     # The account row itself intentionally does not duplicate plan settings.
     vhost_account = dict(account)
     vhost_account["php_workers"] = plan.get("php_workers", 3) if hasattr(plan, "get") else plan["php_workers"]
+    vhost_account["php_timeout"] = plan.get("php_timeout", 120) if hasattr(plan, "get") else (plan["php_timeout"] if "php_timeout" in plan else 120)
     mailboxes = mailboxes or []
     mail_policy = mail_policy or {}
     paths = account_paths(account)
@@ -811,11 +812,11 @@ if grep -q '^enabled' /etc/mangopanel/ftp.enabled; then
   nohup /usr/sbin/proftpd -n -c /etc/proftpd/mangopanel.conf >/var/log/proftpd-runtime.log 2>&1 </dev/null &
 fi
 # Keep a runaway PHP request from pinning a worker indefinitely. This is a
-# hard 120-second ceiling for request workers; idle workers are handled by
+# hard {php_timeout}-second ceiling for request workers; idle workers are handled by
 # OpenLiteSpeed's maxIdleTime setting.
 (
   while :; do
-    for pid in $(ps -eo pid=,etimes=,args= 2>/dev/null | awk '$2 > 120 && $3 ~ /^lsphp:/ {print $1}'); do
+    for pid in $(ps -eo pid=,etimes=,args= 2>/dev/null | awk '$2 > {php_timeout} && $3 ~ /^lsphp:/ {{print $1}}'); do
       kill -TERM "$pid" 2>/dev/null || true
       (sleep 2; kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true) &
     done
@@ -894,7 +895,7 @@ while :; do
   fi
   sleep 15
 done
-""".replace("{username}", str(account["username"]))
+""".replace("{username}", str(account["username"])).replace("{php_timeout}", str(php_timeout_limit(vhost_account, websites)))
     runner_path = paths["stack"] / "services-entrypoint.sh"
     runner_path.write_text(service_runner, encoding="utf-8")
     runner_path.chmod(0o755)
@@ -1050,6 +1051,35 @@ def php_worker_limit(account, website=None):
     return default
 
 
+def php_timeout_limit(account, websites=None):
+    """Resolve the PHP execution timeout ceiling in seconds for an account stack."""
+    candidates = []
+    if websites:
+        for w in websites:
+            if not isinstance(w, dict):
+                continue
+            if w.get("php_timeout"):
+                try:
+                    candidates.append(int(w["php_timeout"]))
+                except (TypeError, ValueError):
+                    pass
+            try:
+                ini = json.loads(w.get("php_ini") or "{}") if isinstance(w.get("php_ini"), str) else (w.get("php_ini") or {})
+                if ini.get("max_execution_time"):
+                    candidates.append(int(ini["max_execution_time"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+    try:
+        acc_timeout = int(account.get("php_timeout") or 0)
+        if acc_timeout > 0:
+            candidates.append(acc_timeout)
+    except (AttributeError, TypeError, ValueError):
+        pass
+    if candidates:
+        return max(10, min(3600, max(candidates)))
+    return 120
+
+
 def render_openlitespeed_httpd_config(account, websites):
     base_config = """
 serverName                       MangoPanel
@@ -1191,6 +1221,7 @@ module cache {
     for website in websites:
         domain = website["domain"]
         php_workers = php_worker_limit(account, website)
+        php_timeout = php_timeout_limit(account, [website])
         safe_domain = domain.replace(".", "_").replace("-", "_")
         supported_php = SUPPORTED_PHP_VERSIONS
         php_raw = str(website.get("php_version", "8.2"))
@@ -1207,7 +1238,7 @@ extprocessor lsphp_{safe_domain} {{
   maxConns                {php_workers}
   env                     PHP_LSAPI_CHILDREN={php_workers}
   env                     LSAPI_AVOID_FORK=200M
-{legacy_env}  initTimeout             120
+{legacy_env}  initTimeout             {php_timeout}
   retryTimeout            0
   persistConn             1
   maxIdleTime             20
@@ -1308,6 +1339,7 @@ def render_ols_vhconf(account, website):
     domain = website["domain"]
     username = account["username"]
     php_workers = php_worker_limit(account, website)
+    php_timeout = php_timeout_limit(account, [website])
     safe_domain = domain.replace(".", "_").replace("-", "_")
 
     # Ensure PHP version is one of the supported versions.
@@ -1454,7 +1486,7 @@ extprocessor lsphp_{safe_domain} {{
   maxConns                {php_workers}
   env                     PHP_LSAPI_CHILDREN={php_workers}
   env                     LSAPI_AVOID_FORK=200M
-{legacy_env}  initTimeout             120
+{legacy_env}  initTimeout             {php_timeout}
   retryTimeout            0
   persistConn             1
   respBuffer              0
@@ -1478,8 +1510,8 @@ phpIniOverride  {{
   php_admin_value memory_limit "256M"
   php_admin_value upload_max_filesize "10M"
   php_admin_value post_max_size "10M"
-  php_value max_execution_time "120"
-  php_value max_input_time "120"
+  php_value max_execution_time "{php_timeout}"
+  php_value max_input_time "{php_timeout}"
   php_admin_value opcache.enable "{opcache_enabled}"
   # Keep OPcache enabled while checking changed PHP files on every request.
   # This preserves bytecode performance without making plugin/theme edits

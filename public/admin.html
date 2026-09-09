@@ -2391,6 +2391,7 @@
                   </label>
                   <label>Max processes <input v-model.number="newPlan.max_processes" type="number" min="0"></label>
                   <label>PHP workers <input v-model.number="newPlan.php_workers" type="number" min="0"></label>
+                  <label>PHP timeout (sec) <input v-model.number="newPlan.php_timeout" type="number" min="10" max="3600" placeholder="120"></label>
                   <label>Bandwidth MB (0 = unlimited) <input v-model.number="newPlan.bandwidth_mb" type="number" min="0"></label>
                   <label>Nameserver 1 <input v-model="newPlan.nameserver_1"></label>
                   <label>Nameserver 2 <input v-model="newPlan.nameserver_2"></label>

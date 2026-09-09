@@ -3574,9 +3574,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                     else:
                         analytics_enabled = 0 if analytics_mode == "disabled" else int(website["analytics_enabled"] if website["analytics_enabled"] is not None else 1)
                         
+                    php_timeout = website.get("php_timeout")
+                    if "php_timeout" in body:
+                        php_timeout = optional_positive_int(body.get("php_timeout"))
+                    elif "php_ini" in body and isinstance(body["php_ini"], dict) and body["php_ini"].get("max_execution_time"):
+                        try:
+                            php_timeout = int(body["php_ini"]["max_execution_time"])
+                        except (TypeError, ValueError):
+                            pass
+
                     conn.execute(
-                        "UPDATE websites SET php_version = ?, status = ?, php_ini = ?, index_enabled = ?, modsec_enabled = ?, analytics_enabled = ? WHERE id = ?",
-                        (php_version, status, php_ini_str, index_enabled, modsec_enabled, analytics_enabled, website_id),
+                        "UPDATE websites SET php_version = ?, status = ?, php_ini = ?, index_enabled = ?, modsec_enabled = ?, analytics_enabled = ?, php_timeout = ? WHERE id = ?",
+                        (php_version, status, php_ini_str, index_enabled, modsec_enabled, analytics_enabled, php_timeout, website_id),
                     )
                     job_id = None
                     if "php_version" in body:
@@ -6847,18 +6856,18 @@ class MangoHandler(BaseHTTPRequestHandler):
                     INSERT INTO plans(
                       name, cpu_limit, memory_mb, storage_mb, inode_limit, max_websites, max_subdomains,
                       max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days, backup_schedule,
-                      max_processes, php_workers, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
+                      max_processes, php_workers, php_timeout, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
                       frontend_frameworks, backend_frameworks, nodejs_versions, package_managers,
                       dns_default_provider, dns_allowed_providers_json, dns_allowed_provider_accounts_json, dns_default_provider_account_id,
                       dns_customer_editable, dns_max_records_per_domain, dns_allowed_record_types_json,
                       dns_min_ttl, dns_wildcard_records_allowed, dns_cloudflare_proxy_allowed,
                       dns_dnssec_allowed, dns_dnssec_required, allow_api_access, reseller_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         plan["name"], plan["cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"],
                         plan["max_websites"], plan["max_databases"], plan["max_mailboxes"], plan["max_cron_jobs"],
-                        plan["daily_email_limit"], plan["backup_retention_days"], plan["backup_schedule"], plan["max_processes"], plan["php_workers"],
+                        plan["daily_email_limit"], plan["backup_retention_days"], plan["backup_schedule"], plan["max_processes"], plan["php_workers"], plan["php_timeout"],
                         plan["bandwidth_mb"], plan["nameserver_1"], plan["nameserver_2"], plan["backup_location"],
                         plan["frontend_frameworks"], plan["backend_frameworks"], plan["nodejs_versions"], plan["package_managers"],
                         plan["dns_default_provider"], plan["dns_allowed_providers_json"], plan["dns_allowed_provider_accounts_json"], plan["dns_default_provider_account_id"],
@@ -8675,7 +8684,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     INSERT INTO plans(
                       name, cpu_limit, service_cpu_limit, total_cpu_limit, memory_mb, storage_mb, inode_limit, max_websites, max_subdomains,
                       max_databases, max_mailboxes, max_cron_jobs, daily_email_limit, backup_retention_days, backup_schedule,
-                      max_processes, php_workers, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
+                      max_processes, php_workers, php_timeout, bandwidth_mb, nameserver_1, nameserver_2, backup_location,
                       frontend_frameworks, backend_frameworks, nodejs_versions, package_managers,
                       dns_default_provider, dns_allowed_providers_json, dns_allowed_provider_accounts_json, dns_default_provider_account_id,
                       dns_customer_editable, dns_max_records_per_domain, dns_allowed_record_types_json,
@@ -8684,7 +8693,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                       is_reseller, max_clients, max_reseller_subplans
                     ) VALUES (
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
@@ -8707,6 +8716,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["backup_schedule"],
                         plan["max_processes"],
                         plan["php_workers"],
+                        plan["php_timeout"],
                         plan["bandwidth_mb"],
                         plan["nameserver_1"],
                         plan["nameserver_2"],
@@ -8759,7 +8769,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     UPDATE plans SET
                       name = ?, cpu_limit = ?, service_cpu_limit = ?, total_cpu_limit = ?, memory_mb = ?, storage_mb = ?, inode_limit = ?, max_websites = ?, max_subdomains = ?,
                       max_databases = ?, max_mailboxes = ?, max_cron_jobs = ?, daily_email_limit = ?, backup_retention_days = ?, backup_schedule = ?,
-                      max_processes = ?, php_workers = ?, bandwidth_mb = ?, nameserver_1 = ?, nameserver_2 = ?, backup_location = ?,
+                      max_processes = ?, php_workers = ?, php_timeout = ?, bandwidth_mb = ?, nameserver_1 = ?, nameserver_2 = ?, backup_location = ?,
                       frontend_frameworks = ?, backend_frameworks = ?, nodejs_versions = ?, package_managers = ?,
                       dns_default_provider = ?, dns_allowed_providers_json = ?, dns_allowed_provider_accounts_json = ?, dns_default_provider_account_id = ?,
                       dns_customer_editable = ?, dns_max_records_per_domain = ?, dns_allowed_record_types_json = ?,
@@ -8772,7 +8782,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         plan["name"], plan["cpu_limit"], plan["service_cpu_limit"], plan["total_cpu_limit"], plan["memory_mb"], plan["storage_mb"], plan["inode_limit"], plan["max_websites"], plan["max_subdomains"],
                         plan["max_databases"], plan["max_mailboxes"], plan["max_cron_jobs"], plan["daily_email_limit"], plan["backup_retention_days"],
                         plan["backup_schedule"],
-                        plan["max_processes"], plan["php_workers"], plan["bandwidth_mb"], plan["nameserver_1"], plan["nameserver_2"], plan["backup_location"],
+                        plan["max_processes"], plan["php_workers"], plan["php_timeout"], plan["bandwidth_mb"], plan["nameserver_1"], plan["nameserver_2"], plan["backup_location"],
                         plan["frontend_frameworks"], plan["backend_frameworks"], plan["nodejs_versions"], plan["package_managers"],
                         plan["dns_default_provider"], plan["dns_allowed_providers_json"], plan["dns_allowed_provider_accounts_json"], plan["dns_default_provider_account_id"],
                         plan["dns_customer_editable"], plan["dns_max_records_per_domain"], plan["dns_allowed_record_types_json"],
@@ -11417,7 +11427,8 @@ def php_info_probe(account, website=None, runtime=None):
             ],
             "directives": {
                 "memory_limit": "256M",
-                "max_execution_time": "120",
+                "max_execution_time": str(account.get("php_timeout") or 120),
+                "php_timeout": int(account.get("php_timeout") or 120),
                 "upload_max_filesize": "64M",
                 "post_max_size": "64M",
                 "error_reporting": "E_ALL & ~E_DEPRECATED",
@@ -13598,6 +13609,7 @@ def validate_plan_payload(body):
         raise ApiError(HTTPStatus.BAD_REQUEST, "total_cpu_limit_below_web_cpu_limit")
     max_processes = positive_int(body.get("max_processes", 120), "invalid_max_processes", minimum=0, maximum=10000)
     php_workers = positive_int(body.get("php_workers", 60), "invalid_php_workers", minimum=0, maximum=1000)
+    php_timeout = positive_int(body.get("php_timeout", 120), "invalid_php_timeout", minimum=10, maximum=3600)
     bandwidth_mb = positive_int(body.get("bandwidth_mb", 0), "invalid_bandwidth_mb", minimum=0, maximum=104857600)
     
     nameserver_1 = clean_text(body.get("nameserver_1", "ns1.dns-parking.com"), "")
@@ -13684,6 +13696,7 @@ def validate_plan_payload(body):
         "backup_schedule": backup_schedule,
         "max_processes": max_processes,
         "php_workers": php_workers,
+        "php_timeout": php_timeout,
         "bandwidth_mb": bandwidth_mb,
         "nameserver_1": nameserver_1,
         "nameserver_2": nameserver_2,

@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS plans (
   backup_schedule TEXT NOT NULL DEFAULT 'daily',
   max_processes INTEGER NOT NULL DEFAULT 120,
   php_workers INTEGER NOT NULL DEFAULT 60,
+  php_timeout INTEGER NOT NULL DEFAULT 120,
   bandwidth_limit_gb INTEGER NOT NULL DEFAULT 0,
   nameserver1 TEXT NOT NULL DEFAULT 'ns1.mangopanel.com',
   nameserver2 TEXT NOT NULL DEFAULT 'ns2.mangopanel.com',
@@ -137,6 +138,7 @@ CREATE TABLE IF NOT EXISTS hosting_accounts (
   status TEXT NOT NULL DEFAULT 'provisioning',
   php_workers_mode TEXT NOT NULL DEFAULT 'max_per_site',
   php_workers_max_per_site INTEGER,
+  php_timeout INTEGER,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -208,6 +210,7 @@ CREATE TABLE IF NOT EXISTS websites (
   litespeed_cache_enabled INTEGER,
   cloudflare_cache_enabled INTEGER,
   php_workers_limit INTEGER,
+  php_timeout INTEGER,
   created_by_user_id INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -1294,6 +1297,7 @@ def ensure_schema(conn):
             "backup_schedule": "TEXT NOT NULL DEFAULT 'daily'",
             "max_processes": "INTEGER NOT NULL DEFAULT 120",
             "php_workers": "INTEGER NOT NULL DEFAULT 60",
+            "php_timeout": "INTEGER NOT NULL DEFAULT 120",
             "bandwidth_mb": "INTEGER NOT NULL DEFAULT 0",
             "nameserver_1": "TEXT NOT NULL DEFAULT 'ns1.dns-parking.com'",
             "nameserver_2": "TEXT NOT NULL DEFAULT 'ns2.dns-parking.com'",
@@ -1613,6 +1617,7 @@ def ensure_schema(conn):
         {
             "max_processes": "INTEGER NOT NULL DEFAULT 120",
             "php_workers": "INTEGER NOT NULL DEFAULT 60",
+            "php_timeout": "INTEGER NOT NULL DEFAULT 120",
             "bandwidth_limit_gb": "INTEGER NOT NULL DEFAULT 0",
             "nameserver1": "TEXT NOT NULL DEFAULT 'ns1.mangopanel.com'",
             "nameserver2": "TEXT NOT NULL DEFAULT 'ns2.mangopanel.com'",
@@ -2091,6 +2096,7 @@ def ensure_dns_provider_schema(conn):
         "timezone": "TEXT NOT NULL DEFAULT 'UTC'",
         "php_workers_mode": "TEXT NOT NULL DEFAULT 'max_per_site'",
         "php_workers_max_per_site": "INTEGER",
+        "php_timeout": "INTEGER",
     })
     ensure_table_columns(conn, "websites", {
         # NULL retains the account default for legacy websites. A concrete
@@ -2101,6 +2107,7 @@ def ensure_dns_provider_schema(conn):
         "litespeed_cache_enabled": "INTEGER",
         "cloudflare_cache_enabled": "INTEGER",
         "php_workers_limit": "INTEGER",
+        "php_timeout": "INTEGER",
     })
     ensure_table_columns(conn, "databases", {
         "website_id": "INTEGER",

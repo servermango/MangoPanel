@@ -2282,6 +2282,7 @@
                   </strong>
                 </div>
                 <div class="php-switcher-group" style="display: flex; gap: 8px; align-items: center;">
+                  <span class="badge" style="padding: 3px 8px; font-size: 12px; border-radius: 4px; opacity: 0.85;">{{ sitePhpTimeout(site) }}s timeout</span>
                   <button class="secondary-button" @click="openPhpIniModal(site)" style="padding: 4px 10px; font-size: 13px;">Configure INI</button>
                   <div class="php-switcher-btn-group">
                     <button
@@ -2315,7 +2316,7 @@
                 <thead><tr><th>Directive</th><th>Recommended value</th><th>Description</th></tr></thead>
                 <tbody>
                   <tr><td><code>memory_limit</code></td><td><code>256M</code></td><td>Maximum memory a script can allocate</td></tr>
-                  <tr><td><code>max_execution_time</code></td><td><code>120</code></td><td>Maximum script execution time (seconds)</td></tr>
+                  <tr><td><code>max_execution_time</code></td><td><code>{{ (phpInfo && phpInfo.directives && phpInfo.directives.max_execution_time) || '120' }}s</code></td><td>Maximum script execution time (seconds)</td></tr>
                   <tr><td><code>upload_max_filesize</code></td><td><code>64M</code></td><td>Maximum upload file size</td></tr>
                   <tr><td><code>post_max_size</code></td><td><code>64M</code></td><td>Maximum POST data size</td></tr>
                   <tr><td><code>max_input_vars</code></td><td><code>5000</code></td><td>Maximum input variables</td></tr>
@@ -4257,8 +4258,8 @@
                   <label>memory_limit
                     <input type="text" v-model="phpIniForm.memory_limit" placeholder="e.g. 256M">
                   </label>
-                  <label>max_execution_time
-                    <input type="number" v-model="phpIniForm.max_execution_time" placeholder="e.g. 120">
+                  <label>max_execution_time (seconds)
+                    <input type="number" v-model="phpIniForm.max_execution_time" min="10" max="3600" placeholder="e.g. 120">
                   </label>
                   <label>upload_max_filesize
                     <input type="text" v-model="phpIniForm.upload_max_filesize" placeholder="e.g. 64M">

@@ -65,6 +65,7 @@
               <label>Memory MB <input v-model.number="newPlan.memory_mb" type="number" min="128"></label>
               <label>Max Processes <input v-model.number="newPlan.max_processes" type="number" min="0"></label>
               <label>PHP Workers <input v-model.number="newPlan.php_workers" type="number" min="0"></label>
+              <label>PHP Timeout (sec) <input v-model.number="newPlan.php_timeout" type="number" min="10" max="3600" placeholder="120"></label>
               
               <h3 class="section-subhead">Storage & Quotas</h3>
               <label>Storage MB <input v-model.number="newPlan.storage_mb" type="number" min="100"></label>

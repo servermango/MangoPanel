@@ -319,7 +319,7 @@ def cron_wrapper_script(account, cron_job):
             'cd "$BASE_PATH" || exit 1',
             'STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
             ': > "$LOG_PATH"',
-            'if timeout --kill-after=10s 120s /bin/sh -lc "$CRON_COMMAND" >>"$LOG_PATH" 2>&1; then',
+            f'if timeout --kill-after=10s {max(10, min(3600, int(account.get("php_timeout") or 120)))}s /bin/sh -lc "$CRON_COMMAND" >>"$LOG_PATH" 2>&1; then',
             "  EXIT_CODE=0",
             "else",
             "  EXIT_CODE=$?",
@@ -426,8 +426,9 @@ class Agent:
     def vhost_account_context(self, conn, account):
         """Return account data plus the worker quota from its current plan."""
         context = row_to_dict(account) if hasattr(account, "keys") else dict(account)
-        plan = conn.execute("SELECT php_workers FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
+        plan = conn.execute("SELECT php_workers, php_timeout FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
         context["php_workers"] = int(plan["php_workers"] if plan and plan["php_workers"] is not None else 3)
+        context["php_timeout"] = int(account.get("php_timeout") or (plan["php_timeout"] if plan and plan["php_timeout"] is not None else 120))
         return context
 
     def run_once(self):

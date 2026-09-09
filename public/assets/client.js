@@ -3098,12 +3098,22 @@ const app = createApp({
       this.editingPhpIniSite = site;
       this.phpIniForm = {
         memory_limit: phpIni.memory_limit || "",
-        max_execution_time: phpIni.max_execution_time || "",
+        max_execution_time: phpIni.max_execution_time || site.php_timeout || (this.phpInfo && this.phpInfo.directives ? this.phpInfo.directives.php_timeout : "") || "120",
         upload_max_filesize: phpIni.upload_max_filesize || "",
         post_max_size: phpIni.post_max_size || "",
         max_input_vars: phpIni.max_input_vars || "",
         custom: phpIni.custom || "",
       };
+    },
+    sitePhpTimeout(site) {
+      if (site.php_timeout) return site.php_timeout;
+      if (site.php_ini) {
+        try {
+          const ini = typeof site.php_ini === "string" ? JSON.parse(site.php_ini) : site.php_ini;
+          if (ini.max_execution_time) return ini.max_execution_time;
+        } catch (e) {}
+      }
+      return (this.phpInfo && this.phpInfo.directives && this.phpInfo.directives.php_timeout) || 120;
     },
     async savePhpIni() {
       if (!this.editingPhpIniSite) return;
@@ -3111,7 +3121,10 @@ const app = createApp({
       try {
         const payload = await this.api(`/api/client/websites/${this.editingPhpIniSite.id}`, {
           method: "PATCH",
-          body: JSON.stringify({ php_ini: this.phpIniForm }),
+          body: JSON.stringify({
+            php_ini: this.phpIniForm,
+            php_timeout: this.phpIniForm.max_execution_time ? Number(this.phpIniForm.max_execution_time) : null,
+          }),
         });
         const idx = this.websites.findIndex((site) => site.id === this.editingPhpIniSite.id);
         if (idx !== -1) {
