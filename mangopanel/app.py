@@ -6043,6 +6043,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "sso_secret": sso_secret,
                         "allow_overwrite": allow_overwrite,
                     })
+                    job = conn.execute("SELECT status, result FROM jobs WHERE id = ?", (job_id,)).fetchone()
+                    if job and job["status"] == "failed":
+                        result = parse_json_field(job["result"], {})
+                        raise ApiError(HTTPStatus.BAD_REQUEST, result.get("error", "wordpress_install_failed"))
                 else:
                     existing = conn.execute("SELECT id FROM script_installs WHERE website_id = ?", (website_id,)).fetchone()
                     if existing:

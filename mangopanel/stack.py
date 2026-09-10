@@ -65,6 +65,7 @@ SHA512_CRYPT_SALT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0
 
 
 def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
+    account = dict(account) if hasattr(account, "keys") else account
     account_id = int(account["id"])
     slot = port_base + (account_id * 10)
     # Every account needs an isolated host-port range. Production accounts
@@ -1537,6 +1538,7 @@ module cache {{
 
 
 def render_crontab(account, cron_jobs=None):
+    account = dict(account) if hasattr(account, "keys") else account
     lines = [
         "# MangoPanel cron file for {}".format(account["username"]),
         "SHELL=/bin/sh",

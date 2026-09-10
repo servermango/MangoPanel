@@ -290,6 +290,7 @@ def read_cron_runtime_state(account, cron_job):
 
 
 def cron_wrapper_script(account, cron_job):
+    account = dict(account) if hasattr(account, "keys") else account
     paths = cron_runner_paths(account, cron_job)
     job_id = int(cron_job["id"])
     account_id = int(account["id"])
@@ -3043,6 +3044,19 @@ class Agent:
         if not account:
             raise AgentError("hosting_account_not_found")
 
+        # Proactively ensure the MariaDB database, user, password, and permissions exist
+        db_name = payload.get("database_name")
+        db_user = payload.get("database_user")
+        db_password = payload.get("database_password")
+        if db_name and db_user and db_password and account:
+            self.execute_mariadb_sql(conn, account["id"], [
+                f"CREATE DATABASE IF NOT EXISTS `{db_name}`;",
+                f"CREATE USER IF NOT EXISTS {sql_literal(db_user)}@'%' IDENTIFIED BY {sql_literal(db_password)};",
+                f"ALTER USER {sql_literal(db_user)}@'%' IDENTIFIED BY {sql_literal(db_password)};",
+                f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO {sql_literal(db_user)}@'%';",
+                "FLUSH PRIVILEGES;",
+            ])
+
         from .installers import INSTALLERS
         try:
             INSTALLERS["wordpress"].install(conn, website, account, payload, install_id)
@@ -3058,6 +3072,11 @@ class Agent:
         # Auto-complete WordPress installation via WP-CLI so the install page
         # never shows and admin credentials from the payload are used correctly.
         self._wpcli_core_install(account, website, payload)
+
+        conn.execute(
+            "UPDATE script_installs SET status = 'installed', installed_at = CURRENT_TIMESTAMP WHERE website_id = ? AND script_id = 'wordpress'",
+            (install["website_id"],),
+        )
 
         return {
             "install_id": install_id,
@@ -3442,10 +3461,21 @@ class Agent:
             "--skip-email",
             "--allow-root",
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+        result = None
+        for attempt in range(15):
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+            if result.returncode == 0:
+                break
+            combined = (result.stdout + result.stderr).lower()
+            if "already install" in combined:
+                break
+            if ("connection refused" in combined or "error establishing a database connection" in combined) and attempt < 14:
+                time.sleep(2)
+                continue
+            raise AgentError(f"wpcli_install_failed: {result.stderr.strip() or result.stdout.strip()}")
         # Log but don't raise — a pre-existing install ("WordPress is already installed")
         # is acceptable; only a real failure should bubble up.
-        if result.returncode != 0:
+        if result and result.returncode != 0:
             already = "already install" in (result.stdout + result.stderr).lower()
             if not already:
                 raise AgentError(f"wpcli_install_failed: {result.stderr.strip() or result.stdout.strip()}")
@@ -3521,6 +3551,15 @@ class Agent:
         payload["database_user"] = db_user
         payload["database_password"] = "dev-db-password-change-me"
         payload["database_host"] = "db"
+
+        if db_name and db_user and account:
+            self.execute_mariadb_sql(conn, account["id"], [
+                f"CREATE DATABASE IF NOT EXISTS `{db_name}`;",
+                f"CREATE USER IF NOT EXISTS {sql_literal(db_user)}@'%' IDENTIFIED BY {sql_literal(payload['database_password'])};",
+                f"ALTER USER {sql_literal(db_user)}@'%' IDENTIFIED BY {sql_literal(payload['database_password'])};",
+                f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO {sql_literal(db_user)}@'%';",
+                "FLUSH PRIVILEGES;",
+            ])
 
         # Run script installation
         try:
