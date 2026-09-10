@@ -706,15 +706,15 @@
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Website IP address</span>
-                      <strong class="premium-item-value">{{ selectedWebsite?.server_ip || selectedWebsite?.ip_address || activeAccount.node_ip || '157.15.203.66' }}</strong>
+                      <strong class="premium-item-value">{{ selectedWebsite?.server_ip || selectedWebsite?.ip_address || activeAccount?.node_ip || serverIp }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Current nameserver 1</span>
-                      <strong class="premium-item-value">{{ (selectedWebsite?.nameservers && selectedWebsite.nameservers[0]) || activeAccount.nameserver_1 || 'ns1.dns-parking.com' }}</strong>
+                      <strong class="premium-item-value">{{ (selectedWebsite?.nameservers && selectedWebsite.nameservers[0]) || activeAccount?.nameserver_1 || 'ns1.' + (selectedWebsite?.domain || 'example.com') }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Current nameserver 2</span>
-                      <strong class="premium-item-value">{{ (selectedWebsite?.nameservers && selectedWebsite.nameservers[1]) || activeAccount.nameserver_2 || 'ns2.dns-parking.com' }}</strong>
+                      <strong class="premium-item-value">{{ (selectedWebsite?.nameservers && selectedWebsite.nameservers[1]) || activeAccount?.nameserver_2 || 'ns2.' + (selectedWebsite?.domain || 'example.com') }}</strong>
                     </div>
                   </div>
                 </div>
@@ -730,15 +730,15 @@
                   <div class="premium-list">
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Server Name</span>
-                      <strong class="premium-item-value">{{ activeAccount.node_name || 'server1874' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount?.node_name || activeAccount?.node_hostname || 'primary' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Server Location</span>
-                      <strong class="premium-item-value">{{ activeAccount.node_location || 'Asia (India)' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount?.node_location || 'Default' }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">Backups location</span>
-                      <strong class="premium-item-value">{{ activeAccount.backup_location || 'Singapore' }}</strong>
+                      <strong class="premium-item-value">{{ activeAccount?.backup_location || 'Local' }}</strong>
                     </div>
                   </div>
                 </div>
@@ -931,7 +931,7 @@
                   <div class="premium-list">
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">FTP IP</span>
-                      <strong class="premium-item-value">{{ selectedWebsite?.server_ip || selectedWebsite?.ip_address || activeAccount.node_ip || '157.15.203.66' }}</strong>
+                      <strong class="premium-item-value">{{ selectedWebsite?.server_ip || selectedWebsite?.ip_address || activeAccount?.node_ip || serverIp }}</strong>
                     </div>
                     <div class="premium-item premium-item-col">
                       <span class="premium-item-label">FTP Hostname</span>

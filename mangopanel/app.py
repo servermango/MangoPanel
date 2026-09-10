@@ -3092,7 +3092,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/home" and method == "GET":
                 user_id = account["user_id"] if account else actor["id"]
                 active_account_id = account["id"] if account else None
-                return self.json_response(client_home(conn, user_id, active_account_id=active_account_id))
+                return self.json_response(client_home(conn, user_id, active_account_id=active_account_id, request_host=self.headers.get("Host")))
             if path == "/api/client/feature-status" and method == "GET":
                 return self.json_response({"features": FEATURE_STATUS})
             if path == "/api/client/sync-jobs" and method == "GET":
@@ -3141,7 +3141,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "job_id": job_id,
                     "message": "Usage recalculation queued.",
-                    "resources": client_home(conn, user_id, active_account_id=active_account_id)["resources"],
+                    "resources": client_home(conn, user_id, active_account_id=active_account_id, request_host=self.headers.get("Host"))["resources"],
                 })
             if path == "/api/client/php-info" and method == "GET":
                 require_account(account)
@@ -3335,6 +3335,25 @@ class MangoHandler(BaseHTTPRequestHandler):
                     website["host_header"] = website["domain"]
                     website["nameservers"] = website_dns_nameservers(website)
                     website["dns_provider_label"] = "Cloudflare" if website.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE else "Local DNS"
+
+                    website_ip = None
+                    if website.get("domain_id"):
+                        a_rec = conn.execute(
+                            "SELECT value FROM dns_records WHERE domain_id = ? AND type = 'A' AND name = '@' ORDER BY system_record DESC, id LIMIT 1",
+                            (website["domain_id"],)
+                        ).fetchone()
+                        if a_rec and a_rec["value"]:
+                            website_ip = a_rec["value"]
+                    host_ip = get_host_public_ip(conn, request_host=self.headers.get("Host"))
+                    if not website_ip or (website_ip in ("127.0.0.1", "0.0.0.0", "localhost", "157.15.203.66") and host_ip not in ("127.0.0.1", "0.0.0.0", "localhost")):
+                        if account and account.get("dedicated_ip_id"):
+                            ded = conn.execute("SELECT ip_address FROM server_ips WHERE id = ?", (account["dedicated_ip_id"],)).fetchone()
+                            if ded and ded["ip_address"] and ded["ip_address"] not in ("157.15.203.66", "127.0.0.1", "0.0.0.0", ""):
+                                website_ip = ded["ip_address"]
+                        if not website_ip or website_ip in ("127.0.0.1", "0.0.0.0", "localhost", "157.15.203.66"):
+                            website_ip = host_ip
+                    website["server_ip"] = website_ip
+                    website["ip_address"] = website_ip
                     provider_state = parse_json_field(website.get("provider_state_json"), {})
                     website["provider_state"] = provider_state
                     website["dns_last_error"] = provider_state.get("last_error") or ""
@@ -10560,8 +10579,40 @@ def pull_cloudflare_domain_records(conn, domain, provider_account_id=None):
     return zone, remote_records, imported_count
 
 
-def get_host_public_ip(conn=None):
+def get_host_public_ip(conn=None, request_host=None):
+    if request_host:
+        host_str = str(request_host).split(":")[0].strip()
+        try:
+            ip_obj = ipaddress.ip_address(host_str)
+            if not ip_obj.is_loopback and not ip_obj.is_unspecified:
+                return host_str
+        except ValueError:
+            pass
+
     if conn:
+        try:
+            primary = conn.execute("SELECT ip_address FROM server_ips WHERE is_primary = 1 AND status = 'active' LIMIT 1").fetchone()
+            if primary and primary["ip_address"] and primary["ip_address"] not in ("127.0.0.1", "0.0.0.0", "localhost", "157.15.203.66"):
+                return primary["ip_address"]
+        except Exception:
+            pass
+
+        try:
+            persisted = get_system_setting(conn, "public_host", "")
+            if persisted and persisted not in ("127.0.0.1", "0.0.0.0", "localhost"):
+                try:
+                    ipaddress.ip_address(persisted)
+                    return persisted
+                except ValueError:
+                    try:
+                        resolved = socket.gethostbyname(persisted)
+                        if resolved and resolved not in ("127.0.0.1", "0.0.0.0"):
+                            return resolved
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         try:
             local_provider = dns_provider_by_key(conn, DNS_PROVIDER_LOCAL_POWERDNS)
             if local_provider:
@@ -10577,7 +10628,12 @@ def get_host_public_ip(conn=None):
             ipaddress.ip_address(CONFIG.public_host)
             return CONFIG.public_host
         except ValueError:
-            pass
+            try:
+                resolved = socket.gethostbyname(CONFIG.public_host)
+                if resolved and resolved not in ("127.0.0.1", "0.0.0.0"):
+                    return resolved
+            except Exception:
+                pass
 
     try:
         req = urllib.request.urlopen("https://api.ipify.org", timeout=3)
@@ -10597,6 +10653,14 @@ def get_host_public_ip(conn=None):
             return ip
     except Exception:
         pass
+
+    if conn:
+        try:
+            primary = conn.execute("SELECT ip_address FROM server_ips WHERE is_primary = 1 LIMIT 1").fetchone()
+            if primary and primary["ip_address"] and primary["ip_address"] not in ("127.0.0.1", "0.0.0.0", "localhost"):
+                return primary["ip_address"]
+        except Exception:
+            pass
 
     return "127.0.0.1"
 
@@ -14516,7 +14580,7 @@ def require_collaborator_permission(conn, actor_id, account_id, perm_key, err_ms
     return scope
 
 
-def client_home(conn, user_id, active_account_id=None):
+def client_home(conn, user_id, active_account_id=None, request_host=None):
     user_row = conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
     user_email = user_row["email"] if user_row else ""
 
@@ -14531,7 +14595,7 @@ def client_home(conn, user_id, active_account_id=None):
                    p.nameserver1 AS nameserver_1, p.nameserver2 AS nameserver_2, 
                    p.server_location AS node_location, p.backups_location AS backup_location,
                    p.frontend_frameworks, p.backend_frameworks, COALESCE(p.allow_api_access, 0) AS allow_api_access,
-                   n.name AS node_name, n.hostname AS node_hostname, COALESCE(n.ip_address, '157.15.203.66') AS node_ip,
+                   n.name AS node_name, n.hostname AS node_hostname, n.ip_address AS node_ip,
                    (CASE WHEN ha.user_id = ? THEN 1 ELSE 0 END) AS is_owner
             FROM hosting_accounts ha
             JOIN plans p ON p.id = ha.plan_id
@@ -14543,6 +14607,18 @@ def client_home(conn, user_id, active_account_id=None):
             (user_id, user_id, user_id, user_email),
         ).fetchall()
     )
+    host_public_ip = get_host_public_ip(conn, request_host=request_host)
+    for account in accounts:
+        account["runtime"] = account_runtime(conn, account["id"])
+        acc_ip = account.get("node_ip")
+        if not acc_ip or acc_ip in ("157.15.203.66", "127.0.0.1", "localhost", "0.0.0.0", ""):
+            if account.get("dedicated_ip_id"):
+                ded = conn.execute("SELECT ip_address FROM server_ips WHERE id = ?", (account["dedicated_ip_id"],)).fetchone()
+                if ded and ded["ip_address"] and ded["ip_address"] not in ("157.15.203.66", "127.0.0.1", "0.0.0.0", ""):
+                    account["node_ip"] = ded["ip_address"]
+                    continue
+            account["node_ip"] = host_public_ip
+
     primary_account = None
     if accounts:
         if active_account_id:
@@ -14630,8 +14706,23 @@ def client_home(conn, user_id, active_account_id=None):
         website["host_header"] = website["domain"]
         website["nameservers"] = website_dns_nameservers(website)
         website["dns_provider_label"] = "Cloudflare" if website.get("dns_provider") == DNS_PROVIDER_CLOUDFLARE else "Local DNS"
-    for account in accounts:
-        account["runtime"] = account_runtime(conn, account["id"])
+        w_ip = None
+        if website.get("domain_id"):
+            a_rec = conn.execute(
+                "SELECT value FROM dns_records WHERE domain_id = ? AND type = 'A' AND name = '@' ORDER BY system_record DESC, id LIMIT 1",
+                (website["domain_id"],)
+            ).fetchone()
+            if a_rec and a_rec["value"]:
+                w_ip = a_rec["value"]
+        if not w_ip or (w_ip in ("127.0.0.1", "0.0.0.0", "localhost", "157.15.203.66") and host_public_ip not in ("127.0.0.1", "0.0.0.0", "localhost")):
+            if primary_account and primary_account.get("dedicated_ip_id"):
+                ded = conn.execute("SELECT ip_address FROM server_ips WHERE id = ?", (primary_account["dedicated_ip_id"],)).fetchone()
+                if ded and ded["ip_address"] and ded["ip_address"] not in ("157.15.203.66", "127.0.0.1", "0.0.0.0", ""):
+                    w_ip = ded["ip_address"]
+            if not w_ip or w_ip in ("127.0.0.1", "0.0.0.0", "localhost", "157.15.203.66"):
+                w_ip = host_public_ip
+        website["server_ip"] = w_ip
+        website["ip_address"] = w_ip
     user = conn.execute("SELECT id, email, full_name, totp_secret FROM users WHERE id = ?", (user_id,)).fetchone()
     has_2fa = bool(user and user["totp_secret"])
     user_dict = {"id": user["id"], "email": user["email"], "full_name": user["full_name"]} if user else None
@@ -14646,9 +14737,6 @@ def client_home(conn, user_id, active_account_id=None):
     memory_pct = 35.0
 
     if primary_account:
-        # Usage is collected by the periodic collector.  Dashboard requests
-        # must remain read-only and must never walk the account filesystem or
-        # query Docker for live statistics.
         sample = conn.execute(
             """
             SELECT storage_mb, storage_limit_mb, inodes_used, inodes_limit, cpu_percent, memory_mb, memory_limit_mb
@@ -14699,7 +14787,7 @@ def client_home(conn, user_id, active_account_id=None):
             else None
         ),
         "has_2fa": has_2fa,
-        "server_ip": get_host_public_ip(conn),
+        "server_ip": host_public_ip,
         "resources": {
             "disk_used_mb": disk_used_mb,
             "disk_limit_mb": disk_limit_mb,

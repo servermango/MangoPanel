@@ -1354,7 +1354,7 @@ def ensure_schema(conn):
         conn,
         "nodes",
         {
-            "ip_address": "TEXT DEFAULT '157.15.203.66'",
+            "ip_address": "TEXT DEFAULT ''",
         },
     )
     ensure_table_columns(
@@ -1373,7 +1373,7 @@ def ensure_schema(conn):
         },
     )
     conn.execute("UPDATE nodes SET hostname = 'seeds.servermango.com' WHERE hostname = 'localhost'")
-    conn.execute("UPDATE nodes SET ip_address = '157.15.203.66' WHERE ip_address IS NULL OR ip_address = '' OR ip_address = '127.0.0.1'")
+    conn.execute("UPDATE nodes SET ip_address = '' WHERE ip_address = '157.15.203.66'")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS dns_zones (

@@ -6298,20 +6298,43 @@ def get_network_overview(conn):
 def _ensure_default_server_ip(conn, interfaces=None):
     count = conn.execute("SELECT COUNT(*) AS c FROM server_ips").fetchone()["c"]
     if count == 0:
-        default_ip = "157.15.203.66"
+        default_ip = None
+        iface_name = "eth0"
         if interfaces:
             for iface in interfaces:
-                if not iface["is_virtual"] and iface["name"] != "lo":
-                    for addr in iface["addresses"]:
-                        if addr["type"] == "Public IPv4":
+                if not iface.get("is_virtual") and iface.get("name") != "lo":
+                    for addr in iface.get("addresses", []):
+                        if addr.get("type") == "Public IPv4":
                             default_ip = addr["ip"]
+                            iface_name = iface.get("name") or "eth0"
                             break
+                    if default_ip:
+                        break
+        if not default_ip:
+            try:
+                from .app import get_host_public_ip
+                detected = get_host_public_ip(conn)
+                if detected and detected not in ("127.0.0.1", "0.0.0.0", "localhost"):
+                    default_ip = detected
+            except Exception:
+                pass
+        if not default_ip and interfaces:
+            for iface in interfaces:
+                if not iface.get("is_virtual") and iface.get("name") != "lo":
+                    for addr in iface.get("addresses", []):
+                        if addr.get("family") == "inet" and not addr.get("ip", "").startswith("127."):
+                            default_ip = addr["ip"]
+                            iface_name = iface.get("name") or "eth0"
+                            break
+                    if default_ip:
+                        break
+        default_ip = default_ip or "127.0.0.1"
         conn.execute(
             """
             INSERT OR IGNORE INTO server_ips(ip_address, ip_type, netmask_cidr, interface, label, is_primary, status)
-            VALUES (?, 'ipv4', '/24', 'ens160', 'Primary Server Public IP', 1, 'active')
+            VALUES (?, 'ipv4', '/24', ?, 'Primary Server Public IP', 1, 'active')
             """,
-            (default_ip,),
+            (default_ip, iface_name),
         )
 
 
@@ -6437,7 +6460,7 @@ def assign_account_ip(conn, account_id, ip_id):
     else:
         conn.execute("UPDATE hosting_accounts SET dedicated_ip_id = NULL WHERE id = ?", (account_id,))
         primary_ip = conn.execute("SELECT ip_address FROM server_ips WHERE is_primary = 1").fetchone()
-        target_ip_str = primary_ip["ip_address"] if primary_ip else "157.15.203.66"
+        target_ip_str = primary_ip["ip_address"] if primary_ip else "127.0.0.1"
 
     domains = conn.execute("SELECT d.id FROM domains d WHERE d.account_id = ?", (account_id,)).fetchall()
     for d in domains:

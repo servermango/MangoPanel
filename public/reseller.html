@@ -1162,9 +1162,9 @@
                   <span class="pill pill-success">Active</span>
                 </div>
                 <strong style="font-family:'JetBrains Mono', monospace; font-size:1.15rem; color:#72e128;">
-                  {{ networkOverview.primary_ip ? networkOverview.primary_ip.ip_address : '157.15.203.66' }}
+                  {{ networkOverview.primary_ip ? networkOverview.primary_ip.ip_address : (window.location && window.location.hostname) || '127.0.0.1' }}
                 </strong>
-                <small>{{ networkOverview.primary_ip ? networkOverview.primary_ip.label : 'Main Server IP' }} ({{ networkOverview.primary_ip ? networkOverview.primary_ip.interface : 'ens160' }})</small>
+                <small>{{ networkOverview.primary_ip ? networkOverview.primary_ip.label : 'Main Server IP' }} ({{ networkOverview.primary_ip ? networkOverview.primary_ip.interface : 'eth0' }})</small>
               </div>
               <div class="metric">
                 <span>Registered IPs</span>

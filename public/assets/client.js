@@ -660,7 +660,7 @@ const app = createApp({
       return `${window.location.protocol}//${host}:${port}/reseller#sso_token=${encodeURIComponent(currentToken)}`;
     },
     serverIp() {
-      return (this.home && this.home.server_ip) || "157.15.203.66";
+      return (this.home && this.home.server_ip) || (this.activeAccount && this.activeAccount.node_ip) || (this.selectedWebsite && (this.selectedWebsite.server_ip || this.selectedWebsite.ip_address)) || (window.location && window.location.hostname) || "127.0.0.1";
     },
     selectedSubdomainParent() {
       return (this.subdomainDomains || []).find((domain) => String(domain.id) === String(this.subdomainWizard.parent_domain_id)) || null;
