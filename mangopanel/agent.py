@@ -313,9 +313,9 @@ def cron_wrapper_script(account, cron_job):
             'LOCK_PATH="$CRON_ROOT/state/account.lock"',
             'mkdir -p "$CRON_ROOT/logs" "$CRON_ROOT/state"',
             'exec 9>"$LOCK_PATH"',
-            # Queue jobs for the account instead of dropping them when the
-            # previous site's cron task is still running.
-            'flock 9',
+            # Allow waiting up to 60s for the previous site's cron task to finish,
+            # but prevent unbound accumulation of queued cron jobs.
+            'flock -w 60 9 || exit 0',
             'cd "$BASE_PATH" || exit 1',
             'STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
             ': > "$LOG_PATH"',
@@ -428,8 +428,17 @@ class Agent:
         context = row_to_dict(account) if hasattr(account, "keys") else dict(account)
         plan = conn.execute("SELECT php_workers, php_timeout FROM plans WHERE id = ?", (account["plan_id"],)).fetchone()
         context["php_workers"] = int(plan["php_workers"] if plan and plan["php_workers"] is not None else 3)
-        context["php_timeout"] = int(account.get("php_timeout") or (plan["php_timeout"] if plan and plan["php_timeout"] is not None else 120))
+        context["php_timeout"] = int(context.get("php_timeout") or (plan["php_timeout"] if plan and plan["php_timeout"] is not None else 120))
         return context
+
+    def public_host(self, conn=None):
+        if conn:
+            persisted = get_system_setting(conn, "public_host", "")
+            if persisted and str(persisted).strip() not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+                return str(persisted).strip()
+        if self.config.public_host and str(self.config.public_host).strip() not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+            return str(self.config.public_host).strip()
+        return self.config.public_host or "127.0.0.1"
 
     def run_once(self):
         with connect(self.config.db_path) as conn:
@@ -2045,7 +2054,7 @@ class Agent:
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
-        runtime = build_account_runtime(self.vhost_account_context(conn, account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(self.vhost_account_context(conn, account), self.public_host(conn), self.config.account_port_base)
         hosts = rows_to_dicts(conn.execute("SELECT id, host_ip, created_at FROM remote_mysql_hosts WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         sql = []
         sql.append(f"CREATE USER IF NOT EXISTS {sql_literal(runtime['db_user'])}@'%' IDENTIFIED BY {sql_literal(runtime['db_password'])};")
@@ -2067,7 +2076,7 @@ class Agent:
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account or not sql_statements:
             return
-        runtime = build_account_runtime(self.vhost_account_context(conn, account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(self.vhost_account_context(conn, account), self.public_host(conn), self.config.account_port_base)
         docker = shutil.which("docker")
         if self.config.agent_mode == "simulate":
             return {"simulated": True}
@@ -2218,7 +2227,7 @@ class Agent:
             vhconf.write_text(render_ols_vhconf(account_dict, website_dict), encoding="utf-8")
             native_vhosts.append(str(vhconf))
 
-        runtime = build_account_runtime(account_dict, self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(account_dict, self.public_host(conn), self.config.account_port_base)
         container_name = f"mp-{account['username']}-web"
         docker = shutil.which("docker") or "docker"
         if self.config.agent_mode == "docker":
@@ -2347,7 +2356,7 @@ class Agent:
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise AgentError("hosting_account_not_found")
-        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(row_to_dict(account), self.public_host(conn), self.config.account_port_base)
         databases = rows_to_dicts(conn.execute("SELECT * FROM pg_databases WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         users = rows_to_dicts(conn.execute("SELECT id, account_id, username, password, created_at FROM pg_users WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
         grants = rows_to_dicts(
@@ -2724,7 +2733,7 @@ class Agent:
             """,
             (account_id,),
         ).fetchall()
-        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(row_to_dict(account), self.public_host(conn), self.config.account_port_base)
         mail_policy = {
             "daily_email_limit": int(plan["daily_email_limit"] or 0),
             "domains": [],
@@ -3594,7 +3603,7 @@ class Agent:
         # files, so reserve approximately the full source size plus a hard
         # safety margin. Never allow backup creation to consume the last 10%
         # of the filesystem or less than 1 GiB.
-        safety_margin = max(1024 ** 3, int(disk.total * 0.10))
+        safety_margin = max(1024 ** 3, int(disk.total * 0.10)) if self.config.agent_mode != "simulate" else 1024 * 1024
         if disk.free < source_bytes + safety_margin or disk.free - source_bytes < safety_margin:
             self.fail_backup(conn, backup_id)
             raise AgentError("insufficient_disk_space_for_backup")
@@ -4584,7 +4593,7 @@ class Agent:
             raise AgentError("hosting_account_not_found")
         
         # We need the runtime for the default sftp_password
-        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(row_to_dict(account), self.public_host(conn), self.config.account_port_base)
         
         ftp_accounts = conn.execute("SELECT * FROM ftp_accounts WHERE account_id = ?", (account_id,)).fetchall()
         
@@ -4663,7 +4672,7 @@ class Agent:
         conn.execute("UPDATE hosting_accounts SET ssh_access = ? WHERE id = ?", (status, account_id))
         # Re-read so we pick up the latest ssh_password stored in the DB
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
-        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(row_to_dict(account), self.public_host(conn), self.config.account_port_base)
         sftp_conf = Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf"
         
         if status == "enabled":
@@ -4756,7 +4765,7 @@ class Agent:
         conn.execute("UPDATE hosting_accounts SET ssh_password = ? WHERE id = ?", (password, account_id))
         # Re-read so runtime picks up the new password
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
-        runtime = build_account_runtime(row_to_dict(account), self.config.public_host, self.config.account_port_base)
+        runtime = build_account_runtime(row_to_dict(account), self.public_host(conn), self.config.account_port_base)
         sftp_conf = Path(account["base_path"]) / ".runtime" / "stack" / "sftp_users.conf"
         ssh_status = dict(account).get("ssh_access") or "disabled"
         if ssh_status == "enabled" and sftp_conf.parent.exists():

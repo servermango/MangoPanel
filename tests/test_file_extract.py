@@ -36,7 +36,7 @@ class FileExtractTests(unittest.TestCase):
 
             abs_path, rel_path = normalize_account_relative_path(account, "test_archive.zip")
             dest_dir = os.path.dirname(str(abs_path))
-            account_base = os.path.abspath(account["base_path"])
+            account_base = os.path.realpath(account["base_path"])
 
             extracted_count = 0
             with zipfile.ZipFile(str(abs_path), "r") as zf:
@@ -65,7 +65,7 @@ class FileExtractTests(unittest.TestCase):
 
             abs_path, rel_path = normalize_account_relative_path(account, "test_archive.tar.gz")
             dest_dir = os.path.dirname(str(abs_path))
-            account_base = os.path.abspath(account["base_path"])
+            account_base = os.path.realpath(account["base_path"])
 
             extracted_count = 0
             with tarfile.open(str(abs_path), "r:*") as tf:
@@ -89,7 +89,7 @@ class FileExtractTests(unittest.TestCase):
 
             abs_path, rel_path = normalize_account_relative_path(account, "evil.zip")
             dest_dir = os.path.dirname(str(abs_path))
-            account_base = os.path.abspath(account["base_path"])
+            account_base = os.path.realpath(account["base_path"])
 
             with self.assertRaises(ApiError) as ctx:
                 with zipfile.ZipFile(str(abs_path), "r") as zf:

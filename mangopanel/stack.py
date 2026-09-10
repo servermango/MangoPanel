@@ -134,7 +134,7 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         "phpmyadmin_secret_path": "db",
     }
     
-    if public_host != "127.0.0.1":
+    if public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
         # Use the same hyphenated hostname as the Caddy route and certificate.
         # The dotted form is retained only as a legacy compatibility alias.
         base["filebrowser_url"] = f"https://files-{username}.{public_host}"
@@ -142,8 +142,8 @@ def build_account_runtime(account, public_host="127.0.0.1", port_base=18000):
         # certificates use pma-<account>.<public-host>; the old dotted form
         # could load over HTTP but failed with ERR_SSL_PROTOCOL_ERROR when a
         # browser upgraded it to HTTPS.
-        base["phpmyadmin_url"] = f"http://pma-{username}.{public_host}"
-        base["adminer_url"] = f"http://adminer.{username}.{public_host}"
+        base["phpmyadmin_url"] = f"https://pma-{username}.{public_host}"
+        base["adminer_url"] = f"https://adminer-{username}.{public_host}"
         base["mail_host"] = f"mail.{username}.{public_host}"
         base["mail_backend_host"] = f"mp-{username}-mailserver"
         base["mail_backend_imap_port"] = 993
@@ -1916,8 +1916,8 @@ volumes:
         pub_host = CONFIG.public_host
     public_tool_host = pub_host if pub_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"} else None
     filebrowser_domain = f"files-{username}.{public_tool_host}, http://files-{username}.localhost" if public_tool_host else f"http://files-{username}.localhost"
-    phpmyadmin_domain = f"pma-{username}.{public_tool_host}, http://{runtime['phpmyadmin_url'].split('://')[1]}" if public_tool_host else f"http://{runtime['phpmyadmin_url'].split('://')[1]}"
-    adminer_domain = f"adminer-{username}.{public_tool_host}, http://{runtime['adminer_url'].split('://')[1]}" if public_tool_host else f"http://{runtime['adminer_url'].split('://')[1]}"
+    phpmyadmin_domain = f"pma-{username}.{public_tool_host}, http://pma-{username}.localhost" if public_tool_host else f"http://pma-{username}.localhost"
+    adminer_domain = f"adminer-{username}.{public_tool_host}, http://adminer-{username}.localhost" if public_tool_host else f"http://adminer-{username}.localhost"
     # The dotted per-account hostname is the only public webmail entry point.
     # Do not publish the historical mail-<account> alias, which made it easy
     # to bypass the canonical account-scoped hostname.

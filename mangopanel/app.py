@@ -679,57 +679,57 @@ def build_tool_redirect_url(host, path, is_https=False):
 
 def resolve_tool_launch_url(tool_name, runtime_url, account, forwarded_host, is_https=False):
     forwarded_host = (forwarded_host or "").strip()
+    acc_dict = dict(account) if account else {}
+    username = acc_dict.get("username", "user")
+    prefix = "files" if tool_name == "filebrowser" else ("pma" if tool_name == "phpmyadmin" else ("adminer" if tool_name == "adminer" else "mail"))
+
+    # Determine if a non-local public host is configured
+    public_host = (CONFIG.public_host or "").strip()
+    if not public_host or public_host in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+        if acc_dict.get("public_host") and str(acc_dict.get("public_host")).strip() not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+            public_host = str(acc_dict["public_host"]).strip()
+    has_public_host = bool(public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"})
+
+    def canonical_public_url(host):
+        if tool_name == "webmail":
+            return f"https://mail.{username}.{host}/webmail"
+        return f"https://{prefix}-{username}.{host}"
+
     if not forwarded_host:
-        # The persisted runtime may belong to an older stack.  Do not expose
-        # its localhost/dotted file-browser URL to the browser.
-        if tool_name == "filebrowser" and account:
-            public_host = (CONFIG.public_host or "").strip()
-            if public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
-                return f"https://files-{account['username']}.{public_host}"
+        if has_public_host:
+            return canonical_public_url(public_host)
         return runtime_url or ""
 
     host_part = forwarded_host.split(":")[0].lower()
 
-    # Preserve configured runtime_url when running unit tests locally (127.0.0.1 or localhost)
-    if host_part in {"127.0.0.1", "localhost"} and runtime_url:
-        return runtime_url
+    # Local development / loopback access (e.g. unit tests or SSH port-forward):
+    # If a real public host is configured, prefer it over unrouteable .localhost.
+    # Otherwise, preserve runtime_url for local development and unit tests.
+    if host_part in {"127.0.0.1", "localhost", "::1"}:
+        if has_public_host:
+            return canonical_public_url(public_host)
+        return runtime_url or ""
 
-    is_ip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_part)) or host_part in {"localhost", "::1"}
-
-    # 1. Accessed directly via public IP address:
+    is_ip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_part))
     if is_ip:
+        if has_public_host:
+            return canonical_public_url(public_host)
         scheme = "https" if is_https else "http"
         return f"{scheme}://{forwarded_host}"
 
-    # 2. Accessed via a Domain (Subdomain launch as intended):
-    username = account["username"] if account else "user"
-    prefix = "files" if tool_name == "filebrowser" else ("pma" if tool_name == "phpmyadmin" else "mail")
-
-    # Filebrowser has one canonical public form.  This also repairs old
-    # persisted values such as files.<account>.<domain> and
-    # files-<account>.localhost when a user launches from the panel.
-    if tool_name == "filebrowser" and host_part not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
-        domain_base = host_part
-        if host_part.startswith("panel.") or host_part.startswith("admin."):
-            domain_base = host_part.split(".", 1)[1]
-        if host_part.startswith("files-"):
-            domain_base = host_part.split(".", 1)[1] if "." in host_part else host_part
-        elif host_part.startswith("files."):
-            domain_base = host_part.split(".", 2)[2] if host_part.count(".") >= 2 else host_part
-        return f"https://files-{username}.{domain_base}"
-
-    if runtime_url and not "localhost" in runtime_url and not ".nip.io" in runtime_url:
-        return runtime_url
-
+    # Accessed via domain name:
     domain_base = host_part
     if host_part.startswith("panel.") or host_part.startswith("admin."):
         domain_base = host_part.split(".", 1)[1]
+    elif host_part.startswith(f"{prefix}-") or host_part.startswith("files-") or host_part.startswith("pma-") or host_part.startswith("adminer-") or host_part.startswith("mail-"):
+        domain_base = host_part.split(".", 1)[1] if "." in host_part else host_part
+    elif host_part.startswith(f"{prefix}.") or host_part.startswith("files.") or host_part.startswith("pma.") or host_part.startswith("adminer.") or host_part.startswith("mail."):
+        domain_base = host_part.split(".", 2)[2] if host_part.count(".") >= 2 else host_part
 
-    if host_part.startswith(f"{prefix}-") or host_part.startswith(f"{prefix}."):
-        subdomain = host_part
-    else:
-        subdomain = f"{prefix}-{username}.{domain_base}"
+    if tool_name == "webmail":
+        return f"https://mail.{username}.{domain_base}/webmail"
 
+    subdomain = f"{prefix}-{username}.{domain_base}"
     scheme = "http" if subdomain.endswith(".localhost") or subdomain == "localhost" else "https"
     return f"{scheme}://{subdomain}"
 
@@ -1161,18 +1161,22 @@ class MangoHandler(BaseHTTPRequestHandler):
                 "INSERT INTO sessions(actor_type, actor_id, token_id, expires_at) VALUES (?, ?, ?, ?)",
                 (actor_type, actor_id, access_payload["jti"], int(time.time()) + 600),
             )
-            default_path = "/files/files/" if tool == "filebrowser" else "/db/"
+            redirect_host = forwarded_host
+            redirect_host_part = (redirect_host or "").split(":", 1)[0].lower()
+            is_local = redirect_host_part.endswith(".localhost") or redirect_host_part in {"127.0.0.1", "localhost", "::1"} or bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", redirect_host_part))
+            default_path = ("/files" if is_local else "/files/files/") if tool == "filebrowser" else "/db/"
             if tool == "webmail":
                 default_path = "/webmail"
             clean_path = suffix or default_path
             if tool == "filebrowser":
-                clean_p = clean_path.rstrip("/")
-                if clean_p in {"/files", "/files/files"}:
-                    clean_path = "/files/files/"
-                elif clean_path.startswith("/files/files/"):
-                    clean_path = "/files/files/" + clean_path[len("/files/files/"):].lstrip("/")
-                elif clean_path.startswith("/files/"):
-                    clean_path = "/files/files/" + clean_path[len("/files/"):].lstrip("/")
+                if suffix:
+                    s = suffix.strip("/")
+                    if is_local:
+                        clean_path = "/" + s if s.startswith("files") else "/files/" + s
+                    else:
+                        clean_path = "/files/files/" + (s[len("files/"):].lstrip("/") if s.startswith("files/") else s.lstrip("/"))
+                else:
+                    clean_path = default_path
 
             if tool == "phpmyadmin":
                 clean_p = clean_path.rstrip("/")
@@ -1184,7 +1188,6 @@ class MangoHandler(BaseHTTPRequestHandler):
             # X-Forwarded-Host and leave the panel's 127.0.0.1 host here.
             # Derive the canonical public tool host from the account
             # instead of sending that unusable host to the user's browser.
-            redirect_host = forwarded_host
             redirect_host_part = (redirect_host or "").split(":", 1)[0].lower()
             prefix = "files" if tool == "filebrowser" else ("pma" if tool == "phpmyadmin" else "mail")
             if (
@@ -1193,6 +1196,10 @@ class MangoHandler(BaseHTTPRequestHandler):
                 or redirect_host_part in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
             ):
                 public_host = (CONFIG.public_host or "").strip()
+                if not public_host or public_host in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+                    persisted = get_system_setting(conn, "public_host", "")
+                    if persisted and str(persisted).strip() not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+                        public_host = str(persisted).strip()
                 if public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
                     canonical_host = f"{prefix}-{acc_dict['username']}.{public_host}"
                     if redirect_host_part != canonical_host:
@@ -1652,8 +1659,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             if os.path.isdir(abs_file):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "path_is_a_directory")
 
-            dest_dir = os.path.dirname(abs_file)
-            account_base = os.path.abspath(account["base_path"])
+            dest_dir = os.path.realpath(os.path.dirname(abs_file))
+            account_base = os.path.realpath(account["base_path"])
 
             extracted_count = 0
             archive_name = os.path.basename(abs_file)
@@ -1662,7 +1669,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 import zipfile
                 with zipfile.ZipFile(abs_file, "r") as zf:
                     for member in zf.infolist():
-                        target_path = os.path.abspath(os.path.join(dest_dir, member.filename))
+                        target_path = os.path.realpath(os.path.join(dest_dir, member.filename))
                         if not target_path.startswith(account_base + os.sep) and target_path != account_base:
                             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_path_traversal")
                         zf.extract(member, dest_dir)
@@ -1671,7 +1678,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 import tarfile
                 with tarfile.open(abs_file, "r:*") as tf:
                     for member in tf.getmembers():
-                        target_path = os.path.abspath(os.path.join(dest_dir, member.name))
+                        target_path = os.path.realpath(os.path.join(dest_dir, member.name))
                         if not target_path.startswith(account_base + os.sep) and target_path != account_base:
                             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_path_traversal")
                         tf.extract(member, dest_dir)
@@ -1820,6 +1827,8 @@ class MangoHandler(BaseHTTPRequestHandler):
         # SnappyMail itself; returning to /webmail would route back through
         # this handler without the one-time launch token and discard the SSO
         # session by redirecting to the panel root.
+        if mail_host.endswith(".localhost") or mail_host in {"localhost", "127.0.0.1"}:
+            return f"http://{mail_host}/webmail"
         return f"https://{mail_host}/"
 
     def snappymail_backend_url(self, conn, mailbox):
@@ -3574,7 +3583,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     else:
                         analytics_enabled = 0 if analytics_mode == "disabled" else int(website["analytics_enabled"] if website["analytics_enabled"] is not None else 1)
                         
-                    php_timeout = website.get("php_timeout")
+                    php_timeout = dict(website).get("php_timeout")
                     if "php_timeout" in body:
                         php_timeout = optional_positive_int(body.get("php_timeout"))
                     elif "php_ini" in body and isinstance(body["php_ini"], dict) and body["php_ini"].get("max_execution_time"):
@@ -11226,11 +11235,15 @@ def account_runtime(conn, account_id):
     account_row = conn.execute("SELECT username FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
     public_host = (runtime.get("public_host") or "").strip()
     if public_host in {"127.0.0.1", "localhost", "0.0.0.0", "::1", ""}:
-        public_host = (CONFIG.public_host or "").strip()
+        persisted = get_system_setting(conn, "public_host", "")
+        public_host = (persisted or CONFIG.public_host or "").strip()
     username = (account_row["username"] if account_row else runtime.get("username") or "").strip()
     if username and public_host and public_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}:
+        runtime["public_host"] = public_host
         runtime["username"] = username
         runtime["filebrowser_url"] = f"https://files-{username}.{public_host}"
+        runtime["phpmyadmin_url"] = f"https://pma-{username}.{public_host}"
+        runtime["adminer_url"] = f"https://adminer-{username}.{public_host}"
         # Account mailservers share the edge Docker network, where the short
         # alias `mailserver` is ambiguous.  Pin SnappyMail to this account's
         # unique mailserver container name.
@@ -11427,8 +11440,8 @@ def php_info_probe(account, website=None, runtime=None):
             ],
             "directives": {
                 "memory_limit": "256M",
-                "max_execution_time": str(account.get("php_timeout") or 120),
-                "php_timeout": int(account.get("php_timeout") or 120),
+                "max_execution_time": str(dict(account).get("php_timeout") or 120),
+                "php_timeout": int(dict(account).get("php_timeout") or 120),
                 "upload_max_filesize": "64M",
                 "post_max_size": "64M",
                 "error_reporting": "E_ALL & ~E_DEPRECATED",
@@ -12954,6 +12967,7 @@ def mailbox_row_payload(conn, mailbox):
         payload["webmail_url"] = runtime.get("mail_webmail_url") or runtime.get("mail_edge_webmail_url") or (f"{mail_url}/webmail" if mail_url else "")
         payload["mail_webmail_url"] = payload["webmail_url"]
         payload["mail_webmail_login_url"] = runtime.get("mail_webmail_login_url") or runtime.get("mail_edge_login_url") or ""
+        payload["webmail_login_url"] = payload["mail_webmail_login_url"]
         payload["mail_edge_host"] = runtime.get("mail_edge_host") or ""
         payload["mail_edge_url"] = runtime.get("mail_edge_url") or mail_url
         payload["mail_edge_webmail_url"] = runtime.get("mail_edge_webmail_url") or (f"{payload['mail_edge_url']}/webmail" if payload["mail_edge_url"] else "")
