@@ -3051,6 +3051,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                         (actor["id"],),
                     ).fetchone()
 
+            if account is not None:
+                account = row_to_dict(account)
+
             path = path.rstrip("/")
             if path == "/api/client/profile" and actor.get("actor_type") == "user":
                 if method == "GET":
@@ -3346,8 +3349,9 @@ class MangoHandler(BaseHTTPRequestHandler):
                             website_ip = a_rec["value"]
                     host_ip = get_host_public_ip(conn, request_host=self.headers.get("Host"))
                     if not website_ip or (website_ip in ("127.0.0.1", "0.0.0.0", "localhost", "157.15.203.66") and host_ip not in ("127.0.0.1", "0.0.0.0", "localhost")):
-                        if account and account.get("dedicated_ip_id"):
-                            ded = conn.execute("SELECT ip_address FROM server_ips WHERE id = ?", (account["dedicated_ip_id"],)).fetchone()
+                        account_dict = dict(account) if account else {}
+                        if account_dict.get("dedicated_ip_id"):
+                            ded = conn.execute("SELECT ip_address FROM server_ips WHERE id = ?", (account_dict["dedicated_ip_id"],)).fetchone()
                             if ded and ded["ip_address"] and ded["ip_address"] not in ("157.15.203.66", "127.0.0.1", "0.0.0.0", ""):
                                 website_ip = ded["ip_address"]
                         if not website_ip or website_ip in ("127.0.0.1", "0.0.0.0", "localhost", "157.15.203.66"):
