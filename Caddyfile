@@ -1,6 +1,5 @@
 {
 	auto_https disable_redirects
-	local_certs
 }
 
 # This is deliberately defined in the mounted base config as well as exposed
