@@ -813,12 +813,20 @@ fi
 if grep -q '^enabled' /etc/mangopanel/ftp.enabled; then
   nohup /usr/sbin/proftpd -n -c /etc/proftpd/mangopanel.conf >/var/log/proftpd-runtime.log 2>&1 </dev/null &
 fi
+# Ensure OPcache is properly enabled and configured for all installed PHP versions
+for opcache_ini in /usr/local/lsws/lsphp*/etc/php/*/mods-available/opcache.ini; do
+  [ -f "$opcache_ini" ] || continue
+  if ! grep -q '^opcache\.enable=' "$opcache_ini" 2>/dev/null; then
+    printf 'opcache.enable=1\nopcache.enable_cli=1\nopcache.memory_consumption=128\nopcache.interned_strings_buffer=16\nopcache.max_accelerated_files=20000\n' >> "$opcache_ini"
+  fi
+done
+
 # Keep a runaway PHP request from pinning a worker indefinitely. This is a
 # hard {php_timeout}-second ceiling for request workers; idle workers are handled by
 # OpenLiteSpeed's maxIdleTime setting.
 (
   while :; do
-    for pid in $(ps -eo pid=,etimes=,args= 2>/dev/null | awk '$2 > {php_timeout} && $3 ~ /^lsphp:/ {{print $1}}'); do
+    for pid in $(ps -eo pid=,etimes=,args= 2>/dev/null | awk '$2 > {php_timeout} && $3 ~ /^lsphp/ {{print $1}}'); do
       kill -TERM "$pid" 2>/dev/null || true
       (sleep 2; kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true) &
     done
@@ -1247,43 +1255,6 @@ module cache {
 """
     blocks = [base_config]
     
-    for website in websites:
-        domain = website["domain"]
-        php_workers = php_worker_limit(account, website)
-        php_timeout = php_timeout_limit(account, [website])
-        safe_domain = domain.replace(".", "_").replace("-", "_")
-        supported_php = SUPPORTED_PHP_VERSIONS
-        php_raw = str(website.get("php_version", "8.2"))
-        php_ver = php_raw.replace(".", "")
-        if php_ver not in supported_php:
-            php_ver = "82"
-        legacy_env = "  env                     LD_LIBRARY_PATH=/opt/mangopanel-legacy-libs\n" if php_ver in {"74", "80", "81"} else ""
-
-        blocks.append(
-            f"""
-extprocessor lsphp_{safe_domain} {{
-  type                    lsapi
-  address                 uds:///tmp/lshttpd/lsphp_{safe_domain}.sock
-  maxConns                {php_workers}
-  env                     PHP_LSAPI_CHILDREN={php_workers}
-  env                     LSAPI_AVOID_FORK=200M
-{legacy_env}  initTimeout             {php_timeout}
-  retryTimeout            0
-  persistConn             1
-  maxIdleTime             20
-  respBuffer              0
-  autoStart               1
-  path                    /usr/local/lsws/lsphp{php_ver}/bin/lsphp
-  backlog                 10000
-  instances               1
-  priority                0
-  memSoftLimit            0
-  memHardLimit            0
-  procSoftLimit           1400
-  procHardLimit           1500
-}}
-""".strip()
-        )
 
     for website in websites:
         domain = website["domain"]
@@ -1518,6 +1489,7 @@ extprocessor lsphp_{safe_domain} {{
 {legacy_env}  initTimeout             {php_timeout}
   retryTimeout            0
   persistConn             1
+  maxIdleTime             30
   respBuffer              0
   autoStart               1
   path                    /usr/local/lsws/lsphp{php_ver}/bin/lsphp
@@ -1541,17 +1513,11 @@ phpIniOverride  {{
   php_admin_value post_max_size "10M"
   php_value max_execution_time "{php_timeout}"
   php_value max_input_time "{php_timeout}"
-  php_admin_value opcache.enable "{opcache_enabled}"
   # Keep OPcache enabled while checking changed PHP files on every request.
   # This preserves bytecode performance without making plugin/theme edits
   # invisible until a PHP worker restart.
   php_admin_value opcache.validate_timestamps "1"
   php_admin_value opcache.revalidate_freq "0"
-  # This is deliberately per-vhost. A shared hosting account can contain
-  # many sites, so a 256 MB OPcache reservation for every domain exhausts the
-  # account before normal PHP traffic is considered.
-  php_admin_value opcache.memory_consumption "64"
-  php_admin_value opcache.max_accelerated_files "20000"
   php_admin_value mysqli.allow_persistent "0"
   php_admin_value mysqli.max_persistent "0"
 }}
