@@ -1,4 +1,5 @@
 import crypt
+import ipaddress
 import json
 import os
 import re
@@ -963,6 +964,32 @@ RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     return paths
 
 
+def expand_domain_aliases(domains):
+    """Expand domain names to include their www variant for Caddy and vhosts.
+
+    If a domain does not already start with www. and is not an IP address or wildcard,
+    the www. variant is included so Caddy provisions TLS certificates and routes
+    both apex and www variants to the web service seamlessly.
+    """
+    expanded = []
+    seen = set()
+    for d in domains:
+        d = str(d).strip()
+        if not d:
+            continue
+        variants = [d]
+        if not d.startswith("www.") and not d.startswith("*."):
+            try:
+                ipaddress.ip_address(d)
+            except ValueError:
+                variants.append(f"www.{d}")
+        for item in variants:
+            if item not in seen:
+                seen.add(item)
+                expanded.append(item)
+    return expanded
+
+
 def render_apache_vhosts(account, websites):
     blocks = []
     for index, website in enumerate(websites):
@@ -975,11 +1002,12 @@ def render_apache_vhosts(account, websites):
             else ""
         )
         base_dir = container_path(account, str(Path(website["document_root"]).parent))
+        aliases = [d for d in expand_domain_aliases([website["domain"]]) if d != website["domain"]]
+        alias_line = f"\n  ServerAlias {' '.join(aliases)}" if aliases else ""
         blocks.append(
             """
 <VirtualHost *:80>
-  ServerName {domain}
-  ServerAlias www.{domain}
+  ServerName {domain}{alias_line}
   DocumentRoot "{root}"
 
   <Directory "{root}">
@@ -996,7 +1024,7 @@ def render_apache_vhosts(account, websites):
 
   ErrorLog "{logs_dir}/error.log"
 {custom_log}</VirtualHost>
-""".strip().format(domain=website["domain"], root=root, base_dir=base_dir, logs_dir=logs_dir, custom_log=custom_log)
+""".strip().format(domain=website["domain"], alias_line=alias_line, root=root, base_dir=base_dir, logs_dir=logs_dir, custom_log=custom_log)
         )
 
     if not blocks:
@@ -1277,7 +1305,7 @@ virtualHost {domain} {{
         maps = []
         for i, w in enumerate(websites):
             dom = w["domain"]
-            aliases = f"{dom}, www.{dom}" if not dom.startswith("www.") else dom
+            aliases = ", ".join(expand_domain_aliases([dom]))
             if i == 0:
                 maps.append(f"map                     {dom} {aliases}, *")
             else:
@@ -1557,15 +1585,20 @@ def render_crontab(account, cron_jobs=None):
 
 
 def render_compose(account, plan, websites, runtime, mail_enabled=True):
-    uid = 5000 + int(account["id"])
-    domains_http = ", ".join([f"http://{w['domain']}" for w in websites]) if websites else f"http://{account['username']}.mango.test"
+    website_domains = [w['domain'] for w in websites] if websites else []
+    http_doms = expand_domain_aliases(website_domains) if website_domains else [f"{account['username']}.mango.test"]
+    domains_http = ", ".join([f"http://{d}" for d in http_doms])
+
     public_doms = [w['domain'] for w in websites if not w['domain'].endswith(('.localhost', '.test', '.local', '.nip.io'))]
     local_doms = [w['domain'] for w in websites if w['domain'].endswith(('.localhost', '.test', '.local', '.nip.io'))]
     if not websites:
         local_doms.append(f"{account['username']}.mango.test")
 
-    domains_public_https = ", ".join([f"https://{d}" for d in public_doms]) if public_doms else ""
-    domains_local_https = ", ".join([f"https://{d}" for d in local_doms]) if local_doms else ""
+    expanded_public = expand_domain_aliases(public_doms)
+    expanded_local = expand_domain_aliases(local_doms)
+
+    domains_public_https = ", ".join([f"https://{d}" for d in expanded_public]) if expanded_public else ""
+    domains_local_https = ", ".join([f"https://{d}" for d in expanded_local]) if expanded_local else ""
     
     username = account["username"]
     uid = 5000 + int(account["id"])

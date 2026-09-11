@@ -15056,6 +15056,11 @@ def run():
         )
     if CONFIG.agent_mode == "docker" and CONFIG.env != "development":
         start_edge_proxy()
+        try:
+            with connect(CONFIG.db_path) as conn:
+                Agent(CONFIG).reconcile_all_account_stacks(conn)
+        except Exception as exc:
+            print(f"Failed to reconcile account stacks on startup: {exc}")
     if CONFIG.env == "development":
         seed_dev_data(CONFIG.db_path, CONFIG.account_root)
         agent = Agent(CONFIG)

@@ -56,7 +56,7 @@ from .providers import (
 )
 from .security import decrypt_secret
 from .backup_service import create_system_backup, backup_config
-from .stack import DEFAULT_SSH_MOTD, STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, render_crontab, render_modsecurity_rules, render_openlitespeed_httpd_config, render_ols_vhconf, stack_summary, sync_account_suspension_marker
+from .stack import DEFAULT_SSH_MOTD, STACK_SERVICES, build_account_runtime, container_path, ensure_account_layout, expand_domain_aliases, render_crontab, render_modsecurity_rules, render_openlitespeed_httpd_config, render_ols_vhconf, stack_summary, sync_account_suspension_marker
 
 
 class AgentError(Exception):
@@ -677,6 +677,38 @@ class Agent:
             for row in rows:
                 results.append(self.provision_hosting_account(conn, row["id"]))
         return results
+
+    def reconcile_all_account_stacks(self, conn=None):
+        """Ensure all existing account stacks have www aliases in their Caddy labels."""
+        def _reconcile(db_conn):
+            results = []
+            accounts = db_conn.execute("SELECT * FROM hosting_accounts ORDER BY id").fetchall()
+            for account in accounts:
+                websites = db_conn.execute("SELECT * FROM websites WHERE account_id = ?", (account["id"],)).fetchall()
+                if not websites:
+                    continue
+                expected_domains = expand_domain_aliases([w["domain"] for w in websites])
+                stack = db_conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
+                needs_update = False
+                if not stack or not Path(stack["compose_path"]).exists():
+                    needs_update = True
+                else:
+                    try:
+                        content = Path(stack["compose_path"]).read_text(encoding="utf-8")
+                        for dom in expected_domains:
+                            if f"://{dom}" not in content and f'"{dom}"' not in content:
+                                needs_update = True
+                                break
+                    except Exception:
+                        needs_update = True
+                if needs_update:
+                    results.append(self.provision_hosting_account(db_conn, account["id"]))
+            return results
+
+        if conn is not None:
+            return _reconcile(conn)
+        with connect(self.config.db_path) as db_conn:
+            return _reconcile(db_conn)
 
     def down_all_accounts(self):
         results = []
@@ -1969,23 +2001,28 @@ class Agent:
         key_path = cert_dir / "issued.key"
         openssl = shutil.which("openssl")
         if openssl:
+            cmd = [
+                openssl,
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key_path),
+                "-out",
+                str(cert_path),
+                "-days",
+                "90",
+                "-subj",
+                f"/CN={website['domain']}",
+            ]
+            san_names = expand_domain_aliases([website["domain"]])
+            if san_names:
+                san_str = ",".join(f"DNS:{name}" for name in san_names)
+                cmd.extend(["-addext", f"subjectAltName={san_str}"])
             subprocess.run(
-                [
-                    openssl,
-                    "req",
-                    "-x509",
-                    "-newkey",
-                    "rsa:2048",
-                    "-nodes",
-                    "-keyout",
-                    str(key_path),
-                    "-out",
-                    str(cert_path),
-                    "-days",
-                    "90",
-                    "-subj",
-                    f"/CN={website['domain']}",
-                ],
+                cmd,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -4257,6 +4294,7 @@ class Agent:
         """Install account IP blocks in the shared Caddy proxy, if present."""
         if not domains:
             return
+        target_domains = expand_domain_aliases(domains)
         valid_ranges = []
         for value in blocked_ips:
             try:
@@ -4298,7 +4336,7 @@ class Agent:
                 insert_at = next(
                     (index for index, route in enumerate(routes)
                      if any(domain in host for matcher in route.get("match", [])
-                            for host in matcher.get("host", []) for domain in domains)),
+                            for host in matcher.get("host", []) for domain in target_domains)),
                     len(routes),
                 )
                 handlers = [{
@@ -4309,7 +4347,7 @@ class Agent:
                 if valid_ranges:
                     routes.insert(insert_at, {
                         "@id": f"{route_prefix}{server_name}-direct",
-                        "match": [{"host": domains, "remote_ip": {"ranges": valid_ranges}}],
+                        "match": [{"host": target_domains, "remote_ip": {"ranges": valid_ranges}}],
                         "handle": handlers,
                         "terminal": True,
                     })
@@ -4318,7 +4356,7 @@ class Agent:
                     routes.insert(insert_at, {
                         "@id": f"{route_prefix}{server_name}-cloudflare",
                         "match": [{
-                            "host": domains,
+                            "host": target_domains,
                             "remote_ip": {"ranges": CLOUDFLARE_PROXY_RANGES},
                             "header": {"CF-Connecting-IP": exact_client_ips},
                         }],
