@@ -1320,41 +1320,14 @@ class Agent:
             vhconf = Path(account["base_path"]) / ".runtime" / "stack" / "vhosts" / website["domain"] / "vhconf.conf"
             vhconf.parent.mkdir(parents=True, exist_ok=True)
             vhconf.write_text(render_ols_vhconf(account_dict, item), encoding="utf-8")
-        # Keep the shared Caddy edge labels aligned with the account setting.
-        # The edge has no cache plugin by default, but these explicit headers
-        # make the disabled state authoritative for browsers and intermediaries.
-        stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
-        if stack and Path(stack["compose_path"]).exists():
-            compose_path = Path(stack["compose_path"])
-            compose_text = compose_path.read_text(encoding="utf-8")
-            cache_header = '      caddy_{index}.header: "Cache-Control no-store, no-cache, must-revalidate, max-age=0"'
-            for index in range(3):
-                line = cache_header.format(index=index)
-                compose_text = "\n".join(item for item in compose_text.splitlines() if item.strip() != line.strip())
-            if not int(account["reverse_proxy_cache_enabled"] or 0):
-                lines = compose_text.splitlines()
-                updated_lines = []
-                for line in lines:
-                    updated_lines.append(line)
-                    for index in range(3):
-                        if line.strip() == f'caddy_{index}.import: "mangopanel-xmlrpc-block"':
-                            updated_lines.append(cache_header.format(index=index))
-                compose_text = "\n".join(updated_lines) + ("\n" if compose_text.endswith("\n") else "")
-            compose_path.write_text(compose_text, encoding="utf-8")
         docker = shutil.which("docker") or "docker"
         if self.config.agent_mode == "docker":
             reload_result = subprocess.run([docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"], check=False, capture_output=True, text=True)
             if reload_result.returncode != 0:
                 raise AgentError(reload_result.stderr.strip() or "cache_vhost_reload_failed")
-            if stack:
-                action = "up" if any(self.effective_cache_setting(account, website, "object_cache_enabled") for website in websites) else "stop"
-                args = [docker, "compose", "-f", stack["compose_path"], action]
-                if action == "up": args.extend(["-d", "redis"])
-                else: args.append("redis")
-                subprocess.run(args, check=False, capture_output=True, text=True)
-                # Reconcile the web container whenever the generated edge
-                # labels change, including when a cache is turned back on.
-                subprocess.run([docker, "compose", "-f", stack["compose_path"], "up", "-d", "web"], check=False, capture_output=True, text=True)
+            stack = conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
+            if stack and Path(stack["compose_path"]).exists():
+                subprocess.run([docker, "compose", "-f", stack["compose_path"], "up", "-d", "redis"], check=False, capture_output=True, text=True)
         return {
             "account_id": account["id"],
             "opcache_enabled": int(account["opcache_enabled"] or 0),
@@ -3215,6 +3188,9 @@ class Agent:
                 ("object-db_id", str(self.object_cache_database(website))),
                 ("object-persistent", "true"),
                 ("object-admin", "true"),
+                ("purge-post_all", "true"),
+                ("purge-post_f", "true"),
+                ("purge-post_h", "true"),
             ):
                 result = subprocess.run(
                     [docker, "exec", container, "wp", "litespeed-option", "set", key, value,

@@ -1580,12 +1580,6 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
     project = "mp-{}".format(username)
     reverse_proxy_value = account.get("reverse_proxy_cache_enabled", 0) if hasattr(account, "get") else account["reverse_proxy_cache_enabled"] if "reverse_proxy_cache_enabled" in account.keys() else 0
     reverse_proxy_cache_enabled = 1 if int(reverse_proxy_value or 0) else 0
-    # Caddy has no cache by default, but when the account cache is disabled we
-    # explicitly instruct every edge route and downstream cache to bypass it.
-    edge_cache_labels = [
-        'caddy_0.header: "Cache-Control no-store, no-cache, must-revalidate, max-age=0"',
-    ] if not reverse_proxy_cache_enabled else []
-
     labels_list = [
         f'mangopanel.plan: "{plan["name"]}"',
         f'mangopanel.storage_mb: "{storage_mb}"',
@@ -1600,7 +1594,6 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
         # a defense-in-depth control for direct/origin traffic.
         'caddy_0.import: "mangopanel-xmlrpc-block"',
     ]
-    labels_list.extend(edge_cache_labels)
     if domains_public_https:
         labels_list.extend([
             f'caddy_1: "{domains_public_https}"',
@@ -1609,8 +1602,6 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
             'caddy_1.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
             'caddy_1.import: "mangopanel-xmlrpc-block"',
         ])
-        if not reverse_proxy_cache_enabled:
-            labels_list.append('caddy_1.header: "Cache-Control no-store, no-cache, must-revalidate, max-age=0"')
     if domains_local_https:
         labels_list.extend([
             f'caddy_2: "{domains_local_https}"',
@@ -1620,8 +1611,6 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
             'caddy_2.reverse_proxy.header_up_0: "X-Forwarded-SSL on"',
             'caddy_2.import: "mangopanel-xmlrpc-block"',
         ])
-        if not reverse_proxy_cache_enabled:
-            labels_list.append('caddy_2.header: "Cache-Control no-store, no-cache, must-revalidate, max-age=0"')
     labels_str = "\n      ".join(labels_list)
 
     mail_restart = "unless-stopped" if mail_enabled else "no"
