@@ -1674,12 +1674,12 @@ services:
     image: redis:7-alpine
     container_name: mp-{username}-redis
     restart: unless-stopped
-    mem_limit: 128m
+    mem_limit: 256m
     cpus: "{service_cpu_count}"
     cgroup_parent: {cpu_group}
     # One Redis service and its /data volume are retained per account. The
     # extra logical databases isolate individual sites within that service.
-    command: ["redis-server", "--databases", "256", "--save", "60", "1", "--appendonly", "yes"]
+    command: ["redis-server", "--databases", "256", "--maxmemory", "200mb", "--maxmemory-policy", "allkeys-lru", "--save", "900", "1", "--appendonly", "no"]
     volumes:
       - {base_path}/.runtime/stack/redis:/data
     networks:
