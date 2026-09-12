@@ -189,8 +189,20 @@ install_linux_docker() {
   needs_new_login=true
 }
 
+configure_linux_sysctl() {
+  if [[ -d /etc/sysctl.d ]]; then
+    say "Configuring host kernel parameters for Redis and container workloads..."
+    printf '%s\n' \
+      "# MangoPanel Host Optimizations" \
+      "vm.overcommit_memory = 1" \
+      | run_sudo tee /etc/sysctl.d/99-mangopanel.conf >/dev/null
+    run_sudo sysctl -p /etc/sysctl.d/99-mangopanel.conf >/dev/null 2>&1 || true
+  fi
+}
+
 install_linux_prereqs() {
   local distro="${1}"
+  configure_linux_sysctl
   case "$distro" in
     ubuntu|debian)
       install_apt_basics
