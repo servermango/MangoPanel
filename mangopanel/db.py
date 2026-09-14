@@ -468,6 +468,24 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Durable operator-facing alerts raised by queue safeguards.  Alerts are
+-- deliberately separate from job history so a burst of identical failures
+-- produces one actionable notification instead of thousands of rows/toasts.
+CREATE TABLE IF NOT EXISTS admin_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fingerprint TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'warning',
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  acknowledged_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_alerts_open_fingerprint
+ON admin_alerts(fingerprint, status);
+
 CREATE TABLE IF NOT EXISTS ip_rules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL REFERENCES hosting_accounts(id),

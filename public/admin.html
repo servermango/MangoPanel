@@ -512,7 +512,17 @@
 
         <template v-else>
           <div class="client-main-content admin-main-content">
-            <section v-if="activePage === 'overview'" class="page-stack">
+          <section v-if="activePage === 'overview'" class="page-stack">
+              <div v-if="dashboard.alerts && dashboard.alerts.length" class="panel" style="border:1px solid rgba(239,68,68,0.45); background:rgba(239,68,68,0.08); margin-bottom:1rem;">
+                <div v-for="alert in dashboard.alerts" :key="alert.id" style="display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; padding:0.35rem 0;">
+                  <div>
+                    <strong style="color:#fca5a5;">{{ alert.title }}</strong>
+                    <p style="margin:0.25rem 0 0; color:#fecaca;">{{ alert.message }}</p>
+                    <small style="color:#fda4af;">Raised {{ alert.created_at }}</small>
+                  </div>
+                  <button class="ghost-button" @click="acknowledgeAlert(alert)">Acknowledge</button>
+                </div>
+              </div>
               <!-- Linked Dashboard Metric Cards -->
               <div class="metric-grid">
                 <div class="metric metric-clickable" @click="goTo('clients')" title="View Clients & Accounts">

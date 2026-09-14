@@ -7689,6 +7689,20 @@ class MangoHandler(BaseHTTPRequestHandler):
 
             if path == "/api/admin/dashboard" and method == "GET":
                 return self.json_response(admin_dashboard(conn))
+            if path == "/api/admin/alerts" and method == "GET":
+                return self.json_response({"alerts": rows_to_dicts(conn.execute("SELECT * FROM admin_alerts WHERE status = 'open' ORDER BY id DESC LIMIT 25").fetchall())})
+            alert_match = re.match(r"^/api/admin/alerts/(\d+)/acknowledge$", path)
+            if alert_match and method == "POST":
+                require_admin_permission(actor, "system.manage")
+                alert_id = int(alert_match.group(1))
+                cur = conn.execute(
+                    "UPDATE admin_alerts SET status = 'acknowledged', acknowledged_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'open'",
+                    (alert_id,),
+                )
+                if not cur.rowcount:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "alert_not_found")
+                log_audit(conn, "admin", actor["id"], "acknowledge_admin_alert", "admin_alert", alert_id)
+                return self.json_response({"id": alert_id, "status": "acknowledged"})
             if path == "/api/admin/security/audit" and method == "GET":
                 return self.json_response({"security": run_server_security_audit(conn)})
             if path == "/api/admin/users" and method == "GET":
@@ -14842,8 +14856,9 @@ def admin_dashboard(conn):
         counts[key] = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
     nodes = rows_to_dicts(conn.execute("SELECT * FROM nodes ORDER BY id").fetchall())
     jobs = rows_to_dicts(conn.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 10").fetchall())
+    alerts = rows_to_dicts(conn.execute("SELECT * FROM admin_alerts WHERE status = 'open' ORDER BY id DESC LIMIT 25").fetchall())
     status = build_status_payload(conn)
-    return {"counts": counts, "nodes": nodes, "recent_jobs": jobs, "status": status}
+    return {"counts": counts, "nodes": nodes, "recent_jobs": jobs, "alerts": alerts, "status": status}
 
 
 def build_status_payload(conn):

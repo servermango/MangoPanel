@@ -63,6 +63,13 @@ class AgentError(Exception):
     pass
 
 
+# Scheduled work must fail closed when an operator-facing condition (for
+# example, a full account quota) is persistent.  Three failures in an hour
+# open a circuit for that job scope until an administrator acknowledges it.
+SCHEDULED_FAILURE_THRESHOLD = 3
+SCHEDULED_FAILURE_WINDOW_MINUTES = 60
+
+
 MANGOPANEL_PLACEHOLDER_PREFIX = "<?php\nheader('Content-Type: text/plain');\necho \"MangoPanel dev site:"
 
 
@@ -550,6 +557,8 @@ class Agent:
                LIMIT 10"""
         ).fetchall()
         for deployment in deployments:
+            if self.job_failure_circuit_open(conn, "git_deploy", "git_deployment", deployment["id"]):
+                continue
             conn.execute("UPDATE git_deployments SET status = 'updating', last_error = NULL WHERE id = ?", (deployment["id"],))
             create_job(conn, "git_deploy", "git_deployment", deployment["id"], {"scheduled": True, "interval_minutes": 5})
         return len(deployments)
@@ -630,6 +639,8 @@ class Agent:
         ).fetchall()
         created = 0
         for account in rows:
+            if self.job_failure_circuit_open(conn, "automatic_backup", "backup_account", account["account_id"]):
+                continue
             active = conn.execute(
                 """SELECT 1 FROM backups WHERE account_id = ?
                    AND status IN ('queued','running') LIMIT 1""",
@@ -651,6 +662,73 @@ class Agent:
             create_job(conn, "automatic_backup", "backup", cur.lastrowid, {})
             return 1
         return 0
+
+    def job_failure_scope(self, conn, job_type, target_type, target_id):
+        """Return the stable scope used to group repeated scheduled failures."""
+        if job_type == "automatic_backup":
+            if target_type == "backup_account":
+                return f"{job_type}:account:{target_id}"
+            row = conn.execute("SELECT account_id FROM backups WHERE id = ?", (target_id,)).fetchone()
+            if row:
+                return f"{job_type}:account:{row['account_id']}"
+        return f"{job_type}:{target_type}:{target_id or 0}"
+
+    def recent_job_failure_count(self, conn, job_type, target_type, target_id):
+        if job_type == "automatic_backup":
+            account_id = target_id
+            if target_type != "backup_account":
+                row = conn.execute("SELECT account_id FROM backups WHERE id = ?", (target_id,)).fetchone()
+                account_id = row["account_id"] if row else target_id
+            return conn.execute(
+                """SELECT COUNT(*) AS count
+                   FROM jobs j JOIN backups b ON b.id = j.target_id
+                   WHERE j.type = 'automatic_backup' AND b.account_id = ?
+                     AND j.status = 'failed'
+                     AND j.updated_at >= datetime('now', ?)""",
+                (account_id, f"-{SCHEDULED_FAILURE_WINDOW_MINUTES} minutes"),
+            ).fetchone()["count"]
+        return conn.execute(
+            """SELECT COUNT(*) AS count FROM jobs
+               WHERE type = ? AND target_type = ? AND target_id IS ?
+                 AND status = 'failed' AND updated_at >= datetime('now', ?)""",
+            (job_type, target_type, target_id, f"-{SCHEDULED_FAILURE_WINDOW_MINUTES} minutes"),
+        ).fetchone()["count"]
+
+    def record_admin_queue_alert(self, conn, fingerprint, title, message, metadata=None):
+        conn.execute(
+            """INSERT INTO admin_alerts(fingerprint, severity, title, message, metadata)
+               SELECT ?, 'critical', ?, ?, ?
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM admin_alerts WHERE fingerprint = ? AND status = 'open'
+               )""",
+            (fingerprint, title, message, json.dumps(metadata or {}), fingerprint),
+        )
+
+    def job_failure_circuit_open(self, conn, job_type, target_type, target_id):
+        """Stop a scheduled scope after repeated failures and alert admins once."""
+        fingerprint = self.job_failure_scope(conn, job_type, target_type, target_id)
+        open_alert = conn.execute(
+            "SELECT 1 FROM admin_alerts WHERE fingerprint = ? AND status = 'open' LIMIT 1",
+            (fingerprint,),
+        ).fetchone()
+        if open_alert:
+            return True
+        failures = self.recent_job_failure_count(conn, job_type, target_type, target_id)
+        if failures < SCHEDULED_FAILURE_THRESHOLD:
+            return False
+        title = f"Scheduled job paused: {job_type.replace('_', ' ')}"
+        message = (
+            f"{job_type} has failed {failures} times within {SCHEDULED_FAILURE_WINDOW_MINUTES} minutes "
+            f"for {target_type} {target_id}. New automatic attempts are paused until the failure is fixed and this alert is acknowledged."
+        )
+        self.record_admin_queue_alert(
+            conn,
+            fingerprint,
+            title,
+            message,
+            {"job_type": job_type, "target_type": target_type, "target_id": target_id, "failure_count": failures},
+        )
+        return True
 
     @staticmethod
     def backup_due(created_at, schedule, now):
@@ -840,6 +918,18 @@ class Agent:
                 """,
                 (json.dumps({"error": str(exc)}), job["id"]),
             )
+            # Scheduled jobs are circuit-broken after repeated failures.  This
+            # is intentionally evaluated after recording the failure so the
+            # current attempt contributes to the threshold.
+            if job["payload"]:
+                try:
+                    payload = self.job_payload(job)
+                except Exception:
+                    payload = {}
+            else:
+                payload = {}
+            if payload.get("scheduled") or job["type"] == "automatic_backup":
+                self.job_failure_circuit_open(conn, job["type"], job["target_type"], job["target_id"])
             if job["type"] == "provision_hosting_account":
                 conn.execute(
                     """
@@ -3325,6 +3415,8 @@ class Agent:
         """Schedule one persisted WordPress scan per account every 25 hours."""
         accounts = conn.execute("SELECT id FROM hosting_accounts WHERE status = 'active' ORDER BY id").fetchall()
         for account in accounts:
+            if self.job_failure_circuit_open(conn, "detect_wordpress_sites", "hosting_account", account["id"]):
+                continue
             active = conn.execute(
                 "SELECT 1 FROM wordpress_detection_runs WHERE account_id = ? AND status IN ('queued', 'running') LIMIT 1",
                 (account["id"],),
@@ -3341,7 +3433,7 @@ class Agent:
             if not websites:
                 continue
             run_id = self.create_wordpress_detection_run(conn, account["id"], [row["id"] for row in websites])
-            create_job(conn, "detect_wordpress_sites", "hosting_account", account["id"], {"run_id": run_id})
+            create_job(conn, "detect_wordpress_sites", "hosting_account", account["id"], {"run_id": run_id, "scheduled": True})
 
     @staticmethod
     def create_wordpress_detection_run(conn, account_id, website_ids):

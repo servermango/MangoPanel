@@ -55,6 +55,7 @@ createApp({
         counts: { users: 0, hosting_accounts: 0, websites: 0, account_stacks: 0, open_incidents: 0 },
         nodes: [],
         recent_jobs: [],
+        alerts: [],
         status: { overall_status: "unknown", components: [] },
       },
       stacks: [],
@@ -1358,6 +1359,9 @@ createApp({
     async load() {
       try {
         this.dashboard = await this.api("/api/admin/dashboard");
+        if (this.dashboard.alerts && this.dashboard.alerts.length && !this.message) {
+          this.message = this.dashboard.alerts[0].message;
+        }
         // Explicit refreshes (for example after saving or deleting a record)
         // must still update the currently visible page, while ordinary
         // navigation remains cached for the duration of the page session.
@@ -2741,6 +2745,15 @@ createApp({
         const payload = await this.api(`/api/admin/jobs/${job.id}/retry`, { method: "POST", body: "{}" });
         this.message = `Job #${payload.job_id} re-queued`;
         await this.load();
+      } catch (error) {
+        this.message = error.message;
+      }
+    },
+    async acknowledgeAlert(alert) {
+      try {
+        await this.api(`/api/admin/alerts/${alert.id}/acknowledge`, { method: "POST", body: "{}" });
+        this.dashboard.alerts = (this.dashboard.alerts || []).filter((item) => item.id !== alert.id);
+        this.message = "Alert acknowledged";
       } catch (error) {
         this.message = error.message;
       }
