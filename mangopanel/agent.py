@@ -513,7 +513,14 @@ class Agent:
                    updated_at = CURRENT_TIMESTAMP,
                    completed_at = CURRENT_TIMESTAMP
              WHERE status = 'running'
-               AND claimed_at < datetime('now', '-2 hours')
+               -- A worker can be interrupted by a host/container restart or a
+               -- timed-out Docker operation.  Leaving the job marked
+               -- running for two hours blocks the queue and makes every
+               -- subsequent panel action appear stalled.  Jobs already have
+               -- their own command timeouts, so recover an abandoned claim
+               -- promptly while still allowing legitimately long operations
+               -- (for example a stack rebuild) a few minutes to finish.
+               AND claimed_at < datetime('now', '-15 minutes')
                AND type NOT IN ('automatic_backup', 'manual_backup', 'system_backup')""",
             (json.dumps({"error": "stale_job_recovered"}),),
         )
