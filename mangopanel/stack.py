@@ -1454,7 +1454,7 @@ rewrite  {{
   RewriteCond             %{{REQUEST_FILENAME}} !-f
   RewriteCond             %{{REQUEST_FILENAME}} !-d
   RewriteCond             %{{REQUEST_URI}} \.(?:css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|pdf)(?:\?.*)?$ [NC]
-  RewriteRule             ^ - [R=404,L]
+  RewriteRule             ^.*$ - [R=404,L]
 {hotlink_block}
 }}
 
