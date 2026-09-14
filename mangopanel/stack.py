@@ -1447,6 +1447,14 @@ rewrite  {{
   RewriteRule             ^/_mangopanel_errors/ - [L]
   RewriteCond             %{{DOCUMENT_ROOT}}/.mangopanel-suspended -f
   RewriteRule             ^/(.*)$ /_mangopanel_errors/suspended.html [L]
+  # Missing static assets must not fall through to a CMS front controller.
+  # WordPress normally rewrites every non-file to index.php; for assets that
+  # needlessly boots PHP (and can leave browsers waiting on a 404). Return a
+  # server-level 404 instead, while preserving dynamic application routes.
+  RewriteCond             %{{REQUEST_FILENAME}} !-f
+  RewriteCond             %{{REQUEST_FILENAME}} !-d
+  RewriteCond             %{{REQUEST_URI}} \.(?:css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|pdf)(?:\?.*)?$ [NC]
+  RewriteRule             ^ - [R=404,L]
 {hotlink_block}
 }}
 
