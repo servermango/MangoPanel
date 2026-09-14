@@ -773,7 +773,10 @@ class Agent:
                 if not websites:
                     continue
                 expected_domains = expand_domain_aliases([w["domain"] for w in websites])
-                stack = db_conn.execute("SELECT compose_path FROM account_stacks WHERE account_id = ?", (account["id"],)).fetchone()
+                stack = db_conn.execute(
+                    "SELECT compose_path, status FROM account_stacks WHERE account_id = ?",
+                    (account["id"],),
+                ).fetchone()
                 needs_update = False
                 if not stack or not Path(stack["compose_path"]).exists():
                     needs_update = True
@@ -788,6 +791,65 @@ class Agent:
                         needs_update = True
                 if needs_update:
                     results.append(self.provision_hosting_account(db_conn, account["id"]))
+                    continue
+
+                # A valid compose file does not guarantee that its containers
+                # are running (for example, a previous rebuild can time out
+                # after the file is generated).  In that state Caddy has no
+                # upstream and can return TLS/proxy errors for every domain
+                # in the account.  On production startup, restore an active
+                # stack from its existing images without forcing a rebuild.
+                if (
+                    self.config.agent_mode == "docker"
+                    and self.config.env != "development"
+                    and str(account["status"] or "").lower() not in {"suspended", "stopped", "deleted"}
+                    and str(stack["status"] or "").lower() not in {"suspended", "stopped"}
+                ):
+                    docker = shutil.which("docker")
+                    if docker:
+                        try:
+                            running = subprocess.run(
+                                [docker, "compose", "-f", str(stack["compose_path"]), "ps", "--services", "--filter", "status=running"],
+                                check=False,
+                                capture_output=True,
+                                text=True,
+                                timeout=30,
+                            )
+                            running_services = set((running.stdout or "").split()) if running.returncode == 0 else set()
+                            if "web" not in running_services:
+                                image = f"mp-{account['username']}-web:latest"
+                                image_present = subprocess.run(
+                                    [docker, "image", "inspect", image],
+                                    check=False,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=30,
+                                ).returncode == 0
+                                if image_present:
+                                    restored = subprocess.run(
+                                        [docker, "compose", "-f", str(stack["compose_path"]), "up", "-d", "--no-build"],
+                                        check=False,
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=180,
+                                    )
+                                    if restored.returncode == 0:
+                                        db_conn.execute(
+                                            "UPDATE account_stacks SET status = 'applied', last_applied_at = CURRENT_TIMESTAMP, last_error = NULL WHERE account_id = ?",
+                                            (account["id"],),
+                                        )
+                                        results.append({"account_id": account["id"], "status": "restored"})
+                                    else:
+                                        results.append({
+                                            "account_id": account["id"],
+                                            "status": "restore_failed",
+                                            "error": (restored.stderr or restored.stdout or "docker_compose_restore_failed").strip()[:1000],
+                                        })
+                        except Exception as exc:
+                            # Reconciliation must never prevent the panel from
+                            # starting; the next restart or explicit rebuild
+                            # can retry a failed restoration.
+                            results.append({"account_id": account["id"], "status": "restore_failed", "error": str(exc)[:1000]})
             return results
 
         if conn is not None:
