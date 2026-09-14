@@ -1525,7 +1525,29 @@ class Agent:
             path.write_text(render_ols_vhconf(context, website), encoding="utf-8")
         if self.config.agent_mode == "docker":
             docker = shutil.which("docker") or "docker"
-            reload_result = subprocess.run([docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"], check=False, capture_output=True, text=True)
+            # Compose may assign a project-prefixed name when recovering an
+            # orphaned service, so do not rely on the generated container_name.
+            # Restart the web service through its compose file instead.
+            compose_path = conn.execute(
+                "SELECT compose_path FROM account_stacks WHERE account_id = ?",
+                (account["id"],),
+            ).fetchone()
+            if compose_path and Path(compose_path["compose_path"]).is_file():
+                reload_result = subprocess.run(
+                    [docker, "compose", "-f", compose_path["compose_path"], "restart", "web"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+            else:
+                reload_result = subprocess.run(
+                    [docker, "exec", f"mp-{account['username']}-web", "/usr/local/lsws/bin/lswsctrl", "restart"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
             if reload_result.returncode != 0:
                 raise AgentError(reload_result.stderr.strip() or "php_worker_reload_failed")
         payload = self.job_payload(job)
