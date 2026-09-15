@@ -26,6 +26,9 @@ class TestErrorPages(unittest.TestCase):
             node = {"id": 1, "name": "node-1", "hostname": "localhost", "public_host": "localhost", "quota_backend": "dev-simulator"}
             paths = ensure_account_layout(account, plan, node, websites=websites)
             errors_dir = paths["stack"] / "errors"
+            services = (paths["stack"] / "services-entrypoint.sh").read_text()
+            self.assertNotIn("etimes=", services)
+            self.assertNotIn("kill -KILL", services)
 
             self.assertTrue(errors_dir.exists())
             for code in ["403", "404", "500", "502", "503"]:
@@ -66,6 +69,10 @@ class TestErrorPages(unittest.TestCase):
         self.assertIn("context /_mangopanel_errors/", vhconf)
         self.assertIn("location                /usr/local/lsws/mangopanel_errors/", vhconf)
         self.assertIn(".mangopanel-suspended -f", vhconf)
+        self.assertIn("pcKeepAliveTimeout      1", vhconf)
+        self.assertIn("LSAPI_MAX_PROCESS_TIME=120", vhconf)
+        self.assertIn("_requestguard.sock", vhconf)
+        self.assertIn("extMaxIdleTime          30", vhconf)
         self.assertIn("/_mangopanel_errors/suspended.html", vhconf)
 
 

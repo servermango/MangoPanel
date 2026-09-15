@@ -821,18 +821,9 @@ for opcache_ini in /usr/local/lsws/lsphp*/etc/php/*/mods-available/opcache.ini; 
   fi
 done
 
-# Keep a runaway PHP request from pinning a worker indefinitely. This is a
-# hard {php_timeout}-second ceiling for request workers; idle workers are handled by
-# OpenLiteSpeed's maxIdleTime setting.
-(
-  while :; do
-    for pid in $(ps -eo pid=,etimes=,args= 2>/dev/null | awk '$2 > {php_timeout} && $3 ~ /^lsphp/ {{print $1}}'); do
-      kill -TERM "$pid" 2>/dev/null || true
-      (sleep 2; kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true) &
-    done
-    sleep 5
-  done
-) >/dev/null 2>&1 &
+# Request deadlines are enforced by LSAPI_MAX_PROCESS_TIME in each vhost.
+# Process age includes idle time and must never be used to kill PHP workers
+# or their persistent parent process.
 # Keep legacy applications that use localhost:3306 working inside the web
 # container while preserving the normal db:3306 Docker-network path.
 nohup /bin/sh -c 'while ! /usr/bin/socat TCP-LISTEN:3306,bind=127.0.0.1,reuseaddr,fork TCP:db:3306; do sleep 2; done' >/var/log/mysql-loopback-proxy.log 2>&1 </dev/null &
@@ -1490,14 +1481,18 @@ context / {{
 
 extprocessor lsphp_{safe_domain} {{
   type                    lsapi
-  address                 uds:///tmp/lshttpd/lsphp_{safe_domain}.sock
+  address                 uds:///tmp/lshttpd/lsphp_{safe_domain}_requestguard.sock
   maxConns                {php_workers}
   env                     PHP_LSAPI_CHILDREN={php_workers}
+  env                     LSAPI_MAX_PROCESS_TIME={php_timeout}
   env                     LSAPI_AVOID_FORK=200M
 {legacy_env}  initTimeout             {php_timeout}
   retryTimeout            0
   persistConn             1
-  maxIdleTime             30
+  # Each OLS worker has its own pool; release idle connections promptly so
+  # one worker cannot hold every child in the shared PHP process group.
+  pcKeepAliveTimeout      1
+  extMaxIdleTime          30
   respBuffer              0
   autoStart               1
   path                    /usr/local/lsws/lsphp{php_ver}/bin/lsphp
