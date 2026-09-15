@@ -3245,6 +3245,10 @@ class Agent:
                 f"CREATE USER IF NOT EXISTS {sql_literal(db_user)}@'%' IDENTIFIED BY {sql_literal(db_password)};",
                 f"ALTER USER {sql_literal(db_user)}@'%' IDENTIFIED BY {sql_literal(db_password)};",
                 f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO {sql_literal(db_user)}@'%';",
+                # phpMyAdmin authenticates as the account control user
+                # (<account>_app).  Keep it able to inspect installer-created
+                # databases even when the application uses a dedicated DB user.
+                f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO {sql_literal(account['username'] + '_app')}@'%';",
                 "FLUSH PRIVILEGES;",
             ])
 
@@ -3754,6 +3758,8 @@ class Agent:
                 f"CREATE USER IF NOT EXISTS {sql_literal(db_user)}@'%' IDENTIFIED BY {sql_literal(payload['database_password'])};",
                 f"ALTER USER {sql_literal(db_user)}@'%' IDENTIFIED BY {sql_literal(payload['database_password'])};",
                 f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO {sql_literal(db_user)}@'%';",
+                # Ensure the phpMyAdmin account user can browse this DB.
+                f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO {sql_literal(account['username'] + '_app')}@'%';",
                 "FLUSH PRIVILEGES;",
             ])
 
