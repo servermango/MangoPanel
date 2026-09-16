@@ -200,6 +200,39 @@ configure_linux_sysctl() {
   fi
 }
 
+install_login_banner() {
+  local banner_path="/etc/profile.d/mangopanel-welcome.sh"
+
+  run_sudo install -d -m 0755 /etc/profile.d
+  cat <<EOF | run_sudo tee "$banner_path" >/dev/null
+# MangoPanel SSH welcome banner. This file is installed by scripts/install.sh.
+# It is intentionally limited to interactive SSH shells and leaves the host
+# MOTD and non-SSH shell sessions unchanged.
+case "\$-" in
+  *i*) ;;
+  *) return 0 ;;
+esac
+
+[ -n "\${SSH_CONNECTION:-}" ] || return 0
+[ -z "\${MANGOPANEL_WELCOME_SHOWN:-}" ] || return 0
+export MANGOPANEL_WELCOME_SHOWN=1
+
+printf '%s\n' '' \
+  ' __  __                         ____                  _ ' \
+  '|  \/  | __ _ _ __   __ _  ___|  _ \ __ _ _ __   ___| |' \
+  '| |\/| |/ _` | ` _ \ / _` |/ _ \ |_) / _` | `_ \ / _ \ |' \
+  '| |  | | (_| | | | | | (_| | (_) |  __/ (_| | | | |  __/ |' \
+  '|_|  |_|\__,_|_| |_|\__, |\___/|_|   \__,_|_| |_|\___|_|' \
+  '                       |___/' \
+  '' \
+  'Welcome to MangoPanel' \
+  'Client login: https://${public_host}/' \
+  'Admin login:  https://${public_host}/admin'
+EOF
+  run_sudo chmod 0644 "$banner_path"
+  say "Installed MangoPanel welcome banner for interactive SSH logins."
+}
+
 install_linux_prereqs() {
   local distro="${1}"
   configure_linux_sysctl
@@ -214,6 +247,7 @@ install_linux_prereqs() {
       die "Unsupported Linux distribution for automatic bootstrap. Use Ubuntu or Debian, or install python3, git, make, curl, tar, lsof, and Docker manually."
       ;;
   esac
+  install_login_banner
 }
 
 wait_for_docker() {
@@ -441,6 +475,19 @@ EOF
   esac
 }
 
+restart_mangopanel_service() {
+  local os_id="${1}"
+
+  case "$os_id" in
+    ubuntu|debian|linux)
+      if have_systemd; then
+        run_sudo systemctl restart mangopanel.service
+        run_sudo systemctl is-active --quiet mangopanel.service || die "mangopanel.service did not remain active after restart. Check: systemctl status mangopanel.service"
+      fi
+      ;;
+  esac
+}
+
 main() {
   local os_id
   os_id="$(detect_os)"
@@ -469,6 +516,7 @@ main() {
   install_system_service "$os_id"
 
   python -m compileall "$repo_root/mangopanel" "$repo_root/scripts" "$repo_root/tests" >/dev/null
+  restart_mangopanel_service "$os_id"
 
   say "Python environment is ready in: $venv_dir"
   say "System prerequisites installed: git, make, curl, tar, lsof, python3"
@@ -479,6 +527,9 @@ main() {
     say "You were added to the docker group. Open a new shell session before using Docker without sudo."
   fi
   say "MangoPanel is configured to start automatically on reboot via the OS service manager."
+  say "MangoPanel is ready:"
+  say "  Client login: https://${public_host}/"
+  say "  Admin login:  https://${public_host}/admin"
   say "Next: make dev-init"
 }
 

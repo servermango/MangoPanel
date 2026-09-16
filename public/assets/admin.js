@@ -69,7 +69,7 @@ createApp({
       clientLoginLoadingId: null,
       showClientModal: false,
       plans: [],
-      configuration: { backup_time: "02:00", resource_scan_time: "03:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "", public_host: "", admin_email: "", auto_updates_enabled: true, auto_update_frequency: "daily", auto_update_day_of_week: "1", auto_update_day_of_month: "1", auto_update_time: "04:00", update_email_notify: true, current_commit: "" },
+      configuration: { backup_time: "02:00", resource_scan_time: "03:00", timezone: "UTC", modsecurity_ruleset: "baseline", ssh_motd: "", public_host: "", server_ip: "", admin_email: "", auto_updates_enabled: true, auto_update_frequency: "daily", auto_update_day_of_week: "1", auto_update_day_of_month: "1", auto_update_time: "04:00", update_email_notify: true, current_commit: "" },
       configTab: "general",
       autoUpdating: false,
       modsecRuleset: "baseline",
@@ -1311,7 +1311,8 @@ createApp({
         // newly added configuration fields.
         this.configuration = { ...this.configuration, ...(result.configuration || {}) };
         const hostJobs = (result.public_host_job_ids || []).length;
-        this.message = hostJobs ? `Configuration saved; ${hostJobs} account route update${hostJobs === 1 ? "" : "s"} queued` : (result.ssh_motd_job_id ? `Configuration saved; SSH message update queued (job #${result.ssh_motd_job_id})` : "Configuration saved");
+        const tlsMessage = result.edge_proxy_refreshed ? "; edge TLS certificate request started" : "";
+        this.message = hostJobs ? `Configuration saved; ${hostJobs} account route update${hostJobs === 1 ? "" : "s"} queued${tlsMessage}` : (result.ssh_motd_job_id ? `Configuration saved; SSH message update queued (job #${result.ssh_motd_job_id})${tlsMessage}` : `Configuration saved${tlsMessage}`);
       } catch (error) {
         this.message = error.message;
       } finally {

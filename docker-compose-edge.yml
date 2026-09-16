@@ -1,5 +1,38 @@
 name: mangopanel-edge
 services:
+  panel:
+    # Supplies the dynamic Caddy labels for the MangoPanel UI. Caddy proxies
+    # directly to the host process; this container is only the route owner.
+    image: alpine:3.20
+    container_name: mangopanel-panel-route
+    command: ["sh", "-c", "while :; do sleep 3600; done"]
+    labels:
+      # A fresh install has no chosen domain yet, so do not attempt ACME.
+      caddy: "${MP_PUBLIC_HOST:-http://panel.invalid}"
+      caddy.route_0: "/admin*"
+      caddy.route_0.reverse_proxy: "host.docker.internal:8001"
+      caddy.route_0.reverse_proxy.header_up: "X-Forwarded-Proto https"
+      caddy.route_0.reverse_proxy.header_up_0: "X-Forwarded-Ssl on"
+      caddy.route_1: "/api/admin*"
+      caddy.route_1.reverse_proxy: "host.docker.internal:8001"
+      caddy.route_1.reverse_proxy.header_up: "X-Forwarded-Proto https"
+      caddy.route_1.reverse_proxy.header_up_0: "X-Forwarded-Ssl on"
+      caddy.route_2: "/reseller*"
+      caddy.route_2.reverse_proxy: "host.docker.internal:8002"
+      caddy.route_2.reverse_proxy.header_up: "X-Forwarded-Proto https"
+      caddy.route_2.reverse_proxy.header_up_0: "X-Forwarded-Ssl on"
+      caddy.route_3: "/api/reseller*"
+      caddy.route_3.reverse_proxy: "host.docker.internal:8002"
+      caddy.route_3.reverse_proxy.header_up: "X-Forwarded-Proto https"
+      caddy.route_3.reverse_proxy.header_up_0: "X-Forwarded-Ssl on"
+      caddy.route_4: "*"
+      caddy.route_4.reverse_proxy: "host.docker.internal:8000"
+      caddy.route_4.reverse_proxy.header_up: "X-Forwarded-Proto https"
+      caddy.route_4.reverse_proxy.header_up_0: "X-Forwarded-Ssl on"
+    networks:
+      - mangopanel-edge
+    restart: unless-stopped
+
   caddy:
     image: lucaslorentz/caddy-docker-proxy:ci-alpine
     container_name: mangopanel-caddy

@@ -4,15 +4,16 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from mangopanel import app as app_module
 from mangopanel.agent import Agent
 from mangopanel.config import Config
-from mangopanel.db import connect, seed_dev_data
+from mangopanel.db import connect, get_system_setting, init_db, seed_dev_data
 from mangopanel.providers import DNS_PROVIDER_CLOUDFLARE
-from mangopanel.security import encrypt_secret
+from mangopanel.security import encrypt_secret, hash_password
 from tests.test_providers import FakeCloudflareHandler, FakeHTTPServer
 
 
@@ -155,6 +156,62 @@ class Phase3RouteTests(unittest.TestCase):
         config.agent_inline = True
         config.dev_auth_test_mode = True
         return config
+
+    def test_first_admin_setup_persists_panel_domain_and_brands_totp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self.make_config(root)
+            config.env = "production"
+            config.agent_mode = "docker"
+            init_db(config.db_path)
+
+            with mock.patch.object(app_module, "get_host_public_ip", return_value="203.0.113.10"), mock.patch.object(app_module, "start_edge_proxy") as start_edge:
+                with ClientApiServer(config, panel="admin") as server:
+                    bootstrap = server.request("GET", "/api/public/bootstrap")
+                    self.assertTrue(bootstrap["admin_setup_required"])
+                    self.assertEqual(bootstrap["server_ip"], "203.0.113.10")
+                    setup = server.request(
+                        "POST",
+                        "/api/public/admin-setup",
+                        {
+                            "public_host": "leaf.servermango.com",
+                            "full_name": "Panel Admin",
+                            "email": "admin@example.com",
+                            "password": PASSWORD,
+                        },
+                    )
+
+            start_edge.assert_called_once_with("leaf.servermango.com")
+            self.assertIn("leaf.servermango.com%20-%20MangoPanel%20Admin", setup["totp_uri"])
+            with connect(config.db_path) as conn:
+                self.assertEqual(get_system_setting(conn, "public_host"), "leaf.servermango.com")
+
+    def test_public_hostname_save_refreshes_the_edge_proxy_for_tls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = self.make_config(root)
+            config.env = "production"
+            config.agent_mode = "docker"
+            init_db(config.db_path)
+            with connect(config.db_path) as conn:
+                conn.execute(
+                    "INSERT INTO admins(id, email, password_hash, full_name, role, status) VALUES (1, 'admin@mango.test', ?, 'Panel Admin', 'super_admin', 'active')",
+                    (hash_password(PASSWORD),),
+                )
+
+            with mock.patch.object(app_module, "start_edge_proxy") as start_edge, mock.patch.object(app_module, "get_host_public_ip", return_value="203.0.113.10"):
+                with ClientApiServer(config, panel="admin") as server:
+                    login = server.request("POST", "/api/admin/auth/login", {"email": "admin@mango.test", "password": PASSWORD})
+                    token = login["access_token"]
+                    result = server.request(
+                        "PATCH",
+                        "/api/admin/configuration",
+                        {"backup_time": "02:00", "resource_scan_time": "03:00", "timezone": "UTC", "public_host": "leaf.servermango.com"},
+                        token,
+                    )
+
+            start_edge.assert_called_once_with("leaf.servermango.com")
+            self.assertTrue(result["edge_proxy_refreshed"])
 
     def test_postgresql_crud_routes_sync_simulated_state(self):
         with tempfile.TemporaryDirectory() as tmp:

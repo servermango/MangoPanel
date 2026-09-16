@@ -1006,7 +1006,12 @@ class MangoHandler(BaseHTTPRequestHandler):
         if path == "/api/public/mail-edge/manifest" and method == "GET":
             return self.public_mail_edge_manifest()
         if path == "/api/public/bootstrap" and method == "GET":
-            return self.json_response({"admin_setup_required": admin_count() == 0})
+            admin_setup_required = admin_count() == 0
+            server_ip = ""
+            if admin_setup_required:
+                with connect(CONFIG.db_path) as conn:
+                    server_ip = get_host_public_ip(conn, self.headers.get("Host"))
+            return self.json_response({"admin_setup_required": admin_setup_required, "server_ip": server_ip})
         if path == "/api/public/signup" and method == "POST":
             body = self.read_json()
             return self.signup_customer(body)
@@ -2620,11 +2625,19 @@ class MangoHandler(BaseHTTPRequestHandler):
         email = normalize_email(body.get("email"))
         full_name = clean_text(body.get("full_name"), "Super Admin")
         password = validate_password(body.get("password", ""))
+        public_host = normalize_public_host(body.get("public_host"))
+        try:
+            ipaddress.ip_address(public_host)
+            raise ApiError(HTTPStatus.BAD_REQUEST, "panel_domain_must_be_a_hostname")
+        except ValueError:
+            pass
         totp_secret = generate_totp_secret()
         with connect(CONFIG.db_path) as conn:
             conn.execute("BEGIN EXCLUSIVE")
             if conn.execute("SELECT COUNT(*) AS count FROM admins").fetchone()["count"] != 0:
                 raise ApiError(HTTPStatus.CONFLICT, "admin_already_configured")
+            set_system_setting(conn, "public_host", public_host)
+            CONFIG.public_host = public_host
             cur = conn.execute(
                 """
                 INSERT INTO admins(email, password_hash, full_name, role, totp_secret)
@@ -2634,6 +2647,8 @@ class MangoHandler(BaseHTTPRequestHandler):
             )
             admin_id = cur.lastrowid
             log_audit(conn, "public", None, "first_admin_signup", "admin", admin_id, self.client_address[0], {"email": email})
+            if CONFIG.agent_mode == "docker" and CONFIG.env != "development":
+                start_edge_proxy(public_host)
             return self.json_response(
                 {
                     "admin": {"id": admin_id, "email": email, "full_name": full_name, "role": "super_admin"},
@@ -4331,7 +4346,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                 if enable_totp:
                     totp_secret = generate_totp_secret()
                     conn.execute("UPDATE users SET totp_secret = ? WHERE id = ?", (totp_secret, new_user_id))
-                    totp_data = {"secret": totp_secret, "uri": generate_totp_uri(totp_secret, email, "MangoPanel")}
+                    totp_data = {"secret": totp_secret, "uri": otpauth_uri("MangoPanel", email, totp_secret)}
 
                 return self.json_response({"status": "created", "user": {"id": new_user_id, "email": email, "full_name": full_name}, "totp": totp_data})
 
@@ -6330,12 +6345,7 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/api/client/2fa/generate" and method == "POST":
                 require_active_account(account)
                 secret = generate_totp_secret()
-                # Create otpauth uri
-                # otpauth://totp/MangoPanel:username?secret=secret&issuer=MangoPanel
-                import urllib.parse
-                issuer = urllib.parse.quote("MangoPanel")
-                account_name = urllib.parse.quote(f"MangoPanel:{actor['email']}")
-                uri = f"otpauth://totp/{account_name}?secret={secret}&issuer={issuer}"
+                uri = otpauth_uri("MangoPanel", actor["email"], secret)
                 return self.json_response({"secret": secret, "uri": uri})
 
             if path == "/api/client/2fa/enable" and method == "POST":
@@ -7218,6 +7228,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     "modsecurity_ruleset": get_system_setting(conn, "modsecurity_ruleset", "baseline"),
                     "ssh_motd": get_system_setting(conn, "ssh_motd", DEFAULT_SSH_MOTD),
                     "public_host": get_system_setting(conn, "public_host", CONFIG.public_host),
+                    "server_ip": get_host_public_ip(conn, self.headers.get("Host")),
                     "admin_email": get_system_setting(conn, "admin_email", ""),
                     "auto_updates_enabled": str(get_system_setting(conn, "auto_updates_enabled", "1")) in {"1", "true", "True"},
                     "auto_update_frequency": get_system_setting(conn, "auto_update_frequency", "daily"),
@@ -7325,6 +7336,12 @@ class MangoHandler(BaseHTTPRequestHandler):
 
                 sync_auto_update_cron(conn)
                 apply_system_timezone(conn)
+                edge_proxy_refreshed = False
+                if public_host_changed and CONFIG.agent_mode == "docker" and CONFIG.env != "development":
+                    # Recreate the label-only panel route with the new host.
+                    # Caddy observes the label change and starts ACME issuance.
+                    start_edge_proxy(public_host)
+                    edge_proxy_refreshed = True
                 log_audit(conn, "admin", actor["id"], "update_configuration", "system_settings", 0, metadata={"backup_time": backup_time, "timezone": timezone_name, "auto_updates_enabled": auto_updates_enabled})
                 return self.json_response({
                     "configuration": {
@@ -7334,6 +7351,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                         "modsecurity_ruleset": ruleset,
                         "ssh_motd": motd,
                         "public_host": public_host,
+                        "server_ip": get_host_public_ip(conn, self.headers.get("Host")),
                         "admin_email": admin_email,
                         "auto_updates_enabled": auto_updates_enabled in {"1", "true", "True"},
                         "auto_update_frequency": auto_update_frequency,
@@ -7345,6 +7363,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                     },
                     "ssh_motd_job_id": motd_job_id,
                     "public_host_job_ids": public_host_job_ids,
+                    "edge_proxy_refreshed": edge_proxy_refreshed,
                 })
             # Reseller Plans API
             if path == "/api/admin/reseller-plans" and method == "GET":
@@ -12765,7 +12784,7 @@ function mangopanel_strip_public_fbp_cookie($html) {{
     if (headers_sent()) return $html;
     $keep = [];
     foreach (headers_list() as $header) {{
-        if (stripos($header, 'Set-Cookie:') === 0 && preg_match('/^Set-Cookie:\s*_fbp=/i', $header)) continue;
+        if (stripos($header, 'Set-Cookie:') === 0 && preg_match('/^Set-Cookie:\\s*_fbp=/i', $header)) continue;
         if (stripos($header, 'Set-Cookie:') === 0) $keep[] = substr($header, strlen('Set-Cookie:'));
     }}
     if (count($keep) !== count(array_filter(headers_list(), function ($header) {{ return stripos($header, 'Set-Cookie:') === 0; }}))) {{
@@ -13918,6 +13937,9 @@ def normalize_cpu_limit(value):
 
 
 def otpauth_uri(issuer, email, secret):
+    panel_host = str(CONFIG.public_host or "").strip()
+    if panel_host:
+        issuer = "{} - {}".format(panel_host, issuer)
     label = "{}:{}".format(issuer, email)
     return "otpauth://totp/{}?secret={}&issuer={}".format(
         quote(label),
@@ -15037,9 +15059,11 @@ def start_worker_daemon(config):
     return thread
 
 
-def start_edge_proxy():
-    """Start the shared Caddy edge proxy for Docker-backed installations."""
+def start_edge_proxy(public_host=None):
+    """Start or refresh the shared Caddy edge proxy for Docker-backed installations."""
     edge_compose = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose-edge.yml")
+    edge_env = os.environ.copy()
+    edge_env["MP_PUBLIC_HOST"] = str(public_host or CONFIG.public_host or "").strip()
     try:
         result = subprocess.run(
             ["docker", "compose", "-f", edge_compose, "up", "-d"],
@@ -15047,6 +15071,7 @@ def start_edge_proxy():
             capture_output=True,
             text=True,
             timeout=120,
+            env=edge_env,
         )
         if result.returncode != 0:
             print(f"Failed to start edge proxy: {result.stderr.strip() or result.stdout.strip()}")

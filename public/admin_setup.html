@@ -471,13 +471,16 @@
         </a>
         <div class="step-indicators" v-if="bootstrap.admin_setup_required || result || currentStep > 1">
           <div class="step-pill" :class="{ active: currentStep === 1, completed: currentStep > 1 }">
-            <span class="step-num">1</span> Account
+            <span class="step-num">1</span> Panel Domain
           </div>
           <div class="step-pill" :class="{ active: currentStep === 2, completed: currentStep > 2 }">
-            <span class="step-num">2</span> 2FA Setup
+            <span class="step-num">2</span> Account
           </div>
-          <div class="step-pill" :class="{ active: currentStep === 3 }">
-            <span class="step-num">3</span> Complete
+          <div class="step-pill" :class="{ active: currentStep === 3, completed: currentStep > 3 }">
+            <span class="step-num">3</span> 2FA Setup
+          </div>
+          <div class="step-pill" :class="{ active: currentStep === 4 }">
+            <span class="step-num">4</span> Complete
           </div>
         </div>
       </header>
@@ -517,8 +520,33 @@
         <!-- Right Side: Multi-Step Setup Form -->
         <section class="setup-form-panel">
 
-          <!-- Step 1: Account Creation -->
+          <!-- Step 1: Panel domain and DNS -->
           <div v-if="currentStep === 1 && (bootstrap.admin_setup_required || !result)">
+            <h2 class="form-title">Choose Your Panel Domain</h2>
+            <p class="form-subtitle">This domain identifies MangoPanel, its authenticator entries, and account tool URLs.</p>
+
+            <div class="form-field">
+              <label>Panel Domain</label>
+              <input v-model.trim="form.panel_domain" placeholder="leaf.servermango.com" autocomplete="url" autofocus>
+            </div>
+
+            <div class="config-info-box">
+              <strong>Create these DNS records before using HTTPS:</strong>
+              <p>Create both <code>A</code> records at your DNS provider and point them to <code>{{ bootstrap.server_ip || 'your server public IP' }}</code>.</p>
+              <p><code>A&nbsp;&nbsp; {{ form.panel_domain || 'leaf.servermango.com' }} &rarr; {{ bootstrap.server_ip || 'SERVER_IP' }}</code></p>
+              <p><code>A&nbsp;&nbsp; *.{{ form.panel_domain || 'leaf.servermango.com' }} &rarr; {{ bootstrap.server_ip || 'SERVER_IP' }}</code></p>
+              <small>The wildcard record is required for File Manager and other account tools. DNS propagation and certificate issuance can take a few minutes.</small>
+            </div>
+
+            <button class="btn-primary" :disabled="!isPanelDomainValid" @click="continueToAccount">
+              Next: Create Admin Account →
+            </button>
+
+            <div v-if="message" class="alert-msg">{{ message }}</div>
+          </div>
+
+          <!-- Step 2: Account Creation -->
+          <div v-else-if="currentStep === 2 && (bootstrap.admin_setup_required || !result)">
             <h2 class="form-title">Create Super Admin</h2>
             <p class="form-subtitle">Set up the primary administrative credentials for this MangoPanel node.</p>
 
@@ -544,7 +572,7 @@
 
             <button 
               class="btn-primary" 
-              :disabled="!isStep1Valid || submitting" 
+              :disabled="!isAccountValid || submitting"
               @click="setup"
             >
               <span v-if="submitting">Generating Account...</span>
@@ -554,8 +582,8 @@
             <div v-if="message" class="alert-msg">{{ message }}</div>
           </div>
 
-          <!-- Step 2: 2FA & Authenticator Setup -->
-          <div v-else-if="currentStep === 2">
+          <!-- Step 3: 2FA & Authenticator Setup -->
+          <div v-else-if="currentStep === 3">
             <h2 class="form-title">Authenticator 2FA Setup</h2>
             <p class="form-subtitle">Scan the QR code with your authenticator app (Google Authenticator, Authy, 1Password).</p>
 
@@ -605,8 +633,8 @@
             </button>
           </div>
 
-          <!-- Step 3: Setup Complete -->
-          <div v-else-if="currentStep === 3" class="completion-card">
+          <!-- Step 4: Setup Complete -->
+          <div v-else-if="currentStep === 4" class="completion-card">
             <div class="success-icon-badge">✓</div>
             <h2 class="form-title">Setup Complete!</h2>
             <p class="form-subtitle">Your Super Admin account and two-factor authentication are successfully configured.</p>

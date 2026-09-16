@@ -646,8 +646,9 @@ make dev-up</code></pre>
                 <p>When starting MangoPanel on a fresh database with zero admins, visiting `http://<server-ip>:8001/admin` automatically routes to the <strong>First-Admin Setup Page</strong> (`/admin/setup`).</p>
                 
                 <ul>
+                    <li>Choose the panel domain first, then create <code>A</code> records for both that domain and its wildcard subdomain, pointing to the displayed server IP.</li>
                     <li>Fill in the admin email address and password.</li>
-                    <li>The system generates an initial TOTP authenticator secret and displays an `otpauth://` QR code.</li>
+                    <li>The system generates an initial TOTP authenticator secret and displays an <code>otpauth://</code> QR code named with the panel domain.</li>
                     <li>Scan the QR code in Google Authenticator / 1Password and verify a code before completing setup.</li>
                     <li>Once an admin exists, public first-admin setup is permanently locked.</li>
                 </ul>

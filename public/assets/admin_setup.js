@@ -3,8 +3,8 @@ const { createApp } = Vue;
 createApp({
   data() {
     return {
-      bootstrap: { admin_setup_required: false },
-      currentStep: 1, // 1: Account, 2: 2FA Setup, 3: Complete
+      bootstrap: { admin_setup_required: false, server_ip: "" },
+      currentStep: 1, // 1: Panel domain, 2: Account, 3: 2FA Setup, 4: Complete
       message: "",
       submitting: false,
       result: null,
@@ -41,6 +41,7 @@ createApp({
         }
       ],
       form: {
+        panel_domain: "",
         full_name: "",
         email: "",
         password: "",
@@ -49,7 +50,11 @@ createApp({
     };
   },
   computed: {
-    isStep1Valid() {
+    isPanelDomainValid() {
+      const domain = this.form.panel_domain.trim().toLowerCase();
+      return /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain);
+    },
+    isAccountValid() {
       return (
         this.form.full_name.trim().length > 0 &&
         this.form.email.includes("@") &&
@@ -78,9 +83,22 @@ createApp({
       try {
         const response = await fetch("/api/public/bootstrap", { headers: { Accept: "application/json" } });
         this.bootstrap = await response.json();
+        const currentHost = window.location.hostname.toLowerCase();
+        const isIpAddress = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(currentHost);
+        if (!this.form.panel_domain && currentHost.includes(".") && !isIpAddress && currentHost !== "localhost") {
+          this.form.panel_domain = currentHost;
+        }
       } catch (e) {
         console.error("Failed to load bootstrap status:", e);
       }
+    },
+    continueToAccount() {
+      if (!this.isPanelDomainValid) {
+        this.message = "Enter a valid panel domain, such as leaf.servermango.com.";
+        return;
+      }
+      this.message = "";
+      this.currentStep = 2;
     },
     async setup() {
       this.message = "";
@@ -99,6 +117,7 @@ createApp({
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify({
+            public_host: this.form.panel_domain,
             full_name: this.form.full_name,
             email: this.form.email,
             password: this.form.password
@@ -108,7 +127,7 @@ createApp({
         if (!response.ok) throw new Error(payload.error || "Admin setup failed");
         this.result = payload;
         this.bootstrap.admin_setup_required = false;
-        this.currentStep = 2; // Advance to 2FA Setup
+        this.currentStep = 3; // Advance to 2FA Setup
       } catch (error) {
         this.message = error.message;
         await this.loadBootstrap();
@@ -143,7 +162,7 @@ createApp({
         this.totpCheckMessage = "Please verify your TOTP code from your authenticator app first.";
         return;
       }
-      this.currentStep = 3; // Advance to Complete screen
+      this.currentStep = 4; // Advance to Complete screen
     },
     copySecret() {
       if (!this.result || !this.result.totp_secret) return;
