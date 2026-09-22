@@ -1558,7 +1558,16 @@ def render_compose(account, plan, websites, runtime, mail_enabled=True):
     http_doms = expand_domain_aliases(website_domains) if website_domains else [f"{account['username']}.mango.test"]
     domains_http = ", ".join([f"http://{d}" for d in http_doms])
 
-    public_doms = [w['domain'] for w in websites if not w['domain'].endswith(('.localhost', '.test', '.local', '.nip.io'))]
+    # Do not expose an HTTPS route (which makes Caddy immediately request an
+    # ACME certificate) until MangoPanel has verified that the domain resolves
+    # to this host.  New websites start with ``ssl_status=missing`` and are
+    # therefore HTTP-only; the SSL agent flips them to ``pending`` only after
+    # a successful DNS check and regenerates the stack.
+    public_doms = [
+        w['domain'] for w in websites
+        if not w['domain'].endswith(('.localhost', '.test', '.local', '.nip.io'))
+        and str(w.get('ssl_status') or 'missing').lower() in {'pending', 'active'}
+    ]
     local_doms = [w['domain'] for w in websites if w['domain'].endswith(('.localhost', '.test', '.local', '.nip.io'))]
     if not websites:
         local_doms.append(f"{account['username']}.mango.test")

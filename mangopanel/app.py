@@ -4174,7 +4174,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                     raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
                 if int(website["is_subdomain"] or 0):
                     require_collaborator_permission(conn, actor["id"], account["id"], "can_edit_subdomains", resource_type="subdomain", resource_id=website_id)
-                job_id = enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto"})
+                # Do not create a second issuance job while one is already
+                # queued or running. Repeated clicks used to restart the
+                # shared Caddy proxy and multiply ACME attempts.
+                existing = conn.execute(
+                    """SELECT id FROM jobs
+                       WHERE type = 'issue_ssl' AND target_type = 'website'
+                         AND target_id = ? AND status IN ('queued', 'running')
+                       ORDER BY id DESC LIMIT 1""",
+                    (website_id,),
+                ).fetchone()
+                job_id = existing["id"] if existing else enqueue_agent_job(conn, "issue_ssl", "website", website_id, {"mode": "auto"})
                 refreshed = conn.execute("SELECT ssl_status FROM websites WHERE id = ?", (website_id,)).fetchone()
                 order = conn.execute(
                     "SELECT * FROM acme_certificate_orders WHERE account_id = ? AND domain = ? ORDER BY id DESC LIMIT 1",

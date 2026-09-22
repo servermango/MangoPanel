@@ -13,6 +13,7 @@ import shlex
 import tempfile
 import threading
 import sys
+import socket
 from datetime import datetime, timedelta, timezone
 
 def is_within_directory(directory, target):
@@ -2132,12 +2133,33 @@ class Agent:
             raise AgentError("website_not_found")
         account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (website["account_id"],)).fetchone()
         if self.config.agent_mode == "docker" and self.config.env != "development":
+            dns_check = self.website_dns_check(conn, website)
+            if not dns_check["verified"]:
+                # A failed DNS check is a completed, non-retryable outcome.
+                # In particular, do not restart the shared Caddy proxy: doing
+                # so causes it to start ACME retries for an unpointed domain.
+                conn.execute("UPDATE websites SET ssl_status = 'missing' WHERE id = ?", (website_id,))
+                return {
+                    "mode": "caddy",
+                    "ssl_status": "missing",
+                    "website_id": website_id,
+                    "domain": website["domain"],
+                    "provider": "caddy-acme",
+                    "status": "skipped",
+                    "reason": "dns_not_pointing_to_server",
+                    "observed_ips": dns_check["observed_ips"],
+                    "expected_ips": dns_check["expected_ips"],
+                }
             # Production HTTPS is terminated by the shared Caddy edge proxy.
             # Do not create a self-signed/local-development certificate and
             # report it as active; that masks failed ACME validation and can
             # produce ERR_SSL_PROTOCOL_ERROR in a fresh installation.
             conn.execute("UPDATE websites SET ssl_status = 'pending' WHERE id = ?", (website_id,))
             conn.execute("UPDATE ssl_certificates SET status = 'pending' WHERE website_id = ? AND status != 'custom'", (website_id,))
+            # Re-render the account stack now that this domain is verified.
+            # render_compose() will include its HTTPS route only while the
+            # website is pending/active, which is what enables Caddy ACME.
+            self.provision_hosting_account(conn, website["account_id"], touched_website_id=website_id, apply_stack=True)
             docker = shutil.which("docker")
             if docker:
                 subprocess.run([docker, "restart", "mangopanel-caddy"], check=False, capture_output=True, text=True, timeout=60)
@@ -2208,6 +2230,64 @@ class Agent:
             {"mode": "native", "domain": website["domain"], "status": "active", "website_id": website_id, "cert_path": str(cert_path), "key_path": str(key_path), "provider_state": provider_state},
         )
         return {"mode": "native", "ssl_status": "active", "website_id": website_id, "artifact_path": artifact, "cert_path": str(cert_path), "key_path": str(key_path), "provider": ACME_PROVIDER_LOCAL, "provider_state": provider_state}
+
+    def website_dns_check(self, conn, website):
+        """Verify that a website resolves to this server before enabling ACME."""
+        domain = str(website["domain"] or "").strip().lower().rstrip(".")
+        observed = set()
+        try:
+            for family, _, _, _, address in socket.getaddrinfo(domain, 443, type=socket.SOCK_STREAM):
+                value = str(address[0]).strip()
+                if value:
+                    observed.add(value)
+        except (OSError, ValueError):
+            pass
+
+        expected = set()
+        for row in conn.execute("SELECT ip_address FROM server_ips WHERE status = 'active'").fetchall():
+            value = str(row["ip_address"] or "").strip()
+            try:
+                if value and not ipaddress.ip_address(value).is_unspecified:
+                    expected.add(value)
+            except ValueError:
+                pass
+        local_config = self.dns_local_config(conn)
+        for key in ("public_ipv4", "public_ipv6"):
+            value = str(local_config.get(key) or "").strip()
+            try:
+                if value and not ipaddress.ip_address(value).is_unspecified:
+                    expected.add(value)
+            except ValueError:
+                pass
+        if not expected:
+            host = self.public_host(conn)
+            try:
+                expected.update(str(item[4][0]) for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM))
+            except (OSError, ValueError):
+                pass
+
+        # For Cloudflare-proxied domains, public DNS intentionally resolves to
+        # Cloudflare. Check the provider's origin records instead of accepting
+        # any arbitrary proxy IP as proof of ownership.
+        domain_row = conn.execute("SELECT * FROM domains WHERE linked_website_id = ? LIMIT 1", (website["id"],)).fetchone()
+        if domain_row and self.row_get(domain_row, "dns_provider") == DNS_PROVIDER_CLOUDFLARE:
+            try:
+                provider, _, _, _ = self.resolve_dns_provider(conn, domain_row)
+                zone = provider.get_zone(domain)
+                records = provider.get_dns_records(zone["id"]) if zone and zone.get("id") else []
+                origins = set()
+                for record in records or []:
+                    if str(record.get("type") or "").upper() not in {"A", "AAAA"}:
+                        continue
+                    name = str(record.get("name") or "").lower().rstrip(".")
+                    if name in {domain, "www." + domain}:
+                        origins.add(str(record.get("content") or "").strip())
+                verified = bool(origins & expected)
+                return {"verified": verified, "observed_ips": sorted(observed), "expected_ips": sorted(expected), "provider_origins": sorted(origins)}
+            except Exception:
+                return {"verified": False, "observed_ips": sorted(observed), "expected_ips": sorted(expected), "provider_origins": []}
+
+        return {"verified": bool(observed & expected), "observed_ips": sorted(observed), "expected_ips": sorted(expected), "provider_origins": []}
 
     def sync_dns_record(self, conn, record_id):
         record = conn.execute("SELECT * FROM dns_records WHERE id = ?", (record_id,)).fetchone()
