@@ -2270,6 +2270,31 @@ class Agent:
         # Cloudflare. Check the provider's origin records instead of accepting
         # any arbitrary proxy IP as proof of ownership.
         domain_row = conn.execute("SELECT * FROM domains WHERE linked_website_id = ? LIMIT 1", (website["id"],)).fetchone()
+        configured_origins = set()
+        if domain_row:
+            try:
+                for record in conn.execute(
+                    "SELECT type, name, value FROM dns_records WHERE domain_id = ?",
+                    (domain_row["id"],),
+                ).fetchall():
+                    if str(record["type"] or "").upper() not in {"A", "AAAA"}:
+                        continue
+                    name = str(record["name"] or "").strip().lower().rstrip(".")
+                    if name in {"", "@", domain, "www." + domain}:
+                        configured_origins.add(str(record["value"] or "").strip())
+            except Exception:
+                configured_origins = set()
+
+        # A proxied Cloudflare record resolves publicly to Cloudflare rather
+        # than to the origin. The panel's own DNS record is still authoritative
+        # for the origin, provided the public lookup resolves to Cloudflare.
+        if configured_origins & expected and observed and all(
+            any(ipaddress.ip_address(value) in ipaddress.ip_network(cidr) for cidr in CLOUDFLARE_PROXY_RANGES)
+            for value in observed
+            if "." in value or ":" in value
+        ):
+            return {"verified": True, "observed_ips": sorted(observed), "expected_ips": sorted(expected), "provider_origins": sorted(configured_origins)}
+
         if domain_row and self.row_get(domain_row, "dns_provider") == DNS_PROVIDER_CLOUDFLARE:
             try:
                 provider, _, _, _ = self.resolve_dns_provider(conn, domain_row)
@@ -2287,7 +2312,7 @@ class Agent:
             except Exception:
                 return {"verified": False, "observed_ips": sorted(observed), "expected_ips": sorted(expected), "provider_origins": []}
 
-        return {"verified": bool(observed & expected), "observed_ips": sorted(observed), "expected_ips": sorted(expected), "provider_origins": []}
+        return {"verified": bool(observed & expected), "observed_ips": sorted(observed), "expected_ips": sorted(expected), "provider_origins": sorted(configured_origins)}
 
     def sync_dns_record(self, conn, record_id):
         record = conn.execute("SELECT * FROM dns_records WHERE id = ?", (record_id,)).fetchone()
@@ -2975,7 +3000,20 @@ class Agent:
         protected_dirs = [row_to_dict(row) for row in conn.execute("SELECT * FROM protected_directories WHERE account_id = ? ORDER BY id", (account_id,)).fetchall()]
         website_dicts = []
         for website in websites:
+            # Older installations may have ``ssl_status=missing`` even
+            # though their DNS already points to this host. Re-evaluate that
+            # state during normal stack reconciliation so valid HTTPS routes
+            # are restored, while genuinely unpointed domains stay HTTP-only.
+            ssl_status = str(website["ssl_status"] or "missing").lower()
+            if ssl_status == "missing" and not website["domain"].endswith((".localhost", ".test", ".local", ".nip.io")):
+                try:
+                    if self.website_dns_check(conn, website)["verified"]:
+                        conn.execute("UPDATE websites SET ssl_status = 'pending' WHERE id = ?", (website["id"],))
+                        ssl_status = "pending"
+                except Exception:
+                    pass
             item = row_to_dict(website)
+            item["ssl_status"] = ssl_status
             item["hotlink_enabled"] = int(hotlink_settings["enabled"]) if hotlink_settings else 0
             item["hotlink_domains"] = hotlink_domains
             item["protected_directories"] = protected_dirs
