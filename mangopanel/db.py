@@ -909,6 +909,56 @@ def connect(db_path, timeout=60.0):
     return conn
 
 
+# High-volume request analytics live in their own SQLite file.  Keeping this
+# schema separate prevents traffic collection from contending with the
+# control-plane database (jobs, accounts, backups, and configuration).
+ANALYTICS_SCHEMA = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS access_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL,
+  website_id INTEGER,
+  domain TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  status_code INTEGER NOT NULL,
+  bytes_sent INTEGER NOT NULL DEFAULT 0,
+  ip_address TEXT,
+  country TEXT NOT NULL DEFAULT 'Unknown',
+  user_agent TEXT,
+  referer TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_analytics_logs_account_domain_time
+  ON access_logs(account_id, domain, created_at);
+CREATE INDEX IF NOT EXISTS idx_analytics_logs_website_time
+  ON access_logs(website_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_analytics_logs_created_at_domain
+  ON access_logs(created_at, domain);
+"""
+
+
+def analytics_db_path(db_path):
+    return Path(db_path).with_name("mangopanel-analytics.sqlite3")
+
+
+def init_analytics_db(db_path):
+    path = analytics_db_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with connect(path, timeout=60.0) as conn:
+        conn.executescript(ANALYTICS_SCHEMA)
+    return path
+
+
+def attach_analytics(conn, db_path):
+    """Attach the separate analytics database once per connection."""
+    attached = conn.execute("PRAGMA database_list").fetchall()
+    if any(row[1] == "analytics" for row in attached):
+        return
+    path = init_analytics_db(db_path)
+    conn.execute("ATTACH DATABASE ? AS analytics", (str(path),))
+
+
 def with_db_retry(func, max_retries=5, initial_delay=0.05):
     for attempt in range(max_retries):
         try:

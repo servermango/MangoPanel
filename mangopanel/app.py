@@ -52,12 +52,14 @@ from .config import FILEBROWSER_CUSTOM_JS, load_config
 from .mail import build_mail_message_bytes, dkim_dns_value, ensure_mailbox_storage, generate_dkim_material, mailbox_storage_inode_count, mailbox_storage_path, mailbox_storage_size_bytes, mail_auth_health, move_mailbox_storage, recommended_dmarc_record, recommended_spf_record, remove_mailbox_storage, sanitize_mailbox_component, split_mailbox_address
 from .db import (
     connect,
+    attach_analytics,
     create_job,
     apply_system_timezone,
     default_system_timezone_name,
     ensure_local_node,
     get_system_setting,
     init_db,
+    init_analytics_db,
     log_activity,
     log_audit,
     row_to_dict,
@@ -11756,6 +11758,7 @@ def client_visible_job(account, row):
 
 def admin_traffic_payload(conn, live_window_minutes=5, history_days=30):
     """Return current and historical website traffic grouped by domain."""
+    attach_analytics(conn, CONFIG.db_path)
     now = datetime.now(timezone.utc)
     live_start = (now - timedelta(minutes=live_window_minutes)).strftime("%Y-%m-%d %H:%M:%S")
     history_start = (now - timedelta(days=history_days)).strftime("%Y-%m-%d %H:%M:%S")
@@ -11770,7 +11773,7 @@ def admin_traffic_payload(conn, live_window_minutes=5, history_days=30):
         FROM websites w
         JOIN hosting_accounts ha ON ha.id = w.account_id
         JOIN users u ON u.id = ha.user_id
-        LEFT JOIN access_logs l
+        LEFT JOIN analytics.access_logs l
           ON l.website_id = w.id AND l.created_at >= ?
         GROUP BY w.id, w.domain, w.status, ha.username, u.full_name, u.email
         ORDER BY bandwidth_bytes DESC, requests DESC, w.domain ASC
@@ -11784,7 +11787,7 @@ def admin_traffic_payload(conn, live_window_minutes=5, history_days=30):
                COUNT(*) AS requests,
                COALESCE(SUM(bytes_sent), 0) AS bandwidth_bytes,
                SUM(CASE WHEN status_code BETWEEN 400 AND 599 THEN 1 ELSE 0 END) AS errors
-        FROM access_logs
+        FROM analytics.access_logs
         WHERE created_at >= ?
         GROUP BY domain, substr(created_at, 1, 10)
         ORDER BY period DESC, bandwidth_bytes DESC, domain ASC
@@ -11813,6 +11816,7 @@ ANALYTICS_FILTERS = {
 
 
 def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-countries"):
+    attach_analytics(conn, CONFIG.db_path)
     analytics_mode, analytics_available = account_analytics_policy(conn, account_id)
     websites = rows_to_dicts(conn.execute("SELECT id, domain, status, analytics_enabled FROM websites WHERE account_id = ? ORDER BY id", (account_id,)).fetchall())
     selected = select_analytics_website(websites, website_id)
@@ -11833,7 +11837,7 @@ def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-
           COALESCE(SUM(bytes_sent), 0) AS bandwidth_bytes,
           SUM(CASE WHEN status_code BETWEEN 400 AND 499 THEN 1 ELSE 0 END) AS error_4xx,
           SUM(CASE WHEN status_code BETWEEN 500 AND 599 THEN 1 ELSE 0 END) AS error_5xx
-        FROM access_logs
+        FROM analytics.access_logs
         WHERE {where_sql}
         """,
         params,
@@ -11842,7 +11846,7 @@ def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-
         conn.execute(
             f"""
             SELECT country, COUNT(*) AS requests, COALESCE(SUM(bytes_sent), 0) AS bandwidth_bytes
-            FROM access_logs
+            FROM analytics.access_logs
             WHERE {where_sql}
             GROUP BY country
             ORDER BY requests DESC, country ASC
@@ -11858,7 +11862,7 @@ def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-
         conn.execute(
             f"""
             SELECT COALESCE(ip_address, 'Unknown') AS ip_address, COUNT(*) AS requests, MAX(created_at) AS last_seen_at
-            FROM access_logs
+            FROM analytics.access_logs
             WHERE {where_sql}
             GROUP BY COALESCE(ip_address, 'Unknown')
             ORDER BY requests DESC, last_seen_at DESC
@@ -11871,7 +11875,7 @@ def client_analytics_payload(conn, account_id, website_id=None, filter_key="top-
         conn.execute(
             f"""
             SELECT path, COUNT(*) AS requests, COALESCE(SUM(bytes_sent), 0) AS bandwidth_bytes
-            FROM access_logs
+            FROM analytics.access_logs
             WHERE {where_sql}
             GROUP BY path
             ORDER BY bandwidth_bytes DESC, requests DESC
@@ -11938,7 +11942,7 @@ def analytics_logs(conn, where_sql, params):
         conn.execute(
             f"""
             SELECT id, created_at, method, path, status_code, bytes_sent, ip_address, country, referer
-            FROM access_logs
+            FROM analytics.access_logs
             WHERE {where_sql}
             ORDER BY id DESC
             LIMIT 100
@@ -11978,6 +11982,7 @@ def panel_access_log_website(domain):
 
 
 def collect_hosted_access_logs(conn, account_id):
+    attach_analytics(conn, CONFIG.db_path)
     websites = conn.execute(
         """
         SELECT w.id, w.account_id, w.domain, w.document_root, COALESCE(w.analytics_enabled, 1) AS analytics_enabled,
@@ -12005,7 +12010,7 @@ def collect_hosted_access_logs(conn, account_id):
             created_at = parsed["created_at"]
             duplicate = conn.execute(
                 """
-                SELECT id FROM access_logs
+                SELECT id FROM analytics.access_logs
                 WHERE website_id = ? AND created_at = ? AND ip_address = ? AND method = ?
                   AND path = ? AND status_code = ? AND bytes_sent = ?
                 LIMIT 1
@@ -12024,7 +12029,7 @@ def collect_hosted_access_logs(conn, account_id):
                 continue
             conn.execute(
                 """
-                INSERT INTO access_logs(
+                INSERT INTO analytics.access_logs(
                   account_id, website_id, domain, method, path, status_code, bytes_sent,
                   ip_address, country, user_agent, referer, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -12069,6 +12074,7 @@ def parse_combined_access_log(line):
 
 def collect_daily_panel_access_log_metadata(conn):
     """Import local panel request logs once per day for admin analytics."""
+    attach_analytics(conn, CONFIG.db_path)
     now = datetime.now(timezone.utc)
     last_run = get_system_setting(conn, "access_log_metadata_last_run", "")
     try:
@@ -12125,7 +12131,7 @@ def collect_daily_panel_access_log_metadata(conn):
                 new_offset = log_file.tell()
             if rows:
                 conn.executemany(
-                    """INSERT INTO access_logs(
+                    """INSERT INTO analytics.access_logs(
                        account_id, website_id, domain, method, path, status_code, bytes_sent,
                        ip_address, country, user_agent, referer, created_at
                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -12369,7 +12375,8 @@ def collect_resource_usage_sample(conn, account, force=False):
     storage_limit_mb = float(account["storage_mb"] if "storage_mb" in account.keys() and account["storage_mb"] is not None else sample.get("storage_limit_mb") or 0)
     inodes_limit = int(account["inode_limit"] if "inode_limit" in account.keys() and account["inode_limit"] is not None else 0)
 
-    bw_row = conn.execute("SELECT COALESCE(SUM(bytes_sent), 0) / (1024.0 * 1024.0) AS bw_mb FROM access_logs WHERE account_id = ?", (account["id"],)).fetchone()
+    attach_analytics(conn, CONFIG.db_path)
+    bw_row = conn.execute("SELECT COALESCE(SUM(bytes_sent), 0) / (1024.0 * 1024.0) AS bw_mb FROM analytics.access_logs WHERE account_id = ?", (account["id"],)).fetchone()
     bandwidth_mb = round(float(bw_row["bw_mb"]), 2) if bw_row else 0.0
 
     conn.execute(
@@ -14202,7 +14209,8 @@ def delete_client_website(conn, account, website):
     conn.execute("DELETE FROM redirects WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM script_installs WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM wordpress_installs WHERE website_id = ?", (website_id,))
-    conn.execute("UPDATE access_logs SET website_id = NULL WHERE website_id = ?", (website_id,))
+    attach_analytics(conn, CONFIG.db_path)
+    conn.execute("UPDATE analytics.access_logs SET website_id = NULL WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE acme_certificate_orders SET website_id = NULL WHERE website_id = ?", (website_id,))
     conn.execute("UPDATE ssl_certificates SET website_id = NULL, status = 'removed' WHERE website_id = ?", (website_id,))
     conn.execute("DELETE FROM websites WHERE id = ?", (website_id,))
@@ -15117,6 +15125,7 @@ def run():
     CONFIG.data_dir.mkdir(parents=True, exist_ok=True)
     CONFIG.account_root.mkdir(parents=True, exist_ok=True)
     init_db(CONFIG.db_path)
+    init_analytics_db(CONFIG.db_path)
     with connect(CONFIG.db_path) as conn:
         persisted_public_host = get_system_setting(conn, "public_host", "")
         if persisted_public_host:
