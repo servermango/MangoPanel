@@ -895,6 +895,10 @@ class MangoHandler(BaseHTTPRequestHandler):
             if path == "/admin/setup":
                 if panel == "client":
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found")
+                # The first-admin wizard is only valid for a fresh database.
+                # Do not expose a misleading setup form on configured panels.
+                if admin_count() != 0:
+                    return self.redirect_response("/admin")
                 return self.serve_file(PUBLIC_DIR / "admin_setup.html")
             if path == "/admin":
                 if panel == "client":
