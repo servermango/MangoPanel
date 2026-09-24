@@ -5022,13 +5022,37 @@ class MangoHandler(BaseHTTPRequestHandler):
                 return self.json_response({"mailbox_id": cur.lastrowid, "job_id": job_id, "dns_job_id": dns_job_id, "dns_configured": configure_dns, "mailbox": mailbox_row_payload(conn, created)}, HTTPStatus.CREATED)
             if path == "/api/client/backups" and method == "POST":
                 require_active_account(account)
+                body = self.read_json() if self.headers.get("Content-Length", "0") != "0" else {}
+                website_id = body.get("website_id")
+                if website_id not in (None, "", "all"):
+                    website_id = optional_positive_int(website_id)
+                    if not conn.execute("SELECT id FROM websites WHERE id = ? AND account_id = ?", (website_id, account["id"])).fetchone():
+                        raise ApiError(HTTPStatus.NOT_FOUND, "website_not_found")
+                else:
+                    website_id = None
                 cur = conn.execute(
-                    "INSERT INTO backups(account_id, kind, status) VALUES (?, ?, ?)",
-                    (account["id"], "manual", "queued"),
+                    "INSERT INTO backups(account_id, website_id, kind, includes_database, status) VALUES (?, ?, ?, ?, ?)",
+                    (account["id"], website_id, "manual", 1, "queued"),
                 )
                 job_id = enqueue_agent_job(conn, "manual_backup", "backup", cur.lastrowid, {})
                 backup = conn.execute("SELECT * FROM backups WHERE id = ?", (cur.lastrowid,)).fetchone()
                 return self.json_response({"backup_id": cur.lastrowid, "status": backup["status"], "job_id": job_id}, HTTPStatus.CREATED)
+            if path.startswith("/api/client/backups/") and path.endswith("/restore") and method == "POST":
+                require_active_account(account)
+                backup_id = path_int_id(path, "/api/client/backups/")
+                backup = conn.execute("SELECT * FROM backups WHERE id = ? AND account_id = ?", (backup_id, account["id"])).fetchone()
+                if not backup:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "backup_not_found")
+                if backup["status"] != "completed":
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "backup_not_completed")
+                body = self.read_json() if self.headers.get("Content-Length", "0") != "0" else {}
+                include_database = bool(body.get("include_database", True))
+                job_id = enqueue_agent_job(conn, "restore_backup", "backup", backup_id, {"include_database": include_database})
+                conn.execute(
+                    "INSERT INTO restore_history(account_id, backup_id, job_id, website_id, include_database, status) VALUES (?, ?, ?, ?, ?, 'queued')",
+                    (account["id"], backup_id, job_id, backup["website_id"], int(include_database)),
+                )
+                return self.json_response({"restoring": True, "backup_id": backup_id, "job_id": job_id})
             if path.startswith("/api/client/backups/") and path.endswith("/download") and method == "GET":
                 require_account(account)
                 backup_id = path_int_id(path, "/api/client/backups/")

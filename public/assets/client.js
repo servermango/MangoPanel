@@ -421,7 +421,7 @@ const app = createApp({
       wizardWebsiteId: "",
       dbTab: "databases", // 'databases', 'users', 'grants'
       databaseWebsiteFilter: "",
-      backupWizard: { isOpen: false, step: 1, isRunning: false, progressText: '' },
+      backupWizard: { isOpen: false, step: 1, isRunning: false, progressText: '', websiteId: 'all' },
       installer: {
         scripts: DEFAULT_INSTALLER_SCRIPTS.map((script) => ({ ...script, required_fields: [...script.required_fields] })),
         selectedScript: null,
@@ -4031,7 +4031,7 @@ const app = createApp({
     },
     // Backup Wizard
     openBackupWizard() {
-      this.backupWizard = { isOpen: true, step: 1, isRunning: false, progressText: '' };
+      this.backupWizard = { isOpen: true, step: 1, isRunning: false, progressText: '', websiteId: this.backupSiteId || 'all' };
     },
     closeBackupWizard() {
       this.backupWizard.isOpen = false;
@@ -4072,7 +4072,8 @@ const app = createApp({
       this.backupWizard.isRunning = true;
       this.backupWizard.progressText = 'Enqueuing backup job...';
       try {
-        const payload = await this.api("/api/client/backups", { method: "POST", body: "{}" });
+        const body = this.backupWizard.websiteId !== "all" ? { website_id: Number(this.backupWizard.websiteId) } : {};
+        const payload = await this.api("/api/client/backups", { method: "POST", body: JSON.stringify(body) });
         this.backupWizard.progressText = `Job #${payload.job_id} queued. Starting process...`;
         this.pollBackupStatus(payload.backup_id);
       } catch (err) {

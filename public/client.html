@@ -1986,7 +1986,7 @@
                     <tr v-for="backup in filteredBackups" :key="backup.id">
                       <td>#{{ backup.id }}</td><td><span class="pill">{{ backup.kind }}</span></td><td><span class="pill" :class="backup.status">{{ backup.status }}</span></td>
                       <td><strong>{{ backup.website_domain || 'Account' }}</strong><small>{{ backup.created_at }}</small></td>
-                      <td><small>{{ backup.artifact_path || '—' }}</small><div v-if="backup.status === 'completed'" class="actions" style="margin-top:.5rem;"><button class="small-button" @click="downloadBackup(backup.id)">Download</button><button class="small-button" @click="restoreBackup(backup.id)">Restore</button></div></td>
+                      <td><small>{{ backup.artifact_path || '—' }}</small><div v-if="backup.status === 'completed'" class="actions" style="margin-top:.5rem;"><button class="small-button" @click="downloadBackup(backup.id)">Download</button><button class="small-button" @click="restoreBackup(backup.id)">{{ backup.website_id ? 'Restore this backup' : 'Restore account backup' }}</button></div></td>
                     </tr>
                     <tr v-if="!filteredBackups.length"><td colspan="5" class="empty-row">{{ backupSiteId === 'all' ? 'No backups yet. Click Create backup to create one.' : 'No backups are available for this site yet.' }}</td></tr>
                   </tbody>
@@ -4186,7 +4186,7 @@
           <div v-if="backupWizard.isOpen" class="modal-overlay" @click.self="!backupWizard.isRunning && closeBackupWizard()">
             <div class="modal-panel" style="max-width: 600px;">
               <div class="modal-header">
-                <h2>Back Up Entire Account</h2>
+                <h2>{{ backupWizard.websiteId === 'all' ? 'Back Up Entire Account' : 'Back Up Website' }}</h2>
                 <button class="close-button" @click="closeBackupWizard" :disabled="backupWizard.isRunning">×</button>
               </div>
               
@@ -4194,10 +4194,15 @@
                 <div class="info-box" style="margin-bottom: 1.5rem; background: var(--brand-tint); border-color: var(--brand); color: var(--brand-ink);">
                   <app-icon name="backup"></app-icon>
                   <div>
-                    <strong style="font-size: 16px;">Account backup and restore point</strong>
-                    <p style="margin: .5rem 0 0; font-size: 13px;">This includes all websites, account files, mail, and databases. You can restore it later from the completed backup row.</p>
+                    <strong style="font-size: 16px;">{{ backupWizard.websiteId === 'all' ? 'Account backup and restore point' : 'Website backup and restore point' }}</strong>
+                    <p style="margin: .5rem 0 0; font-size: 13px;">{{ backupWizard.websiteId === 'all' ? 'This includes all websites, account files, mail, and databases.' : 'This includes the selected website folder and its associated database.' }} You can restore it later from the completed backup row.</p>
                   </div>
                 </div>
+                <label class="form-label" style="display:block; margin-bottom: .5rem;">Backup scope</label>
+                <select v-model="backupWizard.websiteId" class="form-control" style="width:100%; margin-bottom: 1rem;">
+                  <option value="all">Entire account (all websites, files, mail, and databases)</option>
+                  <option v-for="site in websites" :key="site.id" :value="String(site.id)">{{ site.domain }} (website and associated database)</option>
+                </select>
                 
                 <div style="display: grid; gap: 16px; margin-bottom: 1.5rem;">
                   <div class="premium-card" style="padding: 16px;">
@@ -4238,7 +4243,7 @@
 
               <div class="modal-footer" v-if="backupWizard.step === 1">
                 <button class="ghost-button" @click="closeBackupWizard">Cancel</button>
-                <button class="primary-button" style="padding: 0 24px;" @click="startBackupWizard"><app-icon name="backup"></app-icon><span>Start Account Backup</span></button>
+                <button class="primary-button" style="padding: 0 24px;" @click="startBackupWizard"><app-icon name="backup"></app-icon><span>{{ backupWizard.websiteId === 'all' ? 'Start Account Backup' : 'Start Website Backup' }}</span></button>
               </div>
               <div class="modal-footer" v-if="backupWizard.step === 2 && !backupWizard.isRunning">
                 <button class="primary-button" @click="closeBackupWizard">Done</button>

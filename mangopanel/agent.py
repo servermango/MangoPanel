@@ -1,4 +1,5 @@
 import json
+import io
 import crypt
 import ipaddress
 import calendar
@@ -1077,7 +1078,7 @@ class Agent:
             payload = self.job_payload(job)
             return create_system_backup(conn, self.config, job["target_id"], tuple(payload.get("kinds") or ("database", "files")))
         if job_type == "restore_backup":
-            return self.restore_backup(conn, job["target_id"], job.get("payload") or {})
+            return self.restore_backup(conn, job["target_id"], self.job_payload(job))
         if job_type == "fix_file_ownership":
             return self.fix_file_ownership(conn, job["target_id"], self.job_payload(job))
         if job_type == "sync_ip_rules":
@@ -3935,6 +3936,16 @@ class Agent:
         self.prune_expired_backups(conn, account["id"], retention_days)
         conn.commit()
 
+        website = None
+        if backup["website_id"]:
+            website = conn.execute(
+                "SELECT * FROM websites WHERE id = ? AND account_id = ?",
+                (backup["website_id"], account["id"]),
+            ).fetchone()
+            if not website:
+                self.fail_backup(conn, backup_id)
+                raise AgentError("website_not_found")
+
         roots = [
             "account.json",
             "domains",
@@ -3945,7 +3956,12 @@ class Agent:
             "pg_databases",
             ".runtime/stack",
         ]
-        source_bytes = sum(path_usage(base_path / rel)["bytes"] for rel in roots if (base_path / rel).exists())
+        if website:
+            source_paths = self.website_backup_paths(conn, base_path, website)
+            source_bytes = sum(path_usage(path)["bytes"] for path, _ in source_paths if path.exists())
+        else:
+            source_paths = [base_path / rel for rel in roots]
+            source_bytes = sum(path_usage(path)["bytes"] for path in source_paths if path.exists())
         plan_dict = dict(plan) if plan else {}
         storage_limit_bytes = (int(plan_dict.get("storage_mb")) if plan_dict.get("storage_mb") else 10000) * 1024 * 1024
         inode_limit = int(plan_dict.get("inode_limit")) if plan_dict.get("inode_limit") else 500000
@@ -3972,10 +3988,30 @@ class Agent:
             # Low compression keeps scheduled work bounded and avoids
             # competing with web/database containers for CPU.
             with tarfile.open(artifact_path, "w:gz", compresslevel=1) as tar:
-                for rel in roots:
-                    source = base_path / rel
-                    if source.exists():
-                        tar.add(source, arcname=rel)
+                if website:
+                    for source, archive_name in source_paths:
+                        if source.exists():
+                            tar.add(source, arcname=archive_name)
+                    manifest = {
+                        "type": "website",
+                        "website_id": website["id"],
+                        "domain": website["domain"],
+                        "databases": [
+                            dict(row) for row in conn.execute(
+                                "SELECT id, name, username, website_id FROM databases WHERE account_id = ? AND website_id = ?",
+                                (account["id"], website["id"]),
+                            ).fetchall()
+                        ],
+                    }
+                    data = json.dumps(manifest, sort_keys=True).encode("utf-8")
+                    info = tarfile.TarInfo("backup-manifest.json")
+                    info.size = len(data)
+                    tar.addfile(info, fileobj=io.BytesIO(data))
+                else:
+                    for rel in roots:
+                        source = base_path / rel
+                        if source.exists():
+                            tar.add(source, arcname=rel)
         except Exception:
             if artifact_path.exists():
                 artifact_path.unlink()
@@ -3987,6 +4023,27 @@ class Agent:
             (str(artifact_path), backup_id),
         )
         return {"backup_id": backup_id, "artifact_path": str(artifact_path), "status": "completed"}
+
+    @staticmethod
+    def website_backup_paths(conn, base_path, website):
+        """Return (filesystem path, archive name) pairs for one website."""
+        base_path = Path(base_path).resolve()
+        document_root = Path(website["document_root"]).resolve()
+        domain_root = base_path / "domains" / str(website["domain"])
+        if not domain_root.exists():
+            domain_root = document_root.parent if document_root.name == "public_html" else document_root
+        if not str(domain_root).startswith(str(base_path) + os.sep):
+            raise AgentError("website_document_root_outside_account")
+        pairs = [(domain_root, str(domain_root.relative_to(base_path)))]
+        databases = conn.execute(
+            "SELECT name FROM databases WHERE account_id = ? AND website_id = ?",
+            (website["account_id"], website["id"]),
+        ).fetchall()
+        for database in databases:
+            database_path = base_path / "databases" / str(database["name"])
+            if database_path.exists():
+                pairs.append((database_path, str(database_path.relative_to(base_path))))
+        return pairs
 
     @staticmethod
     def fail_backup(conn, backup_id):
@@ -4008,6 +4065,16 @@ class Agent:
             
         base_path = Path(account["base_path"])
         include_database = bool((payload or {}).get("include_database", backup["includes_database"] if "includes_database" in backup.keys() else True))
+        website = None
+        if backup["website_id"]:
+            website = conn.execute(
+                "SELECT * FROM websites WHERE id = ? AND account_id = ?",
+                (backup["website_id"], account["id"]),
+            ).fetchone()
+            if not website:
+                raise AgentError("website_not_found")
+        if website:
+            return self.restore_website_backup(conn, account, backup, website, include_database)
         restore_roots = [
             base_path / "domains",
             base_path / "databases",
@@ -4040,6 +4107,45 @@ class Agent:
             raise AgentError(f"restore_failed: {str(e)}")
 
         return {"backup_id": backup_id, "restored": True, "artifact_path": str(artifact_path)}
+
+    def restore_website_backup(self, conn, account, backup, website, include_database):
+        base_path = Path(account["base_path"]).resolve()
+        pairs = self.website_backup_paths(conn, base_path, website)
+        domain_root = pairs[0][0]
+        database_paths = [source for source, archive_name in pairs[1:]]
+        try:
+            with tarfile.open(Path(backup["artifact_path"]), "r:gz") as tar:
+                members = []
+                allowed_prefixes = tuple(name.rstrip("/") + "/" for _, name in pairs)
+                for member in tar.getmembers():
+                    if member.name == "backup-manifest.json":
+                        continue
+                    if member.name == pairs[0][1] or member.name.startswith(allowed_prefixes):
+                        members.append(member)
+                extracted_bytes = sum(max(0, int(member.size)) for member in members)
+                disk = shutil.disk_usage(base_path)
+                safety_margin = 1024 * 1024 if self.config.agent_mode == "simulate" else max(1024 ** 3, int(disk.total * 0.10))
+                if disk.free < extracted_bytes + safety_margin:
+                    raise AgentError("insufficient_disk_space_for_restore")
+                self.clear_directory_contents(domain_root)
+                if include_database:
+                    for database_path in database_paths:
+                        self.clear_directory_contents(database_path)
+                if not include_database:
+                    members = [member for member in members if not member.name.startswith("databases/")]
+                safe_extract(tar, path=base_path, members=members)
+        except AgentError:
+            raise
+        except Exception as exc:
+            raise AgentError(f"restore_failed: {str(exc)}")
+        return {
+            "backup_id": backup["id"],
+            "website_id": website["id"],
+            "domain": website["domain"],
+            "restored": True,
+            "include_database": include_database,
+            "artifact_path": backup["artifact_path"],
+        }
 
     def update_website_php(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
