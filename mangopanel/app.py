@@ -12861,6 +12861,13 @@ add_action('init', function () {{
     if (!is_array($payload) || ($payload['purpose'] ?? '') !== 'wordpress_sso' || (int) ($payload['exp'] ?? 0) < time()) return;
     $user = get_user_by('login', (string) ($payload['admin_username'] ?? ''));
     if (!$user && !empty($payload['admin_email'])) $user = get_user_by('email', (string) $payload['admin_email']);
+    // Detection metadata can become stale when a site's administrator is
+    // renamed or imported. Use an actual administrator as a safe fallback
+    // instead of sending the user to wp-login.php.
+    if (!$user && function_exists('get_users')) {{
+        $admins = get_users(array('role' => 'administrator', 'number' => 1, 'orderby' => 'ID', 'order' => 'ASC'));
+        $user = $admins ? $admins[0] : null;
+    }}
     if (!$user) return;
     wp_set_auth_cookie($user->ID, true, is_ssl());
     wp_safe_redirect(admin_url());
