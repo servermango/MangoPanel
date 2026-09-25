@@ -12885,10 +12885,21 @@ def ensure_wordpress_compat(document_root, website_id, admin_username="", admin_
             config = fs_method_pattern.sub("define('FS_METHOD', 'direct');", config, count=1)
         else:
             config = config.replace("<?php", "<?php\ndefine('FS_METHOD', 'direct');\n", 1)
-        if "MANGOPANEL_SSO_SECRET" not in config:
-            define_line = f"define('MANGOPANEL_SSO_SECRET', '{secret}');\n"
-            marker = "if ( !defined('ABSPATH') )"
-            config = config.replace(marker, define_line + "\n" + marker, 1) if marker in config else config + "\n" + define_line
+        # MU plugins are loaded by wp-settings.php, so the SSO secret must be
+        # defined before that file is required. Older configs could have the
+        # define appended at EOF, which made the plugin silently skip SSO.
+        config = re.sub(
+            r"^[ \t]*define\(\s*(['\"])MANGOPANEL_SSO_SECRET\1\s*,\s*(['\"])[^'\"]*\2\s*\);\s*\n?",
+            "",
+            config,
+            flags=re.I | re.M,
+        )
+        define_line = f"define('MANGOPANEL_SSO_SECRET', '{secret}');\n"
+        wp_settings_marker = "require_once ABSPATH . 'wp-settings.php';"
+        if wp_settings_marker in config:
+            config = config.replace(wp_settings_marker, define_line + "\n" + wp_settings_marker, 1)
+        else:
+            config = config + "\n" + define_line
         # WordPress cache drop-ins often persist an absolute plugin path in
         # wp-config.php. After an account migration that path can point to the
         # previous account home, causing open_basedir warnings on every PHP
