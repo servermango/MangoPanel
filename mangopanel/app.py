@@ -15131,6 +15131,10 @@ def run():
     init_db(CONFIG.db_path)
     init_analytics_db(CONFIG.db_path)
     with connect(CONFIG.db_path) as conn:
+        # Status history is operational telemetry, not control-plane state.
+        # Keep a bounded window so repeated health checks cannot grow the
+        # primary database indefinitely.
+        conn.execute("DELETE FROM status_check_results WHERE created_at < datetime('now', '-30 days')")
         persisted_public_host = get_system_setting(conn, "public_host", "")
         if persisted_public_host:
             CONFIG.public_host = normalize_public_host(persisted_public_host)

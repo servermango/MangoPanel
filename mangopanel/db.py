@@ -1033,6 +1033,43 @@ def ensure_schema(conn):
         );
         """
     )
+    # Older installations could create the same API health check repeatedly
+    # because status_checks had no natural-key constraint. Consolidate those
+    # rows before enforcing uniqueness; preserve all results by pointing them
+    # at the oldest check definition.
+    conn.execute(
+        """
+        UPDATE status_check_results
+        SET check_id = (
+          SELECT MIN(keep.id) FROM status_checks keep
+          WHERE keep.component_id = (SELECT component_id FROM status_checks dup WHERE dup.id = status_check_results.check_id)
+            AND keep.name = (SELECT name FROM status_checks dup WHERE dup.id = status_check_results.check_id)
+            AND keep.kind = (SELECT kind FROM status_checks dup WHERE dup.id = status_check_results.check_id)
+            AND keep.target = (SELECT target FROM status_checks dup WHERE dup.id = status_check_results.check_id)
+        )
+        WHERE check_id NOT IN (
+          SELECT MIN(id) FROM status_checks GROUP BY component_id, name, kind, target
+        )
+        """
+    )
+    conn.execute(
+        """
+        DELETE FROM status_checks
+        WHERE id NOT IN (SELECT MIN(id) FROM status_checks GROUP BY component_id, name, kind, target)
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_status_checks_natural_key
+        ON status_checks(component_id, name, kind, target)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_status_check_results_created_at
+        ON status_check_results(created_at)
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS user_profiles (
