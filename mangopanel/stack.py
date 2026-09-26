@@ -744,7 +744,16 @@ def ensure_account_layout(account, plan, node, websites, runtime=None, mailboxes
         ftp_passwd.write_text("", encoding="utf-8")
     ftp_passwd.chmod(0o600)
     
+    # Keep the account database tuned across every MangoPanel reprovision.
+    # The buffer pool is deliberately below the container ceiling so MariaDB
+    # still has room for connection/session buffers and temporary tables.
     mysql_cnf = """[mysqld]
+innodb_buffer_pool_size=2048M
+max_connections=250
+tmp_table_size=96M
+max_heap_table_size=96M
+thread_cache_size=96
+table_open_cache=6000
 """
     (paths["stack"] / "mysql.cnf").write_text(mysql_cnf, encoding="utf-8")
     
@@ -817,7 +826,7 @@ fi
 for opcache_ini in /usr/local/lsws/lsphp*/etc/php/*/mods-available/opcache.ini; do
   [ -f "$opcache_ini" ] || continue
   if ! grep -q '^opcache\.enable=' "$opcache_ini" 2>/dev/null; then
-    printf 'opcache.enable=1\nopcache.enable_cli=1\nopcache.memory_consumption=128\nopcache.interned_strings_buffer=16\nopcache.max_accelerated_files=20000\n' >> "$opcache_ini"
+    printf 'opcache.enable=1\nopcache.enable_cli=1\nopcache.memory_consumption=256\nopcache.interned_strings_buffer=16\nopcache.max_accelerated_files=20000\n' >> "$opcache_ini"
   fi
 done
 
@@ -1316,6 +1325,22 @@ def render_modsecurity_rules(websites):
         'SecRule REQUEST_URI "@streq /wp-login.php" "id:1099997,phase:1,pass,nolog,chain"',
         'SecRule REQUEST_METHOD "@streq POST" "setvar:ip.mp_login_count=+1,expirevar:ip.mp_login_count=300"',
         'SecRule IP:MP_LOGIN_COUNT "@gt 5" "id:1099998,phase:1,deny,status:429,log,msg:\'MangoPanel login IP block\'"',
+        # Limit abusive JNews polling before it reaches PHP or MySQL while
+        # allowing normal frontend bursts.
+        'SecRule QUERY_STRING "@rx (^|&)ajax-request=jnews(&|$)" "id:10999910,phase:1,pass,nolog,chain"',
+        'SecRule REQUEST_METHOD "@rx ^(?:GET|POST)$" "setvar:ip.mp_jnews_count=+1,expirevar:ip.mp_jnews_count=60"',
+        'SecRule IP:MP_JNEWS_COUNT "@gt 60" "id:10999911,phase:1,deny,status:429,log,msg:\'MangoPanel JNews AJAX rate limit\'"',
+        # The empty router request only boots WordPress and returns an empty
+        # 200 response. Reject the exact form reported by the old host while
+        # preserving requests that include a real JNews action.
+        'SecRule QUERY_STRING "@streq ajax-request=jnews" "id:10999912,phase:1,deny,status:404,nolog,msg:\'MangoPanel empty JNews request\'"',
+        # Live search performs wildcard scans over the large posts table.
+        # Cap abusive polling and oversized input before PHP/MySQL are reached.
+        'SecRule QUERY_STRING "@rx (^|&)action=jnews_ajax_live_search(&|$)" "id:10999913,phase:1,pass,nolog,chain"',
+        'SecRule REQUEST_METHOD "@streq GET" "setvar:ip.mp_live_search_count=+1,expirevar:ip.mp_live_search_count=60"',
+        'SecRule IP:MP_LIVE_SEARCH_COUNT "@gt 10" "id:10999914,phase:1,deny,status:429,log,msg:\'MangoPanel live search rate limit\'"',
+        'SecRule QUERY_STRING "@rx (^|&)action=jnews_ajax_live_search(&|$)" "id:10999915,phase:1,deny,status:413,log,chain,msg:\'MangoPanel live search input too long\'"',
+        'SecRule QUERY_STRING "@rx (^|&)s=[^&]{121}" "t:none"',
         # Elementor sends large, authenticated JSON editor payloads containing
         # HTML, CSS, SVG, and JavaScript. CRS interprets those values as attack
         # signatures, so skip body inspection only for the editor endpoints.
@@ -1436,6 +1461,9 @@ rewrite  {{
   enable                  1
   autoLoadHtaccess        1
   RewriteRule             ^/_mangopanel_errors/ - [L]
+  # Never serve WordPress configuration source, even if a PHP handler is
+  # temporarily unavailable or a malformed config contains a closing tag.
+  RewriteRule             ^/wp-config(?:\.php)?$ - [F,L,END,NC]
   RewriteCond             %{{DOCUMENT_ROOT}}/.mangopanel-suspended -f
   RewriteRule             ^/(.*)$ /_mangopanel_errors/suspended.html [L]
   # Missing static assets must not fall through to a CMS front controller.
@@ -1445,7 +1473,16 @@ rewrite  {{
   RewriteCond             %{{REQUEST_FILENAME}} !-f
   RewriteCond             %{{REQUEST_FILENAME}} !-d
   RewriteCond             %{{REQUEST_URI}} \.(?:css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|pdf)(?:\?.*)?$ [NC]
-  RewriteRule             ^.*$ - [R=404,L]
+  RewriteRule             ^/.*\.(?:css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|bmp|woff2?|ttf|otf|eot|mp4|webm|pdf)(?:\?.*)?$ - [R=404,L,END]
+  # Cache only public, read-only JNews fragments. Keep search, comments,
+  # auth, cart, nonce, and POST actions dynamic because they may be
+  # user-specific or mutate state. LiteSpeed still bypasses session cookies.
+  RewriteCond             %{{REQUEST_METHOD}} ^GET$ [NC]
+  RewriteCond             %{{QUERY_STRING}} ^ajax-request=jnews&action=jnews_(?:newsfeed_load|mega_category_[12])$ [NC]
+  RewriteRule             ^ - [E=cache-control:public,max-age=60]
+  RewriteCond             %{{REQUEST_METHOD}} ^GET$ [NC]
+  RewriteCond             %{{QUERY_STRING}} ^ajax-request=jnews&action=jnews_ajax_live_search&s=[^&]+$ [NC]
+  RewriteRule             ^ - [E=cache-control:public,max-age=30]
 {hotlink_block}
 }}
 
@@ -1511,7 +1548,7 @@ scripthandler  {{
 
 phpIniOverride  {{
   php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
-  php_admin_value memory_limit "256M"
+  php_admin_value memory_limit "512M"
   php_admin_value upload_max_filesize "10M"
   php_admin_value post_max_size "10M"
   php_value max_execution_time "{php_timeout}"
@@ -1675,12 +1712,12 @@ services:
     image: redis:7-alpine
     container_name: mp-{username}-redis
     restart: unless-stopped
-    mem_limit: 256m
+    mem_limit: 2048m
     cpus: "{service_cpu_count}"
     cgroup_parent: {cpu_group}
     # One Redis service and its /data volume are retained per account. The
     # extra logical databases isolate individual sites within that service.
-    command: ["redis-server", "--databases", "256", "--maxmemory", "200mb", "--maxmemory-policy", "allkeys-lru", "--save", "900", "1", "--appendonly", "no"]
+    command: ["redis-server", "--databases", "256", "--maxmemory", "1800mb", "--maxmemory-policy", "allkeys-lru", "--save", "900", "1", "--appendonly", "no"]
     volumes:
       - {base_path}/.runtime/stack/redis:/data
     networks:
@@ -1845,7 +1882,7 @@ services:
     image: mariadb:10.11
     container_name: mp-{username}-db
     restart: unless-stopped
-    mem_limit: 1536m
+    mem_limit: 3072m
     cpus: "{service_cpu_count}"
     cgroup_parent: {cpu_group}
     labels:

@@ -12902,9 +12902,13 @@ def ensure_wordpress_compat(document_root, website_id, admin_username="", admin_
             flags=re.I | re.M,
         )
         define_line = f"define('MANGOPANEL_SSO_SECRET', '{secret}');\n"
-        wp_settings_marker = "require_once ABSPATH . 'wp-settings.php';"
-        if wp_settings_marker in config:
-            config = config.replace(wp_settings_marker, define_line + "\n" + wp_settings_marker, 1)
+        wp_settings_pattern = re.compile(
+            r"require_once\s*(?:\(\s*)?ABSPATH\s*\.\s*['\"]wp-settings\.php['\"]\s*\)?\s*;",
+            re.I,
+        )
+        wp_settings_match = wp_settings_pattern.search(config)
+        if wp_settings_match:
+            config = config[:wp_settings_match.start()] + define_line + "\n" + config[wp_settings_match.start():]
         else:
             config = config + "\n" + define_line
         # WordPress cache drop-ins often persist an absolute plugin path in
