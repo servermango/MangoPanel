@@ -3384,14 +3384,15 @@ class MangoHandler(BaseHTTPRequestHandler):
                     website["dns_last_error"] = provider_state.get("last_error") or ""
                     website["dns_warnings"] = dns_state_warnings(website)
 
-                    if website.get("ssl_status") != "custom":
-                        has_tls = check_domain_tls_handshake(website["domain"])
-                        real_status = "active" if has_tls else "missing"
-                        if website.get("ssl_status") != real_status:
-                            website["ssl_status"] = real_status
+                    # A failed local handshake can be transient, so it cannot prove
+                    # SSL is missing. Preserve provisioned state and HTTPS routes;
+                    # only a successful probe may promote the status to active.
+                    if website.get("ssl_status") != "custom" and check_domain_tls_handshake(website["domain"]):
+                        if website.get("ssl_status") != "active":
+                            website["ssl_status"] = "active"
                             try:
-                                conn.execute("UPDATE websites SET ssl_status = ? WHERE id = ?", (real_status, website["id"]))
-                                conn.execute("UPDATE ssl_certificates SET status = ? WHERE website_id = ? AND status != 'custom'", (real_status, website["id"]))
+                                conn.execute("UPDATE websites SET ssl_status = 'active' WHERE id = ?", (website["id"],))
+                                conn.execute("UPDATE ssl_certificates SET status = 'active' WHERE website_id = ? AND status != 'custom'", (website["id"],))
                             except Exception:
                                 pass
                 return self.json_response({"websites": websites})
