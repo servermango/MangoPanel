@@ -35,6 +35,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from .caddy import CaddyConfigError, sync_account_ip_rules
 from .config import load_config
 from .db import apply_system_timezone, connect, create_job, get_system_setting, get_system_timezone, set_system_setting, log_audit, log_job_event, row_to_dict, rows_to_dicts
 from .default_page import DEFAULT_PAGE_CONTENT
@@ -4680,99 +4681,15 @@ class Agent:
         return {"synced": True, "account_id": account["id"], "rules_count": len(rules)}
 
     def sync_caddy_ip_rules(self, account_id, domains, blocked_ips):
-        """Install account IP blocks in the shared Caddy proxy, if present."""
+        """Update only account IP routes; never replace the shared proxy config."""
         if not domains:
             return
-        target_domains = expand_domain_aliases(domains)
-        valid_ranges = []
-        for value in blocked_ips:
-            try:
-                valid_ranges.append(str(ipaddress.ip_network(value, strict=False)))
-            except ValueError:
-                continue
-        if not valid_ranges:
-            valid_ranges = []
-        exact_client_ips = []
-        for value in blocked_ips:
-            try:
-                address = ipaddress.ip_address(value)
-            except ValueError:
-                continue
-            exact_client_ips.append(str(address))
-
-        container = "mangopanel-caddy"
         try:
-            config_bytes = subprocess.check_output(
-                ["docker", "exec", container, "wget", "-qO-", "http://127.0.0.1:2019/config/"],
-                stderr=subprocess.STDOUT,
-                timeout=15,
+            sync_account_ip_rules(
+                account_id, expand_domain_aliases(domains), blocked_ips, CLOUDFLARE_PROXY_RANGES,
             )
-            config = json.loads(config_bytes.decode("utf-8"))
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError):
-            # Development/test stacks may not run Caddy.  The .htaccess rule
-            # above remains the enforcement path there.
-            return
-
-        servers = config.get("apps", {}).get("http", {}).get("servers", {})
-        route_prefix = f"mangopanel-ip-block-{int(account_id)}-"
-        for server in servers.values():
-            routes = server.get("routes", [])
-            server["routes"] = [route for route in routes if not str(route.get("@id", "")).startswith(route_prefix)]
-
-        if valid_ranges or exact_client_ips:
-            for server_name, server in servers.items():
-                routes = server.get("routes", [])
-                insert_at = next(
-                    (index for index, route in enumerate(routes)
-                     if any(domain in host for matcher in route.get("match", [])
-                            for host in matcher.get("host", []) for domain in target_domains)),
-                    len(routes),
-                )
-                handlers = [{
-                    "handler": "static_response",
-                    "status_code": 403,
-                    "body": "Forbidden\n",
-                }]
-                if valid_ranges:
-                    routes.insert(insert_at, {
-                        "@id": f"{route_prefix}{server_name}-direct",
-                        "match": [{"host": target_domains, "remote_ip": {"ranges": valid_ranges}}],
-                        "handle": handlers,
-                        "terminal": True,
-                    })
-                    insert_at += 1
-                if exact_client_ips:
-                    routes.insert(insert_at, {
-                        "@id": f"{route_prefix}{server_name}-cloudflare",
-                        "match": [{
-                            "host": target_domains,
-                            "remote_ip": {"ranges": CLOUDFLARE_PROXY_RANGES},
-                            "header": {"CF-Connecting-IP": exact_client_ips},
-                        }],
-                        "handle": handlers,
-                        "terminal": True,
-                    })
-
-        config_path = None
-        try:
-            route_id = f"mangopanel-ip-block-{int(account_id)}"
-            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
-                json.dump(config, handle)
-                config_path = handle.name
-            subprocess.run(["docker", "cp", config_path, f"{container}:/tmp/{route_id}.json"], check=True, timeout=15)
-            subprocess.run([
-                "docker", "exec", container, "wget", "-qO-", "--post-file", f"/tmp/{route_id}.json",
-                "--header", "Content-Type: application/json", "http://127.0.0.1:2019/load",
-            ], check=True, timeout=20, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            raise AgentError(f"caddy_ip_rule_sync_failed: {exc}") from exc
-        finally:
-            if config_path:
-                try:
-                    os.unlink(config_path)
-                except OSError:
-                    pass
-            subprocess.run(["docker", "exec", container, "rm", "-f", f"/tmp/{route_id}.json"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except CaddyConfigError as exc:
+            raise AgentError(str(exc)) from exc
 
     def sync_website_index(self, conn, website_id):
         website = conn.execute("SELECT * FROM websites WHERE id = ?", (website_id,)).fetchone()
