@@ -65,10 +65,11 @@ done
 '''
     command(['docker', 'exec', container, 'bash', '-c', script], timeout=1200)
     legacy = update_legacy_php(container, backup, command)
+    webadmin = update_admin_php(container, backup, command)
     # Restart only this web container, clearing detached workers running old code.
     command(['docker', 'restart', '-t', '30', container], timeout=90)
     tools = update_account_tools(account) if account.get('base_path') else None
-    return {'account_id': account['id'], 'container': container, 'backup': str(backup), 'rollback_archive': str(archive), 'status': 'updated', 'php_branch_preserved': True, 'tools': tools, 'legacy_backports': legacy}
+    return {'account_id': account['id'], 'container': container, 'backup': str(backup), 'rollback_archive': str(archive), 'status': 'updated', 'php_branch_preserved': True, 'tools': tools, 'legacy_backports': legacy, 'webadmin': webadmin}
 
 
 TOOL_IMAGES = {
@@ -216,3 +217,30 @@ def update_legacy_php(container, backup, command, versions=None):
         command(['docker', 'cp', str(staged / 'PHP2SHELL-PATCHED'), container + ':' + prefix + '/PHP2SHELL-PATCHED'])
         updated.append(version)
     return updated
+
+
+ADMIN_PHP_LAUNCHER = '#!/bin/sh\nexec /usr/local/lsws/lsphp82/bin/lsphp -c /usr/local/lsws/admin/misc/php.ini "$@"\n'
+
+
+def admin_php_dockerfile():
+    """Keep WebAdmin on the same maintained PHP branch as its validated launcher."""
+    import shlex
+    lines = ' '.join(shlex.quote(line) for line in ADMIN_PHP_LAUNCHER.splitlines())
+    return "RUN printf '%s\\n' " + lines + " > /usr/local/lsws/admin/fcgi-bin/admin_php && chmod 755 /usr/local/lsws/admin/fcgi-bin/admin_php\n"
+
+
+def update_admin_php(container, backup, command):
+    """Patch the separate WebAdmin PHP handler without restarting website workers."""
+    target = '/usr/local/lsws/admin/fcgi-bin/admin_php'
+    command(['docker', 'cp', container + ':' + target, str(backup / 'admin_php.before')])
+    launcher = backup / 'admin_php.launcher'
+    launcher.write_text(ADMIN_PHP_LAUNCHER)
+    launcher.chmod(0o755)
+    command(['docker', 'cp', str(launcher), container + ':' + target + '.security-new'])
+    command(['docker', 'exec', container, 'sh', '-c', 'chmod 755 ' + target + '.security-new && mv ' + target + '.security-new ' + target])
+    command(['docker', 'exec', container, 'sh', '-c', 'for p in /proc/[0-9]*/exe; do case "$(readlink "$p" 2>/dev/null)" in /usr/local/lsws/admin/fcgi-bin/admin_php*) pid=${p#/proc/}; pid=${pid%/exe}; kill -TERM "$pid" 2>/dev/null || true;; esac; done'])
+    version = command(['docker', 'exec', container, target, '-v'])
+    settings = command(['docker', 'exec', container, '/usr/local/lsws/lsphp82/bin/php', '-c', '/usr/local/lsws/admin/misc/php.ini', '-r', 'echo PHP_VERSION." ".ini_get("session.upload_progress.enabled");'])
+    if not is_patched(version) or settings.strip().split()[-1] != '0':
+        raise RuntimeError('webadmin_php_verification_failed')
+    return {'runtime': settings.strip(), 'website_workers_restarted': False}

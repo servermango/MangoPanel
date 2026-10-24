@@ -1,6 +1,6 @@
 # PHP runtime security maintenance
 
-Administrators with `hosting.manage` can use **Update PHP security** on a hosting account. The asynchronous `update_account_php_security` agent job updates the account's installed LSAPI packages within their existing PHP branches, builds official pinned source backports for installed PHP 7.4/8.0/8.1 cores, recycles only its web container, and updates its running phpMyAdmin, Adminer and SnappyMail services. Databases, Redis, website content, mail storage and account records are retained.
+Administrators with `hosting.manage` can use **Update PHP security** on a hosting account. The asynchronous `update_account_php_security` agent job updates the account's installed LSAPI packages within their existing PHP branches, builds official pinned source backports for installed PHP 7.4/8.0/8.1 cores, recycles only its web container, replaces the separate WebAdmin PHP 5.6 handler with a launcher for patched PHP 8.2, and updates its running phpMyAdmin, Adminer and SnappyMail services. Databases, Redis, website content, mail storage and account records are retained.
 
 The job archives all LSAPI runtimes (including extensions and INIs) and package metadata under `/root/mangopanel-php-security/`; auxiliary service Compose files and rollback images are retained under `/root/mangopanel-php-security-tools/`. These paths contain private configuration and must remain root-only. Restoring a pre-patch PHP runtime restores the vulnerability; use rollback only to recover service while arranging a fixed build.
 

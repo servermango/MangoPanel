@@ -12,6 +12,7 @@ from mangopanel.config import CONFIG, FILEBROWSER_CUSTOM_JS
 
 from .default_page import DEFAULT_PAGE_CONTENT
 from .php_legacy import legacy_security_stages
+from .php_security import admin_php_dockerfile
 from .error_pages import DEFAULT_ERROR_PAGES
 from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes, sanitize_mailbox_component
 from .snappymail import SNAPPYMAIL_APP_VERSION, SNAPPYMAIL_IMAGE, ensure_snappymail_layout, load_snappymail_state
@@ -964,6 +965,7 @@ RUN : PHP2Shell-20261025 && apt-get update && apt-get install -y lsphp82 lsphp83
         if not any(line.startswith(f"COPY --from=php{v}_security /usr/local/lsws/lsphp{v}") for v in {"74", "80", "81"} - required_legacy)
     )
     dockerfile_content += "RUN /usr/local/lsws/lsphp82/bin/php -r 'exit(version_compare(PHP_VERSION, \"8.2.35\", \"<\"));' && /usr/local/lsws/lsphp83/bin/php -r 'exit(version_compare(PHP_VERSION, \"8.3.36\", \"<\"));' && /usr/local/lsws/lsphp84/bin/php -r 'exit(version_compare(PHP_VERSION, \"8.4.27\", \"<\"));'\n"
+    dockerfile_content += admin_php_dockerfile()
     (web_build_dir / "Dockerfile").write_text(dockerfile_content, encoding="utf-8")
     
     # OS User Separation: Change ownership and permissions (Linux production only)

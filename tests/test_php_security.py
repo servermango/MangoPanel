@@ -13,7 +13,7 @@ def test_update_scopes_restart_and_preserves_branch(tmp_path):
     def execute(args, **kwargs):
         calls.append(args)
         return subprocess.CompletedProcess(args,0,'ok','')
-    with patch('mangopanel.php_security.subprocess.run',side_effect=execute), patch('mangopanel.php_security.update_legacy_php', return_value=[]):
+    with patch('mangopanel.php_security.subprocess.run',side_effect=execute), patch('mangopanel.php_security.update_legacy_php', return_value=[]), patch('mangopanel.php_security.update_admin_php', return_value={}):
         result=update_account_php({'id':1,'username':'u000001'},tmp_path)
     assert calls[0][:3]==['docker','exec','mp-u000001-web']
     assert 'cd / && tar -cf - usr/local/lsws/lsphp*' in calls[0][-1]
@@ -135,3 +135,16 @@ def test_modern_accounts_build_legacy_only_when_selected(tmp_path):
     changed=p.read_text()
     assert 'COPY --from=php74_security /usr/local/lsws/lsphp74' in changed
     assert 'COPY --from=php80_security /usr/local/lsws/lsphp80' not in changed
+
+def test_webadmin_uses_patched_runtime_and_only_recycles_old_admin_workers(tmp_path):
+    from mangopanel.php_security import update_admin_php,admin_php_dockerfile
+    calls=[]
+    def command(args,**kwargs):
+        calls.append(args)
+        return 'PHP 8.2.35 (litespeed)' if args[-1]=='-v' else '8.2.35 0'
+    result=update_admin_php('mp-u000001-web',tmp_path,command)
+    assert not result['website_workers_restarted']
+    assert not any('restart' in a for a in calls)
+    assert any('/admin/fcgi-bin/admin_php*' in a[-1] for a in calls)
+    assert 'lsphp82/bin/lsphp' in admin_php_dockerfile()
+    assert '"$@"' in (tmp_path/'admin_php.launcher').read_text()
