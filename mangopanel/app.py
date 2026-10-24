@@ -3649,6 +3649,7 @@ class MangoHandler(BaseHTTPRequestHandler):
                             "website",
                             website_id,
                             {"php_version": php_version, "previous_php_version": website["php_version"]},
+                            inline=False,
                         )
                     elif "php_ini" in body:
                         job_id = enqueue_agent_job(conn, "update_website_php_ini", "website", website_id, {})
@@ -9051,6 +9052,17 @@ class MangoHandler(BaseHTTPRequestHandler):
                 log_audit(conn, "admin", actor["id"], "unsuspend_account", "hosting_account", account_id)
                 account = conn.execute("SELECT status FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
                 return self.json_response({"status": account["status"], "job_id": job_id})
+            if path.endswith("/php-security") and path.startswith("/api/admin/hosting-accounts/") and method == "POST":
+                require_admin_permission(actor, "hosting.manage")
+                account_id = int(path.split("/")[-2])
+                account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (account_id,)).fetchone()
+                if not account or account["status"] != "active":
+                    raise ApiError(HTTPStatus.CONFLICT, "active_hosting_account_required")
+                if conn.execute("SELECT id FROM jobs WHERE target_type = 'hosting_account' AND target_id = ? AND status IN ('queued', 'running')", (account_id,)).fetchone():
+                    raise ApiError(HTTPStatus.CONFLICT, "php_security_update_in_progress")
+                job_id = enqueue_agent_job(conn, "update_account_php_security", "hosting_account", account_id, {}, inline=False)
+                log_audit(conn, "admin", actor["id"], "update_php_security", "hosting_account", account_id, metadata={"job_id": job_id})
+                return self.json_response({"job_id": job_id, "account_id": account_id})
             if path.endswith("/stack/rebuild") and path.startswith("/api/admin/hosting-accounts/") and method == "POST":
                 require_admin_permission(actor, "hosting.manage")
                 account_id = int(path.split("/")[-3])

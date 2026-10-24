@@ -881,6 +881,7 @@
                           <button @click="changeAccountPlan(client, account)" :disabled="Number(account.selected_plan_id) === Number(account.plan_id)">Update Plan</button>
                           <button @click="openAccountDatabases(client, account)">Databases</button>
                           <button @click="toggleAccountStatus(client, account)">{{ ['suspended', 'hard_suspended'].includes(account.status) ? "Unsuspend" : "Soft suspend" }}</button>
+                          <button class="secondary-button" @click="updateAccountPhpSecurity(account)" :disabled="account.status !== 'active'">Update PHP security</button>
                           <button class="secondary-button" @click="rebuildAccountStack(account)" :disabled="account.status === 'rebuilding' || rebuildingStackIds[account.id]">
                             {{ rebuildingStackIds[account.id] || account.status === 'rebuilding' ? 'Rebuilding…' : 'Rebuild · preserve data' }}
                           </button>
@@ -4024,7 +4025,7 @@
     </div>
 
     <script src="/assets/vue.global.prod.js"></script>
-    <script src="/assets/admin.js?v=1.0.13"></script>
+    <script src="/assets/admin.js?v=1.0.14"></script>
     <script>
       (function initAdminLoginInteraction() {
         function attachListeners() {

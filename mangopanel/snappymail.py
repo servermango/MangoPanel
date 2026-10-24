@@ -9,7 +9,7 @@ from pathlib import Path
 
 SNAPPYMAIL_DEFAULT_SSO_PLUGIN = "login-external-sso"
 SNAPPYMAIL_APP_VERSION = "2.38.2"
-SNAPPYMAIL_IMAGE = "djmaze/snappymail:latest@sha256:5e3d990438809a8a49f8ac5758db03e858e6e9fc0e369e1f9e474f7664079905"
+SNAPPYMAIL_IMAGE = "djmaze/snappymail:latest@sha256:cc053169c76e27d54c3533b002ec9987786ca50bf9265ae318b44d8699f60ec0"
 SNAPPYMAIL_THEME_NAME = "MangoPanel"
 SNAPPYMAIL_THEME_SOURCE = Path(__file__).resolve().parent.parent / "templates" / "snappymail-theme" / SNAPPYMAIL_THEME_NAME
 

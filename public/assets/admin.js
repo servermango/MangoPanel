@@ -1680,6 +1680,13 @@ createApp({
         this.message = error.message;
       }
     },
+    async updateAccountPhpSecurity(account) {
+      try {
+        this.message = `Updating PHP security for ${account.username}…`;
+        const result = await this.api(`/api/admin/hosting-accounts/${account.id}/php-security`, { method: "POST", body: "{}" });
+        this.message = `PHP security update queued as job #${result.job_id}. This account's web container will restart; PHP branches are preserved.`;
+      } catch (error) { this.message = error.message; }
+    },
     async rebuildAccountStack(stack) {
       const accountId = stack.account_id || stack.id;
       const accountName = stack.username || `account #${accountId}`;

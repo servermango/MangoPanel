@@ -517,6 +517,10 @@ class Agent:
     def recover_stale_jobs(self, conn):
         """Mark jobs abandoned by a dead worker so they cannot block an account forever."""
         conn.execute(
+            "UPDATE jobs SET status = 'failed', result = ?, updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP WHERE status = 'running' AND type = 'update_account_php_security' AND claimed_at < datetime('now', '-6 hours')",
+            (json.dumps({"error": "stale_php_security_job_recovered"}),),
+        )
+        conn.execute(
             """UPDATE jobs
                SET status = 'failed',
                    result = ?,
@@ -531,7 +535,8 @@ class Agent:
                -- promptly while still allowing legitimately long operations
                -- (for example a stack rebuild) a few minutes to finish.
                AND claimed_at < datetime('now', '-15 minutes')
-               AND type NOT IN ('automatic_backup', 'manual_backup', 'system_backup')""",
+               AND type NOT IN ('automatic_backup', 'manual_backup', 'system_backup', 'update_account_php_security')
+               AND (type NOT IN ('provision_hosting_account', 'rebuild_stack', 'create_website', 'update_website_php') OR claimed_at < datetime('now', '-90 minutes'))""",
             (json.dumps({"error": "stale_job_recovered"}),),
         )
         conn.execute(
@@ -1021,6 +1026,12 @@ class Agent:
         job_type = job["type"]
         if job_type == "provision_hosting_account":
             return self.provision_hosting_account(conn, job["target_id"])
+        if job_type == "update_account_php_security":
+            from .php_security import update_account_php
+            account = conn.execute("SELECT * FROM hosting_accounts WHERE id = ?", (job["target_id"],)).fetchone()
+            if not account or account["status"] != "active":
+                raise AgentError("active_hosting_account_required")
+            return update_account_php(account)
         if job_type == "rebuild_stack":
             return self.rebuild_stack(conn, job)
         if job_type == "create_website":
@@ -3262,7 +3273,7 @@ class Agent:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=600,
+                timeout=2400,
             )
             if result.returncode != 0:
                 raise AgentError(result.stderr.strip() or result.stdout.strip() or "docker_compose_failed")

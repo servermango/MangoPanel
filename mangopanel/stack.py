@@ -11,6 +11,7 @@ from pathlib import Path
 from mangopanel.config import CONFIG, FILEBROWSER_CUSTOM_JS
 
 from .default_page import DEFAULT_PAGE_CONTENT
+from .php_legacy import legacy_security_stages
 from .error_pages import DEFAULT_ERROR_PAGES
 from .mail import ensure_mailbox_storage, mailbox_storage_path, mailbox_storage_size_bytes, sanitize_mailbox_component
 from .snappymail import SNAPPYMAIL_APP_VERSION, SNAPPYMAIL_IMAGE, ensure_snappymail_layout, load_snappymail_state
@@ -822,6 +823,11 @@ fi
 if grep -q '^enabled' /etc/mangopanel/ftp.enabled; then
   nohup /usr/sbin/proftpd -n -c /etc/proftpd/mangopanel.conf >/var/log/proftpd-runtime.log 2>&1 </dev/null &
 fi
+# Apply PHP's startup mitigation before accepting requests, including recreated containers.
+for security_dir in /usr/local/lsws/lsphp*/etc/php/*/mods-available; do
+  [ -d "$security_dir" ] || continue
+  echo 'session.upload_progress.enabled=0' > "$security_dir/zz-mangopanel-security.ini"
+done
 # Ensure OPcache is properly enabled and configured for all installed PHP versions
 for opcache_ini in /usr/local/lsws/lsphp*/etc/php/*/mods-available/opcache.ini; do
   [ -f "$opcache_ini" ] || continue
@@ -910,6 +916,8 @@ done
     runner_path.write_text(service_runner, encoding="utf-8")
     runner_path.chmod(0o755)
 
+    (paths["stack"] / "php-security.ini").write_text("session.upload_progress.enabled=0\n", encoding="utf-8")
+
     paths["compose"].write_text(
         render_compose(account, plan, websites, runtime, mail_enabled=bool(mailboxes)),
         encoding="utf-8",
@@ -918,10 +926,10 @@ done
     # Generate custom web Dockerfile
     web_build_dir = paths["stack"] / "web"
     web_build_dir.mkdir(parents=True, exist_ok=True)
-    dockerfile_content = f"""FROM litespeedtech/openlitespeed:latest
-COPY --from={PHP_LEGACY_IMAGES['74']} /usr/local/lsws/lsphp74 /usr/local/lsws/lsphp74
-COPY --from={PHP_LEGACY_IMAGES['80']} /usr/local/lsws/lsphp80 /usr/local/lsws/lsphp80
-COPY --from={PHP_LEGACY_IMAGES['81']} /usr/local/lsws/lsphp81 /usr/local/lsws/lsphp81
+    dockerfile_content = legacy_security_stages() + f"""FROM litespeedtech/openlitespeed:latest
+COPY --from=php74_security /usr/local/lsws/lsphp74 /usr/local/lsws/lsphp74
+COPY --from=php80_security /usr/local/lsws/lsphp80 /usr/local/lsws/lsphp80
+COPY --from=php81_security /usr/local/lsws/lsphp81 /usr/local/lsws/lsphp81
 COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libssl.so.1.1* /opt/mangopanel-legacy-libs/
 COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1* /opt/mangopanel-legacy-libs/
 COPY --from={PHP_LEGACY_IMAGES['74']} /usr/lib/x86_64-linux-gnu/libxml2.so.2* /opt/mangopanel-legacy-libs/
@@ -937,7 +945,8 @@ COPY --from={PHP_LEGACY_IMAGES['81']} /usr/lib/x86_64-linux-gnu/libzip.so.4* /op
 # bundled explicitly.
 RUN rm -f /usr/local/lsws/lsphp74/etc/php/7.4/mods-available/40-imagick.ini \\
     /usr/local/lsws/lsphp74/etc/php/7.4/mods-available/imap.ini
-RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
+# Security baseline 2026-10-25 (PHP2Shell): invalidate pre-advisory layers.
+RUN : PHP2Shell-20261025 && apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     lsphp82-mysql lsphp83-mysql lsphp84-mysql \\
     lsphp82-sqlite3 lsphp83-sqlite3 lsphp84-sqlite3 \\
     lsphp82-curl lsphp83-curl lsphp84-curl \\
@@ -947,6 +956,14 @@ RUN apt-get update && apt-get install -y lsphp82 lsphp83 lsphp84 \\
     proftpd-basic openssh-server socat inotify-tools \\
     && rm -rf /var/lib/apt/lists/*
 """
+    # Build legacy cores only for branches selected by this account's sites.
+    # BuildKit skips unreferenced stages, keeping modern-only provisioning fast.
+    required_legacy = {str(w["php_version"]).replace(".", "") for w in websites} & {"74", "80", "81"}
+    dockerfile_content = "\n".join(
+        line for line in dockerfile_content.split("\n")
+        if not any(line.startswith(f"COPY --from=php{v}_security /usr/local/lsws/lsphp{v}") for v in {"74", "80", "81"} - required_legacy)
+    )
+    dockerfile_content += "RUN /usr/local/lsws/lsphp82/bin/php -r 'exit(version_compare(PHP_VERSION, \"8.2.35\", \"<\"));' && /usr/local/lsws/lsphp83/bin/php -r 'exit(version_compare(PHP_VERSION, \"8.3.36\", \"<\"));' && /usr/local/lsws/lsphp84/bin/php -r 'exit(version_compare(PHP_VERSION, \"8.4.27\", \"<\"));'\n"
     (web_build_dir / "Dockerfile").write_text(dockerfile_content, encoding="utf-8")
     
     # OS User Separation: Change ownership and permissions (Linux production only)
@@ -1558,6 +1575,7 @@ scripthandler  {{
 }}
 
 phpIniOverride  {{
+  php_admin_value session.upload_progress.enabled "0"
   php_admin_value open_basedir "{base_dir}:/tmp:/var/tmp"
   php_admin_value memory_limit "512M"
   php_admin_value upload_max_filesize "10M"
@@ -1785,7 +1803,7 @@ services:
       - mangopanel-edge
 
   phpmyadmin:
-    image: phpmyadmin:latest
+    image: phpmyadmin:latest@sha256:62a50b1419fe55b9b4c3cd6f5aed03a18f8f5b4a236f24735d76400bea75a5ff
     container_name: mp-{username}-phpmyadmin
     restart: unless-stopped
     mem_limit: 256m
@@ -1807,6 +1825,8 @@ services:
       PMA_PASSWORD: {db_password}
       PMA_ABSOLUTE_URI: "/db/"
       UPLOAD_LIMIT: 1G
+    volumes:
+      - {base_path}/.runtime/stack/php-security.ini:/usr/local/etc/php/conf.d/zz-mangopanel-security.ini:ro
     networks:
       - account
       - mangopanel-edge
@@ -1883,6 +1903,7 @@ services:
     environment:
       DEBUG: "false"
     volumes:
+      - {base_path}/.runtime/stack/php-security.ini:/usr/local/etc/php/conf.d/zz-mangopanel-security.ini:ro
       - {base_path}/.runtime/stack/snappymail:/var/lib/snappymail
       - {base_path}/.runtime/stack/snappymail/themes/MangoPanel:/snappymail/snappymail/v/{SNAPPYMAIL_APP_VERSION}/themes/MangoPanel:ro
     networks:
@@ -1933,7 +1954,7 @@ services:
       - account
 
   adminer:
-    image: adminer:latest
+    image: adminer:latest@sha256:251295c1cd51d3889f1c42ffa4864b24eeab51f0caf395cfe5bf4726c5ec9a2a
     container_name: mp-{username}-adminer
     restart: unless-stopped
     mem_limit: 256m
@@ -1944,6 +1965,8 @@ services:
       caddy.reverse_proxy: "{{upstreams 8080}}"
     environment:
       ADMINER_DEFAULT_SERVER: pg
+    volumes:
+      - {base_path}/.runtime/stack/php-security.ini:/usr/local/etc/php/conf.d/zz-mangopanel-security.ini:ro
     networks:
       - account
       - mangopanel-edge
